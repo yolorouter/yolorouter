@@ -10,8 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter-ce/internal/middleware"
-	"github.com/yolorouter/yolorouter-ce/internal/web"
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
+	"github.com/yolorouter/yolorouter-ce/web"
 )
 
 // isRegularFile reports whether name exists in fsys and is a regular file,
@@ -38,10 +38,12 @@ func New() *gin.Engine {
 	r.GET("/healthz", healthz)
 	r.HEAD("/healthz", healthz) // design doc §10/§14 criterion 7: /healthz accepts GET and HEAD
 
-	distFS, err := fs.Sub(web.DistFS, "dist")
-	if err != nil {
-		panic("internal/web: dist subtree must exist: " + err.Error())
-	}
+	// A plain (non -tags embed) build's web.DistFS is the embed.FS zero
+	// value — no "dist" entry at all — so fs.Sub errors here instead of
+	// panicking; distOK gates every static-file lookup below, all of which
+	// correctly fall through to serving web.PlaceholderHTML instead.
+	distFS, distErr := fs.Sub(web.DistFS, "dist")
+	distOK := distErr == nil
 
 	// NoMethod covers a wrong-method request against an already-registered
 	// route (e.g. POST /healthz); without this, Gin's built-in NoMethod
@@ -70,7 +72,7 @@ func New() *gin.Engine {
 		if assetPath == "" {
 			assetPath = "index.html"
 		}
-		if isRegularFile(distFS, assetPath) {
+		if distOK && isRegularFile(distFS, assetPath) {
 			http.ServeFileFS(c.Writer, c.Request, distFS, assetPath)
 			return
 		}
@@ -88,7 +90,14 @@ func New() *gin.Engine {
 		// SPA fallback: no matching embedded file, hand off to the
 		// frontend router.
 		c.Header("Cache-Control", "no-cache")
-		http.ServeFileFS(c.Writer, c.Request, distFS, "index.html")
+		if distOK && isRegularFile(distFS, "index.html") {
+			http.ServeFileFS(c.Writer, c.Request, distFS, "index.html")
+			return
+		}
+		// No real frontend build embedded (plain build, or -tags embed
+		// against an as-yet-unbuilt frontend) — serve the always-present
+		// placeholder instead of erroring.
+		c.Data(http.StatusOK, "text/html; charset=utf-8", web.PlaceholderHTML)
 	})
 
 	return r

@@ -131,14 +131,26 @@ if [ "${BUILD_FRONTEND}" = "true" ]; then
   # npm ci (not npm install) for a reproducible install from package-lock.json.
   (cd "${ROOT_DIR}/frontend" && npm ci && npm run build)
   echo "==> Copying frontend dist into Go embed target"
-  rm -rf "${ROOT_DIR}/internal/web/dist"
-  mkdir -p "${ROOT_DIR}/internal/web/dist"
-  cp -r "${ROOT_DIR}/frontend/dist/." "${ROOT_DIR}/internal/web/dist/"
+  # web/dist/ is 100% gitignored (see web/embed_stub.go / web/embed_real.go
+  # and design doc §7) — nothing tracked lives in there, so a plain rm -rf
+  # + recopy is safe and never touches git-tracked state.
+  rm -rf "${ROOT_DIR}/web/dist"
+  mkdir -p "${ROOT_DIR}/web/dist"
+  cp -r "${ROOT_DIR}/frontend/dist/." "${ROOT_DIR}/web/dist/"
 fi
 
 if [ "${BUILD_BACKEND}" = "true" ] || [ "${BUILD_FRONTEND}" = "true" ]; then
   echo "==> Building Go binary"
-  (cd "${ROOT_DIR}" && go build -o "${BIN_PATH}" ./cmd/yolorouter-ce)
+  # -tags embed only when web/dist/ actually has a real frontend build to
+  # embed — building with the tag against an empty dist/ fails to compile
+  # (see web/embed_real.go), which would break --backend/--restart modes on
+  # a checkout that never ran the frontend build at all.
+  BUILD_TAGS=""
+  if find "${ROOT_DIR}/web/dist" -mindepth 1 -type f 2>/dev/null | grep -q .; then
+    BUILD_TAGS="-tags embed"
+  fi
+  # shellcheck disable=SC2086 # BUILD_TAGS is intentionally either empty or a single flag token
+  (cd "${ROOT_DIR}" && go build ${BUILD_TAGS} -o "${BIN_PATH}" ./cmd/yolorouter-ce)
 fi
 
 if [ "${EXPLICIT_MIGRATE}" = "true" ]; then
