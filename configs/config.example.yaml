@@ -1,0 +1,27 @@
+# 仅作示例参考；实际运行时如果 configs/config.yaml 不存在，
+# yolorouter-ce 会用内置默认值自动生成一份（含随机生成的
+# security.provider_master_key），不需要手动复制这个文件。
+#
+# 如果确实要直接复制这份文件当作 --config 使用：文件权限必须是 600
+# （chmod 600，否则会被拒绝加载），并且下面的 provider_master_key 必须
+# 换成一个真实的 base64 编码 32 字节 AES-256 密钥——留空只在"配置文件不
+# 存在、走自动生成"这条路径下才会被程序自动填充，一旦文件本身存在，空
+# 值会直接报错，不会静默补全。
+server:
+  port: 8080
+database:
+  driver: sqlite       # sqlite | postgres
+  # 相对路径按这个配置文件自身所在目录解析，不是进程 cwd —— "../data" 落在
+  # 仓库顶层的 data/ 目录（configs/ 的同级目录），跟内置默认值一致；如果写成
+  # "./data/yolorouter-ce.db"，实际会落到 configs/data/ 里，跟自动生成场景的
+  # 默认位置不一样
+  sqlite_path: ../data/yolorouter-ce.db
+  # host, port, user, password, dbname, sslmode 仅在 driver: postgres 时需要
+  # sslmode: disable | allow | prefer | require | verify-ca | verify-full
+  # 本地开发用 disable 即可；远程/生产部署应显式设为 require 或 verify-full，
+  # 否则凭据和数据会以明文传输
+  sslmode: disable
+log:
+  level: info
+security:
+  provider_master_key: ""  # 留空；自动生成场景下由程序填充，不要手写
