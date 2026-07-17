@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
 	// database.go (same package) imports github.com/glebarez/sqlite, which
 	// transitively registers the "sqlite" database/sql driver via its init().
 	// Blank-importing modernc.org/sqlite here as well (as the plan's

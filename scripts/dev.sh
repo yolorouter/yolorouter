@@ -128,6 +128,11 @@ fi
 
 if [ "${BUILD_FRONTEND}" = "true" ]; then
   echo "==> Building frontend"
+  # Remove frontend/dist first so a misconfigured build (e.g. an outDir
+  # typo in vite.config that leaves npm run build writing somewhere else
+  # entirely) can't leave a stale, previously-successful build sitting
+  # there for the copy step below to pick up as if it were fresh.
+  rm -rf "${ROOT_DIR}/frontend/dist"
   # npm ci (not npm install) for a reproducible install from package-lock.json.
   (cd "${ROOT_DIR}/frontend" && npm ci && npm run build)
   echo "==> Copying frontend dist into Go embed target"

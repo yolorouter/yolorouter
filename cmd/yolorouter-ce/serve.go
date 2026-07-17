@@ -15,6 +15,7 @@ import (
 	"github.com/yolorouter/yolorouter-ce/internal/router"
 	"github.com/yolorouter/yolorouter-ce/pkg/database"
 	"github.com/yolorouter/yolorouter-ce/pkg/logger"
+	"github.com/yolorouter/yolorouter-ce/web"
 )
 
 func runServe(ctx context.Context, args []string) error {
@@ -41,6 +42,28 @@ func runServe(ctx context.Context, args []string) error {
 	defer func() { _ = unlockInstance() }()
 	defer func() { _ = app.Close() }()
 
+	// router.New validates the embedded frontend build (if any) and must run
+	// before any database migration: it has no side effects of its own, so
+	// rejecting a broken embedded build here guarantees a bad deploy never
+	// commits schema changes first. Running it after RunMigrations would let
+	// a broken artifact push the database forward and then exit, leaving a
+	// migrated-but-unreachable instance behind for whatever runs next to deal
+	// with.
+	r, err := router.New()
+	if err != nil {
+		return fmt.Errorf("build router: %w", err)
+	}
+	// isReleaseBuild is only true for -tags release; router.New() alone
+	// doesn't reject an empty (no frontend) distFS, since that's the
+	// correct, expected state for a plain build. A release binary built
+	// without -tags embed would otherwise start, report /healthz healthy,
+	// and serve web/placeholder.html for every request instead of the real
+	// UI — see release_flag_off.go for why this check lives here instead
+	// of inside router.New() itself.
+	if isReleaseBuild && !web.HasFrontend() {
+		return fmt.Errorf("release build has no embedded frontend: build with `make build-release` (always pairs -tags release with -tags embed), not -tags release alone")
+	}
+
 	sqlDB, err := app.DB.DB()
 	if err != nil {
 		return err
@@ -50,7 +73,6 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("startup migration failed: %w", err)
 	}
 
-	r := router.New()
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", app.Config.Server.Port),
 		Handler:           r,
