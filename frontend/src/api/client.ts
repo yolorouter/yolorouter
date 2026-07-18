@@ -78,9 +78,10 @@ function bodyManagesOwnContentType(body: BodyInit | null | undefined): boolean {
   )
 }
 
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const timeoutController = new AbortController()
-  const timeout = setTimeout(() => timeoutController.abort(TIMEOUT_REASON), 30_000)
+  const timeoutMs = init?.timeoutMs ?? 30_000
+  const timeout = setTimeout(() => timeoutController.abort(TIMEOUT_REASON), timeoutMs)
   // Combine our own timeout signal with any signal the caller passed in,
   // rather than replacing it — otherwise a caller-provided AbortSignal
   // (e.g. tied to a component unmount) would silently stop working.

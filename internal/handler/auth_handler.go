@@ -52,11 +52,14 @@ func writeSessionCookie(c *gin.Context, sessionID string, maxAge int) {
 // other bind failure (missing field, wrong type, failed validator tag)
 // gets. That generic 400 is a deliberate, tested contract (see e.g.
 // TestSetupRejectsPasswordLongerThanBcryptLimit) — pkg/response.ParamError
-// isn't used here even though every reference-project handler calls it,
-// because ParamError's status comes from httpStatusForCode(InvalidParam),
-// which maps to 500 in this copied package (InvalidParam=50003 falls in
-// the "system error" 50xxx bucket) and would turn every validation
-// failure into a misleading 500.
+// still isn't used here, for a narrower reason than before: ParamError's
+// cleanValidationMessage only understands Go validator-tag failure text,
+// not the JSON-type-mismatch/malformed-body shapes handled below, so this
+// function's own cleanBindValidationError remains the right tool. (An
+// earlier version of this comment cited a since-fixed bug where
+// httpStatusForCode(InvalidParam) mapped to 500 instead of 400 — that's
+// now special-cased in pkg/response.httpStatusForCode itself, so ParamError
+// is no longer unsafe to call, just not the right fit for every shape below.)
 //
 // Bind failures come in four shapes that all need their raw text kept
 // away from the client: a failed validator tag (err.Error() reads "Key:

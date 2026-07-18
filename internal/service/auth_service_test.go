@@ -3,13 +3,51 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter-ce/internal/repository"
 	"github.com/yolorouter/yolorouter-ce/internal/testutil"
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
 )
+
+// blockTableWrites installs a SQLite trigger that turns every future
+// statement of the given kind ("UPDATE"/"INSERT"/"DELETE") against table
+// into an error, while leaving every other table (and every other
+// statement kind on the same table) untouched. Used to force a repository
+// call to fail without corrupting the schema outright (as dropTable does),
+// so earlier reads in the same code path still succeed.
+func blockTableWrites(t *testing.T, db *gorm.DB, table, kind string) {
+	t.Helper()
+	stmt := fmt.Sprintf(
+		"CREATE TRIGGER block_%s_%s BEFORE %s ON %s BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END",
+		strings.ToLower(kind), table, kind, table,
+	)
+	if err := db.Exec(stmt).Error; err != nil {
+		t.Fatalf("create blocking trigger on %s: %v", table, err)
+	}
+}
+
+// dropTable removes a table outright, forcing every subsequent read or
+// write against it to fail — used for the "repository call errors for a
+// reason that isn't gorm.ErrRecordNotFound" branches.
+func dropTable(t *testing.T, db *gorm.DB, table string) {
+	t.Helper()
+	// Disable FK enforcement first: provider_keys.provider_id references
+	// providers(id), and SQLite refuses to drop a table another table's FK
+	// still points at while enforcement is on — tests need to drop just one
+	// side (e.g. providers) while leaving the other (provider_keys) intact
+	// and queryable.
+	if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+		t.Fatalf("disable foreign_keys pragma: %v", err)
+	}
+	if err := db.Exec("DROP TABLE " + table).Error; err != nil {
+		t.Fatalf("drop table %s: %v", table, err)
+	}
+}
 
 func TestCheckStateReflectsAdminCount(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -237,5 +275,176 @@ func TestChangePasswordRejectsWrongCurrentPassword(t *testing.T) {
 	err = ChangePassword(db, admin.ID, "wrong-current", "newpassword456", now)
 	if !errors.Is(err, errcode.ErrAccountInvalidCredentials) {
 		t.Fatalf("expected ErrAccountInvalidCredentials, got: %v", err)
+	}
+}
+
+func TestLockedErrorMessageIsAccountLoginLocked(t *testing.T) {
+	err := &LockedError{LockedUntil: time.Now()}
+	if err.Error() != errcode.ErrorMessages[errcode.AccountLoginLocked] {
+		t.Fatalf("expected the AccountLoginLocked message, got %q", err.Error())
+	}
+}
+
+func TestCheckStateErrorsWhenAdminsTableMissing(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	dropTable(t, db, "admins")
+
+	if _, err := CheckState(db); err == nil {
+		t.Fatalf("expected an error when the admins table is missing")
+	}
+}
+
+func TestSetupErrorsWhenPasswordTooLongToHash(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+
+	_, _, err := Setup(db, "admin", strings.Repeat("a", 73), now)
+	if err == nil {
+		t.Fatalf("expected an error for a password bcrypt refuses to hash")
+	}
+	if errors.Is(err, errcode.ErrAccountSetupAlreadyDone) {
+		t.Fatalf("expected a hashing error, not ErrAccountSetupAlreadyDone")
+	}
+}
+
+// TestSetupRollsBackAndReturnsRawErrorWhenSessionCreationFails exercises
+// Setup's txErr path where the transaction genuinely fails (as opposed to
+// losing the singleton_guard race) — the admin insert must be rolled back
+// (leaving CountAdmins at 0) so the raw error is returned instead of
+// ErrAccountSetupAlreadyDone.
+func TestSetupRollsBackAndReturnsRawErrorWhenSessionCreationFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+	blockTableWrites(t, db, "admin_sessions", "INSERT")
+
+	_, _, err := Setup(db, "admin", "password123", now)
+	if err == nil {
+		t.Fatalf("expected an error when session creation fails")
+	}
+	if errors.Is(err, errcode.ErrAccountSetupAlreadyDone) {
+		t.Fatalf("expected the raw transaction error, not ErrAccountSetupAlreadyDone, got %v", err)
+	}
+
+	count, countErr := repository.CountAdmins(db)
+	if countErr != nil {
+		t.Fatalf("CountAdmins failed: %v", countErr)
+	}
+	if count != 0 {
+		t.Fatalf("expected the failed transaction to roll back the admin insert, found %d admins", count)
+	}
+}
+
+func TestLoginErrorsWhenAdminsTableMissing(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	dropTable(t, db, "admins")
+
+	if _, _, err := Login(db, "admin", "password123", time.Now().UTC()); err == nil {
+		t.Fatalf("expected an error when the admins table is missing")
+	}
+}
+
+func TestLoginErrorsWhenRecordLoginFailureFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+	if _, _, err := Setup(db, "admin", "password123", now); err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+	blockTableWrites(t, db, "admins", "UPDATE")
+
+	_, _, err := Login(db, "admin", "wrong-password", now)
+	if err == nil {
+		t.Fatalf("expected an error when RecordLoginFailure's UPDATE fails")
+	}
+	var lockedErr *LockedError
+	if errors.As(err, &lockedErr) {
+		t.Fatalf("expected a raw DB error, not a LockedError, got %v", err)
+	}
+}
+
+func TestLoginErrorsWhenDeleteExpiredSessionsFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+	admin, _, err := Setup(db, "admin", "password123", now)
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+	// A BEFORE DELETE trigger only fires for rows that actually match the
+	// DELETE's WHERE clause — DeleteExpiredSessions' error branch can only
+	// be exercised if there's at least one already-expired row for it to
+	// attempt to delete.
+	if err := repository.CreateSession(db, "already-expired", admin.ID, now.Add(-time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("seed expired session failed: %v", err)
+	}
+	blockTableWrites(t, db, "admin_sessions", "DELETE")
+
+	if _, _, err := Login(db, "admin", "password123", now); err == nil {
+		t.Fatalf("expected an error when DeleteExpiredSessions fails inside Login's transaction")
+	}
+}
+
+func TestLoginErrorsWhenRecordLoginSuccessFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+	if _, _, err := Setup(db, "admin", "password123", now); err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+	blockTableWrites(t, db, "admins", "UPDATE")
+
+	if _, _, err := Login(db, "admin", "password123", now); err == nil {
+		t.Fatalf("expected an error when RecordLoginSuccess's UPDATE fails inside Login's transaction")
+	}
+}
+
+func TestChangePasswordErrorsWhenAdminNotFound(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	if err := ChangePassword(db, 9999, "whatever", "newpassword456", time.Now().UTC()); err == nil {
+		t.Fatalf("expected an error for a non-existent admin id")
+	}
+}
+
+func TestChangePasswordErrorsWhenNewPasswordTooLongToHash(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+	admin, _, err := Setup(db, "admin", "password123", now)
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+
+	err = ChangePassword(db, admin.ID, "password123", strings.Repeat("b", 73), now)
+	if err == nil {
+		t.Fatalf("expected an error for a new password bcrypt refuses to hash")
+	}
+}
+
+func TestChangePasswordErrorsWhenPasswordHashUpdateFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+	admin, _, err := Setup(db, "admin", "password123", now)
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+	blockTableWrites(t, db, "admins", "UPDATE")
+
+	if err := ChangePassword(db, admin.ID, "password123", "newpassword456", now); err == nil {
+		t.Fatalf("expected an error when the password_hash UPDATE fails")
+	}
+}
+
+// createSession's generateRandomToken error branch is not exercised here —
+// see token_helpers_test.go: since Go 1.24, crypto/rand.Read cannot be made
+// to return an error from a test (it crashes the program instead), so that
+// branch is unreachable dead code under this project's Go version.
+
+func TestCreateSessionErrorsWhenInsertFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+	admin, _, err := Setup(db, "admin", "password123", now)
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+	blockTableWrites(t, db, "admin_sessions", "INSERT")
+
+	if _, err := createSession(db, admin.ID, now); err == nil {
+		t.Fatalf("expected an error when the admin_sessions INSERT fails")
 	}
 }

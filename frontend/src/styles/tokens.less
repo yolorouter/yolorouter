@@ -1,0 +1,92 @@
+// Design tokens ported verbatim from the reference project
+// (/Users/haodou/git/arm/yolorouter/yolorouter-frontend/src/styles/tokens.less)
+// so this admin UI shares the same visual language instead of inventing a
+// second, unrelated one.
+:root {
+  // A max-effort code-review round flagged that deleting the M0 scaffold's
+  // style.css dropped its `color-scheme: light dark` declaration with no
+  // replacement. Investigation found that scaffold file's dark palette was
+  // itself unwired boilerplate (generic `#app`/`.hero` selectors that don't
+  // match any real app markup, and its --bg/--text/etc. vars were never
+  // consumed outside one already-fixed accidental reference); the reference
+  // design system this app now follows (see comment below) has no dark
+  // theme either, and naive-ui's NConfigProvider here is never given
+  // `theme={darkTheme}`. Declaring `light dark` with no matching dark
+  // token set or dark naive-ui theme would just make native scrollbars/
+  // form chrome mismatch this app's actually-always-light surfaces, which
+  // is worse than todays state. `light` makes that current reality
+  // explicit instead of silent; a real dark theme is a separate design
+  // task (new dark OKLCH tokens + NConfigProvider theme switching), not a
+  // one-line fix.
+  color-scheme: light;
+
+  --color-bg: oklch(98.5% 0.004 250);
+  --color-bg-soft: oklch(96.5% 0.008 250);
+  --color-surface: oklch(100% 0 0);
+  --color-surface-raised: oklch(99.2% 0.004 250);
+  --color-surface-hover: oklch(95.5% 0.012 250);
+  --color-sidebar: oklch(99% 0.004 250);
+  --color-border: oklch(87% 0.014 250);
+  --color-border-subtle: #eee;
+
+  --color-text: oklch(22% 0.028 250);
+  --color-text-secondary: oklch(45% 0.03 250);
+  --color-text-muted: oklch(61% 0.022 250);
+
+  --color-accent: #6467f2;
+  --color-accent-hover: #7375f2;
+  --color-accent-subtle: oklch(94% 0.035 248);
+  --color-accent-ring: oklch(56% 0.18 248 / 0.22);
+  --color-accent-glow: oklch(56% 0.18 248 / 0.12);
+
+  --color-success: oklch(58% 0.16 150);
+  --color-success-subtle: oklch(94% 0.05 150);
+  --color-danger: oklch(58% 0.2 25);
+  --color-danger-subtle: oklch(94% 0.04 25);
+  --color-warning: oklch(70% 0.15 75);
+  --color-warning-subtle: oklch(95% 0.055 75);
+  --color-purple: oklch(58% 0.16 300);
+  --color-purple-subtle: oklch(94% 0.04 300);
+
+  --font-sans: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.625rem;
+  --text-3xl: clamp(2rem, 1.4rem + 2vw, 3.25rem);
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  --duration-fast: 150ms;
+  --duration-normal: 240ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --shadow-sm: 0 1px 2px oklch(22% 0.028 250 / 0.06), 0 1px 8px oklch(22% 0.028 250 / 0.04);
+  --shadow-md: 0 12px 30px oklch(22% 0.028 250 / 0.08);
+  --shadow-lg: 0 24px 70px oklch(22% 0.028 250 / 0.12);
+  --shadow-glow: 0 0 0 1px var(--color-accent-ring), 0 18px 80px var(--color-accent-glow);
+
+  --sidebar-width: 240px;
+  --sidebar-collapsed-width: 64px;
+  --sidebar-transition: 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  --sidebar-active-color: #fff;
+  --sidebar-active-text-color: #0d0d0d;
+}

@@ -36,6 +36,11 @@ const (
 	ProviderNoTestableModel  = 12006 // openai/anthropic 类型测试连接需要至少一个已启用模型
 	ProviderMasterKeyMissing = 12007 // AES-256-GCM 主密钥未配置，无法加解密上游 API Key
 	ProviderHasRequestLogs   = 12008 // 已产生过请求日志，不能删除（FK 会拒绝，这里提前给出明确错误）
+	ProviderKeyNotFound      = 12009 // 指定的 Key ID 在该供应商下不存在
+	ProviderKeyLabelTaken    = 12010 // label 在同一供应商内已被其他 Key 占用
+	ProviderKeyNotVerified   = 12011 // 尝试启用一个 verification_status 不是"通过"的 Key
+	ProviderKeyNeedsReentry  = 12012 // authorized_destination_version 与当前 destination_version 不一致，需重新提交明文
+	ProviderKeyTooShort      = 12013 // Key 明文长度不足 minKeyPlaintextLength（正常情况下已被 Gin binding 拦截，这里是防御性兜底）
 
 	ProviderModelNotFound   = 12101
 	ProviderModelAliasTaken = 12102
@@ -107,6 +112,11 @@ var ErrorMessages = map[int]string{
 	ProviderNoTestableModel:  "provider has no enabled model to test with",
 	ProviderMasterKeyMissing: "provider master key not configured",
 	ProviderHasRequestLogs:   "provider has existing request logs, cannot be deleted",
+	ProviderKeyNotFound:      "provider key not found",
+	ProviderKeyLabelTaken:    "provider key label already taken",
+	ProviderKeyNotVerified:   "cannot enable a key that has not passed verification",
+	ProviderKeyNeedsReentry:  "provider address changed, please resubmit the key plaintext",
+	ProviderKeyTooShort:      "key plaintext is too short",
 
 	ProviderModelNotFound:   "model not found",
 	ProviderModelAliasTaken: "model alias already taken",
@@ -160,6 +170,11 @@ var (
 	ErrProviderNoTestableModel  = errors.New(ErrorMessages[ProviderNoTestableModel])
 	ErrProviderMasterKeyMissing = errors.New(ErrorMessages[ProviderMasterKeyMissing])
 	ErrProviderHasRequestLogs   = errors.New(ErrorMessages[ProviderHasRequestLogs])
+	ErrProviderKeyNotFound      = errors.New(ErrorMessages[ProviderKeyNotFound])
+	ErrProviderKeyLabelTaken    = errors.New(ErrorMessages[ProviderKeyLabelTaken])
+	ErrProviderKeyNotVerified   = errors.New(ErrorMessages[ProviderKeyNotVerified])
+	ErrProviderKeyNeedsReentry  = errors.New(ErrorMessages[ProviderKeyNeedsReentry])
+	ErrProviderKeyTooShort      = errors.New(ErrorMessages[ProviderKeyTooShort])
 
 	ErrProviderModelNotFound   = errors.New(ErrorMessages[ProviderModelNotFound])
 	ErrProviderModelAliasTaken = errors.New(ErrorMessages[ProviderModelAliasTaken])

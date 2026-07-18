@@ -352,3 +352,185 @@ func TestAuthRoutesRequireLoginExceptStateSetupLogin(t *testing.T) {
 		}
 	}
 }
+
+// dropAdminsTable forces every subsequent admins-table query to fail with a
+// generic (non-gorm.ErrRecordNotFound) error, without touching the
+// admin_sessions table — used to reach a handler's "DB error other than not
+// found" branch for calls made through a route whose own
+// middleware.RequireAdminSession(db) check must still succeed (it only
+// queries admin_sessions). admin_sessions.admin_id is a foreign key into
+// admins, so the drop must disable FK enforcement first or SQLite refuses
+// it outright ("FOREIGN KEY constraint failed").
+func dropAdminsTable(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+		t.Fatalf("disable foreign keys: %v", err)
+	}
+	if err := db.Exec("DROP TABLE admins").Error; err != nil {
+		t.Fatalf("drop admins table: %v", err)
+	}
+}
+
+func TestGetAuthStateReturns500WhenCountAdminsFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	r := newAuthTestRouter(t, db)
+	dropAdminsTable(t, db)
+
+	w, env := doJSON(t, r, http.MethodGet, "/api/admin/auth/state", nil, nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.DatabaseError {
+		t.Fatalf("expected code %d, got %d", errcode.DatabaseError, env.Code)
+	}
+}
+
+func TestPostSetupReturns500WhenCountAdminsFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	r := newAuthTestRouter(t, db)
+	dropAdminsTable(t, db)
+
+	w, env := doJSON(t, r, http.MethodPost, "/api/admin/auth/setup",
+		map[string]string{"username": "admin", "password": "password123"}, nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.DatabaseError {
+		t.Fatalf("expected code %d, got %d", errcode.DatabaseError, env.Code)
+	}
+}
+
+func TestPostLoginRejectsMalformedJSON(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	r := newAuthTestRouter(t, db)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/auth/login", strings.NewReader(`{"username":`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestPostLoginReturns429WhenLimiterExhausted builds its own minimal router
+// (rather than newAuthTestRouter's shared capacity-8 semaphore) with a
+// zero-capacity semaphore, so the very first login attempt already finds no
+// slot available.
+func TestPostLoginReturns429WhenLimiterExhausted(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	if err := RegisterValidators(); err != nil {
+		t.Fatalf("RegisterValidators failed: %v", err)
+	}
+	r := gin.New()
+	admin := r.Group("/api/admin")
+	admin.POST("/auth/setup", PostSetup(db))
+	admin.POST("/auth/login", PostLogin(db, middleware.NewSemaphore(0)))
+
+	doJSON(t, r, http.MethodPost, "/api/admin/auth/setup",
+		map[string]string{"username": "admin", "password": "password123"}, nil)
+
+	w, env := doJSON(t, r, http.MethodPost, "/api/admin/auth/login",
+		map[string]string{"username": "admin", "password": "password123"}, nil)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.ServiceUnavailable {
+		t.Fatalf("expected code %d, got %d", errcode.ServiceUnavailable, env.Code)
+	}
+}
+
+func TestPostLoginReturns500OnGenericDBError(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	r := newAuthTestRouter(t, db)
+
+	doJSON(t, r, http.MethodPost, "/api/admin/auth/setup",
+		map[string]string{"username": "admin", "password": "password123"}, nil)
+	dropAdminsTable(t, db)
+
+	w, env := doJSON(t, r, http.MethodPost, "/api/admin/auth/login",
+		map[string]string{"username": "admin", "password": "password123"}, nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.DatabaseError {
+		t.Fatalf("expected code %d, got %d", errcode.DatabaseError, env.Code)
+	}
+}
+
+func TestGetMeReturns500WhenAdminLookupFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	r := newAuthTestRouter(t, db)
+
+	w, _ := doJSON(t, r, http.MethodPost, "/api/admin/auth/setup",
+		map[string]string{"username": "admin", "password": "password123"}, nil)
+	sessionCookie := w.Result().Cookies()[0]
+	dropAdminsTable(t, db)
+
+	w, env := doJSON(t, r, http.MethodGet, "/api/admin/auth/me", nil, sessionCookie)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.DatabaseError {
+		t.Fatalf("expected code %d, got %d", errcode.DatabaseError, env.Code)
+	}
+}
+
+func TestPutPasswordRejectsMalformedJSON(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	r := newAuthTestRouter(t, db)
+
+	w, _ := doJSON(t, r, http.MethodPost, "/api/admin/auth/setup",
+		map[string]string{"username": "admin", "password": "password123"}, nil)
+	sessionCookie := w.Result().Cookies()[0]
+
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/auth/password", strings.NewReader(`{"current_password":`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(sessionCookie)
+	wRec := httptest.NewRecorder()
+	r.ServeHTTP(wRec, req)
+	if wRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body: %s", wRec.Code, wRec.Body.String())
+	}
+}
+
+func TestPutPasswordReturns401WhenCurrentPasswordWrong(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	r := newAuthTestRouter(t, db)
+
+	w, _ := doJSON(t, r, http.MethodPost, "/api/admin/auth/setup",
+		map[string]string{"username": "admin", "password": "password123"}, nil)
+	sessionCookie := w.Result().Cookies()[0]
+
+	w, env := doJSON(t, r, http.MethodPut, "/api/admin/auth/password", map[string]string{
+		"current_password": "wrong-password1",
+		"new_password":     "newpassword456",
+	}, sessionCookie)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.AccountInvalidCredentials {
+		t.Fatalf("expected code %d, got %d", errcode.AccountInvalidCredentials, env.Code)
+	}
+}
+
+func TestPutPasswordReturns500WhenAdminLookupFails(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	r := newAuthTestRouter(t, db)
+
+	w, _ := doJSON(t, r, http.MethodPost, "/api/admin/auth/setup",
+		map[string]string{"username": "admin", "password": "password123"}, nil)
+	sessionCookie := w.Result().Cookies()[0]
+	dropAdminsTable(t, db)
+
+	w, env := doJSON(t, r, http.MethodPut, "/api/admin/auth/password", map[string]string{
+		"current_password": "password123",
+		"new_password":     "newpassword456",
+	}, sessionCookie)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.DatabaseError {
+		t.Fatalf("expected code %d, got %d", errcode.DatabaseError, env.Code)
+	}
+}

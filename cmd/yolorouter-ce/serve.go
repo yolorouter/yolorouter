@@ -13,6 +13,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/yolorouter/yolorouter-ce/internal/router"
+	"github.com/yolorouter/yolorouter-ce/internal/service"
+	"github.com/yolorouter/yolorouter-ce/pkg/crypto"
 	"github.com/yolorouter/yolorouter-ce/pkg/database"
 	"github.com/yolorouter/yolorouter-ce/pkg/logger"
 	"github.com/yolorouter/yolorouter-ce/web"
@@ -49,7 +51,12 @@ func runServe(ctx context.Context, args []string) error {
 	// a broken artifact push the database forward and then exit, leaving a
 	// migrated-but-unreachable instance behind for whatever runs next to deal
 	// with.
-	r, err := router.New(app.DB)
+	masterKey, err := crypto.KeyFromBase64(app.Config.Security.ProviderMasterKey)
+	if err != nil {
+		return fmt.Errorf("decode provider master key: %w", err)
+	}
+
+	r, err := router.New(app.DB, masterKey)
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
 	}
@@ -71,6 +78,16 @@ func runServe(ctx context.Context, args []string) error {
 	migrationsFS, dir := migrationsFor(app.Config.Database.Driver)
 	if err := database.RunMigrations(sqlDB, app.Config.Database.Driver, migrationsFS, dir); err != nil {
 		return fmt.Errorf("startup migration failed: %w", err)
+	}
+
+	// nil ProviderClient: VerifyMasterKeyFingerprint only touches s.db/
+	// s.masterKey, never s.client, so this avoids allocating a second,
+	// independent HTTPProviderClient (its own semaphore + http.Transport)
+	// purely for a startup DB+crypto check — router.New builds the one
+	// real instance that actually serves provider-test traffic.
+	fingerprintSvc := service.NewProviderService(app.DB, masterKey, nil)
+	if err := fingerprintSvc.VerifyMasterKeyFingerprint(time.Now().UTC()); err != nil {
+		return fmt.Errorf("startup check failed: %w", err)
 	}
 
 	srv := &http.Server{

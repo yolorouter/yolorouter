@@ -86,12 +86,11 @@ func validateBcryptLen(fl validator.FieldLevel) bool {
 // 'Password' failed on the 'bcrypt_len' tag") into a clean "field: tag"
 // message, so internal Go struct/field names never leak to the client.
 // This ports pkg/response's unexported cleanValidationMessage rather than
-// calling it: pkg/response is a verbatim copy of the reference project's
-// package (M0 design doc §12) that can't be modified to export it, and
-// pkg/response.ParamError bundles the same cleaning with a status derived
-// from httpStatusForCode(InvalidParam) — 500 in this copied package,
-// which would break bindJSON's deliberately-tested 400 contract (see its
-// own doc comment). Non-validation messages are returned as-is.
+// calling it (via pkg/response.ParamError) because ParamError only handles
+// this one failure shape — bindJSON's own dispatch (see its doc comment)
+// also needs to clean the JSON-type-mismatch, malformed-body, and
+// read-timeout shapes, none of which ParamError's cleaning understands.
+// Non-validation messages are returned as-is.
 func cleanBindValidationError(msg string) string {
 	if !strings.Contains(msg, "Error:Field validation") {
 		return msg

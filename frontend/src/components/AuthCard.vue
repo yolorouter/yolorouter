@@ -33,8 +33,9 @@ defineProps<{ title: string; subtitle: string }>()
   padding: 24px 16px;
   box-sizing: border-box;
   background:
-    radial-gradient(ellipse 640px 420px at 50% -10%, var(--accent-bg), transparent 70%),
-    var(--bg);
+    radial-gradient(circle at 18% -8%, oklch(80% 0.11 248 / 0.28), transparent 34rem),
+    radial-gradient(circle at 92% 8%, oklch(82% 0.1 300 / 0.18), transparent 30rem),
+    var(--color-bg);
 }
 
 .auth-card-wrap {
@@ -43,10 +44,10 @@ defineProps<{ title: string; subtitle: string }>()
 }
 
 .auth-card {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
   padding: 40px 32px;
   box-sizing: border-box;
 }
@@ -59,16 +60,16 @@ defineProps<{ title: string; subtitle: string }>()
 
 .auth-title {
   margin: 0;
-  font-size: 1.625rem;
+  font-size: var(--text-2xl);
   font-weight: 800;
   line-height: 1.1;
-  color: var(--text-h);
+  color: var(--color-text);
 }
 
 .auth-subtitle {
-  margin: 8px 0 0;
-  color: var(--text);
-  font-size: 0.875rem;
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
 }
 
 @media (max-width: 480px) {

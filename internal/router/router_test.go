@@ -18,11 +18,32 @@ import (
 func newTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	db := testutil.NewSQLiteDB(t)
-	r, err := New(db)
+	r, err := New(db, testProviderMasterKey())
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
 	return r
+}
+
+func testProviderMasterKey() []byte {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	return key
+}
+
+func TestProviderRoutesAreRegisteredUnderProtectedGroup(t *testing.T) {
+	r := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/providers", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	// No session cookie: RequireAdminSession must reject this before it
+	// ever reaches the provider handler — proves providers routes are on
+	// the `protected` subgroup, not directly on `admin`.
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an unauthenticated request to a provider route, got %d, body: %s", w.Code, w.Body.String())
+	}
 }
 
 // TestNewFailsFastWhenEmbeddedFrontendIsBroken is the integration test the
@@ -44,7 +65,7 @@ func TestNewFailsFastWhenEmbeddedFrontendIsBroken(t *testing.T) {
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 		// deliberately no index.html
 	}
-	_, err := newWithDistFS(broken, testutil.NewSQLiteDB(t))
+	_, err := newWithDistFS(broken, testutil.NewSQLiteDB(t), testProviderMasterKey())
 	if err == nil {
 		t.Fatalf("expected New() to fail when distFS has files but no index.html")
 	}
@@ -56,7 +77,7 @@ func TestNewFailsFastWhenEmbeddedFrontendIsBroken(t *testing.T) {
 // must NOT be treated as broken; New() should succeed and fall back to the
 // placeholder at request time (see TestUnknownFrontendPathFallsBackToIndexHTML).
 func TestNewSucceedsWithEmptyDistFS(t *testing.T) {
-	if _, err := newWithDistFS(fstest.MapFS{}, testutil.NewSQLiteDB(t)); err != nil {
+	if _, err := newWithDistFS(fstest.MapFS{}, testutil.NewSQLiteDB(t), testProviderMasterKey()); err != nil {
 		t.Fatalf("expected New() to succeed with an empty distFS, got: %v", err)
 	}
 }
@@ -73,7 +94,7 @@ func TestNewSucceedsWithCompleteFrontend(t *testing.T) {
 		)},
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
-	if _, err := newWithDistFS(complete, testutil.NewSQLiteDB(t)); err != nil {
+	if _, err := newWithDistFS(complete, testutil.NewSQLiteDB(t), testProviderMasterKey()); err != nil {
 		t.Fatalf("expected New() to succeed with a complete frontend, got: %v", err)
 	}
 }
@@ -86,7 +107,7 @@ func TestNewFailsForEmptyIndexHTML(t *testing.T) {
 		"index.html":    &fstest.MapFile{Data: []byte("")},
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
-	if _, err := newWithDistFS(empty, testutil.NewSQLiteDB(t)); err == nil {
+	if _, err := newWithDistFS(empty, testutil.NewSQLiteDB(t), testProviderMasterKey()); err == nil {
 		t.Fatalf("expected New() to fail for an empty index.html")
 	}
 }
@@ -101,7 +122,7 @@ func TestNewFailsWhenIndexHTMLReferencesMissingAsset(t *testing.T) {
 			`<html><head><script src="/assets/missing-CNWoupNg.js"></script></head></html>`,
 		)},
 	}
-	if _, err := newWithDistFS(partial, testutil.NewSQLiteDB(t)); err == nil {
+	if _, err := newWithDistFS(partial, testutil.NewSQLiteDB(t), testProviderMasterKey()); err == nil {
 		t.Fatalf("expected New() to fail when index.html references a missing local asset")
 	}
 }

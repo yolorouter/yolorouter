@@ -1,20 +1,50 @@
 <!-- frontend/src/layouts/DefaultLayout.vue -->
 <template>
-  <div class="layout">
-    <header>
-      <span class="brand">
-        <img :src="logo" alt="Yolorouter CE" class="brand-logo" />
-        <span>Yolorouter CE</span>
-      </span>
-      <div class="header-right">
-        <LocaleSwitcher />
-        <n-dropdown :options="userMenuOptions" @select="onUserMenuSelect">
-          <n-button quaternary>{{ authStore.username }}</n-button>
-        </n-dropdown>
+  <n-layout has-sider class="app-shell">
+    <n-layout-sider
+      :collapsed="collapsed"
+      :collapsed-width="64"
+      :width="220"
+      collapse-mode="width"
+      show-trigger="bar"
+      bordered
+      :native-scrollbar="false"
+      class="layout-sider"
+      @update:collapsed="(v: boolean) => (collapsed = v)"
+    >
+      <div class="sidebar-inner">
+        <RouterLink to="/" class="sidebar-logo" :class="{ 'sidebar-logo--collapsed': collapsed }">
+          <img :src="logo" alt="" width="26" />
+          <span v-if="!collapsed" class="sidebar-logo__title">Yolorouter CE</span>
+        </RouterLink>
+
+        <div class="sidebar-nav-main">
+          <SidebarNav :items="navItems" :collapsed="collapsed" />
+        </div>
+
+        <div style="flex: 1" />
+
+        <div class="sidebar-bottom">
+          <div v-if="!collapsed" class="sidebar-locale">
+            <LocaleSwitcher />
+          </div>
+          <n-dropdown :options="userMenuOptions" placement="top-start" @select="onUserMenuSelect">
+            <button class="sidebar-user" :class="{ 'sidebar-user--collapsed': collapsed }">
+              <span class="sidebar-user__avatar">{{ userInitial }}</span>
+              <span v-if="!collapsed" class="sidebar-user__name">{{ authStore.username }}</span>
+            </button>
+          </n-dropdown>
+        </div>
       </div>
-    </header>
-    <nav><!-- 导航项由各模块自己往里加 --></nav>
-    <main><router-view /></main>
+    </n-layout-sider>
+
+    <n-layout class="layout-main">
+      <n-layout-content>
+        <div class="layout-content">
+          <router-view />
+        </div>
+      </n-layout-content>
+    </n-layout>
 
     <n-modal
       v-model:show="showChangePassword"
@@ -43,7 +73,7 @@
         </n-space>
       </template>
     </n-modal>
-  </div>
+  </n-layout>
 </template>
 
 <script setup lang="ts">
@@ -51,6 +81,7 @@ import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useDialog, useMessage, type DropdownOption, type FormInst, type FormRules } from 'naive-ui'
+import SidebarNav, { type NavItem } from '../components/SidebarNav.vue'
 import { useAuthStore } from '../store/auth'
 import { APIError, displayMessage } from '../api/client'
 import { ACCOUNT_SESSION_INVALID } from '../api/errcodes'
@@ -64,12 +95,26 @@ const authStore = useAuthStore()
 const dialog = useDialog()
 const message = useMessage()
 
+const collapsed = ref(false)
+
+// computed rather than a plain array so the labels stay in sync when the
+// user switches locale without needing to re-open the dropdown.
+const navItems = computed<NavItem[]>(() => [
+  { key: 'dashboard', label: t('common.dashboard'), icon: 'LayoutGrid', to: '/' },
+  { key: 'providers', label: t('providers.pageTitle'), icon: 'Server', to: '/providers' },
+])
+
 // computed rather than a plain array so the labels stay in sync when the
 // user switches locale without needing to re-open the dropdown.
 const userMenuOptions = computed<DropdownOption[]>(() => [
   { label: t('auth.changePasswordTitle'), key: 'change-password' },
   { label: t('auth.logout'), key: 'logout' },
 ])
+
+// A single-character avatar fallback (no avatar upload in this admin
+// tool) — uppercased so a lowercase username still reads as a deliberate
+// initial, not a truncation artifact.
+const userInitial = computed(() => (authStore.username?.[0] ?? '?').toUpperCase())
 
 function onUserMenuSelect(key: string) {
   if (key === 'change-password') {
@@ -164,18 +209,105 @@ async function onChangePasswordSubmit() {
 </script>
 
 <style scoped>
-.brand {
-  display: inline-flex;
+.layout-sider {
+  background-color: var(--color-sidebar);
+}
+
+.sidebar-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.sidebar-logo {
+  display: flex;
   align-items: center;
   gap: 0.5rem;
+  height: 64px;
+  padding: 0 16px;
+  color: var(--color-text);
+  font-weight: 700;
 }
-.brand-logo {
-  height: 1.5rem;
-  width: auto;
+
+.sidebar-logo--collapsed {
+  justify-content: center;
+  padding: 0;
 }
-.header-right {
-  display: inline-flex;
+
+.sidebar-nav-main {
+  margin-top: var(--space-2);
+}
+
+.sidebar-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0 16px var(--space-4);
+}
+
+.sidebar-locale {
+  display: flex;
+}
+
+.sidebar-user {
+  display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 10px;
+  height: 44px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.sidebar-user:hover {
+  background: var(--color-surface-hover);
+}
+
+.sidebar-user--collapsed {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar-user__avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: #fff;
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.sidebar-user__name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.layout-main {
+  background: transparent;
+}
+
+.layout-content {
+  height: 100dvh;
+  overflow: auto;
+}
+
+@media (max-width: 640px) {
+  .sidebar-bottom {
+    padding: 0 6px var(--space-4);
+  }
 }
 </style>

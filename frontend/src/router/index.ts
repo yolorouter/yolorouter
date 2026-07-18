@@ -3,6 +3,8 @@ import DefaultLayout from '../layouts/DefaultLayout.vue'
 import SetupPage from '../views/auth/SetupPage.vue'
 import LoginPage from '../views/auth/LoginPage.vue'
 import DashboardPlaceholder from '../views/DashboardPlaceholder.vue'
+import ProviderListPage from '../views/providers/ProviderListPage.vue'
+import ProviderDetailPage from '../views/providers/ProviderDetailPage.vue'
 import { useAuthStore } from '../store/auth'
 
 export const router = createRouter({
@@ -13,7 +15,11 @@ export const router = createRouter({
     {
       path: '/',
       component: DefaultLayout,
-      children: [{ path: '', component: DashboardPlaceholder }],
+      children: [
+        { path: '', component: DashboardPlaceholder },
+        { path: 'providers', component: ProviderListPage },
+        { path: 'providers/:id', component: ProviderDetailPage },
+      ],
     },
   ],
 })

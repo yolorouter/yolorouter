@@ -46,3 +46,19 @@ func NewSQLiteDB(t *testing.T) *gorm.DB {
 	}
 	return gormDB
 }
+
+// CloseDB closes db's underlying *sql.DB connection, failing the test if
+// that fails. Tests that need to force a "closed connection" error (to
+// exercise a repository/handler function's DB-error branch) call this
+// directly instead of relying on NewSQLiteDB's own t.Cleanup, which only
+// closes at the very end of the test.
+func CloseDB(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get underlying *sql.DB: %v", err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close underlying *sql.DB: %v", err)
+	}
+}

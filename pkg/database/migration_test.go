@@ -71,9 +71,10 @@ func TestGetCurrentVersionOnFreshSQLiteDB(t *testing.T) {
 	// This asserts the current highest migration version, not just the
 	// baseline migration — it must be bumped whenever a new migration file
 	// is added to migrations/sqlite (currently 00001_baseline.sql +
-	// 00002_create_admin_auth.sql + 00003_add_admin_sessions_expires_at_index.sql).
-	if version != 3 {
-		t.Fatalf("expected version 3 after all migrations, got %d", version)
+	// 00002_create_admin_auth.sql + 00003_add_admin_sessions_expires_at_index.sql +
+	// 00004_create_providers.sql).
+	if version != 4 {
+		t.Fatalf("expected version 4 after all migrations, got %d", version)
 	}
 }
 

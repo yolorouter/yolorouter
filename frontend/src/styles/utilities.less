@@ -1,0 +1,104 @@
+// Atomic spacing/layout utility classes, ported from the reference
+// project's main.less so markup patterns copied from there (mr-2, pb-2,
+// mt-5, ...) resolve to the same values here.
+.text-center {
+  text-align: center;
+}
+.text-left {
+  text-align: left;
+}
+.text-gray {
+  color: #999;
+}
+.flex {
+  display: flex;
+}
+.flex-1 {
+  flex: 1;
+}
+.flex-col {
+  flex-direction: column;
+}
+.justify-center {
+  justify-content: center;
+}
+.justify-between {
+  justify-content: space-between !important;
+}
+.items-center {
+  align-items: center;
+}
+.cu-po {
+  cursor: pointer;
+}
+.font-bold {
+  font-weight: bold;
+}
+.line-overflow {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.h-full {
+  height: 100%;
+  box-sizing: border-box;
+}
+.w-full {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.back-gauge(15);
+
+.back-gauge(@n, @i: 1) when (@i =< @n) {
+  .mr-@{i} {
+    margin-right: @i * 4px !important;
+  }
+  .ml-@{i} {
+    margin-left: @i * 4px !important;
+  }
+  .mt-@{i} {
+    margin-top: @i * 4px !important;
+  }
+  .mb-@{i} {
+    margin-bottom: @i * 4px !important;
+  }
+  .mx-@{i} {
+    margin-left: @i * 4px !important;
+    margin-right: @i * 4px !important;
+  }
+  .my-@{i} {
+    margin-top: @i * 4px !important;
+    margin-bottom: @i * 4px !important;
+  }
+  .ma-@{i} {
+    margin: @i * 4px !important;
+  }
+  .pr-@{i} {
+    padding-right: @i * 4px !important;
+  }
+  .pl-@{i} {
+    padding-left: @i * 4px !important;
+  }
+  .pt-@{i} {
+    padding-top: @i * 4px !important;
+  }
+  .pb-@{i} {
+    padding-bottom: @i * 4px !important;
+  }
+  .px-@{i} {
+    padding-left: @i * 4px !important;
+    padding-right: @i * 4px !important;
+  }
+  .py-@{i} {
+    padding-top: @i * 4px !important;
+    padding-bottom: @i * 4px !important;
+  }
+  .pa-@{i} {
+    padding: @i * 4px !important;
+  }
+  .rounded-@{i} {
+    border-radius: @i * 2px !important;
+  }
+  .back-gauge(@n, (@i + 1));
+}

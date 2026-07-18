@@ -179,6 +179,31 @@ func TestRecordLoginSuccessResetsCountAndLock(t *testing.T) {
 	}
 }
 
+func TestFindAdminByIDReturnsNotFoundForMissingID(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+
+	_, err := FindAdminByID(db, 9999)
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("expected gorm.ErrRecordNotFound, got %v", err)
+	}
+}
+
+// TestRecordLoginFailureReturnsErrorWhenDBUnavailable covers the genuine
+// (non-not-found) DB error branch: the RETURNING-based raw UPDATE reports
+// whatever the driver returns when the connection itself is gone, which
+// Scan surfaces as a plain error rather than gorm.ErrRecordNotFound (a raw
+// Scan on zero affected rows is not itself an error — RecordLoginFailure
+// has no such "not found" case at all, only "the query itself failed").
+func TestRecordLoginFailureReturnsErrorWhenDBUnavailable(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	testutil.CloseDB(t, db)
+
+	_, err := RecordLoginFailure(db, 1, time.Now().UTC(), 5, 15*time.Minute)
+	if err == nil {
+		t.Fatalf("expected an error once the underlying connection is closed")
+	}
+}
+
 func TestUpdateAdminPasswordHash(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)

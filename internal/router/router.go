@@ -14,6 +14,7 @@ import (
 
 	"github.com/yolorouter/yolorouter-ce/internal/handler"
 	"github.com/yolorouter/yolorouter-ce/internal/middleware"
+	"github.com/yolorouter/yolorouter-ce/internal/service"
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
 	"github.com/yolorouter/yolorouter-ce/web"
 )
@@ -92,13 +93,12 @@ func validateEmbeddedFrontend(distFS fs.FS) error {
 
 // New builds the router against the real embedded frontend (web.DistFS,
 // selected at compile time by the embed build tag — see web/embed_real.go
-// / web/embed_stub.go). Thin wrapper around newWithDistFS so tests can
-// exercise the actual routing/validation logic against an injected fake
-// FS instead — embed.FS values can only ever come from a real go:embed
-// directive, so there's no other way to construct a "populated but
-// missing index.html" filesystem to test validateEmbeddedFrontend's
-// integration with New() end-to-end.
-func New(db *gorm.DB) (*gin.Engine, error) {
+// / web/embed_stub.go). providerMasterKey is the already-decoded 32-byte
+// AES-256-GCM key (cmd/yolorouter-ce/serve.go decodes it via
+// crypto.KeyFromBase64 before calling this) — passed here rather than read
+// from a global so provider_service.go's dependencies stay explicit, same
+// as db.
+func New(db *gorm.DB, providerMasterKey []byte) (*gin.Engine, error) {
 	// fs.Sub never actually errors here, in either build variant: it only
 	// validates that "dist" is a syntactically-valid path string, not that
 	// it exists in web.DistFS (confirmed against io/fs's Sub implementation
@@ -108,10 +108,10 @@ func New(db *gorm.DB) (*gin.Engine, error) {
 	// fs.Stat call at each call site below, which correctly reports
 	// "not found" for every path against an empty embedded FS.
 	distFS, _ := fs.Sub(web.DistFS, "dist")
-	return newWithDistFS(distFS, db)
+	return newWithDistFS(distFS, db, providerMasterKey)
 }
 
-func newWithDistFS(distFS fs.FS, db *gorm.DB) (*gin.Engine, error) {
+func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte) (*gin.Engine, error) {
 	if err := validateEmbeddedFrontend(distFS); err != nil {
 		return nil, err
 	}
@@ -221,6 +221,20 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB) (*gin.Engine, error) {
 	protected.POST("/auth/logout", handler.PostLogout(db))
 	protected.GET("/auth/me", handler.GetMe(db))
 	protected.PUT("/auth/password", handler.PutPassword(db))
+
+	providerSvc := service.NewProviderService(db, providerMasterKey, service.NewHTTPProviderClient())
+	protected.GET("/providers", handler.GetProviders(providerSvc))
+	protected.POST("/providers", handler.PostProvider(providerSvc))
+	protected.POST("/providers/test-key", handler.PostProviderTestKey(providerSvc))
+	protected.GET("/providers/:id", handler.GetProvider(providerSvc))
+	protected.PATCH("/providers/:id", handler.PatchProvider(providerSvc))
+	protected.PATCH("/providers/:id/status", handler.PatchProviderStatus(providerSvc))
+	protected.POST("/providers/:id/keys", handler.PostProviderKey(providerSvc))
+	protected.PATCH("/providers/:id/keys/:keyId", handler.PatchProviderKey(providerSvc))
+	protected.PATCH("/providers/:id/keys/:keyId/order", handler.PatchProviderKeyOrder(providerSvc))
+	protected.PATCH("/providers/:id/keys/:keyId/status", handler.PatchProviderKeyStatus(providerSvc))
+	protected.POST("/providers/:id/keys/:keyId/test", handler.PostProviderKeyTest(providerSvc))
+	protected.POST("/providers/:id/keys/test-all", handler.PostProviderKeysTestAll(providerSvc))
 
 	return r, nil
 }

@@ -44,9 +44,20 @@ func Success(c *gin.Context, data interface{}) {
 // 10xxx = account/session errors → 401/403 handled by caller via Error(); default 400
 // 11xxx = api key errors → 401/429 handled by caller via Error(); default 400
 // 12xxx-14xxx = resource/relay errors → 400
-// 50xxx = system errors → 500
+// 50xxx = system errors → 500, EXCEPT InvalidParam (50003): despite its
+// number falling in the "system error" range, its meaning is a 400 client
+// error (a malformed request parameter), not a 500 server fault — special
+// case it here so both this function and its only real caller through
+// this path, ParamError, get it right in one place. Two call sites
+// (internal/handler/auth_handler.go's bindJSON and provider_handler.go's
+// parseUintParam) independently discovered and worked around this exact
+// bug by calling ErrorStatus(400, ...) directly instead of going through
+// Error/ParamError — the root cause belongs here, not repeated as a
+// per-caller special case every time a new handler needs it.
 func httpStatusForCode(code int) int {
 	switch {
+	case code == errcode.InvalidParam:
+		return http.StatusBadRequest
 	case code >= 50000:
 		return http.StatusInternalServerError
 	case code >= 10000:

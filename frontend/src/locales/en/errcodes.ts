@@ -11,4 +11,12 @@ export const errcodes: Record<number, string> = {
   50002: 'Database error',
   50003: 'Invalid parameter',
   50005: 'Service temporarily unavailable, please try again shortly',
+  12001: 'Provider not found',
+  12002: 'Provider name already taken',
+  12004: 'Connection test failed',
+  12009: 'Key not found',
+  12010: 'This label is already taken by another key on this provider',
+  12011: 'This key has not passed verification and cannot be enabled',
+  12012: 'The provider address changed — please resubmit the key plaintext',
+  12013: 'Key plaintext is too short',
 }
