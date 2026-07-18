@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter-ce/internal/handler"
 	"github.com/yolorouter/yolorouter-ce/internal/middleware"
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
 	"github.com/yolorouter/yolorouter-ce/web"
@@ -96,7 +98,7 @@ func validateEmbeddedFrontend(distFS fs.FS) error {
 // directive, so there's no other way to construct a "populated but
 // missing index.html" filesystem to test validateEmbeddedFrontend's
 // integration with New() end-to-end.
-func New() (*gin.Engine, error) {
+func New(db *gorm.DB) (*gin.Engine, error) {
 	// fs.Sub never actually errors here, in either build variant: it only
 	// validates that "dist" is a syntactically-valid path string, not that
 	// it exists in web.DistFS (confirmed against io/fs's Sub implementation
@@ -106,10 +108,10 @@ func New() (*gin.Engine, error) {
 	// fs.Stat call at each call site below, which correctly reports
 	// "not found" for every path against an empty embedded FS.
 	distFS, _ := fs.Sub(web.DistFS, "dist")
-	return newWithDistFS(distFS)
+	return newWithDistFS(distFS, db)
 }
 
-func newWithDistFS(distFS fs.FS) (*gin.Engine, error) {
+func newWithDistFS(distFS fs.FS, db *gorm.DB) (*gin.Engine, error) {
 	if err := validateEmbeddedFrontend(distFS); err != nil {
 		return nil, err
 	}
@@ -183,6 +185,42 @@ func newWithDistFS(distFS fs.FS) (*gin.Engine, error) {
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", web.PlaceholderHTML)
 	})
+
+	if err := handler.RegisterValidators(); err != nil {
+		return nil, fmt.Errorf("register validators: %w", err)
+	}
+
+	admin := r.Group("/api/admin")
+	admin.Use(middleware.BodySizeLimit(1 << 20)) // 1MiB, per design doc §5 / M0 §8 limit
+
+	// Public auth routes — the only /api/admin endpoints that don't require
+	// a session. Every other route on this group, including every future
+	// module's, registers on the protected subgroup below instead of
+	// directly on admin, so a route missing RequireAdminSession is a
+	// deliberate exception the reviewer has to notice, not a silent
+	// default that a forgotten middleware call slips through.
+	//
+	// loginConcurrencyLimit caps the number of in-flight bcrypt
+	// comparisons PostLogin can trigger at once — an unknown username
+	// still runs a full bcrypt comparison (see
+	// internal/service/auth_service.go's dummyPasswordHashForTiming,
+	// added to close an account-enumeration timing side channel), and the
+	// per-account lockout can't apply to a username with no matching row.
+	// See middleware.Semaphore's doc comment for why PostLogin acquires
+	// this itself around just the service.Login call, rather than this
+	// being a middleware wrapping the whole handler (including the
+	// request body read).
+	const loginConcurrencyLimit = 8
+	loginLimiter := middleware.NewSemaphore(loginConcurrencyLimit)
+	admin.GET("/auth/state", handler.GetAuthState(db))
+	admin.POST("/auth/setup", handler.PostSetup(db))
+	admin.POST("/auth/login", handler.PostLogin(db, loginLimiter))
+
+	protected := admin.Group("")
+	protected.Use(middleware.RequireAdminSession(db))
+	protected.POST("/auth/logout", handler.PostLogout(db))
+	protected.GET("/auth/me", handler.GetMe(db))
+	protected.PUT("/auth/password", handler.PutPassword(db))
 
 	return r, nil
 }

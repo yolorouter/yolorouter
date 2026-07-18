@@ -49,7 +49,7 @@ func runServe(ctx context.Context, args []string) error {
 	// a broken artifact push the database forward and then exit, leaving a
 	// migrated-but-unreachable instance behind for whatever runs next to deal
 	// with.
-	r, err := router.New()
+	r, err := router.New(app.DB)
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
 	}
@@ -77,9 +77,17 @@ func runServe(ctx context.Context, args []string) error {
 		Addr:              fmt.Sprintf(":%d", app.Config.Server.Port),
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-		WriteTimeout:      0,
+		// ReadTimeout bounds the whole request (headers + body), not just
+		// the headers ReadHeaderTimeout alone covers — without it, a
+		// client that sends valid headers and then stalls mid-body could
+		// hold a handler (and anything it acquired, e.g.
+		// internal/middleware.Semaphore's login concurrency slots) open
+		// indefinitely. 30s is generous for the 1MiB admin-JSON cap
+		// (middleware.BodySizeLimit) even on a slow connection.
+		ReadTimeout:    30 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+		WriteTimeout:   0,
 	}
 
 	// M0: empty task supervisor. No real periodic task exists yet, so there is

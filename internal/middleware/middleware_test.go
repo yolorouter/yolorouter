@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
 )
 
 func TestRequestIDMiddlewareSetsHeaderAndContext(t *testing.T) {
@@ -52,6 +54,55 @@ func TestBodySizeLimitReturns413Envelope(t *testing.T) {
 
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413, got %d, body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestWriteAdminErrorWithDataIncludesCodeMessageAndData guards
+// WriteAdminErrorWithData's own contract directly, the way WriteAdminError
+// and WriteGatewayError already are elsewhere in this file — the only
+// other coverage (internal/handler's TestLoginLockedResponseCarriesLockedUntil)
+// checks the HTTP status and the data payload but never Code/Message, so a
+// regression that sent the wrong error code or an empty message alongside
+// a correct data payload and status would otherwise pass silently.
+func TestWriteAdminErrorWithDataIncludesCodeMessageAndData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(RequestID())
+	r.GET("/x", func(c *gin.Context) {
+		WriteAdminErrorWithData(c, http.StatusForbidden, errcode.AccountLoginLocked, gin.H{"locked_until": int64(12345)})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	var env struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal response body %q: %v", w.Body.String(), err)
+	}
+	if env.Code != errcode.AccountLoginLocked {
+		t.Fatalf("expected code %d, got %d", errcode.AccountLoginLocked, env.Code)
+	}
+	if env.Message != errcode.ErrorMessages[errcode.AccountLoginLocked] {
+		t.Fatalf("expected message %q, got %q", errcode.ErrorMessages[errcode.AccountLoginLocked], env.Message)
+	}
+
+	var data struct {
+		LockedUntil int64 `json:"locked_until"`
+	}
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		t.Fatalf("unmarshal data field %q: %v", env.Data, err)
+	}
+	if data.LockedUntil != 12345 {
+		t.Fatalf("expected locked_until=12345, got %d", data.LockedUntil)
 	}
 }
 

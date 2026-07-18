@@ -141,6 +141,7 @@ var (
 	ErrAccountSessionInvalid     = errors.New(ErrorMessages[AccountSessionInvalid])
 	ErrAccountLoginLocked        = errors.New(ErrorMessages[AccountLoginLocked])
 	ErrAccountLastAdminProtected = errors.New(ErrorMessages[AccountLastAdminProtected])
+	ErrAccountSetupAlreadyDone   = errors.New(ErrorMessages[AccountSetupAlreadyDone])
 
 	ErrAPIKeyNotFound        = errors.New(ErrorMessages[APIKeyNotFound])
 	ErrAPIKeyInvalid         = errors.New(ErrorMessages[APIKeyInvalid])

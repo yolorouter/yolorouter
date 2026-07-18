@@ -15,10 +15,33 @@ function isEnvelope(value: unknown): value is Envelope<unknown> {
 
 export class APIError extends Error {
   code: number
-  constructor(code: number) {
+  /** The envelope's `data` field, if the error response carried one (e.g. AccountLoginLocked's locked_until). */
+  data?: unknown
+  /**
+   * The envelope's own `timestamp` (server clock, Unix seconds) — needed
+   * whenever a response's `data` includes another server-clock value
+   * (e.g. AccountLoginLocked's `locked_until`) that must be turned into a
+   * relative duration. Computing that duration against the browser's own
+   * Date.now() instead would be wrong by however far the client and
+   * server clocks disagree; both values must come from the server.
+   */
+  timestamp: number
+  constructor(code: number, data?: unknown, timestamp?: number) {
     super(errcodeMessage(code))
     this.code = code
+    this.data = data
+    this.timestamp = timestamp ?? Math.floor(Date.now() / 1000)
   }
+}
+
+/**
+ * Renders a caught error for display: an APIError's own already-localized
+ * message, or a generic network-error fallback via the caller's own
+ * useI18n().t (accepted as a plain function so this module doesn't need to
+ * depend on vue-i18n's composer types — every call site already has one).
+ */
+export function displayMessage(err: unknown, t: (key: string) => string): string {
+  return err instanceof APIError ? err.message : t('common.networkError')
 }
 
 /** Thrown for network failures, timeouts, and responses that aren't a recognizable envelope. */
@@ -110,7 +133,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     }
 
     if (parsed.code !== 0) {
-      throw new APIError(parsed.code)
+      throw new APIError(parsed.code, parsed.data, parsed.timestamp)
     }
     return parsed.data as T
   } finally {

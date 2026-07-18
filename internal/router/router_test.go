@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,13 +10,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/yolorouter/yolorouter-ce/internal/testutil"
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
 	"github.com/yolorouter/yolorouter-ce/pkg/response"
 )
 
 func newTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
-	r, err := New()
+	db := testutil.NewSQLiteDB(t)
+	r, err := New(db)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -41,7 +44,7 @@ func TestNewFailsFastWhenEmbeddedFrontendIsBroken(t *testing.T) {
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 		// deliberately no index.html
 	}
-	_, err := newWithDistFS(broken)
+	_, err := newWithDistFS(broken, testutil.NewSQLiteDB(t))
 	if err == nil {
 		t.Fatalf("expected New() to fail when distFS has files but no index.html")
 	}
@@ -53,7 +56,7 @@ func TestNewFailsFastWhenEmbeddedFrontendIsBroken(t *testing.T) {
 // must NOT be treated as broken; New() should succeed and fall back to the
 // placeholder at request time (see TestUnknownFrontendPathFallsBackToIndexHTML).
 func TestNewSucceedsWithEmptyDistFS(t *testing.T) {
-	if _, err := newWithDistFS(fstest.MapFS{}); err != nil {
+	if _, err := newWithDistFS(fstest.MapFS{}, testutil.NewSQLiteDB(t)); err != nil {
 		t.Fatalf("expected New() to succeed with an empty distFS, got: %v", err)
 	}
 }
@@ -70,7 +73,7 @@ func TestNewSucceedsWithCompleteFrontend(t *testing.T) {
 		)},
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
-	if _, err := newWithDistFS(complete); err != nil {
+	if _, err := newWithDistFS(complete, testutil.NewSQLiteDB(t)); err != nil {
 		t.Fatalf("expected New() to succeed with a complete frontend, got: %v", err)
 	}
 }
@@ -83,7 +86,7 @@ func TestNewFailsForEmptyIndexHTML(t *testing.T) {
 		"index.html":    &fstest.MapFile{Data: []byte("")},
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
-	if _, err := newWithDistFS(empty); err == nil {
+	if _, err := newWithDistFS(empty, testutil.NewSQLiteDB(t)); err == nil {
 		t.Fatalf("expected New() to fail for an empty index.html")
 	}
 }
@@ -98,7 +101,7 @@ func TestNewFailsWhenIndexHTMLReferencesMissingAsset(t *testing.T) {
 			`<html><head><script src="/assets/missing-CNWoupNg.js"></script></head></html>`,
 		)},
 	}
-	if _, err := newWithDistFS(partial); err == nil {
+	if _, err := newWithDistFS(partial, testutil.NewSQLiteDB(t)); err == nil {
 		t.Fatalf("expected New() to fail when index.html references a missing local asset")
 	}
 }
@@ -276,6 +279,31 @@ func TestV1WrongMethodReturnsOpenAICompatibleEnvelope(t *testing.T) {
 		t.Fatalf("expected 405, got %d", w.Code)
 	}
 	assertGatewayEnvelope(t, w.Body.Bytes(), "method_not_allowed")
+}
+
+// TestOversizedAdminRequestReturns413Envelope is the integration path
+// TestBodySizeLimitReturns413Envelope (internal/middleware/middleware_test.go)
+// can't cover: that test hand-writes the 413 response itself against a
+// bare test route, so it never exercises whether a REAL /api/admin handler
+// (bound to middleware.BodySizeLimit(1<<20) via this router, see
+// newWithDistFS) actually maps the resulting *http.MaxBytesError to the
+// same envelope instead of a generic 400 (see internal/handler's bindJSON).
+func TestOversizedAdminRequestReturns413Envelope(t *testing.T) {
+	r := newTestRouter(t)
+
+	oversized := bytes.Repeat([]byte("a"), (1<<20)+1) // valid JSON string content, just too big
+	body := append([]byte(`{"username":"admin","password":"`), oversized...)
+	body = append(body, []byte(`"}`)...)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/auth/setup", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d, body: %s", w.Code, w.Body.String())
+	}
+	assertAdminEnvelope(t, w.Body.Bytes(), errcode.RequestEntityTooLarge)
 }
 
 func assertAdminEnvelope(t *testing.T, body []byte, wantCode int) {

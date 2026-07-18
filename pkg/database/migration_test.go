@@ -68,8 +68,36 @@ func TestGetCurrentVersionOnFreshSQLiteDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCurrentVersion failed: %v", err)
 	}
-	if version != 1 {
-		t.Fatalf("expected version 1 after baseline migration, got %d", version)
+	// This asserts the current highest migration version, not just the
+	// baseline migration — it must be bumped whenever a new migration file
+	// is added to migrations/sqlite (currently 00001_baseline.sql +
+	// 00002_create_admin_auth.sql + 00003_add_admin_sessions_expires_at_index.sql).
+	if version != 3 {
+		t.Fatalf("expected version 3 after all migrations, got %d", version)
+	}
+}
+
+func TestRunMigrationsAppliesAdminAuthTablesOnSQLite(t *testing.T) {
+	db := newMemoryDB(t)
+
+	if err := RunMigrations(db, "sqlite", migrations.SQLiteFS, "sqlite"); err != nil {
+		t.Fatalf("RunMigrations failed: %v", err)
+	}
+
+	version, err := GetCurrentVersion(db, "sqlite")
+	if err != nil {
+		t.Fatalf("GetCurrentVersion failed: %v", err)
+	}
+	if version < 2 {
+		t.Fatalf("expected version >= 2 after admin_auth migration, got %d", version)
+	}
+
+	for _, table := range []string{"admins", "admin_sessions"} {
+		var name string
+		row := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table)
+		if err := row.Scan(&name); err != nil {
+			t.Fatalf("table %q not found after migration: %v", table, err)
+		}
 	}
 }
 

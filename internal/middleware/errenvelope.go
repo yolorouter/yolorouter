@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -23,6 +24,24 @@ const RequestEntityTooLargeCode = errcode.RequestEntityTooLarge
 func WriteAdminError(c *gin.Context, httpStatus int, code int) {
 	c.Abort()
 	response.ErrorStatus(c, httpStatus, code, errcode.ErrorMessages[code])
+}
+
+// WriteAdminErrorWithData is WriteAdminError plus a Data payload —
+// pkg/response has no error-with-data helper of its own (it's kept a
+// verbatim copy of the reference project's package, see M0 design doc
+// §12, so the fix belongs here instead of there). AccountLoginLocked's
+// `locked_until` field is the first caller; any future admin error that
+// also needs to carry structured data (e.g. a 429's retry_after) should
+// go through this one place rather than hand-rolling another
+// response.Response{} literal.
+func WriteAdminErrorWithData(c *gin.Context, httpStatus int, code int, data any) {
+	c.Abort()
+	c.JSON(httpStatus, response.Response{
+		Code:      code,
+		Message:   errcode.ErrorMessages[code],
+		Data:      data,
+		Timestamp: time.Now().Unix(),
+	})
 }
 
 // gatewayError is an OpenAI-compatible error body — the shape every
