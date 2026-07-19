@@ -67,6 +67,14 @@ func (alwaysSuccessClient) TestChatCompletion(ctx context.Context, baseURL, apiK
 	return service.TestResult{Outcome: service.TestSuccess, DurationMs: 5}, nil
 }
 
+func (alwaysSuccessClient) TestStreamingCompletion(ctx context.Context, baseURL, apiKey, model string) (service.TestResult, error) {
+	return service.TestResult{Outcome: service.TestSuccess, DurationMs: 5}, nil
+}
+
+func (alwaysSuccessClient) TestFunctionCalling(ctx context.Context, baseURL, apiKey, model string) (service.TestResult, error) {
+	return service.TestResult{Outcome: service.TestSuccess, DurationMs: 5}, nil
+}
+
 // modelNotFoundClient always classifies as TestModelNotFound, which
 // classifyTestResult (internal/service/provider_service.go) never
 // overwrites verification_status for — a freshly created key stays
@@ -79,12 +87,28 @@ func (modelNotFoundClient) TestChatCompletion(ctx context.Context, baseURL, apiK
 	return service.TestResult{Outcome: service.TestModelNotFound, DurationMs: 3}, nil
 }
 
+func (modelNotFoundClient) TestStreamingCompletion(ctx context.Context, baseURL, apiKey, model string) (service.TestResult, error) {
+	return service.TestResult{Outcome: service.TestModelNotFound, DurationMs: 3}, nil
+}
+
+func (modelNotFoundClient) TestFunctionCalling(ctx context.Context, baseURL, apiKey, model string) (service.TestResult, error) {
+	return service.TestResult{Outcome: service.TestModelNotFound, DurationMs: 3}, nil
+}
+
 // erroringClient always returns an error from the client call itself (e.g.
 // a concurrency cap rejection), never a TestResult outcome — exercises
 // PostProviderTestKey's ProviderTestFailed mapping.
 type erroringClient struct{}
 
 func (erroringClient) TestChatCompletion(ctx context.Context, baseURL, apiKey, model string) (service.TestResult, error) {
+	return service.TestResult{}, errors.New("client refused the call")
+}
+
+func (erroringClient) TestStreamingCompletion(ctx context.Context, baseURL, apiKey, model string) (service.TestResult, error) {
+	return service.TestResult{}, errors.New("client refused the call")
+}
+
+func (erroringClient) TestFunctionCalling(ctx context.Context, baseURL, apiKey, model string) (service.TestResult, error) {
 	return service.TestResult{}, errors.New("client refused the call")
 }
 

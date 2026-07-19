@@ -42,8 +42,15 @@ const (
 	ProviderKeyNeedsReentry  = 12012 // authorized_destination_version 与当前 destination_version 不一致，需重新提交明文
 	ProviderKeyTooShort      = 12013 // Key 明文长度不足 minKeyPlaintextLength（正常情况下已被 Gin binding 拦截，这里是防御性兜底）
 
-	ProviderModelNotFound   = 12101
-	ProviderModelAliasTaken = 12102
+	ModelNotFound               = 12101 // 对外模型名不存在
+	ModelNameTaken              = 12102 // 对外模型名已被占用（MOD-02，全局唯一）
+	ModelCandidateNotFound      = 12103 // 指定的候选 ID 在该模型下不存在
+	ModelCandidateProviderTaken = 12104 // 该供应商已是这个模型的候选（MOD-04，同一模型下同一供应商只能一个候选）
+	ModelCandidateNotVerified   = 12105 // 尝试启用一个 verification_status 不是"通过"的候选
+	// 12106 (原 ModelCandidatePriceMissing) 从未被任何 service 层代码返回过——
+	// input_price/output_price 在 schema 里是 NOT NULL DEFAULT 0（PRD 允许价格
+	// 为 0），"未填写"这个状态在数据模型层面就无法与"显式填 0"区分，本质上不
+	// 可达，故删除这个死码分支而不是保留一个永远不会触发的错误码。
 
 	// === User group errors (13xxx) — 设计文档 §5 用户组"一身三任" ===
 	UserGroupNotFound       = 13001
@@ -118,8 +125,11 @@ var ErrorMessages = map[int]string{
 	ProviderKeyNeedsReentry:  "provider address changed, please resubmit the key plaintext",
 	ProviderKeyTooShort:      "key plaintext is too short",
 
-	ProviderModelNotFound:   "model not found",
-	ProviderModelAliasTaken: "model alias already taken",
+	ModelNotFound:               "model not found",
+	ModelNameTaken:              "model name already taken",
+	ModelCandidateNotFound:      "model candidate not found",
+	ModelCandidateProviderTaken: "this provider is already a candidate for this model",
+	ModelCandidateNotVerified:   "cannot enable a candidate that has not passed the mapping test",
 
 	UserGroupNotFound:       "user group not found",
 	UserGroupNameTaken:      "user group name already taken",
@@ -176,8 +186,11 @@ var (
 	ErrProviderKeyNeedsReentry  = errors.New(ErrorMessages[ProviderKeyNeedsReentry])
 	ErrProviderKeyTooShort      = errors.New(ErrorMessages[ProviderKeyTooShort])
 
-	ErrProviderModelNotFound   = errors.New(ErrorMessages[ProviderModelNotFound])
-	ErrProviderModelAliasTaken = errors.New(ErrorMessages[ProviderModelAliasTaken])
+	ErrModelNotFound               = errors.New(ErrorMessages[ModelNotFound])
+	ErrModelNameTaken              = errors.New(ErrorMessages[ModelNameTaken])
+	ErrModelCandidateNotFound      = errors.New(ErrorMessages[ModelCandidateNotFound])
+	ErrModelCandidateProviderTaken = errors.New(ErrorMessages[ModelCandidateProviderTaken])
+	ErrModelCandidateNotVerified   = errors.New(ErrorMessages[ModelCandidateNotVerified])
 
 	ErrUserGroupNotFound       = errors.New(ErrorMessages[UserGroupNotFound])
 	ErrUserGroupNameTaken      = errors.New(ErrorMessages[UserGroupNameTaken])

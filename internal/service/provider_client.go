@@ -4,6 +4,7 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -50,6 +51,15 @@ type TestResult struct {
 // a fake in provider_service_test.go.
 type ProviderClient interface {
 	TestChatCompletion(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
+	// TestStreamingCompletion validates that baseURL+model can serve a
+	// streaming response (M3 design doc §5 / PRD §6.3.8 streaming test):
+	// success requires at least one structurally valid `delta` chunk
+	// followed by a normal `data: [DONE]` termination.
+	TestStreamingCompletion(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
+	// TestFunctionCalling validates that baseURL+model can return a
+	// structurally valid tool_calls response to a minimal tool definition
+	// (M3 design doc §5).
+	TestFunctionCalling(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
 }
 
 const (
@@ -108,7 +118,22 @@ type chatCompletionSuccessBody struct {
 	} `json:"choices"`
 }
 
-func (c *HTTPProviderClient) TestChatCompletion(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+// runTestRequest builds and sends a POST /chat/completions request, holding
+// the shared concurrency slot and per-call timeout for the request's ENTIRE
+// duration — including whatever handle does with the response body — not
+// just until headers arrive. This is why the semaphore/timeout/transport-
+// error handling can't be split into a plain "get me an *http.Response"
+// helper that returns before the caller reads the body: streaming's body
+// read can itself take a while, and it must still count against the same
+// cap as every other in-flight test call.
+//
+// On a transport-level failure (network/timeout/SSRF-blocked dial), handle
+// is never invoked and TestUnreachable is returned directly, matching design
+// doc §5 item 7's "don't leak which kind of failure this was" rule.
+func (c *HTTPProviderClient) runTestRequest(
+	ctx context.Context, baseURL, apiKey string, reqPayload interface{},
+	handle func(resp *http.Response, durationMs int64) (TestResult, error),
+) (TestResult, error) {
 	if !c.limiter.TryAcquire() {
 		return TestResult{}, fmt.Errorf("too many concurrent provider test calls in flight")
 	}
@@ -117,11 +142,7 @@ func (c *HTTPProviderClient) TestChatCompletion(ctx context.Context, baseURL, ap
 	ctx, cancel := context.WithTimeout(ctx, providerClientTimeout)
 	defer cancel()
 
-	reqBody, err := json.Marshal(map[string]interface{}{
-		"model":      model,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 1,
-	})
+	reqBody, err := json.Marshal(reqPayload)
 	if err != nil {
 		return TestResult{}, fmt.Errorf("marshal request body: %w", err)
 	}
@@ -138,20 +159,171 @@ func (c *HTTPProviderClient) TestChatCompletion(ctx context.Context, baseURL, ap
 	resp, err := c.httpClient.Do(req)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
-		// Network failure, timeout, or SSRF-blocked dial — design doc §5
-		// item 7: classify as TestUnreachable without leaking which of
-		// these it actually was to the admin.
 		return TestResult{Outcome: TestUnreachable, DurationMs: duration}, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	limited := io.LimitReader(resp.Body, providerClientMaxBodyBytes+1)
-	body, readErr := io.ReadAll(limited)
-	if readErr != nil || len(body) > providerClientMaxBodyBytes {
-		return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
-	}
+	return handle(resp, duration)
+}
 
-	return classifyResponse(resp, body, model, duration), nil
+// readBoundedBody applies the same "don't trust an unbounded upstream body"
+// limit every test method needs before classifying a non-streaming response.
+func readBoundedBody(resp *http.Response) ([]byte, bool) {
+	limited := io.LimitReader(resp.Body, providerClientMaxBodyBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil || len(body) > providerClientMaxBodyBytes {
+		return nil, false
+	}
+	return body, true
+}
+
+func (c *HTTPProviderClient) TestChatCompletion(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	payload := map[string]interface{}{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens": 1,
+	}
+	return c.runTestRequest(ctx, baseURL, apiKey, payload, func(resp *http.Response, duration int64) (TestResult, error) {
+		body, ok := readBoundedBody(resp)
+		if !ok {
+			return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
+		}
+		return classifyResponse(resp, body, model, duration), nil
+	})
+}
+
+// streamChunk mirrors the minimal OpenAI streaming chunk shape this test
+// needs to recognize a structurally valid delta — same "don't trust a 200
+// status code alone" principle as isValidSuccessBody.
+type streamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+}
+
+// scanSSEStream reads a bounded number of bytes off r looking for at least
+// one structurally valid `data: {...}` chunk followed by a normal
+// `data: [DONE]` termination. Non-"data:" lines (blank lines, comments) are
+// skipped, not treated as failures.
+func scanSSEStream(r io.Reader) (sawValidDelta, sawDone bool) {
+	scanner := bufio.NewScanner(io.LimitReader(r, providerClientMaxBodyBytes))
+	for scanner.Scan() {
+		line := scanner.Text()
+		data := strings.TrimPrefix(line, "data: ")
+		if data == line {
+			continue // not an SSE data line
+		}
+		if data == "[DONE]" {
+			sawDone = true
+			break
+		}
+		var chunk streamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) > 0 {
+			sawValidDelta = true
+		}
+	}
+	return sawValidDelta, sawDone
+}
+
+func (c *HTTPProviderClient) TestStreamingCompletion(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	payload := map[string]interface{}{
+		"model":    model,
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "ping"}},
+	}
+	return c.runTestRequest(ctx, baseURL, apiKey, payload, func(resp *http.Response, duration int64) (TestResult, error) {
+		if resp.StatusCode != http.StatusOK {
+			body, ok := readBoundedBody(resp)
+			if !ok {
+				return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
+			}
+			return classifyResponse(resp, body, model, duration), nil
+		}
+
+		sawValidDelta, sawDone := scanSSEStream(resp.Body)
+		if sawValidDelta && sawDone {
+			return TestResult{Outcome: TestSuccess, DurationMs: duration}, nil
+		}
+		return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
+	})
+}
+
+// toolCallResponseBody mirrors the minimal OpenAI tool_calls response shape.
+type toolCallResponseBody struct {
+	Choices []struct {
+		Message struct {
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
+// isValidToolCallsBody requires at least one choice with at least one
+// tool_calls entry naming a real function and carrying parseable JSON
+// arguments — a bare non-empty tool_calls array with garbage fields is not
+// enough (mirrors isValidSuccessBody's "don't trust the status code alone"
+// principle, applied to the tool-call response shape).
+func isValidToolCallsBody(body []byte) bool {
+	var parsed toolCallResponseBody
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	if len(parsed.Choices) == 0 || len(parsed.Choices[0].Message.ToolCalls) == 0 {
+		return false
+	}
+	call := parsed.Choices[0].Message.ToolCalls[0]
+	if call.Function.Name == "" {
+		return false
+	}
+	var args map[string]interface{}
+	return json.Unmarshal([]byte(call.Function.Arguments), &args) == nil
+}
+
+func (c *HTTPProviderClient) TestFunctionCalling(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	payload := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "user", "content": "What's the weather in Beijing?"},
+		},
+		"tools": []map[string]interface{}{
+			{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":        "get_weather",
+					"description": "Get the current weather for a location",
+					"parameters": map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{"location": map[string]string{"type": "string"}},
+						"required":   []string{"location"},
+					},
+				},
+			},
+		},
+	}
+	return c.runTestRequest(ctx, baseURL, apiKey, payload, func(resp *http.Response, duration int64) (TestResult, error) {
+		body, ok := readBoundedBody(resp)
+		if !ok {
+			return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
+		}
+		if resp.StatusCode != http.StatusOK {
+			return classifyResponse(resp, body, model, duration), nil
+		}
+		if !isValidToolCallsBody(body) {
+			return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
+		}
+		return TestResult{Outcome: TestSuccess, DurationMs: duration}, nil
+	})
 }
 
 func classifyResponse(resp *http.Response, body []byte, model string, durationMs int64) TestResult {

@@ -104,6 +104,10 @@ const showAddKey = ref(false)
 const showEditKey = ref(false)
 const editingKey = ref<ProviderKey | null>(null)
 const testingAll = ref(false)
+// Tracks the single key currently running its own "测试连接" (distinct from
+// testingAll's batch run) so the actions button can show a spinner instead
+// of silently doing nothing until the request resolves.
+const testingKeyId = ref<number | null>(null)
 const batchSummary = ref('')
 // Keyed by provider_key.id — populated once per completed batch test,
 // cleared at the start of the next one (see onTestAll). Rendered as a
@@ -232,7 +236,11 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
         },
         {
           default: () =>
-            h(NButton, { size: 'small', quaternary: true, circle: true }, { icon: () => h(MoreHorizontal, { size: 16 }) }),
+            h(
+              NButton,
+              { size: 'small', quaternary: true, circle: true, loading: testingKeyId.value === row.id, disabled: testingKeyId.value === row.id },
+              { icon: () => h(MoreHorizontal, { size: 16 }) },
+            ),
         },
       ),
   },
@@ -244,11 +252,14 @@ function onEditKey(key: ProviderKey) {
 }
 
 async function onTestOneKey(keyId: number) {
+  testingKeyId.value = keyId
   try {
     await store.testKey(providerId, keyId)
     await reload()
   } catch (err) {
     message.error(displayMessage(err, t))
+  } finally {
+    testingKeyId.value = null
   }
 }
 

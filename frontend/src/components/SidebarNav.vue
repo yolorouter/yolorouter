@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
 import { useRoute } from 'vue-router'
-import { LayoutGrid, Server } from 'lucide-vue-next'
+import { Box, LayoutGrid, Server } from 'lucide-vue-next'
 
 export interface NavItem {
   key: string
@@ -24,6 +24,7 @@ const route = useRoute()
 const iconMap: Record<string, Component> = {
   LayoutGrid,
   Server,
+  Box,
 }
 
 function isActive(to: string): boolean {

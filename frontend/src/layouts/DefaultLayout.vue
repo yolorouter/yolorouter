@@ -102,6 +102,7 @@ const collapsed = ref(false)
 const navItems = computed<NavItem[]>(() => [
   { key: 'dashboard', label: t('common.dashboard'), icon: 'LayoutGrid', to: '/' },
   { key: 'providers', label: t('providers.pageTitle'), icon: 'Server', to: '/providers' },
+  { key: 'models', label: t('models.pageTitle'), icon: 'Box', to: '/models' },
 ])
 
 // computed rather than a plain array so the labels stay in sync when the

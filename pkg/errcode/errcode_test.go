@@ -48,3 +48,30 @@ func TestProviderKeyErrorCodesHaveMessagesAndSentinels(t *testing.T) {
 		}
 	}
 }
+
+func TestModelErrorCodesAreUniqueWithMessagesAndSentinels(t *testing.T) {
+	cases := []struct {
+		code int
+		err  error
+	}{
+		{ModelNotFound, ErrModelNotFound},
+		{ModelNameTaken, ErrModelNameTaken},
+		{ModelCandidateNotFound, ErrModelCandidateNotFound},
+		{ModelCandidateProviderTaken, ErrModelCandidateProviderTaken},
+		{ModelCandidateNotVerified, ErrModelCandidateNotVerified},
+	}
+	seen := map[int]bool{}
+	for _, c := range cases {
+		if seen[c.code] {
+			t.Fatalf("duplicate code value: %d", c.code)
+		}
+		seen[c.code] = true
+		msg, ok := ErrorMessages[c.code]
+		if !ok || msg == "" {
+			t.Fatalf("code %d: missing ErrorMessages entry", c.code)
+		}
+		if c.err == nil || c.err.Error() != msg {
+			t.Fatalf("code %d: sentinel error text %q does not match ErrorMessages %q", c.code, c.err, msg)
+		}
+	}
+}

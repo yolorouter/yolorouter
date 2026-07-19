@@ -5,6 +5,8 @@ import LoginPage from '../views/auth/LoginPage.vue'
 import DashboardPlaceholder from '../views/DashboardPlaceholder.vue'
 import ProviderListPage from '../views/providers/ProviderListPage.vue'
 import ProviderDetailPage from '../views/providers/ProviderDetailPage.vue'
+import ModelListPage from '../views/models/ModelListPage.vue'
+import ModelDetailPage from '../views/models/ModelDetailPage.vue'
 import { useAuthStore } from '../store/auth'
 
 export const router = createRouter({
@@ -19,6 +21,8 @@ export const router = createRouter({
         { path: '', component: DashboardPlaceholder },
         { path: 'providers', component: ProviderListPage },
         { path: 'providers/:id', component: ProviderDetailPage },
+        { path: 'models', component: ModelListPage },
+        { path: 'models/:id', component: ModelDetailPage },
       ],
     },
   ],

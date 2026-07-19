@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -397,5 +398,160 @@ func TestTestChatCompletionRejectsConcurrencyOverCap(t *testing.T) {
 		if err := <-errCh; err != nil {
 			t.Fatalf("expected in-flight call %d (within the concurrency cap) to succeed, got %v", i, err)
 		}
+	}
+}
+
+func TestTestStreamingCompletionAcceptsValidSSEStream(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	})
+	defer srv.Close()
+
+	result, err := c.TestStreamingCompletion(context.Background(), srv.URL, "sk-test", "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("TestStreamingCompletion failed: %v", err)
+	}
+	if result.Outcome != TestSuccess {
+		t.Fatalf("expected TestSuccess, got %v", result.Outcome)
+	}
+}
+
+func TestTestStreamingCompletionRejectsStreamMissingDoneMarker(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+	})
+	defer srv.Close()
+
+	result, err := c.TestStreamingCompletion(context.Background(), srv.URL, "sk-test", "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("TestStreamingCompletion failed: %v", err)
+	}
+	if result.Outcome != TestUpstreamError {
+		t.Fatalf("expected TestUpstreamError for a stream with no [DONE] marker, got %v", result.Outcome)
+	}
+}
+
+func TestTestStreamingCompletionClassifiesNonOKStatus(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	defer srv.Close()
+
+	result, err := c.TestStreamingCompletion(context.Background(), srv.URL, "sk-test", "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("TestStreamingCompletion failed: %v", err)
+	}
+	if result.Outcome != TestAuthFailed {
+		t.Fatalf("expected TestAuthFailed for a 401 status, got %v", result.Outcome)
+	}
+}
+
+func TestTestFunctionCallingAcceptsValidToolCalls(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Beijing\"}"}}]}}]}`)
+	})
+	defer srv.Close()
+
+	result, err := c.TestFunctionCalling(context.Background(), srv.URL, "sk-test", "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("TestFunctionCalling failed: %v", err)
+	}
+	if result.Outcome != TestSuccess {
+		t.Fatalf("expected TestSuccess, got %v", result.Outcome)
+	}
+}
+
+func TestTestFunctionCallingRejectsPlainTextResponse(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"It's sunny."}}]}`)
+	})
+	defer srv.Close()
+
+	result, err := c.TestFunctionCalling(context.Background(), srv.URL, "sk-test", "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("TestFunctionCalling failed: %v", err)
+	}
+	if result.Outcome != TestUpstreamError {
+		t.Fatalf("expected TestUpstreamError for a plain-text response with no tool_calls, got %v", result.Outcome)
+	}
+}
+
+func TestTestFunctionCallingClassifiesNonOKStatus(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	defer srv.Close()
+
+	result, err := c.TestFunctionCalling(context.Background(), srv.URL, "sk-test", "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("TestFunctionCalling failed: %v", err)
+	}
+	if result.Outcome != TestRateLimited {
+		t.Fatalf("expected TestRateLimited for a 429 status, got %v", result.Outcome)
+	}
+}
+
+func TestTestStreamingCompletionReturnsUnreachableOnNetworkError(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {})
+	srv.Close() // closed before the call — connection refused
+
+	result, err := c.TestStreamingCompletion(context.Background(), srv.URL, "sk-test", "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("TestStreamingCompletion failed: %v", err)
+	}
+	if result.Outcome != TestUnreachable {
+		t.Fatalf("expected TestUnreachable for a connection failure, got %v", result.Outcome)
+	}
+}
+
+func TestTestFunctionCallingReturnsUnreachableOnNetworkError(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {})
+	srv.Close()
+
+	result, err := c.TestFunctionCalling(context.Background(), srv.URL, "sk-test", "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("TestFunctionCalling failed: %v", err)
+	}
+	if result.Outcome != TestUnreachable {
+		t.Fatalf("expected TestUnreachable for a connection failure, got %v", result.Outcome)
+	}
+}
+
+func TestIsValidToolCallsBodyRejectsEmptyFunctionName(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"","arguments":"{}"}}]}}]}`)
+	if isValidToolCallsBody(body) {
+		t.Fatalf("expected false for a tool call with an empty function name")
+	}
+}
+
+func TestIsValidToolCallsBodyRejectsUnparseableArguments(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"not json"}}]}}]}`)
+	if isValidToolCallsBody(body) {
+		t.Fatalf("expected false for a tool call with unparseable JSON arguments")
+	}
+}
+
+func TestIsValidToolCallsBodyRejectsEmptyToolCalls(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"tool_calls":[]}}]}`)
+	if isValidToolCallsBody(body) {
+		t.Fatalf("expected false for an empty tool_calls array")
+	}
+}
+
+func TestIsValidToolCallsBodyRejectsMalformedJSON(t *testing.T) {
+	if isValidToolCallsBody([]byte(`not json`)) {
+		t.Fatalf("expected false for malformed JSON")
 	}
 }

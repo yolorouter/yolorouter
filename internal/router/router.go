@@ -236,6 +236,20 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte) (*gin.En
 	protected.POST("/providers/:id/keys/:keyId/test", handler.PostProviderKeyTest(providerSvc))
 	protected.POST("/providers/:id/keys/test-all", handler.PostProviderKeysTestAll(providerSvc))
 
+	modelSvc := service.NewModelService(db, providerMasterKey, service.NewHTTPProviderClient())
+	protected.GET("/models", handler.GetModels(modelSvc))
+	protected.POST("/models", handler.PostModel(modelSvc))
+	protected.GET("/models/:id", handler.GetModel(modelSvc))
+	protected.PATCH("/models/:id", handler.PatchModel(modelSvc))
+	protected.PATCH("/models/:id/status", handler.PatchModelStatus(modelSvc))
+	protected.POST("/models/:id/candidates/test-mapping", handler.PostModelCandidateTestMapping(modelSvc))
+	protected.POST("/models/:id/candidates", handler.PostModelCandidate(modelSvc))
+	protected.PATCH("/models/:id/candidates/:candidateId", handler.PatchModelCandidate(modelSvc))
+	protected.PATCH("/models/:id/candidates/:candidateId/order", handler.PatchModelCandidateOrder(modelSvc))
+	protected.PATCH("/models/:id/candidates/:candidateId/status", handler.PatchModelCandidateStatus(modelSvc))
+	protected.POST("/models/:id/candidates/:candidateId/test", handler.PostModelCandidateTest(modelSvc))
+	protected.DELETE("/models/:id/candidates/:candidateId", handler.DeleteModelCandidate(modelSvc))
+
 	return r, nil
 }
 

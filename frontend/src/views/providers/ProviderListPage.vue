@@ -38,9 +38,10 @@
 import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { NTag, type DataTableColumns } from 'naive-ui'
+import { NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
 import { Plus } from 'lucide-vue-next'
 import { useProvidersStore } from '../../store/providers'
+import { displayMessage } from '../../api/client'
 import type { Provider } from '../../api/providers'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -48,6 +49,8 @@ import NewProviderDrawer from '../../components/providers/NewProviderDrawer.vue'
 
 const { t } = useI18n()
 const router = useRouter()
+const dialog = useDialog()
+const message = useMessage()
 const store = useProvidersStore()
 const showCreate = ref(false)
 
@@ -74,6 +77,31 @@ const RUNNING_STATUS_DISPLAY: Record<string, { i18nKey: string; type: 'default' 
 
 function runningStatusDisplay(status: string) {
   return RUNNING_STATUS_DISPLAY[status] ?? RUNNING_STATUS_DISPLAY.unavailable
+}
+
+// Mirrors ProviderDetailPage.vue's onToggleProviderStatus, scoped to a list
+// row instead of the single loaded detail — disabling still confirms first,
+// enabling proceeds directly.
+function onToggleStatus(row: Provider, enable: boolean) {
+  const proceed = async () => {
+    try {
+      await store.setStatus(row.id, enable)
+      await store.fetchList()
+    } catch (err) {
+      message.error(displayMessage(err, t))
+    }
+  }
+  if (!enable) {
+    dialog.warning({
+      title: t('providers.confirmDisableProviderTitle'),
+      content: t('providers.confirmDisableProviderContent'),
+      positiveText: t('providers.statusDisabled'),
+      negativeText: t('providers.cancel'),
+      onPositiveClick: proceed,
+    })
+    return
+  }
+  void proceed()
 }
 
 // computed, not a plain const: a max-effort code-review round found this
@@ -112,9 +140,17 @@ const columns = computed<DataTableColumns<Provider>>(() => [
     key: 'management_status',
     width: 120,
     render: (row) =>
-      row.management_status === 2
-        ? h(NTag, { size: 'small', bordered: false }, { default: () => t('providers.disabledBadge') })
-        : null,
+      h(
+        'div',
+        { onClick: (e: MouseEvent) => e.stopPropagation() },
+        [
+          h(NSwitch, {
+            size: 'small',
+            value: row.management_status === 1,
+            'onUpdate:value': (v: boolean) => onToggleStatus(row, v),
+          }),
+        ],
+      ),
   },
 ])
 </script>

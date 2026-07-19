@@ -87,11 +87,31 @@ type fakeProviderClient struct {
 	result     TestResult
 	err        error
 	calls      int
+	lastModel  string
 	sideEffect func()
 }
 
 func (f *fakeProviderClient) TestChatCompletion(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
 	f.calls++
+	f.lastModel = model
+	if f.sideEffect != nil {
+		f.sideEffect()
+	}
+	return f.result, f.err
+}
+
+func (f *fakeProviderClient) TestStreamingCompletion(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	f.calls++
+	f.lastModel = model
+	if f.sideEffect != nil {
+		f.sideEffect()
+	}
+	return f.result, f.err
+}
+
+func (f *fakeProviderClient) TestFunctionCalling(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	f.calls++
+	f.lastModel = model
 	if f.sideEffect != nil {
 		f.sideEffect()
 	}
