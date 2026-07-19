@@ -25,6 +25,9 @@
         :single-line="false"
         :row-key="(row: Provider) => row.id"
         :row-props="rowProps"
+        :pagination="pagination"
+        @update:page="onPageChange"
+        @update:page-size="onPageSizeChange"
       />
     </div>
 
@@ -47,6 +50,7 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import NewProviderDrawer from '../../components/providers/NewProviderDrawer.vue'
 import { columnTitle } from '../../utils/columnTitle'
+import { useClientPagination } from '../../composables/useClientPagination'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -55,7 +59,14 @@ const message = useMessage()
 const store = useProvidersStore()
 const showCreate = ref(false)
 
-onMounted(() => store.fetchList())
+// Client-side pagination: providers are few (admin-configured), so the full
+// list is fetched once and sliced in the table rather than adding a
+// server-side paged endpoint.
+const { pagination, onPageChange, onPageSizeChange } = useClientPagination()
+
+onMounted(() => {
+  void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
+})
 
 function goDetail(id: number) {
   router.push(`/providers/${id}`)

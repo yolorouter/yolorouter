@@ -2,7 +2,9 @@ package service
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 )
 
 // generateRandomToken generates n cryptographically secure random bytes,
@@ -18,4 +20,16 @@ func generateRandomToken(n int, prefix string) (string, error) {
 		return "", err
 	}
 	return prefix + base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// hashToken returns the SHA-256 hex digest of a raw token. API Keys use this
+// (the key is already a high-entropy random value, so a fast indexable hash
+// suffices — not bcrypt). Session tokens use the identical scheme in
+// internal/repository/admin_session_repository.go's hashSessionToken; that
+// copy is kept separate because the repository package can't import this one
+// without an import cycle, but both implementations are intentionally the
+// same SHA-256 hex recipe.
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }

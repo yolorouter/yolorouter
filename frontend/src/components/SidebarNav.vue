@@ -4,12 +4,11 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
 import { useRoute } from 'vue-router'
-import { Box, LayoutGrid, Server } from '@lucide/vue'
 
 export interface NavItem {
   key: string
   label: string
-  icon: string
+  icon: Component
   to: string
 }
 
@@ -21,22 +20,12 @@ const props = defineProps<{
 
 const route = useRoute()
 
-const iconMap: Record<string, Component> = {
-  LayoutGrid,
-  Server,
-  Box,
-}
-
 function isActive(to: string): boolean {
   return route.path === to || route.path.startsWith(to + '/')
 }
 
 const resolvedItems = computed(() =>
-  props.items.map((item) => ({
-    ...item,
-    iconComp: iconMap[item.icon],
-    active: isActive(item.to),
-  })),
+  props.items.map((item) => ({ ...item, active: isActive(item.to) })),
 )
 </script>
 
@@ -51,7 +40,7 @@ const resolvedItems = computed(() =>
       :class="{ 'sidebar-nav-item--active': item.active }"
     >
       <span class="sidebar-nav-item__icon">
-        <component :is="item.iconComp" :size="18" :stroke-width="1.8" />
+        <component :is="item.icon" :size="18" :stroke-width="1.8" />
       </span>
       <span v-if="!collapsed" class="sidebar-nav-item__label">{{ item.label }}</span>
     </RouterLink>

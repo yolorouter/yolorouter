@@ -36,7 +36,14 @@
         </EmptyState>
 
         <div v-else class="data-table-wrapper">
-          <n-data-table :columns="candidateColumns" :data="modelData.candidates" :row-key="(row: ModelCandidate) => row.id" />
+          <n-data-table
+            :columns="candidateColumns"
+            :data="modelData.candidates"
+            :row-key="(row: ModelCandidate) => row.id"
+            :pagination="candidatePagination"
+            @update:page="onCandidatePageChange"
+            @update:page-size="onCandidatePageSizeChange"
+          />
         </div>
       </n-tab-pane>
 
@@ -65,6 +72,7 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import CandidateEditDrawer from '../../components/models/CandidateEditDrawer.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
+import { useClientPagination } from '../../composables/useClientPagination'
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
 
 const { t } = useI18n()
@@ -78,6 +86,15 @@ const modelData = ref<Model | null>(null)
 const activeTab = ref('overview')
 const showAddCandidate = ref(false)
 const showEditCandidate = ref(false)
+
+// Client-side pagination for the route-chain candidate table — a single
+// model's candidate list is short, so slice in-page rather than paging
+// server-side.
+const {
+  pagination: candidatePagination,
+  onPageChange: onCandidatePageChange,
+  onPageSizeChange: onCandidatePageSizeChange,
+} = useClientPagination()
 const editingCandidate = ref<ModelCandidate | null>(null)
 // Tracks the single candidate currently running its own capability test so
 // the actions button can show a spinner instead of silently doing nothing

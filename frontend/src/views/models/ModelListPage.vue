@@ -25,6 +25,9 @@
         :single-line="false"
         :row-key="(row: Model) => row.id"
         :row-props="rowProps"
+        :pagination="pagination"
+        @update:page="onPageChange"
+        @update:page-size="onPageSizeChange"
       />
     </div>
 
@@ -43,6 +46,7 @@ import { displayMessage } from '../../api/client'
 import { toggleStatusWithConfirm } from '../../composables/useConfirmedStatusToggle'
 import { modelRunningStatusDisplay } from '../../utils/modelStatusDisplay'
 import { columnTitle } from '../../utils/columnTitle'
+import { useClientPagination } from '../../composables/useClientPagination'
 import type { Model } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -55,7 +59,14 @@ const message = useMessage()
 const store = useModelsStore()
 const showCreate = ref(false)
 
-onMounted(() => store.fetchList())
+// Client-side pagination: models are few (admin-configured), so the full list
+// is fetched once and sliced in the table rather than adding a server-side
+// paged endpoint.
+const { pagination, onPageChange, onPageSizeChange } = useClientPagination()
+
+onMounted(() => {
+  void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
+})
 
 function goDetail(id: number) {
   router.push(`/models/${id}`)
