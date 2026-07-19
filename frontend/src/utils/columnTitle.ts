@@ -1,4 +1,8 @@
 // frontend/src/utils/columnTitle.ts
+
+/** Column width that fits a HelpLabel "?" glyph + a one-word tag/switch. */
+export const STATUS_COL_WIDTH = 162
+
 import { h } from 'vue'
 import type { VNodeChild } from 'vue'
 import HelpLabel from '../components/HelpLabel.vue'

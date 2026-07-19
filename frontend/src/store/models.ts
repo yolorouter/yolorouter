@@ -5,18 +5,43 @@ import type { Model, ModelCandidate, CreateCandidateInput, UpdateCandidateInput 
 interface ModelsState {
   list: Model[]
   loading: boolean
+  error: unknown | null
+  // Monotonic token used by fetchList() to ignore stale responses. Each
+  // call captures its value at start and, after awaiting, writes back to
+  // state only if it is still the latest. Without this guard an older
+  // failed request can clobber a newer successful one — e.g. the user
+  // leaves the Models list while a request is in flight, then
+  // ProviderDetailPage's onMounted calls fetchList() again on the same
+  // store; if the newer request resolves before the older one rejects,
+  // the stale rejection overwrites valid rows with a network error
+  // (codex review finding).
+  lastFetchId: number
 }
 
 export const useModelsStore = defineStore('models', {
-  state: (): ModelsState => ({ list: [], loading: false }),
+  state: (): ModelsState => ({ list: [], loading: false, error: null, lastFetchId: 0 }),
   actions: {
     async fetchList() {
+      const fetchId = ++this.lastFetchId
       this.loading = true
+      this.error = null
       try {
         const { list } = await modelsApi.listModels()
+        // A newer fetchList() started while this one was in flight — its
+        // result is authoritative, so leave list/loading untouched.
+        if (fetchId !== this.lastFetchId) return
         this.list = list
+      } catch (err) {
+        // Same staleness guard on the failure path: a stale error must not
+        // overwrite a newer success, nor surface a misleading toast to a
+        // caller that has already moved on.
+        if (fetchId !== this.lastFetchId) return
+        this.error = err
+        throw err
       } finally {
-        this.loading = false
+        if (fetchId === this.lastFetchId) {
+          this.loading = false
+        }
       }
     },
     async fetchDetail(id: number): Promise<Model> {

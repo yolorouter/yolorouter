@@ -96,7 +96,7 @@ const columns = computed<DataTableColumns<Model>>(() => [
   {
     title: columnTitle(t('models.runningStatusColumn'), t('models.runningStatusColumn_tip')),
     key: 'running_status',
-    width: 120,
+    width: 180,
     render: (row) => {
       const display = modelRunningStatusDisplay(row.running_status)
       return h(NTag, { size: 'small', bordered: false, type: display.tagType }, { default: () => t(`models.running${display.i18nKey}`) })

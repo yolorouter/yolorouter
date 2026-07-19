@@ -52,7 +52,17 @@
       </n-tab-pane>
 
       <n-tab-pane name="models" :tab="t('providers.tabModels')">
-        <EmptyState :title="t('providers.modelsEmpty')" />
+        <EmptyState v-if="modelsStore.error" :title="t('common.networkError')" />
+        <EmptyState v-else-if="!modelsStore.loading && linkedModelRows.length === 0" :title="t('providers.modelsEmpty')" />
+        <div v-else class="data-table-wrapper">
+          <n-data-table
+            :columns="modelColumns"
+            :data="linkedModelRows"
+            :loading="modelsStore.loading"
+            :bordered="false"
+            :row-key="(row: LinkedModelRow) => row.candidateId"
+          />
+        </div>
       </n-tab-pane>
     </n-tabs>
 
@@ -68,12 +78,14 @@ import { useRoute } from 'vue-router'
 import { NButton, NDropdown, NSpace, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
 import { MoreHorizontal, Plus, PlayCircle } from '@lucide/vue'
 import { useProvidersStore } from '../../store/providers'
+import { useModelsStore } from '../../store/models'
+import type { ModelCandidate } from '../../api/models'
 import { displayMessage } from '../../api/client'
 import type { BatchTestResult, Provider, ProviderKey } from '../../api/providers'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import KeyEditDrawer from '../../components/providers/KeyEditDrawer.vue'
-import { columnTitle } from '../../utils/columnTitle'
+import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 
 // TestOutcome int -> i18n key suffix (mirrors service.TestOutcome, design
 // doc §5's 8 categories). Used to render each key's OWN batch-test result
@@ -97,6 +109,7 @@ const route = useRoute()
 const dialog = useDialog()
 const message = useMessage()
 const store = useProvidersStore()
+const modelsStore = useModelsStore()
 
 const providerId = Number(route.params.id)
 const provider = ref<Provider | null>(null)
@@ -131,11 +144,72 @@ function batchResultTagType(result: BatchTestResult): 'success' | 'warning' | 'e
   return result.outcome === 0 ? 'success' : 'error'
 }
 
-onMounted(reload)
+onMounted(async () => {
+  try {
+    await reload()
+  } catch (err) {
+    message.error(displayMessage(err, t))
+    return
+  }
+  try {
+    await modelsStore.fetchList()
+  } catch (err) {
+    message.error(displayMessage(err, t))
+  }
+})
 
 async function reload() {
   provider.value = await store.fetchDetail(providerId)
 }
+
+// Models referencing this provider as a candidate (the "模型映射" tab). M3
+// left this tab as an EmptyState placeholder; this joins modelsStore.list
+// (every model with its candidates) on candidate.provider_id.
+type LinkedModelRow = { candidateId: number; modelName: string; candidate: ModelCandidate }
+
+const linkedModelRows = computed<LinkedModelRow[]>(() => {
+  if (!provider.value) return []
+  const rows: LinkedModelRow[] = []
+  for (const m of modelsStore.list) {
+    for (const c of m.candidates) {
+      if (c.provider_id === providerId) {
+        rows.push({ candidateId: c.id, modelName: m.name, candidate: c })
+      }
+    }
+  }
+  return rows
+})
+
+const modelColumns = computed<DataTableColumns<LinkedModelRow>>(() => [
+  {
+    title: columnTitle(t('models.name'), t('models.name_tip')),
+    key: 'modelName',
+    minWidth: 160,
+  },
+  {
+    title: columnTitle(t('models.providerModelName'), t('models.providerModelName_tip')),
+    key: 'providerModelName',
+    minWidth: 160,
+    render: (row) => row.candidate.provider_model_name || '-',
+  },
+  {
+    // Reads row.candidate.management_status (candidate-level), NOT the
+    // model-level status — so the tooltip must describe candidate
+    // semantics ("skips this candidate only"), not model semantics
+    // ("model rejects all requests"). Reusing models.managementStatusColumn
+    // here would mislabel the column (codex review finding).
+    title: columnTitle(t('providers.candidateStatus'), t('providers.candidateStatus_tip')),
+    key: 'management_status',
+    width: 100,
+    align: 'center',
+    render: (row) =>
+      h(
+        NTag,
+        { size: 'small', bordered: false, type: row.candidate.management_status === 1 ? 'success' : 'default' },
+        { default: () => (row.candidate.management_status === 1 ? t('providers.statusEnabled') : t('providers.statusDisabled')) },
+      ),
+  },
+])
 
 function verificationLabel(status: number): string {
   if (status === 1) return t('providers.verificationPassed')
@@ -199,7 +273,7 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
   {
     title: columnTitle(t('providers.managementStatusColumn'), t('providers.managementStatusColumn_tip')),
     key: 'management_status',
-    width: 90,
+    width: STATUS_COL_WIDTH,
     align: 'center',
     render: (row) =>
       h(NSwitch, {

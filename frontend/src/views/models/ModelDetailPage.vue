@@ -55,7 +55,7 @@ import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NButton, NDropdown, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { MoreHorizontal, Plus } from '@lucide/vue'
+import { ChevronDown, ChevronUp, MoreHorizontal, Plus } from '@lucide/vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { toggleStatusWithConfirm } from '../../composables/useConfirmedStatusToggle'
@@ -64,7 +64,8 @@ import type { Model, ModelCandidate } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import CandidateEditDrawer from '../../components/models/CandidateEditDrawer.vue'
-import { columnTitle } from '../../utils/columnTitle'
+import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
+import { useSingleRowAction } from '../../composables/useSingleRowAction'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -82,10 +83,13 @@ const editingCandidate = ref<ModelCandidate | null>(null)
 // the actions button can show a spinner instead of silently doing nothing
 // until the request resolves (mirrors ProviderDetailPage.vue's testingKeyId).
 const testingCandidateId = ref<number | null>(null)
+const reorderAction = useSingleRowAction()
 
 const runningStatusKey = computed(() => modelRunningStatusDisplay(modelData.value?.running_status ?? 'not_configured').i18nKey)
 
-onMounted(reload)
+onMounted(() => {
+  void reload().catch((err) => message.error(displayMessage(err, t)))
+})
 
 async function reload() {
   modelData.value = await store.fetchDetail(modelId)
@@ -109,12 +113,14 @@ async function onTestCandidate(candidateId: number, testType: 'basic' | 'streami
 }
 
 async function onReorder(candidateId: number, direction: 'up' | 'down') {
-  try {
-    await store.reorderCandidate(modelId, candidateId, direction)
-    await reload()
-  } catch (err) {
-    message.error(displayMessage(err, t))
-  }
+  await reorderAction.run(candidateId, async () => {
+    try {
+      await store.reorderCandidate(modelId, candidateId, direction)
+      await reload()
+    } catch (err) {
+      message.error(displayMessage(err, t))
+    }
+  }, direction)
 }
 
 function onToggleCandidateStatus(candidateId: number, enable: boolean) {
@@ -179,23 +185,48 @@ const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => [
   {
     title: columnTitle(t('models.managementStatusColumn'), t('models.managementStatusColumn_tip')),
     key: 'management_status',
-    width: 90,
+    width: STATUS_COL_WIDTH,
     align: 'center',
     render: (row) => h(NSwitch, { value: row.management_status === 1, 'onUpdate:value': (v: boolean) => onToggleCandidateStatus(row.id, v) }),
   },
   {
     title: columnTitle(t('models.supportsStreaming'), t('models.supportsStreaming_tip')),
     key: 'supports_streaming',
-    width: 90,
+    width: STATUS_COL_WIDTH,
     align: 'center',
     render: (row) => (row.supports_streaming ? h(NTag, { size: 'small', type: 'success', bordered: false }, { default: () => '✓' }) : null),
   },
   {
     title: columnTitle(t('models.supportsFunctionCalling'), t('models.supportsFunctionCalling_tip')),
     key: 'supports_function_calling',
-    width: 90,
+    width: STATUS_COL_WIDTH,
     align: 'center',
     render: (row) => (row.supports_function_calling ? h(NTag, { size: 'small', type: 'success', bordered: false }, { default: () => '✓' }) : null),
+  },
+  {
+    title: t('models.reorderColumn'),
+    key: 'reorder',
+    width: 70,
+    align: 'center',
+    render: (row, index) => {
+      const count = modelData.value?.candidates.length ?? 0
+      const r = reorderAction.activeId.value
+      const reordering = r !== null
+      const upLoading = r === row.id && reorderAction.direction.value === 'up'
+      const downLoading = r === row.id && reorderAction.direction.value === 'down'
+      return h('div', { style: 'display:inline-flex;align-items:center;gap:2px;justify-content:center' }, [
+        h(
+          NButton,
+          { size: 'small', quaternary: true, circle: true, disabled: reordering || index === 0, loading: upLoading, title: t('models.moveUp'), onClick: () => onReorder(row.id, 'up') },
+          { icon: () => h(ChevronUp, { size: 16 }) },
+        ),
+        h(
+          NButton,
+          { size: 'small', quaternary: true, circle: true, disabled: reordering || index >= count - 1, loading: downLoading, title: t('models.moveDown'), onClick: () => onReorder(row.id, 'down') },
+          { icon: () => h(ChevronDown, { size: 16 }) },
+        ),
+      ])
+    },
   },
   {
     title: t('common.actions'),
@@ -211,16 +242,12 @@ const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => [
           options: [
             { label: t('models.editCandidate'), key: 'edit' },
             { label: t('models.testBasic'), key: 'test_basic' },
-            { label: t('models.moveUp'), key: 'up' },
-            { label: t('models.moveDown'), key: 'down' },
             { type: 'divider', key: 'd' },
             { label: t('models.deleteCandidate'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
           ],
           onSelect: (key: string) => {
             if (key === 'edit') onEditCandidate(row)
             else if (key === 'test_basic') onTestCandidate(row.id, 'basic')
-            else if (key === 'up') onReorder(row.id, 'up')
-            else if (key === 'down') onReorder(row.id, 'down')
             else if (key === 'delete') onDeleteCandidate(row)
           },
         },

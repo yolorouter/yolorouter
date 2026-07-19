@@ -126,7 +126,7 @@ const columns = computed<DataTableColumns<Provider>>(() => [
   {
     title: columnTitle(t('providers.runningStatusColumn'), t('providers.runningStatusColumn_tip')),
     key: 'running_status',
-    width: 140,
+    width: 210,
     render: (row) => {
       const display = runningStatusDisplay(row.running_status)
       return h(
