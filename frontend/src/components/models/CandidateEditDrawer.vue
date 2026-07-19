@@ -2,27 +2,48 @@
 <template>
   <n-drawer :show="show" width="480" @update:show="onUpdateShow">
     <n-drawer-content :title="editingCandidate ? t('models.editCandidate') : t('models.addCandidate')" closable>
-      <n-form ref="formRef" :model="form" :rules="rules">
-        <n-form-item v-if="!editingCandidate" :label="t('models.provider')">
+      <n-form require-mark-placement="left" ref="formRef" :model="form" :rules="rules">
+        <n-form-item v-if="!editingCandidate" path="providerId">
+          <template #label>
+            <HelpLabel :tip="t('models.provider_tip')">{{ t('models.provider') }}</HelpLabel>
+          </template>
           <n-select v-model:value="form.providerId" :options="providerOptions" :placeholder="t('models.provider')" />
           <n-button text @click="openNewProviderDrawer">{{ t('providers.createButton') }}</n-button>
         </n-form-item>
-        <n-form-item path="providerModelName" :label="t('models.providerModelName')">
+        <n-form-item path="providerModelName">
+          <template #label>
+            <HelpLabel :tip="t('models.providerModelName_tip')">{{ t('models.providerModelName') }}</HelpLabel>
+          </template>
           <n-input v-model:value="form.providerModelName" :placeholder="t('models.providerModelNameHint')" />
         </n-form-item>
-        <n-form-item path="inputPrice" :label="t('models.inputPrice')">
+        <n-form-item path="inputPrice">
+          <template #label>
+            <HelpLabel :tip="t('models.inputPrice_tip')">{{ t('models.inputPrice') }}</HelpLabel>
+          </template>
           <n-input-number v-model:value="form.inputPrice" :min="0" style="width: 100%" />
         </n-form-item>
-        <n-form-item path="outputPrice" :label="t('models.outputPrice')">
+        <n-form-item path="outputPrice">
+          <template #label>
+            <HelpLabel :tip="t('models.outputPrice_tip')">{{ t('models.outputPrice') }}</HelpLabel>
+          </template>
           <n-input-number v-model:value="form.outputPrice" :min="0" style="width: 100%" />
         </n-form-item>
-        <n-form-item :label="t('models.cacheWritePrice')">
+        <n-form-item>
+          <template #label>
+            <HelpLabel :tip="t('models.cacheWritePrice_tip')">{{ t('models.cacheWritePrice') }}</HelpLabel>
+          </template>
           <n-input-number v-model:value="form.cacheWritePrice" :min="0" style="width: 100%" />
         </n-form-item>
-        <n-form-item :label="t('models.cacheReadPrice')">
+        <n-form-item>
+          <template #label>
+            <HelpLabel :tip="t('models.cacheReadPrice_tip')">{{ t('models.cacheReadPrice') }}</HelpLabel>
+          </template>
           <n-input-number v-model:value="form.cacheReadPrice" :min="0" style="width: 100%" />
         </n-form-item>
-        <n-form-item :label="t('models.maxOutput')">
+        <n-form-item>
+          <template #label>
+            <HelpLabel :tip="t('models.maxOutput_tip')">{{ t('models.maxOutput') }}</HelpLabel>
+          </template>
           <n-input-number v-model:value="form.maxOutput" :min="0" style="width: 100%" />
         </n-form-item>
       </n-form>
@@ -59,6 +80,7 @@ import { useModelsStore } from '../../store/models'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
 import { providerModelNameRule, nonNegativePriceRule } from '../../utils/modelValidators'
+import HelpLabel from '../HelpLabel.vue'
 import NewProviderDrawer from '../providers/NewProviderDrawer.vue'
 import type { ModelCandidate } from '../../api/models'
 
@@ -98,6 +120,7 @@ const providerOptions = computed(() =>
 )
 
 const rules: FormRules = {
+  providerId: [{ required: true, type: 'number', message: t('models.fieldRequired'), trigger: ['change', 'blur'] }],
   providerModelName: providerModelNameRule(t),
   inputPrice: nonNegativePriceRule(t),
   outputPrice: nonNegativePriceRule(t),

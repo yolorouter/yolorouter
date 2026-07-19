@@ -7,26 +7,44 @@
         <n-step :title="t('providers.keyLabel')" />
       </n-steps>
 
-      <n-form v-if="step === 1" ref="basicFormRef" :model="basicForm" :rules="basicRules" class="form">
-        <n-form-item path="name" :label="t('providers.name')">
+      <n-form require-mark-placement="left" v-if="step === 1" ref="basicFormRef" :model="basicForm" :rules="basicRules" class="form">
+        <n-form-item path="name">
+          <template #label>
+            <HelpLabel :tip="t('providers.name_tip')">{{ t('providers.name') }}</HelpLabel>
+          </template>
           <n-input v-model:value="basicForm.name" />
         </n-form-item>
-        <n-form-item path="baseUrl" :label="t('providers.baseUrl')">
+        <n-form-item path="baseUrl">
+          <template #label>
+            <HelpLabel :tip="t('providers.baseUrl_tip')">{{ t('providers.baseUrl') }}</HelpLabel>
+          </template>
           <n-input v-model:value="basicForm.baseUrl" placeholder="https://api.example.com/v1" />
         </n-form-item>
-        <n-form-item path="note" :label="t('providers.note')">
+        <n-form-item path="note">
+          <template #label>
+            <HelpLabel :tip="t('providers.note_tip')">{{ t('providers.note') }}</HelpLabel>
+          </template>
           <n-input v-model:value="basicForm.note" type="textarea" />
         </n-form-item>
       </n-form>
 
-      <n-form v-else ref="keyFormRef" :model="keyForm" :rules="keyRules" class="form">
-        <n-form-item path="label" :label="t('providers.keyLabel')">
+      <n-form require-mark-placement="left" v-else ref="keyFormRef" :model="keyForm" :rules="keyRules" class="form">
+        <n-form-item path="label">
+          <template #label>
+            <HelpLabel :tip="t('providers.keyLabel_tip')">{{ t('providers.keyLabel') }}</HelpLabel>
+          </template>
           <n-input v-model:value="keyForm.label" />
         </n-form-item>
-        <n-form-item path="plaintext" :label="t('providers.keyPlaintext')">
+        <n-form-item path="plaintext">
+          <template #label>
+            <HelpLabel :tip="t('providers.keyPlaintext_tip')">{{ t('providers.keyPlaintext') }}</HelpLabel>
+          </template>
           <n-input v-model:value="keyForm.plaintext" type="password" show-password-on="click" />
         </n-form-item>
-        <n-form-item path="testModel" :label="t('providers.testModel')">
+        <n-form-item path="testModel">
+          <template #label>
+            <HelpLabel :tip="t('providers.testModel_tip')">{{ t('providers.testModel') }}</HelpLabel>
+          </template>
           <n-input v-model:value="keyForm.testModel" :placeholder="t('providers.testModelHint')" />
         </n-form-item>
         <n-button :loading="testing" @click="onTestConnection">{{ t('providers.testConnection') }}</n-button>
@@ -52,6 +70,7 @@ import { useI18n } from 'vue-i18n'
 import { useMessage, type FormInst, type FormRules } from 'naive-ui'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
+import HelpLabel from '../HelpLabel.vue'
 import { providerNameRule, baseUrlRule, noteRule, keyLabelRule, keyPlaintextRule, testModelRule } from '../../utils/providerValidators'
 
 const props = defineProps<{ show: boolean }>()

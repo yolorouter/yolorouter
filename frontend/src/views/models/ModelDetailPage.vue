@@ -55,7 +55,7 @@ import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NButton, NDropdown, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { MoreHorizontal, Plus } from 'lucide-vue-next'
+import { MoreHorizontal, Plus } from '@lucide/vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { toggleStatusWithConfirm } from '../../composables/useConfirmedStatusToggle'
@@ -64,6 +64,7 @@ import type { Model, ModelCandidate } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import CandidateEditDrawer from '../../components/models/CandidateEditDrawer.vue'
+import { columnTitle } from '../../utils/columnTitle'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -173,24 +174,24 @@ function onToggleModelStatus() {
 // Actions column collapses into an NDropdown — the M2 convention established
 // after flat buttons pushed the table into horizontal scroll.
 const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => [
-  { title: t('models.provider'), key: 'provider_name', minWidth: 140 },
-  { title: t('models.providerModelName'), key: 'provider_model_name', minWidth: 160 },
+  { title: columnTitle(t('models.provider'), t('models.provider_tip')), key: 'provider_name', minWidth: 140 },
+  { title: columnTitle(t('models.providerModelName'), t('models.providerModelName_tip')), key: 'provider_model_name', minWidth: 160 },
   {
-    title: t('models.managementStatusColumn'),
+    title: columnTitle(t('models.managementStatusColumn'), t('models.managementStatusColumn_tip')),
     key: 'management_status',
     width: 90,
     align: 'center',
     render: (row) => h(NSwitch, { value: row.management_status === 1, 'onUpdate:value': (v: boolean) => onToggleCandidateStatus(row.id, v) }),
   },
   {
-    title: t('models.supportsStreaming'),
+    title: columnTitle(t('models.supportsStreaming'), t('models.supportsStreaming_tip')),
     key: 'supports_streaming',
     width: 90,
     align: 'center',
     render: (row) => (row.supports_streaming ? h(NTag, { size: 'small', type: 'success', bordered: false }, { default: () => '✓' }) : null),
   },
   {
-    title: t('models.supportsFunctionCalling'),
+    title: columnTitle(t('models.supportsFunctionCalling'), t('models.supportsFunctionCalling_tip')),
     key: 'supports_function_calling',
     width: 90,
     align: 'center',

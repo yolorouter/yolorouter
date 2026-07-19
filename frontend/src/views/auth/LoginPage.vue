@@ -1,7 +1,10 @@
 <template>
   <AuthCard :title="t('auth.loginTitle')" :subtitle="t('auth.loginSubtitle')">
-    <n-form ref="formRef" class="auth-form" :model="form" :rules="rules">
-      <n-form-item path="username" :label="t('auth.username')">
+    <n-form require-mark-placement="left" ref="formRef" class="auth-form" :model="form" :rules="rules">
+      <n-form-item path="username">
+        <template #label>
+          <HelpLabel :tip="t('auth.username_tip')">{{ t('auth.username') }}</HelpLabel>
+        </template>
         <n-input
           v-model:value="form.username"
           size="large"
@@ -9,7 +12,10 @@
           @keyup.enter="onSubmit"
         />
       </n-form-item>
-      <n-form-item path="password" :label="t('auth.password')">
+      <n-form-item path="password">
+        <template #label>
+          <HelpLabel :tip="t('auth.password_tip')">{{ t('auth.password') }}</HelpLabel>
+        </template>
         <n-input
           v-model:value="form.password"
           type="password"
@@ -45,6 +51,7 @@ import { ACCOUNT_LOGIN_LOCKED, ACCOUNT_SESSION_INVALID } from '../../api/errcode
 import { errcodeMessage } from '../../i18n'
 import type { LoginLockedData } from '../../api/auth'
 import AuthCard from '../../components/AuthCard.vue'
+import HelpLabel from '../../components/HelpLabel.vue'
 
 const { t } = useI18n()
 const router = useRouter()

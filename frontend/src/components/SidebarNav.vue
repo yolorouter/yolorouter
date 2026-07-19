@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
 import { useRoute } from 'vue-router'
-import { Box, LayoutGrid, Server } from 'lucide-vue-next'
+import { Box, LayoutGrid, Server } from '@lucide/vue'
 
 export interface NavItem {
   key: string

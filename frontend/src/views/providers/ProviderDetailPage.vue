@@ -66,13 +66,14 @@ import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NButton, NDropdown, NSpace, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { MoreHorizontal, Plus, PlayCircle } from 'lucide-vue-next'
+import { MoreHorizontal, Plus, PlayCircle } from '@lucide/vue'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
 import type { BatchTestResult, Provider, ProviderKey } from '../../api/providers'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import KeyEditDrawer from '../../components/providers/KeyEditDrawer.vue'
+import { columnTitle } from '../../utils/columnTitle'
 
 // TestOutcome int -> i18n key suffix (mirrors service.TestOutcome, design
 // doc §5's 8 categories). Used to render each key's OWN batch-test result
@@ -104,7 +105,7 @@ const showAddKey = ref(false)
 const showEditKey = ref(false)
 const editingKey = ref<ProviderKey | null>(null)
 const testingAll = ref(false)
-// Tracks the single key currently running its own "测试连接" (distinct from
+// Tracks the single key currently running its own "Test Connection" (distinct from
 // testingAll's batch run) so the actions button can show a spinner instead
 // of silently doing nothing until the request resolves.
 const testingKeyId = ref<number | null>(null)
@@ -153,20 +154,20 @@ function verificationTagType(status: number): 'success' | 'error' | 'default' {
 // flex rows — kept as a computed so the columns re-render when the active
 // locale or batchResultByKeyId changes.
 const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
-  { title: t('providers.keyLabel'), key: 'label', minWidth: 140 },
+  { title: columnTitle(t('providers.keyLabel'), t('providers.keyLabel_tip')), key: 'label', minWidth: 140 },
   {
-    title: t('providers.keyPlaintext'),
+    title: columnTitle(t('providers.keyPlaintext'), t('providers.keyPlaintext_tip')),
     key: 'key_prefix',
     minWidth: 140,
     render: (row) => h('span', { class: 'key-prefix-cell' }, `${row.key_prefix}***`),
   },
   {
-    title: t('providers.testModel'),
+    title: columnTitle(t('providers.testModel'), t('providers.testModel_tip')),
     key: 'test_model',
     minWidth: 140,
   },
   {
-    title: t('providers.statusColumn'),
+    title: columnTitle(t('providers.statusColumn'), t('providers.statusColumn_tip')),
     key: 'status',
     minWidth: 220,
     render: (row) => {
@@ -196,7 +197,7 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
     },
   },
   {
-    title: t('providers.managementStatusColumn'),
+    title: columnTitle(t('providers.managementStatusColumn'), t('providers.managementStatusColumn_tip')),
     key: 'management_status',
     width: 90,
     align: 'center',

@@ -53,14 +53,23 @@
       style="max-width: 400px"
       @after-leave="resetChangePasswordForm"
     >
-      <n-form ref="changePasswordFormRef" :model="changePasswordForm" :rules="changePasswordRules">
-        <n-form-item path="currentPassword" :label="t('auth.currentPassword')">
+      <n-form require-mark-placement="left" ref="changePasswordFormRef" :model="changePasswordForm" :rules="changePasswordRules">
+        <n-form-item path="currentPassword">
+          <template #label>
+            <HelpLabel :tip="t('auth.currentPassword_tip')">{{ t('auth.currentPassword') }}</HelpLabel>
+          </template>
           <n-input v-model:value="changePasswordForm.currentPassword" type="password" show-password-on="click" />
         </n-form-item>
-        <n-form-item path="newPassword" :label="t('auth.newPassword')">
+        <n-form-item path="newPassword">
+          <template #label>
+            <HelpLabel :tip="t('auth.newPassword_tip')">{{ t('auth.newPassword') }}</HelpLabel>
+          </template>
           <n-input v-model:value="changePasswordForm.newPassword" type="password" show-password-on="click" />
         </n-form-item>
-        <n-form-item path="confirmNewPassword" :label="t('auth.confirmNewPassword')">
+        <n-form-item path="confirmNewPassword">
+          <template #label>
+            <HelpLabel :tip="t('auth.confirmNewPassword_tip')">{{ t('auth.confirmNewPassword') }}</HelpLabel>
+          </template>
           <n-input v-model:value="changePasswordForm.confirmNewPassword" type="password" show-password-on="click" />
         </n-form-item>
       </n-form>
@@ -87,6 +96,7 @@ import { APIError, displayMessage } from '../api/client'
 import { ACCOUNT_SESSION_INVALID } from '../api/errcodes'
 import { passwordStrengthRule, confirmPasswordRule } from '../utils/authValidators'
 import LocaleSwitcher from '../components/LocaleSwitcher.vue'
+import HelpLabel from '../components/HelpLabel.vue'
 import logo from '../assets/logo.svg'
 
 const { t } = useI18n()

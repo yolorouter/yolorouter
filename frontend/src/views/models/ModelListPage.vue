@@ -37,11 +37,12 @@ import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { Plus } from 'lucide-vue-next'
+import { Plus } from '@lucide/vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { toggleStatusWithConfirm } from '../../composables/useConfirmedStatusToggle'
 import { modelRunningStatusDisplay } from '../../utils/modelStatusDisplay'
+import { columnTitle } from '../../utils/columnTitle'
 import type { Model } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -87,13 +88,13 @@ function onToggleStatus(row: Model, enable: boolean) {
 
 const columns = computed<DataTableColumns<Model>>(() => [
   {
-    title: t('models.name'),
+    title: columnTitle(t('models.name'), t('models.name_tip')),
     key: 'name',
     minWidth: 200,
     render: (row) => h('span', { class: 'model-name-cell' }, row.name),
   },
   {
-    title: t('models.runningStatusColumn'),
+    title: columnTitle(t('models.runningStatusColumn'), t('models.runningStatusColumn_tip')),
     key: 'running_status',
     width: 120,
     render: (row) => {
@@ -102,13 +103,13 @@ const columns = computed<DataTableColumns<Model>>(() => [
     },
   },
   {
-    title: t('models.candidateCountColumn'),
+    title: columnTitle(t('models.candidateCountColumn'), t('models.candidateCountColumn_tip')),
     key: 'candidates',
     width: 140,
     render: (row) => `${row.candidates.filter((c) => c.routable).length} / ${row.candidates.length}`,
   },
   {
-    title: t('models.firstRouteColumn'),
+    title: columnTitle(t('models.firstRouteColumn'), t('models.firstRouteColumn_tip')),
     key: 'first_route',
     minWidth: 200,
     render: (row) => {
@@ -117,7 +118,7 @@ const columns = computed<DataTableColumns<Model>>(() => [
     },
   },
   {
-    title: t('models.managementStatusColumn'),
+    title: columnTitle(t('models.managementStatusColumn'), t('models.managementStatusColumn_tip')),
     key: 'management_status',
     width: 100,
     render: (row) =>

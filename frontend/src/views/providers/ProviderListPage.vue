@@ -39,13 +39,14 @@ import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { Plus } from 'lucide-vue-next'
+import { Plus } from '@lucide/vue'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
 import type { Provider } from '../../api/providers'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import NewProviderDrawer from '../../components/providers/NewProviderDrawer.vue'
+import { columnTitle } from '../../utils/columnTitle'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -111,19 +112,19 @@ function onToggleStatus(row: Provider, enable: boolean) {
 // already gets this right via computed().
 const columns = computed<DataTableColumns<Provider>>(() => [
   {
-    title: t('providers.name'),
+    title: columnTitle(t('providers.name'), t('providers.name_tip')),
     key: 'name',
     minWidth: 200,
     render: (row) => h('span', { class: 'provider-name-cell' }, row.name),
   },
   {
-    title: t('providers.baseUrl'),
+    title: columnTitle(t('providers.baseUrl'), t('providers.baseUrl_tip')),
     key: 'base_url',
     minWidth: 240,
     render: (row) => h('span', { class: 'provider-url-cell' }, row.base_url),
   },
   {
-    title: t('providers.runningStatusColumn'),
+    title: columnTitle(t('providers.runningStatusColumn'), t('providers.runningStatusColumn_tip')),
     key: 'running_status',
     width: 140,
     render: (row) => {
@@ -136,7 +137,7 @@ const columns = computed<DataTableColumns<Provider>>(() => [
     },
   },
   {
-    title: t('providers.managementStatusColumn'),
+    title: columnTitle(t('providers.managementStatusColumn'), t('providers.managementStatusColumn_tip')),
     key: 'management_status',
     width: 120,
     render: (row) =>

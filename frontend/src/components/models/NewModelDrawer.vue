@@ -2,8 +2,11 @@
 <template>
   <n-drawer :show="show" width="420" @update:show="onUpdateShow">
     <n-drawer-content :title="t('models.createButton')" closable>
-      <n-form ref="formRef" :model="form" :rules="rules">
-        <n-form-item path="name" :label="t('models.name')">
+      <n-form require-mark-placement="left" ref="formRef" :model="form" :rules="rules">
+        <n-form-item path="name">
+          <template #label>
+            <HelpLabel :tip="t('models.name_tip')">{{ t('models.name') }}</HelpLabel>
+          </template>
           <n-input v-model:value="form.name" :placeholder="t('models.nameHint')" />
         </n-form-item>
       </n-form>
@@ -22,6 +25,7 @@ import { reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useMessage, type FormInst, type FormRules } from 'naive-ui'
+import HelpLabel from '../HelpLabel.vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { modelNameRule } from '../../utils/modelValidators'

@@ -2,18 +2,30 @@
 <template>
   <n-drawer :show="show" width="420" @update:show="onUpdateShow">
     <n-drawer-content :title="editingKey ? t('providers.editKey') : t('providers.addKey')" closable>
-      <n-form ref="formRef" :model="form" :rules="rules">
-        <n-form-item path="label" :label="t('providers.keyLabel')">
+      <n-form require-mark-placement="left" ref="formRef" :model="form" :rules="rules">
+        <n-form-item path="label">
+          <template #label>
+            <HelpLabel :tip="t('providers.keyLabel_tip')">{{ t('providers.keyLabel') }}</HelpLabel>
+          </template>
           <n-input v-model:value="form.label" />
         </n-form-item>
-        <n-form-item path="plaintext" :label="t('providers.keyPlaintext')">
+        <n-form-item path="plaintext">
+          <template #label>
+            <HelpLabel :tip="t('providers.keyPlaintext_tip')">{{ t('providers.keyPlaintext') }}</HelpLabel>
+          </template>
           <n-input v-model:value="form.plaintext" type="password" show-password-on="click"
             :placeholder="plaintextPlaceholder" />
         </n-form-item>
-        <n-form-item path="testModel" :label="t('providers.testModel')">
+        <n-form-item path="testModel">
+          <template #label>
+            <HelpLabel :tip="t('providers.testModel_tip')">{{ t('providers.testModel') }}</HelpLabel>
+          </template>
           <n-input v-model:value="form.testModel" :placeholder="t('providers.testModelHint')" />
         </n-form-item>
-        <n-form-item :label="t('providers.statusEnabled')">
+        <n-form-item>
+          <template #label>
+            <HelpLabel :tip="t('providers.statusEnabled_tip')">{{ t('providers.statusEnabled') }}</HelpLabel>
+          </template>
           <n-switch v-model:value="form.enabled" />
         </n-form-item>
       </n-form>
@@ -35,6 +47,7 @@ import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
 import type { ProviderKey } from '../../api/providers'
 import { keyLabelRule, keyPlaintextRule, testModelRule } from '../../utils/providerValidators'
+import HelpLabel from '../HelpLabel.vue'
 
 const props = defineProps<{ show: boolean; providerId: number; editingKey?: ProviderKey | null }>()
 const emit = defineEmits<{ 'update:show': [boolean]; saved: [] }>()
