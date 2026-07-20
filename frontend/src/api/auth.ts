@@ -9,6 +9,10 @@ export interface AuthState {
 
 export interface AdminInfo {
   username: string
+  /** Minutes east of UTC for the server's timezone. Only /auth/me populates
+   *  it; the analytics time-range picker uses it so "Today"/"Yesterday"
+   *  presets match the server's natural day instead of the browser's. */
+  server_timezone_offset?: number
 }
 
 export interface LoginLockedData {

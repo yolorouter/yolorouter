@@ -199,6 +199,18 @@ type wireUsage struct {
 	PromptTokens     *int `json:"prompt_tokens"`
 	CompletionTokens *int `json:"completion_tokens"`
 	TotalTokens      *int `json:"total_tokens"`
+	// prompt_tokens_details.cached_tokens is OpenAI's cache-READ count (the
+	// portion of prompt_tokens already served from cache). Anthropic splits
+	// this into cache_creation_input_tokens (WRITE) + cache_read_input_tokens,
+	// surfaced via the alias fields below.
+	PromptTokensDetails *promptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// Anthropic-style aliases (absent on OpenAI upstreams).
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
+}
+
+type promptTokensDetails struct {
+	CachedTokens *int `json:"cached_tokens"`
 }
 
 func (w *wireUsage) toUsage() *Usage {
@@ -213,6 +225,17 @@ func (w *wireUsage) toUsage() *Usage {
 		u.TotalTokens = *w.TotalTokens
 	} else {
 		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	}
+	// Cache READ: OpenAI reports it under prompt_tokens_details.cached_tokens;
+	// Anthropic reports it directly as cache_read_input_tokens.
+	if w.PromptTokensDetails != nil && w.PromptTokensDetails.CachedTokens != nil {
+		u.CacheReadTokens = *w.PromptTokensDetails.CachedTokens
+	} else if w.CacheReadInputTokens != nil {
+		u.CacheReadTokens = *w.CacheReadInputTokens
+	}
+	// Cache WRITE: only Anthropic exposes this (cache_creation_input_tokens).
+	if w.CacheCreationInputTokens != nil {
+		u.CacheWriteTokens = *w.CacheCreationInputTokens
 	}
 	return u
 }

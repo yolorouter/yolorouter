@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter-ce/internal/middleware"
+	"github.com/yolorouter/yolorouter-ce/internal/model"
 	"github.com/yolorouter/yolorouter-ce/internal/service"
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
 	"github.com/yolorouter/yolorouter-ce/pkg/response"
@@ -136,7 +137,7 @@ func PostSetup(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		writeSessionCookie(c, sessionID, int(service.SessionTTL.Seconds()))
-		response.Success(c, gin.H{"username": admin.Username})
+		writeMeResponse(c, admin)
 	}
 }
 
@@ -176,7 +177,7 @@ func PostLogin(db *gorm.DB, limiter *middleware.Semaphore) gin.HandlerFunc {
 		}
 
 		writeSessionCookie(c, sessionID, int(service.SessionTTL.Seconds()))
-		response.Success(c, gin.H{"username": admin.Username})
+		writeMeResponse(c, admin)
 	}
 }
 
@@ -195,7 +196,11 @@ func PostLogout(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-// GetMe returns the currently logged-in admin's username.
+// GetMe returns the currently logged-in admin's username plus the server's
+// current timezone offset (minutes east of UTC). The offset lets the browser
+// resolve "Today"/"Yesterday" preset windows in the SERVER's natural day
+// rather than the browser's, so dashboard/analytics ranges line up with the
+// backend's time.Local-based aggregation (PRD §6.6.3).
 func GetMe(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		adminID := c.MustGet(middleware.AdminIDKey).(uint)
@@ -204,8 +209,20 @@ func GetMe(db *gorm.DB) gin.HandlerFunc {
 			middleware.WriteAdminError(c, http.StatusInternalServerError, errcode.DatabaseError)
 			return
 		}
-		response.Success(c, gin.H{"username": admin.Username})
+		writeMeResponse(c, admin)
 	}
+}
+
+// writeMeResponse emits the shared me-shape (username + server timezone
+// offset) used by PostSetup, PostLogin, and GetMe. Centralizing it keeps the
+// three "you are now logged in" responses identical and the timezone offset
+// computation in one place.
+func writeMeResponse(c *gin.Context, admin *model.Admin) {
+	_, offsetSec := time.Now().In(time.Local).Zone()
+	response.Success(c, gin.H{
+		"username":               admin.Username,
+		"server_timezone_offset": offsetSec / 60,
+	})
 }
 
 // PutPassword changes the caller's own password and forces re-login.

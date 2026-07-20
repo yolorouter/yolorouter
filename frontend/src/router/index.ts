@@ -2,7 +2,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 import DefaultLayout from '../layouts/DefaultLayout.vue'
 import SetupPage from '../views/auth/SetupPage.vue'
 import LoginPage from '../views/auth/LoginPage.vue'
-import DashboardPlaceholder from '../views/DashboardPlaceholder.vue'
+import DashboardPage from '../views/dashboard/DashboardPage.vue'
+import AnalyticsPage from '../views/analytics/AnalyticsPage.vue'
+import RequestLogListPage from '../views/request-logs/RequestLogListPage.vue'
+import RequestLogDetailPage from '../views/request-logs/RequestLogDetailPage.vue'
 import ProviderListPage from '../views/providers/ProviderListPage.vue'
 import ProviderDetailPage from '../views/providers/ProviderDetailPage.vue'
 import ModelListPage from '../views/models/ModelListPage.vue'
@@ -19,7 +22,10 @@ export const router = createRouter({
       path: '/',
       component: DefaultLayout,
       children: [
-        { path: '', component: DashboardPlaceholder },
+        { path: '', component: DashboardPage },
+        { path: 'analytics', component: AnalyticsPage },
+        { path: 'request-logs', component: RequestLogListPage },
+        { path: 'request-logs/:requestId', component: RequestLogDetailPage },
         { path: 'providers', component: ProviderListPage },
         { path: 'providers/:id', component: ProviderDetailPage },
         { path: 'models', component: ModelListPage },

@@ -23,14 +23,14 @@ type openaiError struct {
 // these). Kept as untyped string constants — they only appear at the
 // WriteOpenAIError call sites and in tests.
 const (
-	errTypeAuthentication = "authentication_error"
-	errTypePermission     = "permission_error"
-	errTypeRateLimit      = "rate_limit_error"
-	errTypeInvalidRequest = "invalid_request_error"
-	errTypeNotFound       = "not_found_error"
-	errTypeUpstream         = "upstream_error"
-	errTypeServer           = "server_error"
-	errTypeUnavailable      = "service_unavailable"
+	errTypeAuthentication    = "authentication_error"
+	errTypePermission        = "permission_error"
+	errTypeRateLimit         = "rate_limit_error"
+	errTypeInvalidRequest    = "invalid_request_error"
+	errTypeNotFound          = "not_found_error"
+	errTypeUpstream          = "upstream_error"
+	errTypeServer            = "server_error"
+	errTypeUnavailable       = "service_unavailable"
 	errTypeInsufficientQuota = "insufficient_quota" // OpenAI's type for budget/quota exhaustion (distinct from rate_limit_error)
 )
 
@@ -60,9 +60,9 @@ func WriteOpenAIErrorWithRequestID(c *gin.Context, status int, errType, message,
 type statusCategory int
 
 const (
-	statusRotateKey     statusCategory = iota // 401/429: Key-scoped, try next key (GATE-09)
-	statusFailover                            // 5xx: provider-scoped, try next candidate (GATE-10)
-	statusTerminalClient                      // other 4xx: caller's problem, no switch (GATE-11)
+	statusRotateKey      statusCategory = iota // 401/429: Key-scoped, try next key (GATE-09)
+	statusFailover                             // 5xx: provider-scoped, try next candidate (GATE-10)
+	statusTerminalClient                       // other 4xx: caller's problem, no switch (GATE-11)
 )
 
 // upstreamStatusClass is the full classification attemptOne needs from one

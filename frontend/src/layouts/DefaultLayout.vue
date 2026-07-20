@@ -91,7 +91,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useDialog, useMessage, type DropdownOption, type FormInst, type FormRules } from 'naive-ui'
 import SidebarNav, { type NavItem } from '../components/SidebarNav.vue'
-import { Box, Key, LayoutGrid, Server } from '@lucide/vue'
+import { BarChart3, Box, Key, LayoutGrid, ScrollText, Server } from '@lucide/vue'
 import { useAuthStore } from '../store/auth'
 import { APIError, displayMessage } from '../api/client'
 import { ACCOUNT_SESSION_INVALID } from '../api/errcodes'
@@ -112,6 +112,8 @@ const collapsed = ref(false)
 // user switches locale without needing to re-open the dropdown.
 const navItems = computed<NavItem[]>(() => [
   { key: 'dashboard', label: t('common.dashboard'), icon: LayoutGrid, to: '/' },
+  { key: 'analytics', label: t('analytics.pageTitle'), icon: BarChart3, to: '/analytics' },
+  { key: 'requestLogs', label: t('requestLogs.pageTitle'), icon: ScrollText, to: '/request-logs' },
   { key: 'providers', label: t('providers.pageTitle'), icon: Server, to: '/providers' },
   { key: 'models', label: t('models.pageTitle'), icon: Box, to: '/models' },
   { key: 'apikeys', label: t('apiKeys.pageTitle'), icon: Key, to: '/api-keys' },

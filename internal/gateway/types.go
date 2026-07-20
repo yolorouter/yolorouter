@@ -91,20 +91,28 @@ type AttemptRecord struct {
 // loop's switch decision.
 const (
 	AttemptSuccess     = "success"
-	AttemptAuthFailed  = "auth_failed"   // 401 from upstream -> rotate Key
-	AttemptRateLimited = "rate_limited"  // 429 -> rotate Key
-	AttemptConnError   = "conn_error"    // network/timeout -> failover candidate
-	AttemptServerError = "server_error"  // 5xx -> failover candidate
-	AttemptClientError = "client_error"  // 4xx (non-auth) -> do NOT switch (GATE-11)
-	AttemptBadStatus   = "bad_status"    // unmapped non-2xx -> do NOT switch
+	AttemptAuthFailed  = "auth_failed"  // 401 from upstream -> rotate Key
+	AttemptRateLimited = "rate_limited" // 429 -> rotate Key
+	AttemptConnError   = "conn_error"   // network/timeout -> failover candidate
+	AttemptServerError = "server_error" // 5xx -> failover candidate
+	AttemptClientError = "client_error" // 4xx (non-auth) -> do NOT switch (GATE-11)
+	AttemptBadStatus   = "bad_status"   // unmapped non-2xx -> do NOT switch
 )
 
 // Usage is the token usage pulled from an OpenAI-compatible response or
-// final SSE chunk (PRD §6.5.4/6.5.5). Cache breakdown fields are deferred
-// (design doc §3.3 — cache pricing applied later); the totals are enough for
-// v0.1 cost math.
+// final SSE chunk (PRD §6.5.4/6.5.5). Prompt/Completion/Total are the
+// always-present totals; CacheWrite/CacheRead are the prompt-cache counts
+// some upstreams report, driving the cache line items in computeCost
+// (PRD §6.7.5).
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// CacheWriteTokens / CacheReadTokens are the prompt-cache counts some
+	// upstreams report (OpenAI exposes cache READ via
+	// prompt_tokens_details.cached_tokens; Anthropic splits cache writes via
+	// cache_creation_input_tokens). They drive the cache line items in
+	// computeCost (PRD §6.7.5). Zero when the upstream didn't report them.
+	CacheWriteTokens int `json:"cache_write_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
 }

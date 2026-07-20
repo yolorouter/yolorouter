@@ -7,6 +7,10 @@ interface AuthStoreState {
   /** null = /auth/state hasn't been queried yet; cached after the first query so we don't hit it on every route change. */
   initialized: boolean | null
   username: string | null
+  /** Minutes east of UTC for the server's timezone, or null before /auth/me
+   *  resolves. The analytics time-range picker uses it to align preset
+   *  windows with the server's natural day (PRD §6.6.3). */
+  serverTimezoneOffset: number | null
   /**
    * Set whenever handleSessionExpired fires (a genuinely mid-use session
    * expiry, caught by withSessionInvalidHandling on some later
@@ -26,6 +30,7 @@ export const useAuthStore = defineStore('auth', {
     initialized: null,
     username: null,
     sessionExpiredNotice: false,
+    serverTimezoneOffset: null,
   }),
   getters: {
     // Derived rather than a separately-tracked field: username and
@@ -65,6 +70,7 @@ export const useAuthStore = defineStore('auth', {
         try {
           const me = await authApi.getMe()
           this.username = me.username
+          this.serverTimezoneOffset = me.server_timezone_offset ?? null
         } catch (err) {
           if (err instanceof APIError && err.code === ACCOUNT_SESSION_INVALID) {
             this.username = null
@@ -78,10 +84,12 @@ export const useAuthStore = defineStore('auth', {
       const admin = await authApi.setup(username, password)
       this.initialized = true
       this.username = admin.username
+      this.serverTimezoneOffset = admin.server_timezone_offset ?? null
     },
     async login(username: string, password: string) {
       const admin = await authApi.login(username, password)
       this.username = admin.username
+      this.serverTimezoneOffset = admin.server_timezone_offset ?? null
     },
     async logout() {
       await authApi.logout()

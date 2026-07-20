@@ -73,9 +73,11 @@ func TestGetCurrentVersionOnFreshSQLiteDB(t *testing.T) {
 	// is added to migrations/sqlite (currently 00001_baseline.sql +
 	// 00002_create_admin_auth.sql + 00003_add_admin_sessions_expires_at_index.sql +
 	// 00004_create_providers.sql + 00005_create_models.sql +
-	// 00006_create_api_keys.sql + 00007_create_request_logs.sql).
-	if version != 7 {
-		t.Fatalf("expected version 7 after all migrations, got %d", version)
+	// 00006_create_api_keys.sql + 00007_create_request_logs.sql +
+	// 00008_request_logs_status_index.sql + 00009_request_logs_request_id_index.sql +
+	// 00010_request_logs_cache_tokens.sql).
+	if version != 10 {
+		t.Fatalf("expected version 10 after all migrations, got %d", version)
 	}
 }
 

@@ -319,7 +319,7 @@ func (s *RelayService) relayCandidates(c *gin.Context, rc *RelayContext, candida
 type relayOutcome int
 
 const (
-	outcomeDone         relayOutcome = iota // response written, relay finished
+	outcomeDone          relayOutcome = iota // response written, relay finished
 	outcomeNextCandidate                     // this candidate's keys are exhausted, try next
 )
 
@@ -366,10 +366,10 @@ func (s *RelayService) tryKeys(c *gin.Context, rc *RelayContext, cand *model.Mod
 type attemptResult int
 
 const (
-	attemptSuccess attemptResult = iota
-	attemptTerminal      // 4xx client error — surfaced to caller, no switch (GATE-11)
-	attemptRotateKey     // 401/429 — try next key (GATE-09)
-	attemptNextCandidate // 5xx / conn / timeout — try next candidate (GATE-10)
+	attemptSuccess       attemptResult = iota
+	attemptTerminal                    // 4xx client error — surfaced to caller, no switch (GATE-11)
+	attemptRotateKey                   // 401/429 — try next key (GATE-09)
+	attemptNextCandidate               // 5xx / conn / timeout — try next candidate (GATE-10)
 )
 
 // attemptOne sends one upstream request with one decrypted key and routes

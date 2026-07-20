@@ -258,6 +258,24 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte) (*gin.En
 	protected.PATCH("/api-keys/:id", handler.PatchAPIKey(apiKeySvc))
 	protected.PATCH("/api-keys/:id/revoke", handler.PatchAPIKeyRevoke(apiKeySvc))
 
+	// M6.1: dashboard / analytics / request logs (PRD §6.6 / §6.7 / §6.8).
+	// All three are read-only queries over request_logs (written by the M5
+	// gateway), layered handler → service → repository like M1-M4. The
+	// /request-logs/export route MUST be registered before /request-logs/:requestId
+	// or gin treats "export" as a requestId.
+	dashboardSvc := service.NewDashboardService(db)
+	protected.GET("/dashboard", handler.GetDashboard(dashboardSvc))
+
+	analyticsSvc := service.NewAnalyticsService(db)
+	protected.GET("/analytics/overview", handler.GetAnalyticsOverview(analyticsSvc))
+	protected.GET("/analytics/report", handler.GetAnalyticsReport(analyticsSvc))
+	protected.GET("/analytics/export", handler.ExportAnalyticsCSV(analyticsSvc))
+
+	requestLogSvc := service.NewRequestLogService(db)
+	protected.GET("/request-logs", handler.GetRequestLogs(requestLogSvc))
+	protected.GET("/request-logs/export", handler.ExportRequestLogsCSV(requestLogSvc))
+	protected.GET("/request-logs/:requestId", handler.GetRequestLogDetail(requestLogSvc))
+
 	// Gateway: POST /v1/chat/completions — the second auth path (PRD §6.5).
 	// The caller presents an API key in Authorization: Bearer, not a session
 	// cookie. The 20MiB body cap is M0's gateway limit (design doc §5/§8),

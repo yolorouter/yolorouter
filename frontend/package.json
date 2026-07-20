@@ -10,9 +10,11 @@
   },
   "dependencies": {
     "@lucide/vue": "^1.25.0",
+    "echarts": "^6.1.0",
     "naive-ui": "^2.44.1",
     "pinia": "^4.0.2",
     "vue": "^3.5.39",
+    "vue-echarts": "^8.0.1",
     "vue-i18n": "^11.4.6",
     "vue-router": "^4.6.4"
   },

@@ -68,7 +68,7 @@ func createProviderKey(t *testing.T, db *gorm.DB, masterKey []byte, providerID u
 	pk := &model.ProviderKey{
 		ProviderID: providerID, Label: label, EncryptedKey: enc, KeyPrefix: plaintext,
 		SortOrder: order, TestModel: "m", ManagementStatus: status,
-		VerificationStatus: model.VerificationStatusPassed,
+		VerificationStatus:           model.VerificationStatusPassed,
 		AuthorizedDestinationVersion: 1, ConfigVersion: 1, TestGeneration: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -90,7 +90,7 @@ func createModelAndCandidate(t *testing.T, db *gorm.DB, provider *model.Provider
 		SupportsStreaming: stream, SupportsFunctionCalling: fn,
 		ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: order,
 		VerificationStatus: model.ModelVerificationStatusPassed,
-		CreatedAt: now, UpdatedAt: now,
+		CreatedAt:          now, UpdatedAt: now,
 	}
 	if err := db.Create(cand).Error; err != nil {
 		t.Fatalf("seed candidate: %v", err)
@@ -234,7 +234,7 @@ func TestRelayCandidateFailover(t *testing.T) {
 			SupportsStreaming: true, SupportsFunctionCalling: true,
 			ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: i + 1,
 			VerificationStatus: model.ModelVerificationStatusPassed,
-			CreatedAt: now, UpdatedAt: now,
+			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %d: %v", i, err)
 		}

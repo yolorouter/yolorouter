@@ -36,7 +36,32 @@ func computeCost(cand *model.ModelCandidate, usage *Usage) (cents int64, known b
 	if usage == nil || cand == nil {
 		return 0, false
 	}
-	cost := float64(usage.PromptTokens)/1_000_000*cand.InputPrice +
+	// PRD §6.7.5: cost = (prompt − cache_read) × input_price
+	//                   + cache_read × cache_read_price
+	//                   + cache_write × cache_write_price
+	//                   + completion × output_price
+	// cache_read tokens are a subset of prompt_tokens (OpenAI), so subtract
+	// them from the input line to avoid double-counting. Candidate prices
+	// are CNY per million tokens (design doc §3.3).
+	cacheRead := usage.CacheReadTokens
+	cacheWrite := usage.CacheWriteTokens
+	nonCacheInput := usage.PromptTokens - cacheRead
+	if nonCacheInput < 0 {
+		nonCacheInput = 0 // defensive: upstream reporting cache_read > prompt
+	}
+	// Candidate without a configured cache price bills cache tokens at the
+	// input price (PRD §6.7.5: "候选未配置缓存价格时，对应缓存 Token 按输入单价计费").
+	cacheReadPrice := cand.InputPrice
+	if cand.CacheReadPrice != nil {
+		cacheReadPrice = *cand.CacheReadPrice
+	}
+	cacheWritePrice := cand.InputPrice
+	if cand.CacheWritePrice != nil {
+		cacheWritePrice = *cand.CacheWritePrice
+	}
+	cost := float64(nonCacheInput)/1_000_000*cand.InputPrice +
+		float64(cacheRead)/1_000_000*cacheReadPrice +
+		float64(cacheWrite)/1_000_000*cacheWritePrice +
 		float64(usage.CompletionTokens)/1_000_000*cand.OutputPrice
 	return int64(cost*100 + 0.5), true
 }
@@ -81,26 +106,30 @@ func (s *RelayService) finalize(rc *RelayContext, statusCode int, failReason str
 		failPtr = &fr
 	}
 	apiKeyID := rc.APIKeyID
-	var inputTokens, outputTokens int
+	var inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens int
 	if rc.Usage != nil {
 		inputTokens = rc.Usage.PromptTokens
 		outputTokens = rc.Usage.CompletionTokens
+		cacheWriteTokens = rc.Usage.CacheWriteTokens
+		cacheReadTokens = rc.Usage.CacheReadTokens
 	}
 
 	logRow := &model.RequestLog{
-		RequestID:    rc.RequestID,
-		APIKeyID:     &apiKeyID,
-		ModelName:    rc.OriginalModel,
-		ProviderID:   providerID,
-		IsStream:     rc.IsStream,
-		StatusCode:   statusCode,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		CostCents:    costCents,
-		CostKnown:    costKnown,
-		FailReason:   failPtr,
-		Attempts:     len(rc.Attempts),
-		DurationMs:   durationMs,
+		RequestID:        rc.RequestID,
+		APIKeyID:         &apiKeyID,
+		ModelName:        rc.OriginalModel,
+		ProviderID:       providerID,
+		IsStream:         rc.IsStream,
+		StatusCode:       statusCode,
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		CacheWriteTokens: cacheWriteTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CostCents:        costCents,
+		CostKnown:        costKnown,
+		FailReason:       failPtr,
+		Attempts:         len(rc.Attempts),
+		DurationMs:       durationMs,
 	}
 	// GATE-13: keep every attempt's order / key label / failure cause, not
 	// just the count. Stored as JSON so the §6.8 query page can render it
