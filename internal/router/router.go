@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter-ce/internal/gateway"
 	"github.com/yolorouter/yolorouter-ce/internal/handler"
 	"github.com/yolorouter/yolorouter-ce/internal/middleware"
 	"github.com/yolorouter/yolorouter-ce/internal/service"
@@ -256,6 +257,15 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte) (*gin.En
 	protected.GET("/api-keys/:id", handler.GetAPIKey(apiKeySvc))
 	protected.PATCH("/api-keys/:id", handler.PatchAPIKey(apiKeySvc))
 	protected.PATCH("/api-keys/:id/revoke", handler.PatchAPIKeyRevoke(apiKeySvc))
+
+	// Gateway: POST /v1/chat/completions — the second auth path (PRD §6.5).
+	// The caller presents an API key in Authorization: Bearer, not a session
+	// cookie. The 20MiB body cap is M0's gateway limit (design doc §5/§8),
+	// larger than the admin JSON API's 1MiB to leave room for long histories
+	// and tool definitions.
+	relaySvc := gateway.NewRelayService(db, providerMasterKey)
+	v1 := r.Group("/v1", middleware.BodySizeLimit(20<<20), middleware.APIKeyAuth(db))
+	v1.POST("/chat/completions", gateway.PostChatCompletions(relaySvc))
 
 	return r, nil
 }

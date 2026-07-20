@@ -44,6 +44,62 @@ func TestCreateProviderWithKeyPersistsBothRowsInOneTransaction(t *testing.T) {
 	}
 }
 
+// TestMarkProviderKeyVerificationFailedIfCurrentCAS: GATE-16 — the gateway
+// invalidates a key after a real upstream 401 by CAS-writing
+// verification_status=Failed, but ONLY when the row still matches (Passed +
+// the destination the key was just sent to). A destination mismatch (admin
+// changed BaseURL mid-request) or a no-longer-Passed status must report
+// applied=false so the gateway never clobbers a concurrent edit.
+func TestMarkProviderKeyVerificationFailedIfCurrentCAS(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+	provider, key := seedProviderWithKey(t, db, "openai-main")
+
+	// Seed the key as Passed for the current destination — the state a key
+	// must be in before the gateway would ever route traffic to it.
+	if err := db.Model(&model.ProviderKey{}).Where("id = ?", key.ID).
+		Update("verification_status", model.VerificationStatusPassed).Error; err != nil {
+		t.Fatalf("seed passed: %v", err)
+	}
+
+	// Happy path: Passed + destination matches -> flipped to Failed.
+	applied, err := MarkProviderKeyVerificationFailedIfCurrent(db, key.ID, provider.DestinationVersion, now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected CAS to apply on a Passed key at the matching destination")
+	}
+	var reloaded model.ProviderKey
+	if err := db.First(&reloaded, key.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.VerificationStatus != model.VerificationStatusFailed {
+		t.Fatalf("expected verification_status=Failed, got %d", reloaded.VerificationStatus)
+	}
+
+	// CAS guard: destination mismatch -> not applied, row untouched.
+	_, key2 := seedProviderWithKey(t, db, "openai-other")
+	if err := db.Model(&model.ProviderKey{}).Where("id = ?", key2.ID).
+		Update("verification_status", model.VerificationStatusPassed).Error; err != nil {
+		t.Fatalf("seed passed: %v", err)
+	}
+	applied, err = MarkProviderKeyVerificationFailedIfCurrent(db, key2.ID, provider.DestinationVersion+999, now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if applied {
+		t.Fatal("expected CAS NOT to apply when destination mismatches")
+	}
+	var reloaded2 model.ProviderKey
+	if err := db.First(&reloaded2, key2.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded2.VerificationStatus != model.VerificationStatusPassed {
+		t.Fatalf("row should be untouched (still Passed), got %d", reloaded2.VerificationStatus)
+	}
+}
+
 func TestFindProviderByIDReturnsNotFoundForMissingID(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	_, err := FindProviderByID(db, 9999)

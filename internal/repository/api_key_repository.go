@@ -144,3 +144,29 @@ func RevokeAPIKey(db *gorm.DB, id uint, now time.Time) error {
 			"updated_at": now,
 		}).Error
 }
+
+// FindAPIKeyByHash looks up a key by its SHA-256 hash — the gateway auth path
+// (PRD §6.5 step 1). The plaintext is never stored or indexed; the caller
+// hashes the bearer token and looks the row up by hash. Returns
+// gorm.ErrRecordNotFound for an unknown key (the service layer maps that to
+// ErrAPIKeyInvalid — never "not found", to avoid leaking which keys exist).
+func FindAPIKeyByHash(db *gorm.DB, hash string) (*model.APIKey, error) {
+	var k model.APIKey
+	if err := db.Where("key_hash = ?", hash).First(&k).Error; err != nil {
+		return nil, err
+	}
+	return &k, nil
+}
+
+// HasAPIKeyModelAccess reports whether modelID is in the key's allowlist
+// (PRD §6.5 step 5). Stored by id, so renaming a model does not break
+// whitelists (design doc §3 / M4 APIKeyModel). A key with an empty whitelist
+// matches nothing — M4 allows creating one, the gateway rejects every call.
+func HasAPIKeyModelAccess(db *gorm.DB, apiKeyID, modelID uint) (bool, error) {
+	var cnt int64
+	if err := db.Model(&model.APIKeyModel{}).
+		Where("api_key_id = ? AND model_id = ?", apiKeyID, modelID).Count(&cnt).Error; err != nil {
+		return false, err
+	}
+	return cnt > 0, nil
+}

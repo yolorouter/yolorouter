@@ -1,27 +1,27 @@
 package repository
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter-ce/internal/model"
+	"github.com/yolorouter/yolorouter-ce/pkg/crypto"
 )
 
-// hashSessionToken returns the SHA-256 hex digest of a raw session token.
-// admin_sessions.id stores only this digest, never the raw token: the raw
-// token is what's sent to the browser as the cookie value (design doc
-// §4/§6), so a leaked database file or backup (see pkg/database's
-// db:backup) would otherwise hand out directly-replayable, still-valid
-// admin sessions for up to SessionTTL. Reversing a SHA-256 digest back to
-// the original token is infeasible, so a leaked row alone isn't enough to
-// impersonate an admin — the same reasoning bcrypt-hashing the password
-// already applies to credentials applies here to the session token too.
+// hashSessionToken delegates to crypto.HashToken — the single SHA-256 hex
+// recipe shared with the gateway's bearer-key lookup (middleware) and the
+// API-key hash (service). admin_sessions.id stores only this digest, never
+// the raw token: the raw token is what's sent to the browser as the cookie
+// value (design doc §4/§6), so a leaked database file or backup (see
+// pkg/database's db:backup) would otherwise hand out directly-replayable,
+// still-valid admin sessions for up to SessionTTL. Reversing a SHA-256
+// digest back to the original token is infeasible, so a leaked row alone
+// isn't enough to impersonate an admin — the same reasoning bcrypt-hashing
+// the password already applies to credentials applies here to the session
+// token too.
 func hashSessionToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	return crypto.HashToken(token)
 }
 
 // CreateSession inserts a new session row for rawToken — the

@@ -9,7 +9,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 )
@@ -68,4 +70,15 @@ func KeyFromBase64(encoded string) ([]byte, error) {
 		return nil, fmt.Errorf("key must be 32 bytes, got %d", len(key))
 	}
 	return key, nil
+}
+
+// HashToken returns the SHA-256 hex digest of a token. API keys and session
+// tokens use this for at-rest lookup: the token is already a high-entropy
+// random value, so a fast indexable hash suffices (not bcrypt). This is the
+// single source of truth for that recipe — service.hashToken,
+// repository.hashSessionToken, middleware.hashBearerKey, and the gateway
+// test helper all delegate here rather than carrying their own copies.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }

@@ -518,3 +518,23 @@ func CommitProviderKeyRetestResult(
 	`
 	return execReturningApplied(db, query, args...)
 }
+
+// MarkProviderKeyVerificationFailedIfCurrent is the gateway's CAS write to
+// invalidate a provider key after a real upstream 401 (GATE-16). Unlike the
+// M2 test-flow CAS functions above (CommitProviderKeyPlaintextTestResult /
+// CommitProviderKeyRetestResult, which guard on config_version +
+// test_generation because they belong to a plaintext/retest lifecycle), this
+// guards only on verification_status=Passed AND authorized_destination_version
+// = the destination the key was just sent to — i.e. "the key was valid for
+// exactly this destination, and the upstream rejected the credential".
+// CommitProviderKeyRetestResult's CAS does NOT check verification_status, so
+// a gateway-invalidated key can still be recovered by a later M2 retest.
+// Returns applied=false (no error) if the row no longer matches (concurrent
+// edit, destination change, or already invalidated) — callers treat that as
+// a benign lost race, not an error.
+func MarkProviderKeyVerificationFailedIfCurrent(db *gorm.DB, keyID uint, expectedDestinationVersion int, now time.Time) (bool, error) {
+	return execReturningApplied(db,
+		`UPDATE provider_keys SET verification_status = ?, updated_at = ?
+		 WHERE id = ? AND verification_status = ? AND authorized_destination_version = ?`,
+		model.VerificationStatusFailed, now, keyID, model.VerificationStatusPassed, expectedDestinationVersion)
+}
