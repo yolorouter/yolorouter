@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -121,7 +123,7 @@ func TestUsageFromRawMap(t *testing.T) {
 
 func TestWriteStreamLineDataChunk(t *testing.T) {
 	var buf bytes.Buffer
-	wrote, usage, done := writeStreamLine(&buf, []byte(`data: {"model":"p","choices":[]}`+"\n"), "ext", true)
+	wrote, usage, done, _ := writeStreamLine(&buf, []byte(`data: {"model":"p","choices":[]}`+"\n"), "ext", true)
 	if !wrote {
 		t.Error("expected wroteData=true for a data line")
 	}
@@ -138,7 +140,7 @@ func TestWriteStreamLineDataChunk(t *testing.T) {
 
 func TestWriteStreamLineDone(t *testing.T) {
 	var buf bytes.Buffer
-	wrote, _, done := writeStreamLine(&buf, []byte("data: [DONE]\n"), "ext", true)
+	wrote, _, done, _ := writeStreamLine(&buf, []byte("data: [DONE]\n"), "ext", true)
 	if !wrote {
 		t.Error("[DONE] should count as a data line")
 	}
@@ -152,7 +154,7 @@ func TestWriteStreamLineDone(t *testing.T) {
 
 func TestWriteStreamLineNonDataPassthrough(t *testing.T) {
 	var buf bytes.Buffer
-	wrote, _, done := writeStreamLine(&buf, []byte(": keepalive\n"), "ext", true)
+	wrote, _, done, _ := writeStreamLine(&buf, []byte(": keepalive\n"), "ext", true)
 	if wrote {
 		t.Error("non-data line should not count as data")
 	}
@@ -226,5 +228,134 @@ func TestStreamUpstreamStripsInjectedUsage(t *testing.T) {
 	}
 	if bytes.Contains(rec.Body.Bytes(), []byte(`"usage"`)) {
 		t.Errorf("injected usage leaked to caller (WantsStreamUsage=false): %s", rec.Body.Bytes())
+	}
+}
+
+// runStreamPumpCapture is runStreamPump plus the "bodies_dir" context value
+// and a RequestID (Task 5's stream body capture: internal/router/router.go
+// stashes the absolute bodies dir on every request's gin.Context; here the
+// test wires it directly instead of going through the real middleware). It
+// returns the RelayContext so callers can inspect streamBodyCaptured/
+// streamBodyTruncated and the recorder so callers can check the bytes the
+// caller actually received.
+func runStreamPumpCapture(t *testing.T, upstreamBody, requestID, bodiesDir string) (*RelayContext, *httptest.ResponseRecorder, *Usage, error) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("bodies_dir", bodiesDir)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+		Header:     make(http.Header),
+	}
+	rc := &RelayContext{RequestID: requestID, OriginalModel: "ext", IsStream: true, WantsStreamUsage: true}
+	usage, err := StreamUpstreamToClient(c, resp, rc)
+	return rc, rec, usage, err
+}
+
+// sseDataFrames builds n SSE `data:` frames, each carrying a `content` field
+// padded to at least payloadBytes so the caller can control the aggregate
+// stream size precisely, followed by the `data: [DONE]` terminator.
+func sseDataFrames(n, payloadBytes int) string {
+	pad := strings.Repeat("A", payloadBytes)
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString(`data: {"choices":[{"delta":{"content":"`)
+		b.WriteString(pad)
+		b.WriteString(`"}}]}` + "\n\n")
+	}
+	b.WriteString("data: [DONE]\n\n")
+	return b.String()
+}
+
+// TestStreamCaptureNoTruncation (Task 5, Codex #4): a >2MB SSE stream is
+// captured in full under data/bodies/<request_id>.stream — no truncation
+// below the 1GiB backstop — while the caller's own stream is unaffected.
+func TestStreamCaptureNoTruncation(t *testing.T) {
+	dir := t.TempDir()
+	body := sseDataFrames(3000, 1000) // ~3MB of data frames, well over 2MB
+	rc, rec, _, err := runStreamPumpCapture(t, body, "req-no-trunc", dir)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("data: [DONE]")) {
+		t.Fatalf("caller stream did not complete: %s", rec.Body.String()[:200])
+	}
+	if rc.streamBodyTruncated {
+		t.Error("expected streamBodyTruncated=false (well under the 1GiB backstop)")
+	}
+	captured, err := os.ReadFile(filepath.Join(dir, "req-no-trunc.stream"))
+	if err != nil {
+		t.Fatalf("read captured stream file: %v", err)
+	}
+	if len(captured) < 2<<20 {
+		t.Fatalf("captured file too small: %d bytes, want > 2MB", len(captured))
+	}
+	// The captured bytes must be the caller-facing (post-rewrite) content,
+	// not just any bytes — every content frame's padding must be present.
+	if bytes.Count(captured, []byte(strings.Repeat("A", 1000))) != 3000 {
+		t.Errorf("captured file is missing data frames: found %d of 3000", bytes.Count(captured, []byte(strings.Repeat("A", 1000))))
+	}
+	if !bytes.Contains(captured, []byte("data: [DONE]")) {
+		t.Error("captured file missing the [DONE] terminator line")
+	}
+}
+
+// TestStreamCaptureBackstopMarked (Task 5, Codex #4): once the (test-shrunk)
+// maxStreamBodyFileBytes cap is hit, streamBodyTruncated flips true, the
+// file stops growing past the cap, and the caller's own stream still
+// completes normally — the backstop only stops the disk audit copy, never
+// the client-facing stream.
+func TestStreamCaptureBackstopMarked(t *testing.T) {
+	orig := maxStreamBodyFileBytes
+	maxStreamBodyFileBytes = 500 // test-only small cap; avoids writing a real 1GiB
+	defer func() { maxStreamBodyFileBytes = orig }()
+
+	dir := t.TempDir()
+	body := sseDataFrames(50, 200) // far larger than the 500-byte test cap
+	rc, rec, _, err := runStreamPumpCapture(t, body, "req-backstop", dir)
+	if err != nil {
+		t.Fatalf("expected nil error (backstop must not break the caller's stream), got %v", err)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("data: [DONE]")) {
+		t.Fatalf("caller stream did not complete despite the backstop: %s", rec.Body.String()[:200])
+	}
+	if !rc.streamBodyTruncated {
+		t.Error("expected streamBodyTruncated=true once the test cap was exceeded")
+	}
+	info, err := os.Stat(filepath.Join(dir, "req-backstop.stream"))
+	if err != nil {
+		t.Fatalf("stat captured stream file: %v", err)
+	}
+	if info.Size() > maxStreamBodyFileBytes {
+		t.Errorf("captured file grew past the backstop cap: %d bytes, cap %d", info.Size(), maxStreamBodyFileBytes)
+	}
+}
+
+// TestStreamCaptureRedacted (Task 5): a credential embedded in an SSE data
+// line must be redacted in the persisted stream file (pkg/redact), even
+// though it is forwarded to the caller unchanged (the gateway doesn't
+// mutate arbitrary content fields, only model/usage).
+func TestStreamCaptureRedacted(t *testing.T) {
+	dir := t.TempDir()
+	secret := "sk-abcdefghijklmnopqrstuvwxyz0123456789"
+	body := `data: {"choices":[{"delta":{"content":"Bearer ` + secret + `"}}]}` + "\n\n" + "data: [DONE]\n\n"
+	rc, _, _, err := runStreamPumpCapture(t, body, "req-redact", dir)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	captured, err := os.ReadFile(filepath.Join(dir, "req-redact.stream"))
+	if err != nil {
+		t.Fatalf("read captured stream file: %v", err)
+	}
+	if bytes.Contains(captured, []byte(secret)) {
+		t.Errorf("secret leaked into the captured stream file: %s", captured)
+	}
+	if !bytes.Contains(captured, []byte("[REDACTED]")) {
+		t.Errorf("expected [REDACTED] marker in the captured stream file: %s", captured)
+	}
+	if !rc.streamBodyCaptured {
+		t.Error("expected streamBodyCaptured to be true")
 	}
 }

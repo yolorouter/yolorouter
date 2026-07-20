@@ -498,10 +498,18 @@ export default {
 
     attemptsEmpty: '该请求未记录任何上游尝试（可能在路由前就被拒绝）',
 
-    // M6.2 deferral notice. Single alert rather than four empty
-    // placeholders so it's clear what's deferred vs what's just empty for
-    // this particular request.
-    bodyNotRecorded: '请求 / 响应正文、流式片段、函数调用与缓存 Token 将在后续版本支持。',
+    // M6.2 body sections (§6.8.4/§6.8.6): the four redacted non-stream
+    // bodies embedded in the detail response, plus the lazily-loaded
+    // stream body served from disk via body/stream.
+    requestBody: '请求正文',
+    upstreamRequestBody: '发上游请求体',
+    responseBody: '调用方响应',
+    upstreamResponseBody: '上游响应',
+    streamBody: '流式已发送片段',
+    streamBodyTruncated: '命中反 OOM 上限，前 1GiB 已记录',
+    streamBodyPreviewTruncated: '此处仅显示前 2MB 预览，',
+    streamBodyViewFull: '查看完整文件',
+    bodyNotRecorded: '未记录',
   },
   errcodes,
 }

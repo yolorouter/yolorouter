@@ -117,13 +117,42 @@
         </NDescriptions>
       </section>
 
-      <!-- M6.2 notice: bodies / stream chunks / tool calls / cache tokens
-           are deferred (design doc §9). Single alert rather than four
-           empty placeholders so it's clear what's deferred vs what's just
-           empty for this particular request. -->
-      <NAlert type="info" :bordered="false" :show-icon="true">
-        {{ t('requestLogs.bodyNotRecorded') }}
-      </NAlert>
+      <!-- Bodies (M6.2 §6.8.4/§6.8.6): server-redacted request/response
+           bodies (pkg/redact strips credentials before persistence, never
+           truncated). Empty string means "not captured" (e.g. an early
+           rejection before the body was read) and renders as NEmpty rather
+           than an empty code block. Stream requests carry the sent SSE on
+           disk instead of in response_body/upstream_response_body — that
+           card is lazy-loaded via body/stream (LOG-08: full content, no
+           mid-stream truncation, only a 1GiB anti-OOM backstop). -->
+      <div class="body-cards">
+        <!-- The four non-stream bodies differ only by title + bound field
+             (code-review simplification finding) — one v-for replaces four
+             near-identical copy-pasted NCard blocks. The stream-body card
+             below stays separate: it has genuinely different behavior
+             (lazy-loaded, preview/backstop truncation hints) that doesn't
+             fit this shape. -->
+        <NCard v-for="section in bodySections" :key="section.key" size="small" :title="section.title">
+          <NCode v-if="section.body" :code="prettyBody(section.body)" language="json" word-wrap />
+          <NEmpty v-else :description="t('requestLogs.bodyNotRecorded')" size="small" />
+        </NCard>
+
+        <NCard v-if="detail.has_stream_body" size="small" :title="t('requestLogs.streamBody')">
+          <NSpin :show="streamLoading">
+            <div class="stream-body-content">
+              <NCode v-if="streamBody" :code="streamBody" language="json" word-wrap />
+              <NEmpty v-else-if="streamLoaded" :description="t('requestLogs.bodyNotRecorded')" size="small" />
+            </div>
+          </NSpin>
+          <p v-if="streamPreviewTruncated" class="stream-truncated-hint">
+            {{ t('requestLogs.streamBodyPreviewTruncated') }}
+            <a :href="streamRawUrl" target="_blank" rel="noopener noreferrer">{{ t('requestLogs.streamBodyViewFull') }}</a>
+          </p>
+          <p v-if="detail.stream_body_truncated" class="stream-truncated-hint">
+            {{ t('requestLogs.streamBodyTruncated') }}
+          </p>
+        </NCard>
+      </div>
     </template>
   </div>
 </template>
@@ -133,17 +162,21 @@ import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  NAlert,
   NButton,
+  NCard,
+  NCode,
   NDataTable,
   NDescriptions,
   NDescriptionsItem,
+  NEmpty,
+  NSpin,
   NTag,
   useMessage,
   type DataTableColumns,
 } from 'naive-ui'
 import {
   getRequestLogDetail,
+  streamRequestLogBody,
   type AttemptRecord,
   type RequestLogDetail,
 } from '../../api/requestLogs'
@@ -172,7 +205,9 @@ const notFound = ref(false)
 const requestId = computed(() => decodeURIComponent(String(route.params.requestId ?? '')))
 
 onMounted(() => {
-  void reload().catch((err) => message.error(displayMessage(err, t)))
+  void reload()
+    .then(() => (detail.value?.has_stream_body ? loadStreamBody() : undefined))
+    .catch((err) => message.error(displayMessage(err, t)))
 })
 
 // 14005 = errcode.RequestLogNotFound (pkg/errcode/errcode.go). Checking
@@ -206,6 +241,58 @@ async function reload() {
 
 function onBack() {
   router.push('/request-logs')
+}
+
+// ---------- Body sections (M6.2) ----------
+
+// The stream body is fetched separately from the JSON detail envelope
+// (handler.GetRequestLogBodyStream serves raw bytes off disk, not the
+// envelope) so it is loaded lazily right after the detail resolves, rather
+// than embedded in RequestLogDetail like the other three bodies.
+const streamBody = ref('')
+const streamLoading = ref(false)
+const streamLoaded = ref(false)
+// True when the fetched preview is only a prefix of a larger on-disk capture
+// (code-review finding: never buffer/render the full up-to-1GiB capture in
+// this page's own JS string/DOM) — the "view full file" link below lets the
+// browser handle the rest outside this component entirely.
+const streamPreviewTruncated = ref(false)
+const streamRawUrl = ref('')
+
+async function loadStreamBody() {
+  if (streamLoaded.value || !detail.value?.has_stream_body) return
+  streamLoading.value = true
+  try {
+    const preview = await streamRequestLogBody(requestId.value)
+    streamBody.value = preview.text
+    streamPreviewTruncated.value = preview.truncated
+    streamRawUrl.value = preview.rawUrl
+  } finally {
+    streamLoading.value = false
+    streamLoaded.value = true
+  }
+}
+
+// The four non-stream body cards, driven by the v-for above (code-review
+// simplification finding — was four copy-pasted NCard blocks differing only
+// by title + bound field).
+const bodySections = computed(() => [
+  { key: 'request', title: t('requestLogs.requestBody'), body: detail.value?.request_body ?? '' },
+  { key: 'upstreamRequest', title: t('requestLogs.upstreamRequestBody'), body: detail.value?.upstream_request_body ?? '' },
+  { key: 'response', title: t('requestLogs.responseBody'), body: detail.value?.response_body ?? '' },
+  { key: 'upstreamResponse', title: t('requestLogs.upstreamResponseBody'), body: detail.value?.upstream_response_body ?? '' },
+])
+
+// Bodies are stored as the raw (already redacted) JSON text the gateway
+// captured — re-indent for readability when it parses as JSON, otherwise
+// fall back to the raw string (e.g. a plain-text error body).
+function prettyBody(raw: string): string {
+  if (!raw) return ''
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return raw
+  }
 }
 
 // The "final" attempt is the last one in the array — gateway/log.go
@@ -347,5 +434,27 @@ const attemptColumns = computed<DataTableColumns<AttemptRecord>>(() => [
   font-size: var(--text-xs);
   color: var(--color-danger, var(--color-text));
   word-break: break-word;
+}
+
+.body-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.stream-body-content {
+  min-height: 48px;
+}
+
+:deep(.n-code) {
+  max-height: 480px;
+  overflow: auto;
+  font-size: var(--text-xs);
+}
+
+.stream-truncated-hint {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted, var(--color-text-secondary));
 }
 </style>

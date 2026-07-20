@@ -12,6 +12,7 @@
 package gateway
 
 import (
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -57,6 +58,42 @@ type RelayContext struct {
 	logWritten atomic.Bool
 
 	mu sync.Mutex // protects FirstByteSent flips from racing the flusher
+
+	// Bodies captured for the request_log_bodies row (PRD §6.8.4, LOG-06). All
+	// are REDACTED (pkg/redact) before being stashed — persistence and the
+	// detail page only ever see redacted bytes. RequestBody is set as soon as
+	// the caller body is read. UpstreamRequestBody is overwritten on each
+	// attempt (success => successful attempt; total failure => last attempt).
+	// ResponseBody is the caller-FACING response (post-rewrite, post-usage-
+	// strip, including local error JSON); UpstreamResponseBody is the raw
+	// upstream response (non-stream full / non-2xx error body bounded-read).
+	// For stream, the sent SSE is appended to streamBodyFile instead (§4.3)
+	// and these two stay empty. Nil/empty on early failure or body-read failure.
+	RequestBody          []byte
+	UpstreamRequestBody  []byte
+	ResponseBody         []byte
+	UpstreamResponseBody []byte
+
+	// streamBodyFile/streamBodyCaptured/streamBodyTruncated are the
+	// stream-only counterpart of the four body fields above (Task 5, PRD
+	// §6.8.4/§6.8.6): the sent SSE lines are appended to streamBodyFile as
+	// they go out instead of being buffered in memory. streamBodyCaptured is
+	// true once a capture file was successfully opened for this request —
+	// finalize derives the persisted stream_body_path from RequestID
+	// (simplification: the path is always exactly "<request_id>.stream", so
+	// this field only ever needs to answer "was a file captured?", not carry
+	// the string itself). streamBodyTruncated flips true only if the 1GiB
+	// anti-OOM backstop was hit (never a silent content cut). Unexported —
+	// accessed only from within this package (stream.go/relay.go).
+	streamBodyFile      *os.File
+	streamBodyCaptured  bool
+	streamBodyTruncated bool
+	// streamBodyBytesWritten mirrors the capture file's current size so
+	// appendStreamBodyLine can check the 1GiB backstop with a plain integer
+	// comparison instead of an os.File.Stat() syscall per appended line
+	// (code-review efficiency finding: a chat stream can append hundreds of
+	// lines, each previously costing its own Stat() call).
+	streamBodyBytesWritten int64
 }
 
 // MarkFirstByteSent flips FirstByteSent true under the lock. Returns whether

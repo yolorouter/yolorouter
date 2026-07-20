@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/yolorouter/yolorouter-ce/internal/model"
 )
@@ -32,4 +33,27 @@ func CreateRequestLog(db *gorm.DB, log *model.RequestLog) error {
 func IncrementAPIKeyBudgetSpent(db *gorm.DB, apiKeyID uint, cents int64) error {
 	return db.Model(&model.APIKey{}).Where("id = ?", apiKeyID).
 		UpdateColumn("budget_spent_cents", gorm.Expr("budget_spent_cents + ?", cents)).Error
+}
+
+// UpsertRequestLogBody inserts or (on duplicate request_id) updates the 1:1
+// body row for one gateway request (PRD §6.8.4, Codex #5). UNIQUE(request_id)
+// + ON CONFLICT DO UPDATE makes finalize idempotent under retry/double-call
+// and enforces true 1:1. Best-effort caller (gateway finalize): a failure is
+// logged, not escalated — the request_logs billing row is already written.
+//
+// created_at is deliberately excluded from DoUpdates (code-review finding):
+// it must keep recording when the row was FIRST created, not get bumped
+// forward by a later conflicting write.
+func UpsertRequestLogBody(db *gorm.DB, body *model.RequestLogBody) error {
+	if body.CreatedAt.IsZero() {
+		body.CreatedAt = time.Now().UTC()
+	}
+	return db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "request_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"request_body", "upstream_request_body",
+			"response_body", "upstream_response_body",
+			"stream_body_path", "stream_body_truncated",
+		}),
+	}).Create(body).Error
 }

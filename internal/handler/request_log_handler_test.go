@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,14 +27,24 @@ import (
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
 )
 
-// newRequestLogTestRouter wires up the three M6.1 request-log routes over a
-// fresh migrated SQLite DB. Uses a real RequestLogService — see the package
-// doc comment for why.
+// newRequestLogTestRouter wires up the M6.1/M6.2 request-log routes over a
+// fresh migrated SQLite DB, using t.TempDir() as the bodies directory. Uses
+// a real RequestLogService — see the package doc comment for why.
 func newRequestLogTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, *service.RequestLogService) {
+	t.Helper()
+	r, db, svc, _ := newRequestLogTestRouterWithBodiesDir(t)
+	return r, db, svc
+}
+
+// newRequestLogTestRouterWithBodiesDir is newRequestLogTestRouter plus the
+// bodiesDir it wired GetRequestLogBodyStream to — the stream-body tests
+// need it to plant a real file on disk at the path a body row references.
+func newRequestLogTestRouterWithBodiesDir(t *testing.T) (*gin.Engine, *gorm.DB, *service.RequestLogService, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	db := testutil.NewSQLiteDB(t)
 	svc := service.NewRequestLogService(db)
+	bodiesDir := t.TempDir()
 	r := gin.New()
 	admin := r.Group("/api/admin")
 	// Export is registered BEFORE :requestId so the literal /export path
@@ -41,7 +53,8 @@ func newRequestLogTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, *service.Requ
 	admin.GET("/request-logs", GetRequestLogs(svc))
 	admin.GET("/request-logs/export", ExportRequestLogsCSV(svc))
 	admin.GET("/request-logs/:requestId", GetRequestLogDetail(svc))
-	return r, db, svc
+	admin.GET("/request-logs/:requestId/body/stream", GetRequestLogBodyStream(svc, bodiesDir))
+	return r, db, svc, bodiesDir
 }
 
 // seedAPIKey inserts a minimal api_keys row with a unique key_hash and
@@ -541,6 +554,75 @@ func TestGetRequestLogDetailReturns500WhenDBErrors(t *testing.T) {
 	}
 	if env.Code != errcode.InternalError {
 		t.Fatalf("expected code %d, got %d", errcode.InternalError, env.Code)
+	}
+}
+
+// TestGetRequestLogBodyStreamReturnsFile plants a real file under the
+// test's bodiesDir and a request_log_bodies row referencing it, then
+// asserts GET .../body/stream serves the file's exact bytes with a
+// text/plain Content-Type.
+func TestGetRequestLogBodyStreamReturnsFile(t *testing.T) {
+	r, db, _, bodiesDir := newRequestLogTestRouterWithBodiesDir(t)
+	seedRequestLog(t, db, "req-stream-body", time.Now().UTC(), func(r *model.RequestLog) {
+		r.IsStream = true
+	})
+	const streamContent = "data: {\"chunk\":1}\n\ndata: [DONE]\n\n"
+	if err := os.WriteFile(filepath.Join(bodiesDir, "req-stream-body.stream"), []byte(streamContent), 0o600); err != nil {
+		t.Fatalf("write stream file: %v", err)
+	}
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+		RequestID:      "req-stream-body",
+		StreamBodyPath: "req-stream-body.stream",
+	}); err != nil {
+		t.Fatalf("upsert body row: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/request-logs/req-stream-body/body/stream", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != streamContent {
+		t.Fatalf("expected body %q, got %q", streamContent, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("expected text/plain Content-Type, got %q", ct)
+	}
+}
+
+// TestGetRequestLogBodyStreamNotFound covers both 404 shapes: a
+// non-streaming request (no body row at all, so stream_body_path is
+// effectively empty) and a body row whose stream_body_path points at a
+// file that no longer exists on disk.
+func TestGetRequestLogBodyStreamNotFound(t *testing.T) {
+	r, db, _, _ := newRequestLogTestRouterWithBodiesDir(t)
+	seedRequestLog(t, db, "req-nonstream-body", time.Now().UTC(), func(r *model.RequestLog) {
+		r.IsStream = false
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/request-logs/req-nonstream-body/body/stream", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for a request with no body row, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	seedRequestLog(t, db, "req-missing-stream-file", time.Now().UTC(), func(r *model.RequestLog) {
+		r.IsStream = true
+	})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+		RequestID:      "req-missing-stream-file",
+		StreamBodyPath: "req-missing-stream-file.stream",
+	}); err != nil {
+		t.Fatalf("upsert body row: %v", err)
+	}
+	req2 := httptest.NewRequest(http.MethodGet, "/api/admin/request-logs/req-missing-stream-file/body/stream", nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when stream file is missing on disk, got %d, body: %s", w2.Code, w2.Body.String())
 	}
 }
 

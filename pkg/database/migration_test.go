@@ -75,9 +75,9 @@ func TestGetCurrentVersionOnFreshSQLiteDB(t *testing.T) {
 	// 00004_create_providers.sql + 00005_create_models.sql +
 	// 00006_create_api_keys.sql + 00007_create_request_logs.sql +
 	// 00008_request_logs_status_index.sql + 00009_request_logs_request_id_index.sql +
-	// 00010_request_logs_cache_tokens.sql).
-	if version != 10 {
-		t.Fatalf("expected version 10 after all migrations, got %d", version)
+	// 00010_request_logs_cache_tokens.sql + 00011_create_request_log_bodies.sql).
+	if version != 11 {
+		t.Fatalf("expected version 11 after all migrations, got %d", version)
 	}
 }
 

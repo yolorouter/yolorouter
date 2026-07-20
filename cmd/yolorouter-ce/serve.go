@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -56,7 +57,18 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("decode provider master key: %w", err)
 	}
 
-	r, err := router.New(app.DB, masterKey)
+	// M6.2: stream sent-SSE bodies live under data/bodies/ (sibling of the
+	// sqlite file, same convention instanceLockPath already uses). Created
+	// on boot so the gateway's stream capture can append without a
+	// per-request MkdirAll; the absolute path is threaded through
+	// router.New so the gateway package (no direct config access) can
+	// resolve it via the request context (internal/gateway/stream.go).
+	bodiesDir := filepath.Join(filepath.Dir(app.Config.Database.SQLitePath), "bodies")
+	if err := os.MkdirAll(bodiesDir, 0o755); err != nil {
+		return fmt.Errorf("create bodies dir: %w", err)
+	}
+
+	r, err := router.New(app.DB, masterKey, bodiesDir)
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
 	}

@@ -7,6 +7,7 @@
 package repository
 
 import (
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -152,6 +153,22 @@ func ListRequestLogs(db *gorm.DB, f *RequestLogFilter) (rows []model.RequestLog,
 func GetRequestLogByRequestID(db *gorm.DB, requestID string) (*model.RequestLog, error) {
 	var row model.RequestLog
 	if err := db.Where("request_id = ?", requestID).First(&row).Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// GetRequestLogBodyByRequestID returns the 1:1 body row joined by request_id
+// (PRD §6.8.4). Returns (nil, nil) when absent (pre-migration rows or capture
+// failure) — the service treats nil as empty bodies, never an error. Mirrors
+// reference FindRelayLogBodyByRequestID (relay_log_dao.go:18-28).
+func GetRequestLogBodyByRequestID(db *gorm.DB, requestID string) (*model.RequestLogBody, error) {
+	var row model.RequestLogBody
+	err := db.Where("request_id = ?", requestID).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &row, nil

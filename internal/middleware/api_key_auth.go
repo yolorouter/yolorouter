@@ -26,6 +26,7 @@ import (
 	"github.com/yolorouter/yolorouter-ce/internal/repository"
 	"github.com/yolorouter/yolorouter-ce/pkg/crypto"
 	"github.com/yolorouter/yolorouter-ce/pkg/logger"
+	"github.com/yolorouter/yolorouter-ce/pkg/redact"
 )
 
 // APIKeyAuth resolves an Authorization: Bearer <key> credential to its
@@ -37,7 +38,7 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := extractBearerKey(c)
 		if raw == "" {
-			logAuthRejection(c, db, http.StatusUnauthorized, "missing API key")
+			logAuthRejection(c, db, http.StatusUnauthorized, "missing API key", "authentication_error", "missing API key")
 			gateway.WriteOpenAIError(c, http.StatusUnauthorized, "authentication_error", "missing API key")
 			return
 		}
@@ -46,14 +47,18 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				// "invalid" rather than "not found" — never confirm whether
 				// a key exists, to avoid an enumeration oracle.
-				logAuthRejection(c, db, http.StatusUnauthorized, "invalid API key")
+				logAuthRejection(c, db, http.StatusUnauthorized, "invalid API key", "authentication_error", "invalid API key")
 				gateway.WriteOpenAIError(c, http.StatusUnauthorized, "authentication_error", "invalid API key")
 				return
 			}
-			logAuthRejection(c, db, http.StatusInternalServerError, "auth db lookup failed")
+			logAuthRejection(c, db, http.StatusInternalServerError, "auth db lookup failed", "server_error", "internal error")
 			gateway.WriteOpenAIError(c, http.StatusInternalServerError, "server_error", "internal error")
 			return
 		}
+		// Stash the raw (plaintext) key so gateway.RelayService.Handle can
+		// redact it exactly out of persisted bodies (PRD §6.8.6) — the
+		// gateway only ever sees the hash otherwise.
+		c.Set(gateway.CallerKeyContextKey, raw)
 		gateway.SetGatewayAuth(c, key)
 		c.Next()
 	}
@@ -66,7 +71,12 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 // log audit views (Codex adversarial finding). Only the request id, a nil
 // api_key_id, the rejection status, and a generic fail_reason are stored —
 // never the credential or header content.
-func logAuthRejection(c *gin.Context, db *gorm.DB, status int, reason string) {
+//
+// errType/message are the exact error.type/message gateway.WriteOpenAIError
+// is about to return to the caller (the call site right after this one) —
+// passed through rather than re-derived so the persisted response_body
+// matches what the caller actually received (PRD §6.8.4, Codex #2).
+func logAuthRejection(c *gin.Context, db *gorm.DB, status int, reason, errType, message string) {
 	// RequestID middleware is always registered ahead of APIKeyAuth (router.go
 	// mounts it first on the root engine), so request_id is always set here.
 	// If a future route mounts APIKeyAuth without RequestID, the empty id
@@ -81,6 +91,27 @@ func logAuthRejection(c *gin.Context, db *gorm.DB, status int, reason string) {
 	}
 	if err := repository.CreateRequestLog(db, row); err != nil {
 		logger.Warn("middleware: write auth-rejection audit row failed",
+			zap.String("request_id", requestID), zap.Error(err))
+	}
+
+	// LOG-06 (Codex #2): auth-rejected requests never reach gateway.Handle,
+	// so its finalize() never runs and the request would otherwise have no
+	// request_log_bodies row at all. gateway.ReadAuditBody is the same
+	// bounded-read-then-redact helper gateway.captureRejectedBody uses for
+	// its own early-rejection paths — a body failure must never block the
+	// 401/500 response above, which ReadAuditBody's nil-on-failure contract
+	// already guarantees.
+	var reqBody []byte
+	if c.Request != nil {
+		reqBody = gateway.ReadAuditBody(c.Request.Body, "")
+	}
+	bodyRow := &model.RequestLogBody{
+		RequestID:    requestID,
+		RequestBody:  string(reqBody),
+		ResponseBody: string(redact.RedactBytes(gateway.LocalErrorBody(errType, message), "")),
+	}
+	if err := repository.UpsertRequestLogBody(db, bodyRow); err != nil {
+		logger.Warn("middleware: write auth-rejection body row failed",
 			zap.String("request_id", requestID), zap.Error(err))
 	}
 }

@@ -14,6 +14,9 @@ package handler
 
 import (
 	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -81,6 +84,39 @@ func GetRequestLogDetail(svc *service.RequestLogService) gin.HandlerFunc {
 			return
 		}
 		response.Success(c, detail)
+	}
+}
+
+// GetRequestLogBodyStream handles GET /api/admin/request-logs/:requestId/body/stream
+// — serves the raw sent-SSE bytes captured on disk for a streaming request
+// (design doc §9, gateway/stream.go's per-chunk disk append). Deliberately
+// separate from GetRequestLogDetail's JSON envelope: a stream body can be
+// arbitrarily large (up to the 1GiB backstop) and is plain text, not JSON,
+// so it is served as its own endpoint with http.ServeContent (Range/If-*
+// support) rather than being embedded inline in the detail DTO.
+//
+// filepath.Base(path) strips any directory components off the stored
+// stream_body_path before joining it under bodiesDir — the path column is
+// meant to hold a bare filename (e.g. "req_x.stream"), but treating it
+// defensively as untrusted input keeps a corrupted/malicious row from
+// escaping bodiesDir via "../" traversal.
+func GetRequestLogBodyStream(svc *service.RequestLogService, bodiesDir string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		requestID := c.Param("requestId")
+		path, err := svc.GetStreamBodyPath(requestID)
+		if err != nil || path == "" {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		abs := filepath.Join(bodiesDir, filepath.Base(path))
+		f, err := os.Open(abs)
+		if err != nil {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		defer func() { _ = f.Close() }()
+		c.Header("Content-Type", "text/plain; charset=utf-8")
+		http.ServeContent(c.Writer, c.Request, "", time.Time{}, f)
 	}
 }
 

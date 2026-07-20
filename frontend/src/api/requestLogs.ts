@@ -67,8 +67,20 @@ export interface AttemptRecord {
   fail_reason: string
 }
 
+// Mirrors service.RequestLogDetail's M6.2 body fields (PRD §6.8.4/§6.8.6).
+// The four *_body strings are the redacted, non-stream bodies embedded
+// directly in the detail response; empty string means "not recorded" (early
+// failure before body capture, or a stream request where the response body
+// lives on disk instead — see has_stream_body / stream_body_path below).
 export interface RequestLogDetail extends RequestLogRow {
   attempts_detail: AttemptRecord[]
+  request_body: string
+  upstream_request_body: string
+  response_body: string
+  upstream_response_body: string
+  stream_body_path: string
+  stream_body_truncated: boolean
+  has_stream_body: boolean
 }
 
 export interface RequestLogListParams {
@@ -117,6 +129,55 @@ export function listRequestLogs(filter: RequestLogListParams): Promise<RequestLo
 
 export function getRequestLogDetail(requestId: string): Promise<RequestLogDetail> {
   return apiFetch(`/api/admin/request-logs/${encodeURIComponent(requestId)}`)
+}
+
+// STREAM_BODY_PREVIEW_CAP bounds how much of a captured stream body this
+// page loads into a JS string / the DOM. The backend allows a capture up to
+// 1GiB (gateway/stream.go's maxStreamBodyFileBytes) before it even starts
+// truncating — buffering that much into one JS string and handing it to
+// NCode for syntax highlighting can hang or crash the admin's browser tab
+// (code-review finding). handler.GetRequestLogBodyStream serves the file via
+// http.ServeContent, which already supports Range requests, so a Range
+// header caps what we actually transfer and hold in memory.
+export const STREAM_BODY_PREVIEW_CAP = 2 * 1024 * 1024 // 2 MiB
+
+export interface StreamBodyPreview {
+  text: string
+  truncated: boolean
+  rawUrl: string
+}
+
+// streamRequestLogBody fetches up to STREAM_BODY_PREVIEW_CAP bytes of the raw
+// sent-SSE capture for a streaming request (handler.GetRequestLogBodyStream),
+// via a Range request so neither the network transfer nor the in-memory
+// string ever exceeds the cap regardless of how large the actual capture is.
+// `truncated` is true when the file is larger than what was fetched — the
+// caller can offer `rawUrl` as a "view full file" escape hatch that lets the
+// browser handle the full download/render itself, entirely outside this
+// page's own JS string/DOM. Deliberately bypasses apiFetch: the response is
+// raw text, not the JSON envelope — same reasoning as exportRequestLogsCSV
+// above. A missing/failed body degrades to an empty, non-truncated result
+// rather than throwing, since the detail page already knows from
+// has_stream_body whether a body should exist and just shows "not recorded".
+export async function streamRequestLogBody(requestId: string): Promise<StreamBodyPreview> {
+  const rawUrl = `/api/admin/request-logs/${encodeURIComponent(requestId)}/body/stream`
+  const res = await fetch(rawUrl, {
+    method: 'GET',
+    credentials: 'include',
+    headers: { Range: `bytes=0-${STREAM_BODY_PREVIEW_CAP - 1}` },
+  })
+  if (!res.ok) return { text: '', truncated: false, rawUrl }
+  const text = await res.text()
+  // http.ServeContent replies 206 with Content-Range "bytes 0-N/total" when
+  // it honored the Range header and more bytes remain; a 200 (Range ignored
+  // or the whole file already fit under the cap) means we got everything.
+  let truncated = res.status === 206
+  const contentRange = res.headers.get('Content-Range')
+  if (truncated && contentRange) {
+    const total = Number(contentRange.split('/')[1])
+    if (Number.isFinite(total) && total <= STREAM_BODY_PREVIEW_CAP) truncated = false
+  }
+  return { text, truncated, rawUrl }
 }
 
 // exportRequestLogsCSV streams the current filter as a CSV download. Uses a

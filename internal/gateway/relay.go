@@ -16,6 +16,7 @@ import (
 	"github.com/yolorouter/yolorouter-ce/internal/repository"
 	"github.com/yolorouter/yolorouter-ce/pkg/crypto"
 	"github.com/yolorouter/yolorouter-ce/pkg/logger"
+	"github.com/yolorouter/yolorouter-ce/pkg/redact"
 )
 
 // upstreamRequestTimeout caps a single upstream attempt's full duration
@@ -32,6 +33,60 @@ const upstreamRequestTimeout = 120 * time.Second
 // request body does). Mirrors the provider-test client's bound
 // (provider_client.go). Read up to N+1 so an overflow is detectable.
 const maxNonStreamResponseBytes = 32 * 1024 * 1024 // 32 MiB
+
+// BodyAuditCap bounds every early-rejection audit read of the caller's
+// request body (captureRejectedBody here, and middleware.logAuthRejection's
+// own read for the auth-gate rejection paths — code-review finding: the two
+// packages each defined their own identical copy of this constant, which
+// nothing enforced staying in sync). Exported so middleware can share this
+// single definition instead of duplicating it. Mirrors the /v1 route group's
+// middleware.BodySizeLimit(20<<20) (router.go) — this is a memory-safety cap
+// on our read, not a re-enforcement of that limit (http.MaxBytesReader
+// already enforces it upstream of us, before this code ever runs).
+const BodyAuditCap = 20 << 20 // 20 MiB
+
+// ReadAuditBody drains r (bounded by BodyAuditCap) and redacts the result —
+// the shared "bounded read + redact" step every early-rejection audit path
+// needs (captureRejectedBody below, and middleware.logAuthRejection's own
+// auth-gate rejections). Exported so middleware doesn't re-implement this
+// same read-then-redact sequence itself (code-review finding: it previously
+// did, with only the byte-count constant actually shared). Best-effort: nil
+// on a read error or a nil/absent body, never an error the caller must
+// handle. callerKey, if non-empty, is redacted exactly in addition to the
+// generic sk-/Bearer/JSON-field patterns (PRD §6.8.6).
+func ReadAuditBody(r io.Reader, callerKey string) []byte {
+	if r == nil {
+		return nil
+	}
+	b, err := io.ReadAll(io.LimitReader(r, BodyAuditCap+1))
+	if err != nil {
+		return nil
+	}
+	return redact.RedactBytes(b, callerKey)
+}
+
+// captureRejectedBody drains the caller request body for the audit row, so
+// LOG-06 records the request body even when the request is rejected before
+// the normal body read (revoked/expired/budget/concurrency/RPM, all before
+// io.ReadAll in Handle).
+func captureRejectedBody(c *gin.Context, rc *RelayContext, callerKey string) {
+	if rc.RequestBody != nil {
+		return // already captured (e.g. body read succeeded then a later check failed)
+	}
+	if c.Request == nil {
+		return
+	}
+	if body := ReadAuditBody(c.Request.Body, callerKey); body != nil {
+		rc.RequestBody = body
+	}
+}
+
+// testHookHandleDone, when non-nil, is invoked with the RelayContext at the
+// end of every Handle call (success or failure). Test-only wiring — Handle
+// intentionally doesn't expose its internal RelayContext in its public
+// signature, so tests needing to inspect it (e.g. the captured request/
+// response bodies) set this hook instead. Always nil in production.
+var testHookHandleDone func(*RelayContext)
 
 // RelayService is the gateway orchestrator. One instance lives for the
 // process lifetime (created in router.New); it owns the DB, the master key
@@ -78,6 +133,16 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 		RequestID: requestIDFor(c),
 		APIKeyID:  apiKey.ID,
 	}
+	// PRD §6.8.4/Codex #1: put rc on the gin context so WriteOpenAIError*
+	// (called from many exit paths below, and potentially from further down
+	// the chain) can stash the local error JSON into rc.ResponseBody without
+	// every call site threading an *RelayContext parameter through.
+	c.Set(relayContextKey, rc)
+	// callerKey is the raw caller API key APIKeyAuth stashed on success
+	// (empty in tests that call Handle directly, bypassing the middleware) —
+	// used to redact the caller's own key exactly out of captured bodies,
+	// on top of the generic sk-/Bearer/JSON-field patterns.
+	callerKey := c.GetString(CallerKeyContextKey)
 	// Panic-recovery safety net for GATE-13: if any sub-call panics (nil
 	// deref, index OOB, type assertion), gin's Recovery middleware catches
 	// it upstream, but finalize would otherwise never run and the request
@@ -88,17 +153,26 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 		if !rc.logWritten.Load() {
 			s.finalize(rc, http.StatusInternalServerError, "panic_recovered", start)
 		}
+		// Test-only hook: Handle doesn't return its internal RelayContext, so
+		// tests that need to assert on the captured bodies (RequestBody/
+		// UpstreamRequestBody/ResponseBody/UpstreamResponseBody, PRD §6.8.4)
+		// hook in here instead of depending on Task 6's DB persistence. Never
+		// set outside _test.go.
+		if testHookHandleDone != nil {
+			testHookHandleDone(rc)
+		}
 	}()
 
-	if !s.checkKeyStateAndLimits(c, rc, apiKey, start) {
+	if !s.checkKeyStateAndLimits(c, rc, apiKey, start, callerKey) {
 		return
 	}
 	// Concurrency is the only limit that needs a paired release — acquire it
 	// here and defer the release so every return path below frees the slot.
 	if apiKey.ConcurrencyLimit != nil && *apiKey.ConcurrencyLimit > 0 {
 		if !s.limiter.AcquireConcurrency(apiKey.ID, *apiKey.ConcurrencyLimit) {
-			s.finalize(rc, http.StatusTooManyRequests, "concurrency_limit", start)
+			captureRejectedBody(c, rc, callerKey)
 			WriteOpenAIErrorWithRequestID(c, http.StatusTooManyRequests, errTypeRateLimit, "concurrency limit exceeded", rc.RequestID)
+			s.finalize(rc, http.StatusTooManyRequests, "concurrency_limit", start)
 			return
 		}
 		defer s.limiter.ReleaseConcurrency(apiKey.ID)
@@ -109,8 +183,9 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// exhaust the whole minute's RPM under concurrent load).
 	if apiKey.RPMLimit != nil && *apiKey.RPMLimit > 0 {
 		if !s.limiter.CheckRPM(apiKey.ID, *apiKey.RPMLimit, time.Now()) {
-			s.finalize(rc, http.StatusTooManyRequests, "rpm_exceeded", start)
+			captureRejectedBody(c, rc, callerKey)
 			WriteOpenAIErrorWithRequestID(c, http.StatusTooManyRequests, errTypeRateLimit, "rate limit exceeded (requests per minute)", rc.RequestID)
+			s.finalize(rc, http.StatusTooManyRequests, "rpm_exceeded", start)
 			return
 		}
 	}
@@ -135,10 +210,15 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 			message = "request body exceeds the size limit"
 			reason = "body_too_large"
 		}
-		s.finalize(rc, status, reason, start)
 		WriteOpenAIErrorWithRequestID(c, status, errTypeInvalidRequest, message, rc.RequestID)
+		s.finalize(rc, status, reason, start)
 		return
 	}
+	// PRD §6.8.4/LOG-06: stash the caller-facing request body for the
+	// request_log_bodies row. Redacted immediately, including an exact-match
+	// pass on the caller's own key (empty when Handle was invoked outside
+	// the middleware, e.g. tests).
+	rc.RequestBody = redact.RedactBytes(body, callerKey)
 
 	// One JSON decode of the caller body — parsed.Model/Stream for routing,
 	// parsed.validate() for structural checks, parsed.hasTools() for the
@@ -146,13 +226,13 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// by RewriteRequestModel.
 	parsed, err := parseRequest(body)
 	if err != nil {
-		s.finalize(rc, http.StatusBadRequest, "parse: "+err.Error(), start)
 		WriteOpenAIErrorWithRequestID(c, http.StatusBadRequest, errTypeInvalidRequest, "invalid request body", rc.RequestID)
+		s.finalize(rc, http.StatusBadRequest, "parse: "+err.Error(), start)
 		return
 	}
 	if parsed.Model == "" {
-		s.finalize(rc, http.StatusBadRequest, "empty_model", start)
 		WriteOpenAIErrorWithRequestID(c, http.StatusBadRequest, errTypeInvalidRequest, "model is required", rc.RequestID)
+		s.finalize(rc, http.StatusBadRequest, "empty_model", start)
 		return
 	}
 	rc.OriginalModel = parsed.Model
@@ -164,18 +244,18 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 	m, err := repository.FindModelByName(s.db, parsed.Model)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			s.finalize(rc, http.StatusNotFound, "model_not_found", start)
 			WriteOpenAIErrorWithRequestID(c, http.StatusNotFound, errTypeNotFound, "model does not exist", rc.RequestID)
+			s.finalize(rc, http.StatusNotFound, "model_not_found", start)
 			return
 		}
 		logger.Error("gateway: find model", zap.String("request_id", rc.RequestID), zap.Error(err))
-		s.finalize(rc, http.StatusInternalServerError, "db_model: "+err.Error(), start)
 		WriteOpenAIErrorWithRequestID(c, http.StatusInternalServerError, errTypeServer, "internal error", rc.RequestID)
+		s.finalize(rc, http.StatusInternalServerError, "db_model: "+err.Error(), start)
 		return
 	}
 	if m.ManagementStatus != model.ModelStatusEnabled {
-		s.finalize(rc, http.StatusNotFound, "model_disabled", start)
 		WriteOpenAIErrorWithRequestID(c, http.StatusNotFound, errTypeNotFound, "model does not exist", rc.RequestID)
+		s.finalize(rc, http.StatusNotFound, "model_disabled", start)
 		return
 	}
 
@@ -183,20 +263,20 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 	allowed, err := repository.HasAPIKeyModelAccess(s.db, apiKey.ID, m.ID)
 	if err != nil {
 		logger.Error("gateway: allowlist", zap.String("request_id", rc.RequestID), zap.Error(err))
-		s.finalize(rc, http.StatusInternalServerError, "db_allowlist: "+err.Error(), start)
 		WriteOpenAIErrorWithRequestID(c, http.StatusInternalServerError, errTypeServer, "internal error", rc.RequestID)
+		s.finalize(rc, http.StatusInternalServerError, "db_allowlist: "+err.Error(), start)
 		return
 	}
 	if !allowed {
-		s.finalize(rc, http.StatusForbidden, "model_not_allowed", start)
 		WriteOpenAIErrorWithRequestID(c, http.StatusForbidden, errTypePermission, "model is not in this API key's allowlist", rc.RequestID)
+		s.finalize(rc, http.StatusForbidden, "model_not_allowed", start)
 		return
 	}
 
 	// Step 6: request structure validation.
 	if err := parsed.validate(); err != nil {
-		s.finalize(rc, http.StatusBadRequest, "validate: "+err.Error(), start)
 		WriteOpenAIErrorWithRequestID(c, http.StatusBadRequest, errTypeInvalidRequest, err.Error(), rc.RequestID)
+		s.finalize(rc, http.StatusBadRequest, "validate: "+err.Error(), start)
 		return
 	}
 
@@ -204,8 +284,8 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 	allCandidates, err := repository.ListModelCandidatesByModelID(s.db, m.ID)
 	if err != nil {
 		logger.Error("gateway: list candidates", zap.String("request_id", rc.RequestID), zap.Error(err))
-		s.finalize(rc, http.StatusInternalServerError, "db_candidates: "+err.Error(), start)
 		WriteOpenAIErrorWithRequestID(c, http.StatusInternalServerError, errTypeServer, "internal error", rc.RequestID)
+		s.finalize(rc, http.StatusInternalServerError, "db_candidates: "+err.Error(), start)
 		return
 	}
 	routable, anyEnabled, anyVerified := filterCandidates(allCandidates, parsed.Stream, parsed.hasTools())
@@ -216,8 +296,8 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 		} else if anyEnabled {
 			reason = "no_verified_candidate"
 		}
-		s.finalize(rc, http.StatusServiceUnavailable, reason, start)
 		WriteOpenAIErrorWithRequestID(c, http.StatusServiceUnavailable, errTypeUnavailable, "model is not available", rc.RequestID)
+		s.finalize(rc, http.StatusServiceUnavailable, reason, start)
 		return
 	}
 
@@ -228,21 +308,27 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 // checkKeyStateAndLimits runs the pre-call checks that don't need a paired
 // release: status (revoked), expiry, budget (read-only here — the gateway
 // writes the spend in finalize), and RPM. Concurrency is handled separately
-// in Handle because it needs a deferred release.
-func (s *RelayService) checkKeyStateAndLimits(c *gin.Context, rc *RelayContext, apiKey *model.APIKey, start time.Time) bool {
+// in Handle because it needs a deferred release. callerKey is threaded
+// through to captureRejectedBody (PRD §6.8.4/LOG-06: these three checks all
+// run before Handle's normal body read, so the audit row would otherwise
+// have an empty request_body).
+func (s *RelayService) checkKeyStateAndLimits(c *gin.Context, rc *RelayContext, apiKey *model.APIKey, start time.Time, callerKey string) bool {
 	if apiKey.Status == model.APIKeyStatusRevoked {
-		s.finalize(rc, http.StatusUnauthorized, "revoked", start)
+		captureRejectedBody(c, rc, callerKey)
 		WriteOpenAIErrorWithRequestID(c, http.StatusUnauthorized, errTypeAuthentication, "API key revoked", rc.RequestID)
+		s.finalize(rc, http.StatusUnauthorized, "revoked", start)
 		return false
 	}
 	if apiKey.ExpiresAt != nil && apiKey.ExpiresAt.Before(time.Now().UTC()) {
-		s.finalize(rc, http.StatusUnauthorized, "expired", start)
+		captureRejectedBody(c, rc, callerKey)
 		WriteOpenAIErrorWithRequestID(c, http.StatusUnauthorized, errTypeAuthentication, "API key expired", rc.RequestID)
+		s.finalize(rc, http.StatusUnauthorized, "expired", start)
 		return false
 	}
 	if apiKey.BudgetLimitCents != nil && apiKey.BudgetSpentCents >= *apiKey.BudgetLimitCents {
-		s.finalize(rc, http.StatusTooManyRequests, "budget_exceeded", start)
+		captureRejectedBody(c, rc, callerKey)
 		WriteOpenAIErrorWithRequestID(c, http.StatusTooManyRequests, errTypeInsufficientQuota, "budget limit exceeded", rc.RequestID)
+		s.finalize(rc, http.StatusTooManyRequests, "budget_exceeded", start)
 		return false
 	}
 	return true
@@ -377,6 +463,11 @@ const (
 // are candidate-level (failover); 401/429 are key-level (rotate); 2xx is
 // success; other 4xx is terminal (caller's problem, GATE-11).
 func (s *RelayService) attemptOne(c *gin.Context, rc *RelayContext, cand model.ModelCandidate, provider *model.Provider, pk model.ProviderKey, plaintext string, upstreamBody []byte, start time.Time) attemptResult {
+	// PRD §6.8.4/LOG-06: record the rewritten (provider_model_name) request
+	// actually sent upstream. Overwritten on every attempt — the last write
+	// wins, matching the "successful attempt, else the last attempt" rule.
+	rc.UpstreamRequestBody = redact.RedactBytes(upstreamBody, "")
+
 	ctx, cancel := context.WithTimeout(c.Request.Context(), upstreamRequestTimeout)
 	defer cancel()
 
@@ -405,6 +496,16 @@ func (s *RelayService) attemptOne(c *gin.Context, rc *RelayContext, cand model.M
 	}
 
 	statusCode := resp.StatusCode
+	// LOG-06: capture the obtainable upstream error body before close (Codex
+	// #2/#3). Error bodies are small; cap at 1MiB — beyond that is truncation
+	// of an error diagnostic, not a response body, and 1MiB is ample for
+	// debugging. Unconditionally overwritten (even when empty) so this
+	// matches rc.UpstreamRequestBody's "last attempt wins" rule above — an
+	// empty errBody from THIS attempt must clear out a stale non-empty body
+	// left by an earlier failed candidate, not leave it looking current
+	// (code-review finding).
+	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	rc.UpstreamResponseBody = redact.RedactBytes(errBody, "")
 	_ = resp.Body.Close()
 
 	class := classifyUpstreamStatus(statusCode)
@@ -470,6 +571,11 @@ func (s *RelayService) handleNonStream(c *gin.Context, rc *RelayContext, cand mo
 		rc.Attempts = append(rc.Attempts, makeAttempt(cand, provider, &pk, resp.StatusCode, AttemptBadStatus, "rewrite: "+err.Error()))
 		return attemptNextCandidate
 	}
+	// PRD §6.8.4/LOG-06: raw upstream (pre-rewrite, provider model name) vs.
+	// caller-facing (post-rewrite, external model name) — these two differ
+	// only in the model field, but both must be recorded (Codex #1).
+	rc.UpstreamResponseBody = redact.RedactBytes(body, "")
+	rc.ResponseBody = redact.RedactBytes(rewritten, "")
 	rc.Usage = usage
 	rc.Attempts = append(rc.Attempts, makeAttempt(cand, provider, &pk, resp.StatusCode, AttemptSuccess, ""))
 	c.Header("Content-Type", "application/json")
@@ -481,9 +587,19 @@ func (s *RelayService) handleNonStream(c *gin.Context, rc *RelayContext, cand mo
 
 func (s *RelayService) handleStream(c *gin.Context, rc *RelayContext, cand model.ModelCandidate, provider *model.Provider, pk model.ProviderKey, resp *http.Response, start time.Time) attemptResult {
 	usage, err := StreamUpstreamToClient(c, resp, rc)
+	// StreamUpstreamToClient deliberately leaves the capture file open past
+	// its own return (code-review finding) so the writeStreamErrorEvent call
+	// below can still append to it; this handleStream call is the single
+	// place responsible for closing it, on every exit path.
+	defer closeStreamBodyFile(rc)
 	if usage != nil {
 		rc.Usage = usage // preserve partial usage even on error paths (GATE-21)
 	}
+	// If the stream never produced a sent byte, the capture file (if any)
+	// is empty — remove it so the detail page never shows an empty "stream
+	// body" link (covers both the pre-first-byte failover path below and an
+	// early client-disconnect).
+	removeEmptyStreamBodyFile(c, rc)
 	if err == nil {
 		rc.Attempts = append(rc.Attempts, makeAttempt(cand, provider, &pk, resp.StatusCode, AttemptSuccess, ""))
 		s.finalize(rc, http.StatusOK, "", start)
@@ -508,7 +624,7 @@ func (s *RelayService) handleStream(c *gin.Context, rc *RelayContext, cand model
 	if rc.FirstByteSent {
 		// Mid-stream failure after the first byte — can't switch (GATE-19),
 		// can't change HTTP status; emit one inline SSE error event + close.
-		writeStreamErrorEvent(c, rc.RequestID)
+		writeStreamErrorEvent(c, rc)
 		rc.Attempts = append(rc.Attempts, makeAttempt(cand, provider, &pk, resp.StatusCode, AttemptServerError, "stream mid: "+err.Error()))
 		s.finalize(rc, http.StatusOK, "stream_partial: "+err.Error(), start)
 		return attemptSuccess

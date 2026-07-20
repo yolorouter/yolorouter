@@ -15,6 +15,7 @@ import (
 	ycrypto "github.com/yolorouter/yolorouter-ce/pkg/crypto"
 
 	"github.com/yolorouter/yolorouter-ce/internal/model"
+	"github.com/yolorouter/yolorouter-ce/internal/repository"
 	"github.com/yolorouter/yolorouter-ce/internal/testutil"
 )
 
@@ -156,6 +157,84 @@ func TestRelayNonStreamSuccess(t *testing.T) {
 	db.Model(&model.RequestLog{}).Count(&logCount)
 	if logCount != 1 {
 		t.Fatalf("expected 1 request_log row, got %d", logCount)
+	}
+}
+
+// TestFinalizeNonStreamCapturesBodies (Codex #1, PRD §6.8.4/LOG-06): a 2xx
+// non-stream upstream response is captured into the RelayContext's 4 body
+// fields — the caller's original request, the rewritten (provider model
+// name) request actually sent upstream, the raw upstream response (provider
+// model name), and the caller-facing rewritten response (external model
+// name). response_body and upstream_response_body must differ (only the
+// model field), proving both are recorded independently and neither is a
+// copy of the other. It asserts the RelayContext fields directly via
+// testHookHandleDone AND (now that Task 6's finalize persists the row) that
+// the same four values landed in request_log_bodies.
+func TestFinalizeNonStreamCapturesBodies(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"gpt-4o-real","choices":[{"message":{"role":"assistant","content":"raw upstream resp"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
+	}))
+	defer upstream.Close()
+
+	svc := newRelaySvc(t, db)
+	p := createProvider(t, db, "p1", upstream.URL)
+	createProviderKey(t, db, svc.masterKey, p.ID, "sk-upstream-1", "k1", 1, true)
+	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
+	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+
+	var captured *RelayContext
+	testHookHandleDone = func(rc *RelayContext) { captured = rc }
+	defer func() { testHookHandleDone = nil }()
+
+	reqBody := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	c, w := newCtx(reqBody)
+	svc.Handle(c, apiKey)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	if captured == nil {
+		t.Fatal("testHookHandleDone was never invoked")
+	}
+
+	if !bytes.Contains(captured.RequestBody, []byte(`"model":"gpt-4o"`)) {
+		t.Errorf("RequestBody = %s, want it to contain the caller's original request", captured.RequestBody)
+	}
+	if !bytes.Contains(captured.UpstreamRequestBody, []byte(`"model":"gpt-4o-real"`)) {
+		t.Errorf("UpstreamRequestBody = %s, want the rewritten (provider model name) request", captured.UpstreamRequestBody)
+	}
+	if !bytes.Contains(captured.UpstreamResponseBody, []byte(`"model":"gpt-4o-real"`)) {
+		t.Errorf("UpstreamResponseBody = %s, want the raw upstream response (provider model name)", captured.UpstreamResponseBody)
+	}
+	if !bytes.Contains(captured.ResponseBody, []byte(`"model":"gpt-4o"`)) {
+		t.Errorf("ResponseBody = %s, want the caller-facing rewritten response (external model name)", captured.ResponseBody)
+	}
+	if bytes.Equal(captured.ResponseBody, captured.UpstreamResponseBody) {
+		t.Error("ResponseBody and UpstreamResponseBody must differ (post- vs pre-rewrite model field)")
+	}
+
+	// Task 6: finalize must persist the same four values into
+	// request_log_bodies, keyed by request_id (UPSERT, 1:1 with request_logs).
+	dbBody, err := repository.GetRequestLogBodyByRequestID(db, captured.RequestID)
+	if err != nil {
+		t.Fatalf("GetRequestLogBodyByRequestID: %v", err)
+	}
+	if dbBody == nil {
+		t.Fatal("expected a request_log_bodies row to be persisted by finalize (Task 6)")
+	}
+	if dbBody.RequestBody != string(captured.RequestBody) {
+		t.Errorf("persisted RequestBody = %q, want %q", dbBody.RequestBody, captured.RequestBody)
+	}
+	if dbBody.UpstreamRequestBody != string(captured.UpstreamRequestBody) {
+		t.Errorf("persisted UpstreamRequestBody = %q, want %q", dbBody.UpstreamRequestBody, captured.UpstreamRequestBody)
+	}
+	if dbBody.ResponseBody != string(captured.ResponseBody) {
+		t.Errorf("persisted ResponseBody = %q, want %q", dbBody.ResponseBody, captured.ResponseBody)
+	}
+	if dbBody.UpstreamResponseBody != string(captured.UpstreamResponseBody) {
+		t.Errorf("persisted UpstreamResponseBody = %q, want %q", dbBody.UpstreamResponseBody, captured.UpstreamResponseBody)
 	}
 }
 
@@ -338,6 +417,130 @@ func TestRelayRevokedKey(t *testing.T) {
 	}
 	if upstreamHit {
 		t.Error("upstream must not be called when the API key is revoked")
+	}
+}
+
+// TestHandleEarlyRejectionCapturesRequestBody (Task 7, Codex #1/#2): every
+// early-rejection branch that runs before Handle's normal io.ReadAll(body)
+// call — revoked/expired/budget (checkKeyStateAndLimits), concurrency, RPM —
+// still records the caller's request body (bounded read) and the local
+// error JSON as response_body, with upstream_* left empty (never dispatched
+// to any provider).
+func TestHandleEarlyRejectionCapturesRequestBody(t *testing.T) {
+	reqBody := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+
+	cases := []struct {
+		name          string
+		configureKey  func(k *model.APIKey)
+		preRejectHook func(svc *RelayService, apiKeyID uint)
+		wantStatus    int
+		wantRespSub   string
+	}{
+		{
+			name:         "revoked",
+			configureKey: func(k *model.APIKey) { k.Status = model.APIKeyStatusRevoked },
+			wantStatus:   http.StatusUnauthorized,
+			wantRespSub:  "API key revoked",
+		},
+		{
+			name: "expired",
+			configureKey: func(k *model.APIKey) {
+				past := time.Now().UTC().Add(-time.Hour)
+				k.ExpiresAt = &past
+			},
+			wantStatus:  http.StatusUnauthorized,
+			wantRespSub: "API key expired",
+		},
+		{
+			name: "budget_exceeded",
+			configureKey: func(k *model.APIKey) {
+				limit := int64(100)
+				k.BudgetLimitCents = &limit
+				k.BudgetSpentCents = 100
+			},
+			wantStatus:  http.StatusTooManyRequests,
+			wantRespSub: "budget limit exceeded",
+		},
+		{
+			name: "concurrency_limit",
+			configureKey: func(k *model.APIKey) {
+				limit := 1
+				k.ConcurrencyLimit = &limit
+			},
+			preRejectHook: func(svc *RelayService, apiKeyID uint) {
+				svc.limiter.AcquireConcurrency(apiKeyID, 1) // exhaust the only slot
+			},
+			wantStatus:  http.StatusTooManyRequests,
+			wantRespSub: "concurrency limit exceeded",
+		},
+		{
+			name: "rpm_exceeded",
+			configureKey: func(k *model.APIKey) {
+				limit := 1
+				k.RPMLimit = &limit
+			},
+			preRejectHook: func(svc *RelayService, apiKeyID uint) {
+				svc.limiter.CheckRPM(apiKeyID, 1, time.Now()) // consume the only token
+			},
+			wantStatus:  http.StatusTooManyRequests,
+			wantRespSub: "rate limit exceeded",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testutil.NewSQLiteDB(t)
+			svc := newRelaySvc(t, db)
+			p := createProvider(t, db, "p1", "http://unused.invalid")
+			m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
+			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+			tc.configureKey(apiKey)
+			if err := db.Save(apiKey).Error; err != nil {
+				t.Fatalf("update api key: %v", err)
+			}
+			if tc.preRejectHook != nil {
+				tc.preRejectHook(svc, apiKey.ID)
+			}
+
+			var captured *RelayContext
+			testHookHandleDone = func(rc *RelayContext) { captured = rc }
+			defer func() { testHookHandleDone = nil }()
+
+			c, w := newCtx(reqBody)
+			svc.Handle(c, apiKey)
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if captured == nil {
+				t.Fatal("testHookHandleDone was never invoked")
+			}
+			if !bytes.Contains(captured.RequestBody, []byte(`"model":"gpt-4o"`)) {
+				t.Errorf("RequestBody = %s, want it to contain the caller's request", captured.RequestBody)
+			}
+			if len(captured.UpstreamRequestBody) != 0 || len(captured.UpstreamResponseBody) != 0 {
+				t.Errorf("expected empty upstream_* for a pre-dispatch rejection, got request=%q response=%q",
+					captured.UpstreamRequestBody, captured.UpstreamResponseBody)
+			}
+
+			dbBody, err := repository.GetRequestLogBodyByRequestID(db, captured.RequestID)
+			if err != nil {
+				t.Fatalf("GetRequestLogBodyByRequestID: %v", err)
+			}
+			if dbBody == nil {
+				t.Fatalf("expected a request_log_bodies row for the %s rejection", tc.name)
+			}
+			if !bytes.Contains([]byte(dbBody.RequestBody), []byte(`"model":"gpt-4o"`)) {
+				t.Errorf("persisted request_body = %q, want it to contain the caller's request", dbBody.RequestBody)
+			}
+			if !bytes.Contains([]byte(dbBody.ResponseBody), []byte(tc.wantRespSub)) {
+				t.Errorf("persisted response_body = %q, want it to contain %q", dbBody.ResponseBody, tc.wantRespSub)
+			}
+			if dbBody.UpstreamRequestBody != "" || dbBody.UpstreamResponseBody != "" {
+				t.Errorf("expected empty upstream_* columns, got request=%q response=%q",
+					dbBody.UpstreamRequestBody, dbBody.UpstreamResponseBody)
+			}
+		})
 	}
 }
 

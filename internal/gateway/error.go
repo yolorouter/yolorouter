@@ -1,10 +1,29 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/yolorouter/yolorouter-ce/pkg/redact"
 )
+
+// relayContextKey is the gin.Context key Handle stores the in-flight
+// RelayContext under (relay.go: c.Set(relayContextKey, rc)), so
+// WriteOpenAIError* can stash the local error JSON it is about to return
+// into rc.ResponseBody (PRD §6.8.4/LOG-06) without threading an
+// *RelayContext parameter through every call site. Absent on paths that
+// never call Handle (e.g. unit tests, or middleware.APIKeyAuth's own 401s
+// before Handle ever runs) — stashLocalErrorBody is then a no-op.
+const relayContextKey = "relay_context"
+
+// CallerKeyContextKey is the gin.Context key APIKeyAuth stores the raw
+// (plaintext) caller API key under on successful resolution, so the gateway
+// can redact it exactly out of persisted bodies (PRD §6.8.6) in addition to
+// the generic sk-/Bearer/JSON-field patterns. Exported so middleware (a
+// different package) sets the same key the gateway reads.
+const CallerKeyContextKey = "caller_key_raw"
 
 // openaiErrorBody is the OpenAI-compatible error envelope. Gateway traffic
 // uses upstream's native wire format, NOT pkg/response (design doc §3) — so
@@ -17,6 +36,35 @@ type openaiErrorBody struct {
 type openaiError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
+}
+
+// LocalErrorBody serializes the OpenAI-compatible error envelope used by
+// WriteOpenAIError/WriteOpenAIErrorWithRequestID. Exported so
+// middleware.logAuthRejection (a different package, rejecting requests
+// before Handle — and any RelayContext — ever exists) can build the exact
+// same response_body JSON for its own request_log_bodies row instead of
+// duplicating the envelope shape (PITFALLS: single source of truth for
+// shared logic).
+func LocalErrorBody(errType, message string) []byte {
+	b, _ := json.Marshal(openaiErrorBody{Error: openaiError{Message: message, Type: errType}})
+	return b
+}
+
+// stashLocalErrorBody records the local error JSON WriteOpenAIError is about
+// to return, as response_body for this request's request_log_bodies row
+// (PRD §6.8.4, Codex #1). No-op when no RelayContext is on the context.
+// Redacted defensively even though gateway error bodies carry no
+// credentials.
+func stashLocalErrorBody(c *gin.Context, errType, message string) {
+	v, ok := c.Get(relayContextKey)
+	if !ok {
+		return
+	}
+	rc, ok := v.(*RelayContext)
+	if !ok || rc == nil {
+		return
+	}
+	rc.ResponseBody = redact.RedactBytes(LocalErrorBody(errType, message), "")
 }
 
 // OpenAI error "type" values (PRD §6.5.9 maps each failure class to one of
@@ -38,6 +86,7 @@ const (
 // the chain. status is the HTTP status; errType is the error.type string;
 // message is shown verbatim to the caller.
 func WriteOpenAIError(c *gin.Context, status int, errType, message string) {
+	stashLocalErrorBody(c, errType, message)
 	c.AbortWithStatusJSON(status, openaiErrorBody{
 		Error: openaiError{Message: message, Type: errType},
 	})

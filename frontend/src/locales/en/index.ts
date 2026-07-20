@@ -495,10 +495,18 @@ export default {
 
     attemptsEmpty: 'No upstream attempts recorded for this request (it may have been rejected before routing).',
 
-    // M6.2 deferral notice. Single alert rather than four empty
-    // placeholders so it's clear what's deferred vs what's just empty for
-    // this particular request.
-    bodyNotRecorded: 'Request / response bodies, stream chunks, function calls, and cache-token breakdown will land in a later milestone.',
+    // M6.2 body sections (§6.8.4/§6.8.6): the four redacted non-stream
+    // bodies embedded in the detail response, plus the lazily-loaded
+    // stream body served from disk via body/stream.
+    requestBody: 'Request body',
+    upstreamRequestBody: 'Upstream request body',
+    responseBody: 'Caller response',
+    upstreamResponseBody: 'Upstream response',
+    streamBody: 'Sent stream chunks',
+    streamBodyTruncated: 'Hit the anti-OOM cap, first 1GiB recorded',
+    streamBodyPreviewTruncated: 'Showing a 2MB preview only.',
+    streamBodyViewFull: 'View full file',
+    bodyNotRecorded: 'Not recorded',
   },
   errcodes,
 }

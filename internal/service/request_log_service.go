@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"time"
 
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter-ce/internal/gateway"
@@ -22,6 +23,7 @@ import (
 	"github.com/yolorouter/yolorouter-ce/internal/repository"
 	"github.com/yolorouter/yolorouter-ce/pkg/csvutil"
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
+	"github.com/yolorouter/yolorouter-ce/pkg/logger"
 )
 
 // RequestLogService is the stateless composition layer over
@@ -83,31 +85,39 @@ type RequestLogListItem struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-// RequestLogDetail is the single-row detail DTO. M6.1 does NOT include
-// request/response bodies, stream chunks, tool calls, or cache-token
-// breakdown — those land in M6.2 with a schema migration (design doc §9).
-// AttemptsDetail is parsed from the stored JSON string into
-// []gateway.AttemptRecord so the frontend can render failover order
-// directly without re-parsing.
+// RequestLogDetail is the single-row detail DTO. AttemptsDetail is parsed
+// from the stored JSON string into []gateway.AttemptRecord so the frontend
+// can render failover order directly without re-parsing. The 7 body fields
+// (M6.2, PRD §6.8.4/§6.8.6) are sourced from the 1:1 request_log_bodies row
+// via repository.GetRequestLogBodyByRequestID — when that row is absent
+// (pre-migration rows or capture failure) they degrade to zero values and
+// the detail page shows "not recorded" rather than erroring.
 type RequestLogDetail struct {
-	RequestID      string                  `json:"request_id"`
-	APIKeyID       *uint                   `json:"api_key_id"`
-	OwnerLabel     string                  `json:"owner_label"`
-	ModelName      string                  `json:"model_name"`
-	ProviderID     *uint                   `json:"provider_id"`
-	ProviderName   string                  `json:"provider_name"`
-	IsStream       bool                    `json:"is_stream"`
-	StatusCode     int                     `json:"status_code"`
-	StatusClass    string                  `json:"status_class"`
-	InputTokens    int                     `json:"input_tokens"`
-	OutputTokens   int                     `json:"output_tokens"`
-	CostCents      int64                   `json:"cost_cents"`
-	CostKnown      bool                    `json:"cost_known"`
-	FailReason     *string                 `json:"fail_reason"`
-	Attempts       int                     `json:"attempts"`
-	AttemptsDetail []gateway.AttemptRecord `json:"attempts_detail"`
-	DurationMs     int64                   `json:"duration_ms"`
-	CreatedAt      time.Time               `json:"created_at"`
+	RequestID            string                  `json:"request_id"`
+	APIKeyID             *uint                   `json:"api_key_id"`
+	OwnerLabel           string                  `json:"owner_label"`
+	ModelName            string                  `json:"model_name"`
+	ProviderID           *uint                   `json:"provider_id"`
+	ProviderName         string                  `json:"provider_name"`
+	IsStream             bool                    `json:"is_stream"`
+	StatusCode           int                     `json:"status_code"`
+	StatusClass          string                  `json:"status_class"`
+	InputTokens          int                     `json:"input_tokens"`
+	OutputTokens         int                     `json:"output_tokens"`
+	CostCents            int64                   `json:"cost_cents"`
+	CostKnown            bool                    `json:"cost_known"`
+	FailReason           *string                 `json:"fail_reason"`
+	Attempts             int                     `json:"attempts"`
+	AttemptsDetail       []gateway.AttemptRecord `json:"attempts_detail"`
+	DurationMs           int64                   `json:"duration_ms"`
+	CreatedAt            time.Time               `json:"created_at"`
+	RequestBody          string                  `json:"request_body"`
+	UpstreamRequestBody  string                  `json:"upstream_request_body"`
+	ResponseBody         string                  `json:"response_body"`
+	UpstreamResponseBody string                  `json:"upstream_response_body"`
+	StreamBodyPath       string                  `json:"stream_body_path"`
+	StreamBodyTruncated  bool                    `json:"stream_body_truncated"`
+	HasStreamBody        bool                    `json:"has_stream_body"`
 }
 
 // ListRequestLogs returns one page of rows (newest first) plus the total
@@ -191,7 +201,17 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 			return nil, err
 		}
 	}
-	return &RequestLogDetail{
+
+	// bodyRow == nil (not-found, or a lookup error we choose to swallow)
+	// leaves every body field at its zero value — the detail page renders
+	// that as "not recorded" rather than failing the whole request.
+	bodyRow, bErr := repository.GetRequestLogBodyByRequestID(s.db, requestID)
+	if bErr != nil {
+		logger.Warn("request log detail: fetch body failed",
+			zap.String("request_id", requestID), zap.Error(bErr))
+	}
+
+	detail := &RequestLogDetail{
 		RequestID:      row.RequestID,
 		APIKeyID:       row.APIKeyID,
 		OwnerLabel:     lookupName(row.APIKeyID, ownerLabels),
@@ -210,7 +230,36 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 		AttemptsDetail: attempts,
 		DurationMs:     row.DurationMs,
 		CreatedAt:      row.CreatedAt,
-	}, nil
+	}
+	if bodyRow != nil {
+		detail.RequestBody = bodyRow.RequestBody
+		detail.UpstreamRequestBody = bodyRow.UpstreamRequestBody
+		detail.ResponseBody = bodyRow.ResponseBody
+		detail.UpstreamResponseBody = bodyRow.UpstreamResponseBody
+		detail.StreamBodyPath = bodyRow.StreamBodyPath
+		detail.StreamBodyTruncated = bodyRow.StreamBodyTruncated
+		detail.HasStreamBody = bodyRow.StreamBodyPath != ""
+	}
+	return detail, nil
+}
+
+// GetStreamBodyPath returns the stream_body_path stored on the
+// request_log_bodies row for requestID (relative to the bodies dir, e.g.
+// "req_x.stream"), or "" when there is no body row or no stream file was
+// recorded for it (a non-streaming request, or one that failed before any
+// SSE chunk was sent). The handler (GetRequestLogBodyStream) treats both a
+// lookup error and an empty path as "no file to serve" — a 404, not a 500 —
+// since a missing stream body is an expected shape for most rows, not a
+// server fault.
+func (s *RequestLogService) GetStreamBodyPath(requestID string) (string, error) {
+	bodyRow, err := repository.GetRequestLogBodyByRequestID(s.db, requestID)
+	if err != nil {
+		return "", err
+	}
+	if bodyRow == nil {
+		return "", nil
+	}
+	return bodyRow.StreamBodyPath, nil
 }
 
 // ExportRequestLogsCSV walks every page of the filter (PageSize=200, the

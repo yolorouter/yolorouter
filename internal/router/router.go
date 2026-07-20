@@ -99,7 +99,14 @@ func validateEmbeddedFrontend(distFS fs.FS) error {
 // crypto.KeyFromBase64 before calling this) — passed here rather than read
 // from a global so provider_service.go's dependencies stay explicit, same
 // as db.
-func New(db *gorm.DB, providerMasterKey []byte) (*gin.Engine, error) {
+// bodiesDir is the absolute data/bodies/ directory (already created by
+// cmd/yolorouter-ce/serve.go at boot) that the gateway's stream body
+// capture (internal/gateway/stream.go) appends sent-SSE files under. The
+// gateway package has no direct access to app config — passing the
+// resolved absolute path down through New/newWithDistFS and stashing it on
+// every request's gin.Context (below) is how it crosses that boundary
+// without an import cycle.
+func New(db *gorm.DB, providerMasterKey []byte, bodiesDir string) (*gin.Engine, error) {
 	// fs.Sub never actually errors here, in either build variant: it only
 	// validates that "dist" is a syntactically-valid path string, not that
 	// it exists in web.DistFS (confirmed against io/fs's Sub implementation
@@ -109,10 +116,10 @@ func New(db *gorm.DB, providerMasterKey []byte) (*gin.Engine, error) {
 	// fs.Stat call at each call site below, which correctly reports
 	// "not found" for every path against an empty embedded FS.
 	distFS, _ := fs.Sub(web.DistFS, "dist")
-	return newWithDistFS(distFS, db, providerMasterKey)
+	return newWithDistFS(distFS, db, providerMasterKey, bodiesDir)
 }
 
-func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte) (*gin.Engine, error) {
+func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDir string) (*gin.Engine, error) {
 	if err := validateEmbeddedFrontend(distFS); err != nil {
 		return nil, err
 	}
@@ -275,6 +282,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte) (*gin.En
 	protected.GET("/request-logs", handler.GetRequestLogs(requestLogSvc))
 	protected.GET("/request-logs/export", handler.ExportRequestLogsCSV(requestLogSvc))
 	protected.GET("/request-logs/:requestId", handler.GetRequestLogDetail(requestLogSvc))
+	protected.GET("/request-logs/:requestId/body/stream", handler.GetRequestLogBodyStream(requestLogSvc, bodiesDir))
 
 	// Gateway: POST /v1/chat/completions — the second auth path (PRD §6.5).
 	// The caller presents an API key in Authorization: Bearer, not a session
@@ -283,6 +291,15 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte) (*gin.En
 	// and tool definitions.
 	relaySvc := gateway.NewRelayService(db, providerMasterKey)
 	v1 := r.Group("/v1", middleware.BodySizeLimit(20<<20), middleware.APIKeyAuth(db))
+	// M6.2: stash the absolute bodies dir on the request context so the
+	// gateway package (which cannot import app config without a cycle) can
+	// resolve where to append its stream capture file via
+	// c.GetString("bodies_dir") — see internal/gateway/stream.go's
+	// streamBodiesDir.
+	v1.Use(func(c *gin.Context) {
+		c.Set("bodies_dir", bodiesDir)
+		c.Next()
+	})
 	v1.POST("/chat/completions", gateway.PostChatCompletions(relaySvc))
 
 	return r, nil

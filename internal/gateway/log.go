@@ -151,4 +151,32 @@ func (s *RelayService) finalize(rc *RelayContext, statusCode int, failReason str
 				zap.String("request_id", rc.RequestID), zap.Error(err))
 		}
 	}
+
+	// PRD §6.8.4/§6.8.6/LOG-06: record obtainable request/response bodies
+	// (already redacted at capture sites). Idempotent UPSERT (UNIQUE
+	// request_id) so retry/double-call never duplicates. Best-effort: a body-
+	// write failure is logged only — the billing row (above) is authoritative
+	// and must not roll back on a body failure (Codex #5).
+	//
+	// streamBodyPath is derived here (not stored on rc) rather than kept as a
+	// second string field alongside streamBodyCaptured (simplification: the
+	// path is always exactly "<request_id>.stream" — see rc.streamBodyCaptured's
+	// doc comment in types.go).
+	streamBodyPath := ""
+	if rc.streamBodyCaptured {
+		streamBodyPath = rc.RequestID + ".stream"
+	}
+	bodyRow := &model.RequestLogBody{
+		RequestID:            rc.RequestID,
+		RequestBody:          string(rc.RequestBody),
+		UpstreamRequestBody:  string(rc.UpstreamRequestBody),
+		ResponseBody:         string(rc.ResponseBody),
+		UpstreamResponseBody: string(rc.UpstreamResponseBody),
+		StreamBodyPath:       streamBodyPath,
+		StreamBodyTruncated:  rc.streamBodyTruncated,
+	}
+	if err := repository.UpsertRequestLogBody(s.db, bodyRow); err != nil {
+		logger.Error("gateway: write request log body failed",
+			zap.String("request_id", rc.RequestID), zap.Error(err))
+	}
 }
