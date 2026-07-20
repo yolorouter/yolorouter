@@ -122,6 +122,7 @@ export interface ProviderReportRow {
   success_rate: number
   avg_duration_ms: number
   cost_cents: number
+  unknown_cost_calls: number
 }
 
 export interface CallerReportRow {
@@ -134,6 +135,7 @@ export interface CallerReportRow {
   input_tokens: number
   output_tokens: number
   cost_cents: number
+  unknown_cost_calls: number
 }
 
 export interface TimeReportRow {
