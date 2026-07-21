@@ -66,7 +66,7 @@ import { ChevronDown, ChevronUp, MoreHorizontal, Plus } from '@lucide/vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { toggleStatusWithConfirm } from '../../composables/useConfirmedStatusToggle'
-import { modelRunningStatusDisplay } from '../../utils/modelStatusDisplay'
+import { candidateTestPassed, candidateTestResultText, modelRunningStatusDisplay } from '../../utils/modelStatusDisplay'
 import type { Model, ModelCandidate } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -120,8 +120,12 @@ function onEditCandidate(candidate: ModelCandidate) {
 async function onTestCandidate(candidateId: number, testType: 'basic' | 'streaming' | 'function_calling') {
   testingCandidateId.value = candidateId
   try {
-    await store.testCandidate(modelId, candidateId, testType)
+    const updated = await store.testCandidate(modelId, candidateId, testType)
     await reload()
+    // Two-tier feedback so the click is never silent: pass (green) vs. the
+    // specific outcome reason (yellow).
+    const passed = candidateTestPassed(testType, updated)
+    message[passed ? 'success' : 'warning'](candidateTestResultText(t, passed, updated.last_test_result))
   } catch (err) {
     message.error(displayMessage(err, t))
   } finally {

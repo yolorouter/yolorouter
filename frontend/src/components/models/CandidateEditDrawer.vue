@@ -80,7 +80,7 @@ import { useModelsStore } from '../../store/models'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
 import { providerModelNameRule, nonNegativePriceRule } from '../../utils/modelValidators'
-import { testOutcomeI18nKey } from '../../utils/testOutcomeDisplay'
+import { candidateTestPassed, candidateTestResultText } from '../../utils/modelStatusDisplay'
 import HelpLabel from '../HelpLabel.vue'
 import NewProviderDrawer from '../providers/NewProviderDrawer.vue'
 import type { ModelCandidate } from '../../api/models'
@@ -96,28 +96,30 @@ const providersStore = useProvidersStore()
 const formRef = ref<FormInst | null>(null)
 const submitting = ref(false)
 const testing = ref<'basic' | 'streaming' | 'function_calling' | null>(null)
-// outcome is only carried by the new-mapping test (testMapping returns a
-// TestOutcome int); the editing-candidate branch tests booleans (streaming /
-// function_calling / verification_status) and leaves it undefined.
-const testResult = ref<{ ok: boolean; outcome?: number } | null>(null)
-// basicTestPassed only gates the "save and enable" button in the UI for the
-// new-candidate flow — the server independently re-runs the basic test on
-// its own before honoring an enabled create request (design doc §5), so this
-// is a UX nicety, not the actual enforcement point.
-const basicTestPassed = computed(() => !!props.editingCandidate || testResult.value?.ok === true)
+// testType is tracked so basicTestPassed can tell a passing BASIC test apart
+// from a passing streaming/function_calling test — only the basic test gates
+// enablement. outcome is the failure reason for the result alert (carried for
+// both the new-mapping and edit branches).
+const testResult = ref<{ ok: boolean; outcome?: number | null; testType: 'basic' | 'streaming' | 'function_calling' } | null>(null)
+// basicTestPassed gates the "save and enable" button. It is satisfied by the
+// candidate's stored basic verification, or by a fresh in-drawer BASIC test
+// pass — NOT by a streaming/function_calling pass, which does not imply the
+// basic mapping works (the server refuses to enable an unverified candidate,
+// so counting those would enable the button then hit a rejection). UX gate
+// only; the server independently re-checks.
+const basicTestPassed = computed(
+  () =>
+    props.editingCandidate?.verification_status === 1 ||
+    (testResult.value?.testType === 'basic' && testResult.value.ok),
+)
 
 // Result alert text: on a failed new-mapping test, append the specific
-// outcome reason (via the shared testOutcomeI18nKey, same as the provider
-// surfaces) so a wrong model/bad key/unreachable address is distinguishable
-// rather than a blanket "test failed".
+// outcome reason so a wrong model/bad key/unreachable address is
+// distinguishable rather than a blanket "test failed".
 const testResultLabel = computed(() => {
   const r = testResult.value
   if (!r) return ''
-  if (r.ok) return t('models.testPassed')
-  if (r.outcome !== undefined) {
-    return `${t('models.testFailed')}: ${t(`providers.${testOutcomeI18nKey(r.outcome)}`)}`
-  }
-  return t('models.testFailed')
+  return candidateTestResultText(t, r.ok, r.outcome)
 })
 
 const showNewProviderDrawer = ref(false)
@@ -201,10 +203,10 @@ async function onTest(testType: 'basic' | 'streaming' | 'function_calling') {
   try {
     if (props.editingCandidate) {
       const result = await store.testCandidate(props.modelId, props.editingCandidate.id, testType)
-      testResult.value = { ok: testType === 'basic' ? result.verification_status === 1 : (testType === 'streaming' ? result.supports_streaming : result.supports_function_calling) }
+      testResult.value = { ok: candidateTestPassed(testType, result), outcome: result.last_test_result, testType }
     } else {
       const result = await store.testMapping(props.modelId, form.providerId, form.providerModelName, testType)
-      testResult.value = { ok: result.outcome === 0, outcome: result.outcome }
+      testResult.value = { ok: result.outcome === 0, outcome: result.outcome, testType }
     }
   } catch (err) {
     message.error(displayMessage(err, t))
@@ -230,6 +232,14 @@ async function onSave(enable: boolean) {
         cache_read_price: form.cacheReadPrice,
         max_output: form.maxOutput,
       })
+      // updateCandidate only persists fields — it never changes
+      // management_status — so "save and enable" for an existing candidate
+      // must flip the status explicitly (the create path below does this via
+      // its own management_status field). The server refuses to enable an
+      // unverified candidate, surfacing as an error the caller shows.
+      if (enable) {
+        await store.setCandidateStatus(props.modelId, props.editingCandidate.id, true)
+      }
     } else {
       await store.createCandidate(props.modelId, {
         provider_id: form.providerId!,

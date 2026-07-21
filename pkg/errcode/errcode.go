@@ -131,7 +131,7 @@ var ErrorMessages = map[int]string{
 	ModelNameTaken:              "model name already taken",
 	ModelCandidateNotFound:      "model candidate not found",
 	ModelCandidateProviderTaken: "this provider is already a candidate for this model",
-	ModelCandidateNotVerified:   "cannot enable a candidate that has not passed the mapping test",
+	ModelCandidateNotVerified:   "cannot enable a candidate that has not passed the basic test",
 
 	UserGroupNotFound:       "user group not found",
 	UserGroupNameTaken:      "user group name already taken",

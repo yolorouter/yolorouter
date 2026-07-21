@@ -504,6 +504,66 @@ func TestUpdateModelCandidate(t *testing.T) {
 	}
 }
 
+func TestUpdateModelCandidateResetsVerificationWhenModelNameChanges(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+
+	svc := NewModelService(db, testMasterKey(), client)
+	modelView, err := svc.CreateModel(CreateModelInput{Name: "smart"}, now)
+	if err != nil {
+		t.Fatalf("CreateModel failed: %v", err)
+	}
+	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, CreateCandidateInput{
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+	}, now)
+	if err != nil {
+		t.Fatalf("CreateModelCandidate failed: %v", err)
+	}
+
+	seedVerified := func() {
+		if err := db.Model(&model.ModelCandidate{}).Where("id = ?", candidate.ID).Updates(map[string]interface{}{
+			"verification_status":       model.ModelVerificationStatusPassed,
+			"supports_streaming":        true,
+			"supports_function_calling": true,
+		}).Error; err != nil {
+			t.Fatalf("seed verified state failed: %v", err)
+		}
+	}
+	reload := func() model.ModelCandidate {
+		var c model.ModelCandidate
+		if err := db.Where("id = ?", candidate.ID).First(&c).Error; err != nil {
+			t.Fatalf("reload candidate failed: %v", err)
+		}
+		return c
+	}
+
+	// Changing provider_model_name invalidates the mapping verification and the
+	// capability flags — they were established against the OLD name.
+	seedVerified()
+	if _, err := svc.UpdateModelCandidate(candidate.ID, UpdateCandidateInput{
+		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+	}, now); err != nil {
+		t.Fatalf("UpdateModelCandidate (name change) failed: %v", err)
+	}
+	if c := reload(); c.VerificationStatus != model.ModelVerificationStatusUntested || c.SupportsStreaming || c.SupportsFunctionCalling {
+		t.Fatalf("expected verification+capabilities reset after model name change, got status=%d streaming=%v fc=%v",
+			c.VerificationStatus, c.SupportsStreaming, c.SupportsFunctionCalling)
+	}
+
+	// A no-op edit that keeps provider_model_name must PRESERVE verification.
+	seedVerified()
+	if _, err := svc.UpdateModelCandidate(candidate.ID, UpdateCandidateInput{
+		ProviderModelName: "gpt-4o-mini", InputPrice: 9, OutputPrice: 9,
+	}, now); err != nil {
+		t.Fatalf("UpdateModelCandidate (same name) failed: %v", err)
+	}
+	if c := reload(); c.VerificationStatus != model.ModelVerificationStatusPassed || !c.SupportsStreaming || !c.SupportsFunctionCalling {
+		t.Fatalf("expected verification+capabilities preserved when name unchanged, got status=%d streaming=%v fc=%v",
+			c.VerificationStatus, c.SupportsStreaming, c.SupportsFunctionCalling)
+	}
+}
+
 func TestUpdateModelCandidateReturnsNotFoundForUnknownID(t *testing.T) {
 	svc, _, _ := newTestModelService(t)
 	_, err := svc.UpdateModelCandidate(999999, UpdateCandidateInput{ProviderModelName: "gpt-4o"}, time.Now().UTC())

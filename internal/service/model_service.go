@@ -463,8 +463,12 @@ func (s *ModelService) UpdateModelCandidate(id uint, input UpdateCandidateInput,
 		}
 		providerModelName = m.Name
 	}
+	// Changing the routing target (provider_model_name) invalidates the prior
+	// mapping test, so the candidate must be re-verified before it can route
+	// or be enabled again (repository resets verification + capability flags).
+	resetVerification := providerModelName != candidate.ProviderModelName
 	if err := repository.UpdateModelCandidate(s.db, id, providerModelName, input.InputPrice, input.OutputPrice,
-		input.CacheWritePrice, input.CacheReadPrice, input.MaxOutput, now); err != nil {
+		input.CacheWritePrice, input.CacheReadPrice, input.MaxOutput, resetVerification, now); err != nil {
 		return nil, err
 	}
 	reloaded, err := repository.FindModelCandidateByID(s.db, id)

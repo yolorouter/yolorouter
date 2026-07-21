@@ -88,8 +88,8 @@ func CreateModelCandidate(db *gorm.DB, c *model.ModelCandidate) error {
 }
 
 func UpdateModelCandidate(db *gorm.DB, id uint, providerModelName string, inputPrice, outputPrice float64,
-	cacheWritePrice, cacheReadPrice *float64, maxOutput int, now time.Time) error {
-	return db.Model(&model.ModelCandidate{}).Where("id = ?", id).Updates(map[string]interface{}{
+	cacheWritePrice, cacheReadPrice *float64, maxOutput int, resetVerification bool, now time.Time) error {
+	updates := map[string]interface{}{
 		"provider_model_name": providerModelName,
 		"input_price":         inputPrice,
 		"output_price":        outputPrice,
@@ -97,7 +97,18 @@ func UpdateModelCandidate(db *gorm.DB, id uint, providerModelName string, inputP
 		"cache_read_price":    cacheReadPrice,
 		"max_output":          maxOutput,
 		"updated_at":          now,
-	}).Error
+	}
+	if resetVerification {
+		// The mapping test and capability probes validated the OLD
+		// provider_model_name; a new name makes them stale, so clear them —
+		// the candidate must be re-tested before it can route or be enabled
+		// again. A map-based Updates writes these zero values (a struct-based
+		// one would skip them).
+		updates["verification_status"] = model.ModelVerificationStatusUntested
+		updates["supports_streaming"] = false
+		updates["supports_function_calling"] = false
+	}
+	return db.Model(&model.ModelCandidate{}).Where("id = ?", id).Updates(updates).Error
 }
 
 func SetModelCandidateManagementStatus(db *gorm.DB, id uint, status int, now time.Time) error {

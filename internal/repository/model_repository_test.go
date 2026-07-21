@@ -201,7 +201,7 @@ func TestUpdateModelCandidate(t *testing.T) {
 	cacheWrite := 0.5
 	cacheRead := 0.1
 
-	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-2024", 1.5, 3.0, &cacheWrite, &cacheRead, 4096, now); err != nil {
+	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-2024", 1.5, 3.0, &cacheWrite, &cacheRead, 4096, false, now); err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
 	}
 	reloaded, err := FindModelCandidateByID(db, candidate.ID)
