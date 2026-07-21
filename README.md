@@ -59,6 +59,29 @@ _Screenshots coming soon._
 
 ## Quick start
 
+### Install as a service (one command)
+
+Install yolorouter as a boot-persistent background service (systemd on Linux,
+launchd on macOS):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/install.sh | bash
+```
+
+The installer picks a UI language (Chinese/English) as its first step, detects
+your OS/arch, downloads and sha256-verifies the matching release, sets up a
+self-contained app-home directory, then starts and health-checks the service.
+Re-run the same command to upgrade (your config and database are preserved, and
+the database is backed up first). Uninstall with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/install.sh | bash -s -- --uninstall
+```
+
+Optional environment overrides: `YOLO_LANG=zh|en`, `YOLO_SCOPE=system|user`,
+`YOLO_VERSION=vX.Y.Z`, `YOLO_REPO=owner/repo`. A system install needs root/sudo;
+without them the installer falls back to a user-level service.
+
 ### Run a release binary
 
 Download the archive for your platform from the
