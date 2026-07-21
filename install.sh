@@ -48,6 +48,8 @@ TAG=""                     # resolved release tag, e.g. v0.1.0
 IS_UPGRADE=false
 TMP_DIR=""
 HAVE_TTY=false
+SERVICE_START_OK=true      # set by setup_service; gates upgrade success
+BACKUP_TAKEN=false         # set true only when a pre-upgrade backup succeeded
 
 # ---------------------------------------------------------------------------
 # Colors (tput with safe fallback; no-op when stderr is not a terminal)
@@ -282,7 +284,10 @@ resolve_version() {
   info "$(m '查询最新版本...' 'Resolving latest release...')"
   local json
   json="$(curl -fsSL "${GITHUB_API}/releases/latest" 2>/dev/null || true)"
-  TAG="$(printf '%s' "${json}" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+  # Trailing `|| true`: under `set -o pipefail` a no-match grep makes the whole
+  # substitution non-zero, and a bare assignment would then abort via `set -e`
+  # BEFORE the friendly `[ -n "${TAG}" ] || die` guard below ever runs.
+  TAG="$(printf '%s' "${json}" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
   [ -n "${TAG}" ] || die "$(m "无法获取最新版本（检查网络或 YOLO_REPO=${REPO} 是否有发布）。也可用 YOLO_VERSION 指定。" \
                               "Could not resolve the latest release (check network, or whether YOLO_REPO=${REPO} has any release). You can also set YOLO_VERSION.")"
 }
@@ -317,7 +322,9 @@ download_and_extract() {
     || die "$(m "下载 checksums.txt 失败: ${sums_url}" "Failed to download checksums.txt: ${sums_url}")"
 
   local expected actual
-  expected="$(grep " ${asset}\$" "${TMP_DIR}/checksums.txt" | head -1 | awk '{print $1}')"
+  # `|| true` so a missing asset line doesn't abort via set -e/pipefail before
+  # the explicit "No checksum entry" die below.
+  expected="$(grep " ${asset}\$" "${TMP_DIR}/checksums.txt" | head -1 | awk '{print $1}' || true)"
   [ -n "${expected}" ] || die "$(m "checksums.txt 中找不到 ${asset} 的校验值" \
                                     "No checksum entry for ${asset} in checksums.txt")"
   actual="$(sha256_of "${TMP_DIR}/${asset}")"
@@ -350,11 +357,18 @@ ensure_service_user() {
   info "$(printf "$(m '创建服务用户 %s' 'Creating service user %s')" "${SVC_USER}")"
   if available useradd; then
     priv useradd --system --no-create-home --shell /usr/sbin/nologin "${SVC_USER}" 2>/dev/null \
-      || priv useradd -r -s /bin/false "${SVC_USER}"
+      || priv useradd -r -s /bin/false "${SVC_USER}" || true
   elif available adduser; then
     priv adduser --system --no-create-home --shell /usr/sbin/nologin "${SVC_USER}" || true
   else
     die "$(m '找不到 useradd/adduser，无法创建服务用户' 'Neither useradd nor adduser found')"
+  fi
+  # Verify the account actually exists rather than trusting the create command's
+  # exit status: adduser variants (e.g. BusyBox) reject the GNU long options and
+  # a swallowed failure would otherwise let install proceed to a chown that dies
+  # with a confusing "invalid user" instead of this clear message.
+  if ! id "${SVC_USER}" >/dev/null 2>&1; then
+    die "$(printf "$(m '创建服务用户 %s 失败' 'Failed to create service user %s')" "${SVC_USER}")"
   fi
   USER_CREATED_BY_INSTALLER=true
 }
@@ -390,11 +404,31 @@ install_files() {
     priv touch "${APP_HOME}/.user_created_by_installer"
   fi
 
-  # Ownership: the run user must be able to read/write app-home (config + db).
+  # Ownership. A FRESH install recurses once to make the whole tree writable by
+  # the run user. On UPGRADE we avoid re-walking the (growing) data/ + backups/
+  # tree, but still re-own the freshly-copied binary — `priv cp` made it
+  # root-owned, and leaving it so breaks a later non-root `yolorouter update`
+  # whose self-replace matches the executable's owner.
   if [ "${SCOPE}" = "system" ] && [ "${OS}" = "linux" ] && [ -n "${SVC_USER}" ]; then
-    priv chown -R "${SVC_USER}:${SVC_USER}" "${APP_HOME}"
+    if [ "${IS_UPGRADE}" != "true" ]; then
+      priv chown -R "${SVC_USER}:${SVC_USER}" "${APP_HOME}"
+    else
+      priv chown "${SVC_USER}:${SVC_USER}" "${BIN_DIR}/${BINARY_NAME}"
+    fi
   elif [ "${SCOPE}" = "system" ] && [ "${OS}" = "darwin" ]; then
-    priv chown -R "${RUN_USER}" "${APP_HOME}" 2>/dev/null || true
+    if [ "${IS_UPGRADE}" != "true" ]; then
+      priv chown -R "${RUN_USER}" "${APP_HOME}" 2>/dev/null || true
+    else
+      priv chown "${RUN_USER}" "${BIN_DIR}/${BINARY_NAME}" 2>/dev/null || true
+      # If a DIFFERENT admin account is running this upgrade than installed it,
+      # the launchd plist is rewritten for the new account but the 0600
+      # config/db stay owned by the old one and the new service can't read
+      # them. Re-own the tree only in that (rare) account-change case.
+      local cur_owner; cur_owner="$(stat -f '%Su' "${APP_HOME}/configs/config.yaml" 2>/dev/null || echo '')"
+      if [ -n "${cur_owner}" ] && [ "${cur_owner}" != "${RUN_USER}" ]; then
+        priv chown -R "${RUN_USER}" "${APP_HOME}" 2>/dev/null || true
+      fi
+    fi
   fi
 }
 
@@ -450,6 +484,7 @@ backup_before_upgrade() {
     die "$(m '升级前数据库备份失败，已中止升级（现有服务未受影响）。修复后重试，或设 YOLO_SKIP_BACKUP=1 显式跳过。' \
             'Pre-upgrade database backup failed; upgrade aborted (the running service is untouched). Fix the cause and retry, or set YOLO_SKIP_BACKUP=1 to skip deliberately.')"
   fi
+  BACKUP_TAKEN=true
   ok "$(m '数据库已备份' 'Database backed up')"
 }
 
@@ -483,9 +518,17 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 EOF
-  priv systemctl daemon-reload
+  # daemon-reload / restart must not hard-abort under `set -e`: a failure here
+  # (non-systemd-PID1 host, a bad unit, a service that won't start) has to fall
+  # through to health_check so the upgrade rollback safety net can run instead
+  # of leaving a swapped-in binary with the script killed mid-flight.
+  priv systemctl daemon-reload || true
   priv systemctl enable "${BINARY_NAME}" >/dev/null 2>&1 || true
-  priv systemctl restart "${BINARY_NAME}"
+  # Capture whether restart actually succeeded (via `if`, which is set-e-safe)
+  # instead of swallowing it with `|| true`: a swallowed failure would let a
+  # still-running OLD process answer /healthz and be mistaken for a healthy
+  # upgrade. The success decision in main() requires this to be true.
+  if priv systemctl restart "${BINARY_NAME}"; then SERVICE_START_OK=true; else SERVICE_START_OK=false; fi
 }
 
 write_systemd_user() {
@@ -507,9 +550,12 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 EOF
-  systemctl --user daemon-reload
+  # Same as the system path: never let a user-bus failure (headless SSH with no
+  # XDG_RUNTIME_DIR / user manager) abort the installer — fall through to
+  # health_check, which reports a clear failure instead of a raw bus error.
+  systemctl --user daemon-reload || true
   systemctl --user enable "${BINARY_NAME}" >/dev/null 2>&1 || true
-  systemctl --user restart "${BINARY_NAME}"
+  if systemctl --user restart "${BINARY_NAME}"; then SERVICE_START_OK=true; else SERVICE_START_OK=false; fi
   # Boot-start without an active login session requires lingering.
   if available loginctl; then
     loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
@@ -548,12 +594,14 @@ ${run_user_line}
 EOF
   # Reload: unload (ignore errors) then load -w. `load -w` works across all
   # supported macOS versions, unlike the newer bootstrap/bootout verbs.
+  # `|| true` on load for the same reason as the systemd paths: a load failure
+  # must fall through to health_check / rollback, not abort under `set -e`.
   if [ "${SCOPE}" = "system" ]; then
     priv launchctl unload "${plist}" >/dev/null 2>&1 || true
-    priv launchctl load -w "${plist}"
+    if priv launchctl load -w "${plist}"; then SERVICE_START_OK=true; else SERVICE_START_OK=false; fi
   else
     launchctl unload "${plist}" >/dev/null 2>&1 || true
-    launchctl load -w "${plist}"
+    if launchctl load -w "${plist}"; then SERVICE_START_OK=true; else SERVICE_START_OK=false; fi
   fi
 }
 
@@ -575,9 +623,21 @@ setup_service() {
 # ---------------------------------------------------------------------------
 config_port() {
   local cfg="${APP_HOME}/configs/config.yaml" p=""
-  if [ -f "${cfg}" ]; then
-    p="$(grep -A2 '^server:' "${cfg}" 2>/dev/null | grep 'port:' | head -1 | sed 's/[^0-9]*//g' || true)"
-  fi
+  # Read via priv: in system scope the config is 0600 owned by the service
+  # user, so a plain read as the invoking user fails and would silently fall
+  # back to DEFAULT_PORT — making health_check and the summary probe the wrong
+  # port whenever the deployment uses a non-default one.
+  # Parse ONLY inside the top-level `server:` block (indented lines up to the
+  # next unindented key), so an unrelated `database.port:` a few lines below
+  # can never be mistaken for the server port. A `server: {}` with no nested
+  # port yields nothing here and correctly falls back to DEFAULT_PORT. Only
+  # ever called after the service has started (config exists, sudo cached).
+  p="$(priv cat "${cfg}" 2>/dev/null | awk '
+    /^server:/ { f=1; next }
+    /^[^[:space:]#]/ { f=0 }
+    f && match($0, /port:[ \t]*[0-9]+/) {
+      s = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", s); print s; exit
+    }' || true)"
   [ -n "${p}" ] && printf '%s' "${p}" || printf '%s' "${DEFAULT_PORT}"
 }
 
@@ -671,6 +731,16 @@ print_summary() {
   printf '%s  %s\n' "$(m '  重启服务:' '  restart:')" "${SVC_RESTART}"
   printf '%s  %s\n' "$(m '  升级:    ' '  upgrade:')" "$(m '重跑安装命令，或 ' 're-run the installer, or ')${BINARY_NAME} update"
   printf '%s  curl -fsSL %s | bash -s -- --uninstall\n' "$(m '  卸载:    ' '  remove: ')" "${install_url}"
+  # If the symlink dir isn't on PATH (common for ~/.local/bin in user scope),
+  # the bare `yolorouter …` commands above won't resolve — point at the real
+  # binary and how to fix PATH.
+  case ":${PATH}:" in
+    *":$(dirname "${BIN_LINK}"):"*) : ;;
+    *)
+      printf '%s\n' "$(printf "$(m '  注意：%s 不在 PATH 中——用 %s 调用，或把该目录加进 PATH。' \
+                                   '  Note: %s is not on PATH — invoke %s directly, or add that dir to PATH.')" \
+                              "$(dirname "${BIN_LINK}")" "${BIN_DIR}/${BINARY_NAME}")" ;;
+  esac
   printf '\n'
   printf '%s\n' "$(m "  改端口 = 编辑 ${APP_HOME}/configs/config.yaml 的 server.port 后重启服务。" \
                      "  Change port = edit server.port in ${APP_HOME}/configs/config.yaml, then restart.")"
@@ -681,6 +751,43 @@ print_summary() {
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
+# For uninstall, resolve the scope from what is actually on disk rather than
+# the install-oriented guess choose_scope made. Without this, a no-tty uninstall
+# of a system install (choose_scope falls back to user scope when it can't get
+# root non-interactively) would target the empty user location and report
+# success while the real system service keeps running. An explicit YOLO_SCOPE
+# still wins.
+resolve_uninstall_scope() {
+  # An explicit YOLO_SCOPE, or an interactive choice the user just made in
+  # choose_scope, both win — only infer from disk in the non-interactive
+  # fallback, where choose_scope merely guessed a scope from privilege.
+  [ -z "${YOLO_SCOPE:-}" ] || return 0
+  [ "${HAVE_TTY}" = "true" ] && return 0
+  local sys_home sys_unit user_home user_unit
+  if [ "${OS}" = "linux" ]; then
+    sys_home="/opt/${BINARY_NAME}"
+    sys_unit="/etc/systemd/system/${BINARY_NAME}.service"
+    user_home="${HOME}/.${BINARY_NAME}"
+    user_unit="${HOME}/.config/systemd/user/${BINARY_NAME}.service"
+  else
+    sys_home="/usr/local/var/${BINARY_NAME}"
+    sys_unit="/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist"
+    user_home="${HOME}/.${BINARY_NAME}"
+    user_unit="${HOME}/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
+  fi
+  if [ -d "${sys_home}" ] || [ -e "${sys_unit}" ] || [ -e "/usr/local/bin/${BINARY_NAME}" ]; then
+    SCOPE="system"
+  elif [ -d "${user_home}" ] || [ -e "${user_unit}" ]; then
+    SCOPE="user"
+  else
+    return 0
+  fi
+  # Re-derive SUDO/APP_HOME/BIN_LINK/SVC_USER for the resolved scope. For a
+  # system scope with no root/sudo this deliberately dies with a clear message
+  # rather than pretending to uninstall.
+  configure_scope_paths
+}
+
 do_uninstall() {
   info "$(m '卸载 yolorouter...' 'Uninstalling yolorouter...')"
 
@@ -762,16 +869,19 @@ main() {
   choose_scope
 
   if [ "${do_remove}" = "true" ]; then
+    resolve_uninstall_scope
     do_uninstall
     exit 0
   fi
 
-  # Warn (don't block) if the target port already has a listener.
+  # Warn (don't block) on a FRESH install if the default port already has a
+  # listener. Skipped on upgrade: the existing config's port is respected, and
+  # reading it here would be a needless privileged (sudo) read whose result the
+  # warning below never consumes anyway.
   local port="${DEFAULT_PORT}"
-  [ "${IS_UPGRADE}" = "true" ] && port="$(config_port)"
-  if [ "${IS_UPGRADE}" != "true" ] && port_in_use "${port}"; then
+  if [ "${IS_UPGRADE}" != "true" ] && port_in_use "${DEFAULT_PORT}"; then
     warn "$(printf "$(m '端口 %s 已被占用，服务可能无法监听；装完请改端口或释放占用。' \
-                        'Port %s is already in use; the service may fail to bind. Change the port or free it after install.')" "${port}")"
+                        'Port %s is already in use; the service may fail to bind. Change the port or free it after install.')" "${DEFAULT_PORT}")"
   fi
 
   resolve_version
@@ -788,7 +898,11 @@ main() {
   setup_service
 
   port="$(config_port)"
-  if health_check "${port}"; then
+  # Require BOTH: the service manager reported a successful (re)start AND the
+  # port is healthy. Without the start check, a failed restart that left an old
+  # process listening (e.g. a headless user-scope upgrade with no user bus)
+  # would answer /healthz and be misread as a successful upgrade.
+  if [ "${SERVICE_START_OK}" = "true" ] && health_check "${port}"; then
     [ "${IS_UPGRADE}" = "true" ] && discard_old_binary
     print_summary "${port}"
   else
@@ -801,6 +915,16 @@ main() {
       setup_service
       if health_check "${port}"; then
         warn "$(m '旧版本已恢复运行；本次升级失败，请查日志。' 'The previous version is running again; the upgrade failed — check the logs.')"
+      elif [ "${BACKUP_TAKEN}" = "true" ]; then
+        # The new binary may have already migrated the DB schema on start, which
+        # the rolled-back older binary can reject. Point at the pre-upgrade
+        # backup — only if one was actually taken, and without assuming the
+        # driver (SQLite ships a .db.gz, PostgreSQL a .sql.gz restored via psql).
+        warn "$(printf "$(m '旧版本仍未起来——新版本可能已迁移数据库。升级前备份在 %s，必要时停服后按你的数据库类型恢复最近一次备份。' \
+                            'The old version is still down — the newer one may have migrated the database. A pre-upgrade backup is in %s; if needed, stop the service and restore the latest one per your database driver.')" "${APP_HOME}/backups")"
+      else
+        warn "$(m '旧版本仍未起来，且本次未做升级前备份（YOLO_SKIP_BACKUP=1）；请查日志手动处理。' \
+                 'The old version is still down and no pre-upgrade backup was taken (YOLO_SKIP_BACKUP=1); check the logs and recover manually.')"
       fi
     fi
     printf '%s\n' "$(m "  查看日志: $(logs_hint)" "  Check logs: $(logs_hint)")"
