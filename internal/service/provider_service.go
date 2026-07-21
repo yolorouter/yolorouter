@@ -859,8 +859,22 @@ func (s *ProviderService) TestProviderKey(ctx context.Context, providerID, keyID
 		return nil, fmt.Errorf("provider test call could not be started: %w", testErr)
 	}
 	verificationStatus, overwrite, lastTestResult := classifyTestResult(result)
-	_, _ = repository.CommitProviderKeyRetestResult(s.db, keyID, configVersion, testGeneration,
+	applied, commitErr := repository.CommitProviderKeyRetestResult(s.db, keyID, configVersion, testGeneration,
 		overwrite, verificationStatus, lastTestResult, key.TestModel, result.DurationMs, now)
+	if commitErr != nil {
+		return nil, fmt.Errorf("record test result: %w", commitErr)
+	}
+	if !applied {
+		// The network test ran, but a concurrent plaintext/config edit bumped
+		// config_version between BeginProviderKeyRetest and this write, so the
+		// CAS matched no row and THIS run's result was not persisted. Reloading
+		// and returning the row here would hand back a stale last_test_result
+		// (possibly the concurrent edit's own outcome), which the caller would
+		// then present as this test's result — a false confirmation. Surface it
+		// as a retryable error instead; the batch path reports the same lost
+		// race via BatchTestResult.Skipped.
+		return nil, errcode.ErrProviderKeyTestNotSaved
+	}
 
 	reloaded, err := repository.FindProviderKeyByID(s.db, keyID)
 	if err != nil {
@@ -880,10 +894,14 @@ type BatchTestResult struct {
 	DurationMs   int64  `json:"duration_ms"`
 }
 
-// TestAllProviderKeys sequentially tests every enabled key in sort_order
-// (design doc §7) — synchronous and blocking by deliberate design decision
-// (not a background job). Keys needing re-entry are skipped without any
-// network call.
+// TestAllProviderKeys sequentially tests every key in sort_order —
+// synchronous and blocking by deliberate design decision (not a background
+// job). Management status is deliberately NOT a filter: a not-yet-enabled
+// key must still be testable so an admin can verify it before flipping it
+// on (the create/enable flow is test-first, so a fresh key is always
+// disabled until it passes). Only keys needing re-entry are skipped without
+// a network call. Batch test only RECORDS verification results; it never
+// changes management_status (enabling stays an explicit admin action).
 func (s *ProviderService) TestAllProviderKeys(ctx context.Context, providerID uint, now time.Time) ([]BatchTestResult, error) {
 	provider, err := repository.FindProviderByID(s.db, providerID)
 	if err != nil {
@@ -899,9 +917,6 @@ func (s *ProviderService) TestAllProviderKeys(ctx context.Context, providerID ui
 
 	results := make([]BatchTestResult, 0, len(keys))
 	for _, key := range keys {
-		if key.ManagementStatus != model.ProviderKeyStatusEnabled {
-			continue
-		}
 		if key.AuthorizedDestinationVersion != provider.DestinationVersion {
 			results = append(results, BatchTestResult{KeyID: key.ID, Label: key.Label, NeedsReentry: true, Skipped: true})
 			continue

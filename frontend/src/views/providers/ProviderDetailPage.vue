@@ -112,9 +112,13 @@ const batchSummary = ref('')
 // per-key badge in the template above.
 const batchResultByKeyId = ref<Record<number, BatchTestResult>>({})
 
+// "N keys pending" = the keys batch test will actually hit. Batch test
+// covers every key that isn't awaiting re-entry (regardless of enabled
+// status — a fresh key is disabled until it passes), so this count must
+// match that scope, not just the enabled subset.
 const pendingCount = computed(() => {
   if (!provider.value) return null
-  return provider.value.keys.filter((k) => k.management_status === 1 && !k.needs_reentry).length
+  return provider.value.keys.filter((k) => !k.needs_reentry).length
 })
 
 function batchResultLabel(result: BatchTestResult): string {
@@ -313,8 +317,18 @@ function onEditKey(key: ProviderKey) {
 async function onTestOneKey(keyId: number) {
   testingKeyId.value = keyId
   try {
-    await store.testKey(providerId, keyId)
+    const updated = await store.testKey(providerId, keyId)
     await reload()
+    // Two-tier feedback so the click is never silent: pass (green) vs
+    // everything else (yellow) named by its specific outcome reason
+    // (e.g. "unreachable"). Deliberately not mirroring the backend's
+    // definitive-fail vs inconclusive split — that lives in
+    // classifyTestResult and would drift if duplicated here.
+    const outcome = updated.last_test_result
+    if (outcome === null) return
+    const label = t(`providers.${testOutcomeI18nKey(outcome)}`)
+    if (outcome === 0) message.success(label)
+    else message.warning(label)
   } catch (err) {
     message.error(displayMessage(err, t))
   } finally {
@@ -402,8 +416,10 @@ async function onTestAll() {
   batchSummary.value = ''
   batchResultByKeyId.value = {}
   try {
-    const enabledCount = provider.value.keys.filter((k) => k.management_status === 1).length
-    const { results } = await store.testAll(providerId, enabledCount)
+    // Timeout budget must count every key batch test will hit — that's
+    // exactly pendingCount's scope (all !needs_reentry keys), so reuse it
+    // rather than recomputing the same filter.
+    const { results } = await store.testAll(providerId, pendingCount.value ?? 0)
     // `skipped` and `outcome === 0` are not mutually exclusive: a result
     // can be both TestSuccess AND skipped (its CAS write was lost to a
     // concurrent edit — the test itself succeeded, but nothing was

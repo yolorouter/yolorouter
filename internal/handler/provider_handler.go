@@ -113,6 +113,8 @@ func writeProviderServiceError(c *gin.Context, err error) {
 		response.Error(c, errcode.ProviderKeyNotVerified, errcode.GetMessage(errcode.ProviderKeyNotVerified))
 	case errors.Is(err, errcode.ErrProviderKeyNeedsReentry):
 		response.Error(c, errcode.ProviderKeyNeedsReentry, errcode.GetMessage(errcode.ProviderKeyNeedsReentry))
+	case errors.Is(err, errcode.ErrProviderKeyTestNotSaved):
+		response.Error(c, errcode.ProviderKeyTestNotSaved, errcode.GetMessage(errcode.ProviderKeyTestNotSaved))
 	case errors.Is(err, errcode.ErrProviderKeyTooShort):
 		// validatePlaintextLength (provider_service.go) wraps this sentinel —
 		// Gin's own binding tags currently make that check unreachable via

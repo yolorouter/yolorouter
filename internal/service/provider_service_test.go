@@ -1449,26 +1449,88 @@ func TestTestAllProviderKeysErrorsWhenListKeysFails(t *testing.T) {
 	}
 }
 
-func TestTestAllProviderKeysSkipsDisabledKeyWithoutNetworkCall(t *testing.T) {
-	svc, _, client := newTestProviderService(t)
+// A disabled key IS batch-tested: the design intent is that batch test
+// verifies every !needs_reentry key (including a not-yet-enabled one) so an
+// admin can test-then-enable a fresh key. The test only RECORDS the
+// verification result — it must never auto-enable the key.
+func TestTestAllProviderKeysTestsDisabledKeyButDoesNotEnable(t *testing.T) {
+	svc, db, client := newTestProviderService(t)
 	now := time.Now().UTC()
+	// Seed the key as NOT-passed at creation so the post-batch passed
+	// assertion actually proves the batch path recorded a result. If we left
+	// the default zero-value TestSuccess in place, CreateProvider's own test
+	// would already mark the key passed and the assertion below would hold
+	// even if the batch path stopped writing anything at all.
+	client.result = TestResult{Outcome: TestAuthFailed}
 	provider, err := svc.CreateProvider(context.Background(), CreateProviderInput{
 		Name: "p1", BaseURL: "https://a.example.com", KeyLabel: "k1", KeyPlaintext: "sk-abcdefghijklmnopqrstuvwxyz1234", TestModel: "gpt-4o-mini",
-	}, now) // ManagementStatus defaults to 0 -> not enabled, and CreateProvider never enables without a passed test anyway.
+	}, now) // ManagementStatus defaults to disabled; auth-failed test leaves it disabled + verification=failed.
 	if err != nil {
 		t.Fatalf("CreateProvider failed: %v", err)
 	}
+	client.result = TestResult{Outcome: TestSuccess, DurationMs: 5}
 
 	callsBefore := client.calls
 	results, err := svc.TestAllProviderKeys(context.Background(), provider.ID, now)
 	if err != nil {
 		t.Fatalf("TestAllProviderKeys failed: %v", err)
 	}
-	if client.calls != callsBefore {
-		t.Fatalf("expected zero network calls for a disabled key, calls went from %d to %d", callsBefore, client.calls)
+	if client.calls != callsBefore+1 {
+		t.Fatalf("expected the disabled key to be network-tested, calls went from %d to %d", callsBefore, client.calls)
 	}
-	if len(results) != 0 {
-		t.Fatalf("expected a disabled key to be silently skipped (not even reported), got %+v", results)
+	if len(results) != 1 || results[0].Skipped {
+		t.Fatalf("expected 1 non-skipped result for the disabled key, got %+v", results)
+	}
+	if results[0].Outcome == nil || *results[0].Outcome != int(TestSuccess) {
+		t.Fatalf("expected outcome=TestSuccess, got %+v", results[0])
+	}
+
+	var reloaded model.ProviderKey
+	if err := db.Where("id = ?", provider.Keys[0].ID).First(&reloaded).Error; err != nil {
+		t.Fatalf("reload key failed: %v", err)
+	}
+	// verification flipped failed -> passed proves the batch path wrote the
+	// result; duration_ms=5 (only the batch run set that) corroborates it.
+	if reloaded.VerificationStatus != model.VerificationStatusPassed {
+		t.Fatalf("expected verification_status=passed to be recorded by the batch test, got %d", reloaded.VerificationStatus)
+	}
+	if reloaded.LastTestDurationMs == nil || *reloaded.LastTestDurationMs != 5 {
+		t.Fatalf("expected last_test_duration_ms=5 from the batch run, got %v", reloaded.LastTestDurationMs)
+	}
+	if reloaded.ManagementStatus != model.ProviderKeyStatusDisabled {
+		t.Fatalf("expected batch test to NOT auto-enable the key, management_status=%d", reloaded.ManagementStatus)
+	}
+}
+
+// TestTestProviderKeyReturnsErrorWhenCommitLosesCASRace covers the single-key
+// counterpart to TestTestAllProviderKeysSkipsWhenCommitLosesCASRace: when a
+// concurrent config_version bump lands mid-test, the write-back CAS matches no
+// row and the result is not persisted. Rather than reload+return a stale row
+// (whose last_test_result the UI would present as this run's outcome), the
+// service surfaces a retryable ErrProviderKeyTestNotSaved.
+func TestTestProviderKeyReturnsErrorWhenCommitLosesCASRace(t *testing.T) {
+	svc, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider, err := svc.CreateProvider(context.Background(), CreateProviderInput{
+		Name: "p1", BaseURL: "https://a.example.com", KeyLabel: "k1", KeyPlaintext: "sk-abcdefghijklmnopqrstuvwxyz1234", TestModel: "gpt-4o-mini",
+	}, now)
+	if err != nil {
+		t.Fatalf("CreateProvider failed: %v", err)
+	}
+	keyID := provider.Keys[0].ID
+	client.result = TestResult{Outcome: TestSuccess, DurationMs: 5}
+	client.sideEffect = func() {
+		if err := db.Exec("UPDATE provider_keys SET config_version = config_version + 1 WHERE id = ?", keyID).Error; err != nil {
+			t.Fatalf("simulated concurrent config_version bump failed: %v", err)
+		}
+	}
+
+	view, err := svc.TestProviderKey(context.Background(), provider.ID, keyID, now)
+	if !errors.Is(err, errcode.ErrProviderKeyTestNotSaved) {
+		t.Fatalf("expected ErrProviderKeyTestNotSaved after losing the CAS race, got view=%+v err=%v", view, err)
+	}
+	if view != nil {
+		t.Fatalf("expected no view when the result was not saved, got %+v", view)
 	}
 }
 

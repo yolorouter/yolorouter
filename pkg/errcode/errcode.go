@@ -41,6 +41,7 @@ const (
 	ProviderKeyNotVerified   = 12011 // 尝试启用一个 verification_status 不是"通过"的 Key
 	ProviderKeyNeedsReentry  = 12012 // authorized_destination_version 与当前 destination_version 不一致，需重新提交明文
 	ProviderKeyTooShort      = 12013 // Key 明文长度不足 minKeyPlaintextLength（正常情况下已被 Gin binding 拦截，这里是防御性兜底）
+	ProviderKeyTestNotSaved  = 12014 // 测试网络调用已完成，但写回结果时 Key 被并发修改（config_version 变化），CAS 未命中、结果未落库，需重试
 
 	ModelNotFound               = 12101 // 对外模型名不存在
 	ModelNameTaken              = 12102 // 对外模型名已被占用（MOD-02，全局唯一）
@@ -124,6 +125,7 @@ var ErrorMessages = map[int]string{
 	ProviderKeyNotVerified:   "cannot enable a key that has not passed verification",
 	ProviderKeyNeedsReentry:  "provider address changed, please resubmit the key plaintext",
 	ProviderKeyTooShort:      "key plaintext is too short",
+	ProviderKeyTestNotSaved:  "test result not saved because the key was modified concurrently, please retry",
 
 	ModelNotFound:               "model not found",
 	ModelNameTaken:              "model name already taken",
@@ -185,6 +187,7 @@ var (
 	ErrProviderKeyNotVerified   = errors.New(ErrorMessages[ProviderKeyNotVerified])
 	ErrProviderKeyNeedsReentry  = errors.New(ErrorMessages[ProviderKeyNeedsReentry])
 	ErrProviderKeyTooShort      = errors.New(ErrorMessages[ProviderKeyTooShort])
+	ErrProviderKeyTestNotSaved  = errors.New(ErrorMessages[ProviderKeyTestNotSaved])
 
 	ErrModelNotFound               = errors.New(ErrorMessages[ModelNotFound])
 	ErrModelNameTaken              = errors.New(ErrorMessages[ModelNameTaken])
