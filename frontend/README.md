@@ -1,5 +1,7 @@
 # Yolorouter — Frontend
 
+English · [简体中文](README_zh.md)
+
 The admin console for [Yolorouter](../README.md): a Vue 3 + TypeScript SPA
 built with Vite and [naive-ui](https://www.naiveui.com/).
 
