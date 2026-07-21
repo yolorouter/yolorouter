@@ -1,9 +1,18 @@
 .PHONY: build build-embed build-release frontend embed-frontend test test-release test-embed vet vet-embed dev migrate
 
-# Design doc §2.1: --version must print a real, non-"dev" version in
-# production builds, injected via -ldflags rather than hand-editing the
-# var version = "dev" default in commands.go for each release.
+# Release-build metadata injected via -ldflags into internal/version (the
+# package both the `--version` CLI flag and the system-info API read from).
+# A plain `go build` / `make build` leaves the "dev"/"unknown" defaults, so
+# only build-release (and goreleaser) carry real values.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILDTIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+# The canonical "owner/repo" GitHub release source, baked into release builds
+# as version.DefaultGitHubRepo. Empty in local builds (the update feature then
+# relies on config.update.github_repo, or is disabled). The public release
+# workflow injects the real value (see .github/workflows/release.yml).
+DEFAULT_GITHUB_REPO ?=
+VERSION_PKG := github.com/yolorouter/yolorouter-ce/internal/version
 
 # Plain build: no -tags embed, so it never requires web/dist/ to contain
 # anything (see web/embed_stub.go) — web/dist/ is 100% gitignored with no
@@ -38,8 +47,44 @@ embed-frontend: frontend
 build-embed: embed-frontend
 	go build -tags embed -o ./bin/yolorouter-ce ./cmd/yolorouter-ce
 
+# RELEASE_TAG is the exact git tag at HEAD (empty if HEAD isn't tagged).
+# Evaluated at make-parse time so every recipe line sees the same value — a
+# recipe-local `TAG=$$(...)` would be lost on the next line because make runs
+# each recipe line in a fresh shell. git-describe strings (v1.2.3-dirty /
+# v1.2.3-4-gabc) are rejected: they're semver prereleases ranked below the
+# tag, which would let the updater downgrade a newer build to the older tag.
+RELEASE_TAG := $(shell git describe --tags --exact-match HEAD 2>/dev/null)
+
 build-release: embed-frontend
-	go build -tags release,embed -ldflags "-X main.version=$(VERSION)" -o ./bin/yolorouter-ce ./cmd/yolorouter-ce
+	@if [ -z "$(RELEASE_TAG)" ]; then \
+		echo "ERROR: build-release requires HEAD to be an exact git tag (e.g. v0.1.0)" >&2; \
+		echo "       git-describe strings (v1.2.3-dirty / v1.2.3-4-gabc) are semver prereleases," >&2; \
+		echo "       ranked below their release, which would let the updater downgrade a" >&2; \
+		echo "       newer build to the older tag. Tag first: git tag v0.1.0" >&2; \
+		echo "       (release publishing uses goreleaser, not this target)" >&2; \
+		exit 1; \
+	fi
+	@if ! printf '%s' "$(RELEASE_TAG)" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$$'; then \
+		echo "ERROR: build-release tag '$(RELEASE_TAG)' must be canonical release semver (v1.2.3, no leading zeros, no prerelease)" >&2; \
+		echo "       currentUpdatable rejects non-semver and prerelease versions; a non-canonical" >&2; \
+		echo "       tag would build a binary the update checker can never compare (Codex P2)." >&2; \
+		exit 1; \
+	fi
+	@if ! git diff-index --quiet HEAD --; then \
+		echo "ERROR: build-release requires a clean worktree (no uncommitted changes)" >&2; \
+		echo "       git describe --tags --exact-match ignores dirty state, so a tagged HEAD" >&2; \
+		echo "       with modified sources still ships as a clean vX.Y.Z, defeating the" >&2; \
+		echo "       downgrade/provenance guard. Commit or stash first." >&2; \
+		exit 1; \
+	fi
+	@if [ -n "$$(git ls-files --others --exclude-standard)" ]; then \
+		echo "ERROR: build-release requires a clean worktree (no untracked source files)" >&2; \
+		echo "       untracked .go / frontend sources are built but invisible to git" >&2; \
+		echo "       diff-index, so a tagged HEAD with untracked files still ships as a clean" >&2; \
+		echo "       vX.Y.Z. Commit or remove them first (Codex review P2)." >&2; \
+		exit 1; \
+	fi
+	go build -tags release,embed -ldflags "-X $(VERSION_PKG).Version=$(RELEASE_TAG) -X $(VERSION_PKG).Commit=$(COMMIT) -X $(VERSION_PKG).BuildTime=$(BUILDTIME) -X $(VERSION_PKG).DefaultGitHubRepo=$(DEFAULT_GITHUB_REPO)" -o ./bin/yolorouter-ce ./cmd/yolorouter-ce
 
 test:
 	go test ./... -v

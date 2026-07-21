@@ -8,6 +8,7 @@ import ProviderDetailPage from '../views/providers/ProviderDetailPage.vue'
 import ModelListPage from '../views/models/ModelListPage.vue'
 import ModelDetailPage from '../views/models/ModelDetailPage.vue'
 import ApiKeyListPage from '../views/apikeys/ApiKeyListPage.vue'
+import SystemInfoPage from '../views/system/SystemInfoPage.vue'
 import { useAuthStore } from '../store/auth'
 
 export const router = createRouter({
@@ -25,6 +26,7 @@ export const router = createRouter({
         { path: 'models', component: ModelListPage },
         { path: 'models/:id', component: ModelDetailPage },
         { path: 'api-keys', component: ApiKeyListPage },
+        { path: 'system', component: SystemInfoPage },
       ],
     },
   ],

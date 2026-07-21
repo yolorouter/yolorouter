@@ -25,3 +25,9 @@ log:
   level: info
 security:
   provider_master_key: ""  # 留空；自动生成场景下由程序填充，不要手写
+update:
+  enabled: true        # set false to fully disable the update-check API and the `update` CLI
+  # GitHub release source as "owner/repo"; empty falls back to the binary's
+  # compiled-in default (injected via ldflags at release time). Forks can
+  # override it here.
+  github_repo: ""

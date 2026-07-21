@@ -86,13 +86,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useDialog, useMessage, type DropdownOption, type FormInst, type FormRules } from 'naive-ui'
 import SidebarNav, { type NavItem } from '../components/SidebarNav.vue'
-import { Box, Key, LayoutGrid, Server } from '@lucide/vue'
+import { Box, Info, Key, LayoutGrid, Server } from '@lucide/vue'
 import { useAuthStore } from '../store/auth'
+import { useUpdateStore } from '../store/update'
 import { APIError, displayMessage } from '../api/client'
 import { ACCOUNT_SESSION_INVALID } from '../api/errcodes'
 import { passwordStrengthRule, confirmPasswordRule } from '../utils/authValidators'
@@ -107,14 +108,26 @@ const dialog = useDialog()
 const message = useMessage()
 
 const collapsed = ref(false)
+const updateStore = useUpdateStore()
+
+// Fire the background update check once when the admin shell mounts, so the
+// sidebar badge reflects "new version available" without the user having to
+// visit the system page first. checkForUpdates swallows its own errors (a
+// failed check is an expected pre-public / GitHub-outage state), so
+// fire-and-forget here is safe — no unhandled rejection.
+onMounted(() => {
+  void updateStore.checkForUpdates()
+})
 
 // computed rather than a plain array so the labels stay in sync when the
-// user switches locale without needing to re-open the dropdown.
+// user switches locale without needing to re-open the dropdown. The system
+// item's `badge` lights the red dot whenever an update is available.
 const navItems = computed<NavItem[]>(() => [
   { key: 'dashboard', label: t('common.dashboard'), icon: LayoutGrid, to: '/' },
   { key: 'providers', label: t('providers.pageTitle'), icon: Server, to: '/providers' },
   { key: 'models', label: t('models.pageTitle'), icon: Box, to: '/models' },
   { key: 'apikeys', label: t('apiKeys.pageTitle'), icon: Key, to: '/api-keys' },
+  { key: 'system', label: t('system.pageTitle'), icon: Info, to: '/system', badge: updateStore.hasUpdate },
 ])
 
 // computed rather than a plain array so the labels stay in sync when the

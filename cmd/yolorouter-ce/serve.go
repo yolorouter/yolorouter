@@ -56,7 +56,7 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("decode provider master key: %w", err)
 	}
 
-	r, err := router.New(app.DB, masterKey)
+	r, err := router.New(app.DB, masterKey, app.Config.Update)
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
 	}

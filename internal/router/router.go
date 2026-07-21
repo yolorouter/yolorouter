@@ -7,15 +7,18 @@ import (
 	"io/fs"
 	"net/http"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter-ce/internal/config"
 	"github.com/yolorouter/yolorouter-ce/internal/gateway"
 	"github.com/yolorouter/yolorouter-ce/internal/handler"
 	"github.com/yolorouter/yolorouter-ce/internal/middleware"
 	"github.com/yolorouter/yolorouter-ce/internal/service"
+	"github.com/yolorouter/yolorouter-ce/internal/version"
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
 	"github.com/yolorouter/yolorouter-ce/web"
 )
@@ -99,7 +102,7 @@ func validateEmbeddedFrontend(distFS fs.FS) error {
 // crypto.KeyFromBase64 before calling this) — passed here rather than read
 // from a global so provider_service.go's dependencies stay explicit, same
 // as db.
-func New(db *gorm.DB, providerMasterKey []byte) (*gin.Engine, error) {
+func New(db *gorm.DB, providerMasterKey []byte, updateCfg config.UpdateConfig) (*gin.Engine, error) {
 	// fs.Sub never actually errors here, in either build variant: it only
 	// validates that "dist" is a syntactically-valid path string, not that
 	// it exists in web.DistFS (confirmed against io/fs's Sub implementation
@@ -109,10 +112,10 @@ func New(db *gorm.DB, providerMasterKey []byte) (*gin.Engine, error) {
 	// fs.Stat call at each call site below, which correctly reports
 	// "not found" for every path against an empty embedded FS.
 	distFS, _ := fs.Sub(web.DistFS, "dist")
-	return newWithDistFS(distFS, db, providerMasterKey)
+	return newWithDistFS(distFS, db, providerMasterKey, updateCfg)
 }
 
-func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte) (*gin.Engine, error) {
+func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, updateCfg config.UpdateConfig) (*gin.Engine, error) {
 	if err := validateEmbeddedFrontend(distFS); err != nil {
 		return nil, err
 	}
@@ -257,6 +260,22 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte) (*gin.En
 	protected.GET("/api-keys/:id", handler.GetAPIKey(apiKeySvc))
 	protected.PATCH("/api-keys/:id", handler.PatchAPIKey(apiKeySvc))
 	protected.PATCH("/api-keys/:id/revoke", handler.PatchAPIKeyRevoke(apiKeySvc))
+
+	// System info + update check (GET /api/admin/system/version). Read-only
+	// and session-protected like the other admin endpoints. VersionService
+	// resolves its repo from updateCfg + the compiled-in default (see
+	// version.ResolveRepo); an empty resolved repo disables the check and is
+	// surfaced as check_failed, not an error.
+	versionSvc := service.NewVersionService(version.ResolveRepo(updateCfg.Enabled, updateCfg.GitHubRepo))
+	protected.GET("/system/version", handler.GetSystemVersion(handler.SystemInfo{
+		Version:   version.Version,
+		Commit:    version.Commit,
+		BuildTime: version.BuildTime,
+		GoVersion: runtime.Version(),
+		GOOS:      runtime.GOOS,
+		GOARCH:    runtime.GOARCH,
+		DBDriver:  db.Dialector.Name(), //nolint:staticcheck // QF1008 false-positive — gorm.DB exposes the driver name only via Dialector.Name(); there is no db.Name()
+	}, versionSvc))
 
 	// Gateway: POST /v1/chat/completions — the second auth path (PRD §6.5).
 	// The caller presents an API key in Authorization: Bearer, not a session
