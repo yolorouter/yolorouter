@@ -10,6 +10,9 @@ export interface NavItem {
   label: string
   icon: Component
   to: string
+  // badge lights a small indicator dot (e.g. "new version available") at the
+  // item's top-right. Optional; absent means no badge.
+  badge?: boolean
 }
 
 const props = defineProps<{
@@ -43,6 +46,7 @@ const resolvedItems = computed(() =>
         <component :is="item.icon" :size="18" :stroke-width="1.8" />
       </span>
       <span v-if="!collapsed" class="sidebar-nav-item__label">{{ item.label }}</span>
+      <span v-if="item.badge" class="sidebar-nav-item__dot" :title="item.label" />
     </RouterLink>
   </nav>
 </template>
@@ -110,5 +114,19 @@ const resolvedItems = computed(() =>
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* The update-available indicator dot. .sidebar-nav-item is position:relative,
+   so this absolute dot anchors to the item's top-right corner — visible in
+   both expanded and collapsed sidebar states. */
+.sidebar-nav-item__dot {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-danger, #d03050);
+  pointer-events: none;
 }
 </style>

@@ -71,7 +71,7 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("create bodies dir: %w", err)
 	}
 
-	r, err := router.New(app.DB, masterKey, bodiesDir)
+	r, err := router.New(app.DB, masterKey, bodiesDir, app.Config.Update)
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
 	}

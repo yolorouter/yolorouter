@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/yolorouter/yolorouter-ce/internal/config"
 	"github.com/yolorouter/yolorouter-ce/internal/testutil"
 	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
 	"github.com/yolorouter/yolorouter-ce/pkg/response"
@@ -18,7 +19,7 @@ import (
 func newTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	db := testutil.NewSQLiteDB(t)
-	r, err := New(db, testProviderMasterKey(), t.TempDir())
+	r, err := New(db, testProviderMasterKey(), t.TempDir(), testUpdateConfig())
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -31,6 +32,14 @@ func testProviderMasterKey() []byte {
 		key[i] = byte(i)
 	}
 	return key
+}
+
+// testUpdateConfig enables the update feature with no explicit repo, so the
+// /system/version route wires up against the compiled-in DefaultGitHubRepo
+// (empty in tests — VersionService.Check short-circuits to check_failed, no
+// network).
+func testUpdateConfig() config.UpdateConfig {
+	return config.UpdateConfig{Enabled: true}
 }
 
 func TestProviderRoutesAreRegisteredUnderProtectedGroup(t *testing.T) {
@@ -65,7 +74,7 @@ func TestNewFailsFastWhenEmbeddedFrontendIsBroken(t *testing.T) {
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 		// deliberately no index.html
 	}
-	_, err := newWithDistFS(broken, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir())
+	_, err := newWithDistFS(broken, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir(), testUpdateConfig())
 	if err == nil {
 		t.Fatalf("expected New() to fail when distFS has files but no index.html")
 	}
@@ -77,7 +86,7 @@ func TestNewFailsFastWhenEmbeddedFrontendIsBroken(t *testing.T) {
 // must NOT be treated as broken; New() should succeed and fall back to the
 // placeholder at request time (see TestUnknownFrontendPathFallsBackToIndexHTML).
 func TestNewSucceedsWithEmptyDistFS(t *testing.T) {
-	if _, err := newWithDistFS(fstest.MapFS{}, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir()); err != nil {
+	if _, err := newWithDistFS(fstest.MapFS{}, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir(), testUpdateConfig()); err != nil {
 		t.Fatalf("expected New() to succeed with an empty distFS, got: %v", err)
 	}
 }
@@ -94,7 +103,7 @@ func TestNewSucceedsWithCompleteFrontend(t *testing.T) {
 		)},
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
-	if _, err := newWithDistFS(complete, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir()); err != nil {
+	if _, err := newWithDistFS(complete, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir(), testUpdateConfig()); err != nil {
 		t.Fatalf("expected New() to succeed with a complete frontend, got: %v", err)
 	}
 }
@@ -107,7 +116,7 @@ func TestNewFailsForEmptyIndexHTML(t *testing.T) {
 		"index.html":    &fstest.MapFile{Data: []byte("")},
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
-	if _, err := newWithDistFS(empty, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir()); err == nil {
+	if _, err := newWithDistFS(empty, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir(), testUpdateConfig()); err == nil {
 		t.Fatalf("expected New() to fail for an empty index.html")
 	}
 }
@@ -122,7 +131,7 @@ func TestNewFailsWhenIndexHTMLReferencesMissingAsset(t *testing.T) {
 			`<html><head><script src="/assets/missing-CNWoupNg.js"></script></head></html>`,
 		)},
 	}
-	if _, err := newWithDistFS(partial, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir()); err == nil {
+	if _, err := newWithDistFS(partial, testutil.NewSQLiteDB(t), testProviderMasterKey(), t.TempDir(), testUpdateConfig()); err == nil {
 		t.Fatalf("expected New() to fail when index.html references a missing local asset")
 	}
 }

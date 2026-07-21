@@ -1,0 +1,76 @@
+# Release workflow: push a `v*` tag to build and publish a GitHub Release
+# with cross-platform archives + checksums via goreleaser. See design doc §4.3.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# goreleaser creates the GitHub Release, which needs contents: write — the
+# GITHUB_TOKEN on a new repository defaults to read-only, so this MUST be set
+# explicitly or the release step 403s.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # goreleaser's changelog.use: git walks the full commit history;
+          # the default shallow checkout would produce an empty/garbled
+          # changelog.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          # frontend/package.json engines requires Node >=22.12.0; pinning to
+          # 22.12 satisfies the floor while allowing patch updates (Node 20
+          # fails engine enforcement on locked @intlify packages).
+          node-version: '22.12'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Validate tag is canonical semver
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The runtime update check (golang.org/x/mod/semver) and the updater
+          # (currentUpdatable) only handle exact-tag releases: canonical
+          # vMAJOR.MINOR.PATCH with no leading zeros and no prerelease suffix.
+          # goreleaser's parser is more permissive and would publish tags like
+          # v1.2-rc1 (missing patch), v01.1.1 (leading zeros), or v1.2.3-rc1
+          # (prerelease) — but currentUpdatable rejects every prerelease, so
+          # users of such a release could never reach stable via the built-in
+          # updater. Fail the build before goreleaser runs (Codex review P2).
+          if ! printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+            echo "ERROR: tag '$TAG' must be an exact canonical release (v1.2.3, no leading zeros, no prerelease suffix)" >&2
+            exit 1
+          fi
+
+      - name: Validate goreleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: check
+
+      - name: Release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          # Explicit injection: "GITHUB_TOKEN is available" does not mean the
+          # goreleaser process receives it as an env var automatically.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Set DEFAULT_GITHUB_REPO as a repository VARIABLE (Settings →
+          # Secrets and variables → Actions → Variables), not a secret — it's
+          # not sensitive. Empty is allowed before the repo is public; the
+          # update feature then falls back to config.update.github_repo.
+          DEFAULT_GITHUB_REPO: ${{ vars.DEFAULT_GITHUB_REPO }}

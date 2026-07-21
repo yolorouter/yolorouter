@@ -263,3 +263,102 @@ func TestAtomicWriteConfigConcurrentRaceHasExactlyOneWinner(t *testing.T) {
 		t.Fatalf("expected no leftover temp files, found: %v", leftover)
 	}
 }
+
+// TestDefaultsSetsUpdateEnabled guards the update-feature default: defaults()
+// must set Enabled=true so an auto-generated or legacy config that omits the
+// whole `update` section keeps updates ON. A zero-value UpdateConfig (Enabled
+// false) would silently disable the feature — exactly the regression Codex
+// review flagged on the v1 design.
+func TestDefaultsSetsUpdateEnabled(t *testing.T) {
+	cfg := defaults()
+	if !cfg.Update.Enabled {
+		t.Fatalf("defaults().Update.Enabled = false, want true (omitted update section must not disable updates)")
+	}
+}
+
+// TestLoadOmittedUpdateSectionDefaultsEnabled drives a config with NO
+// `update:` section through Load: the strict decoder starts from defaults()
+// (Enabled=true) and an absent section leaves it untouched. Without this, a
+// typo in defaults() that drops the Enabled field would silently flip every
+// legacy config to updates-disabled.
+func TestLoadOmittedUpdateSectionDefaultsEnabled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(
+		"server:\n  port: 8080\ndatabase:\n  driver: sqlite\n  sqlite_path: ./data/x.db\n"+
+			"security:\n  provider_master_key: \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"\n"), 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected load to succeed: %v", err)
+	}
+	if !cfg.Update.Enabled {
+		t.Fatalf("omitted update section must default Enabled=true, got false")
+	}
+}
+
+func TestLoadAcceptsUpdateSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(
+		"server:\n  port: 8080\ndatabase:\n  driver: sqlite\n  sqlite_path: ./data/x.db\n"+
+			"security:\n  provider_master_key: \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"\n"+
+			"update:\n  enabled: false\n  github_repo: \"fork/ce\"\n"), 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected load to succeed: %v", err)
+	}
+	if cfg.Update.Enabled {
+		t.Fatalf("expected Enabled=false, got true")
+	}
+	if cfg.Update.GitHubRepo != "fork/ce" {
+		t.Fatalf("expected GitHubRepo fork/ce, got %q", cfg.Update.GitHubRepo)
+	}
+}
+
+// TestLoadRejectsInvalidGitHubRepo drives every malformed shape through
+// validate() so a typo'd owner/repo fails at config load, not as a mysterious
+// GitHub 404 at runtime.
+func TestLoadRejectsInvalidGitHubRepo(t *testing.T) {
+	for _, repo := range []string{
+		"ownerrepo",       // missing slash
+		"owner/repo/extra", // too many segments
+		"/repo",           // empty owner
+		"owner/",          // empty repo
+		"own er/repo",     // whitespace
+	} {
+		t.Run(repo, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(
+				"server:\n  port: 8080\ndatabase:\n  driver: sqlite\n  sqlite_path: ./data/x.db\n"+
+					"security:\n  provider_master_key: \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"\n"+
+					"update:\n  github_repo: \""+repo+"\"\n"), 0o600); err != nil {
+				t.Fatalf("write test config: %v", err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatalf("expected error for malformed github_repo %q", repo)
+			}
+		})
+	}
+}
+
+// TestLoadAcceptsEmptyGitHubRepo: an empty repo is valid (it falls back to
+// the compiled-in default, or disables updates if that is also empty) — only
+// a non-empty malformed value is rejected.
+func TestLoadAcceptsEmptyGitHubRepo(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(
+		"server:\n  port: 8080\ndatabase:\n  driver: sqlite\n  sqlite_path: ./data/x.db\n"+
+			"security:\n  provider_master_key: \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"\n"+
+			"update:\n  github_repo: \"\"\n"), 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("expected empty github_repo to be accepted, got error: %v", err)
+	}
+}

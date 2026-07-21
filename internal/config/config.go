@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,6 +21,7 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Log      LogConfig      `yaml:"log"`
 	Security SecurityConfig `yaml:"security"`
+	Update   UpdateConfig   `yaml:"update"`
 }
 
 type ServerConfig struct {
@@ -49,6 +51,18 @@ type SecurityConfig struct {
 	ProviderMasterKey string `yaml:"provider_master_key"`
 }
 
+// UpdateConfig controls the version-update feature (the background update
+// check surfaced via the system info API + the `update` CLI). Enabled
+// defaults true so an auto-generated or legacy config that omits the whole
+// `update` section does not silently disable updates — only an explicit
+// `enabled: false` does. GitHubRepo overrides the binary's compiled-in
+// version.DefaultGitHubRepo; empty falls back to it, and both empty (or
+// Enabled=false) disable the feature entirely.
+type UpdateConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	GitHubRepo string `yaml:"github_repo"`
+}
+
 func defaults() *Config {
 	return &Config{
 		Server: ServerConfig{Port: 8080},
@@ -59,6 +73,10 @@ func defaults() *Config {
 		// it.
 		Database: DatabaseConfig{Driver: "sqlite", SQLitePath: "../data/yolorouter-ce.db", SSLMode: "disable"},
 		Log:      LogConfig{Level: "info"},
+		// Enabled defaults true so a config that omits the `update` section
+		// entirely (auto-generated, legacy) keeps updates ON — only an
+		// explicit `enabled: false` disables them.
+		Update: UpdateConfig{Enabled: true},
 	}
 }
 
@@ -281,6 +299,28 @@ func validate(cfg *Config) error {
 	}
 	if err := validateMasterKey(cfg.Security.ProviderMasterKey); err != nil {
 		return fmt.Errorf("security.provider_master_key: %w", err)
+	}
+	if err := validateGitHubRepo(cfg.Update.GitHubRepo); err != nil {
+		return fmt.Errorf("update.github_repo: %w", err)
+	}
+	return nil
+}
+
+// validateGitHubRepo accepts an empty repo (falls back to the compiled-in
+// version.DefaultGitHubRepo, or disables updates if that is also empty) but
+// rejects a malformed non-empty value early — a typo like "ownerrepo" or
+// "owner/repo/extra" would otherwise only surface as a 404 from GitHub's
+// releases API at runtime, with no hint that the config value was the cause.
+func validateGitHubRepo(repo string) error {
+	if repo == "" {
+		return nil
+	}
+	if strings.ContainsAny(repo, " \t") {
+		return fmt.Errorf("must not contain whitespace, got %q", repo)
+	}
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("must be %q with exactly one slash, got %q", "owner/repo", repo)
 	}
 	return nil
 }

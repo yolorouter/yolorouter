@@ -5,9 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-)
 
-var version = "dev"
+	"github.com/yolorouter/yolorouter-ce/internal/version"
+)
 
 type Command struct {
 	Name  string
@@ -22,6 +22,7 @@ var commands = []Command{
 	{Name: "db:status", Usage: "show current migration version", Run: runDBStatus},
 	{Name: "db:backup", Usage: "back up the database", Run: runDBBackup},
 	{Name: "db:reset", Usage: "drop all tables and re-migrate (dangerous)", Run: runDBReset},
+	{Name: "update", Usage: "update to the latest GitHub release", Run: runUpdate},
 }
 
 // dispatch resolves args[0] against the command table and runs it,
@@ -33,7 +34,7 @@ func dispatch(ctx context.Context, args []string) (int, error) {
 		return 0, nil
 	}
 	if args[0] == "--version" || args[0] == "-v" || args[0] == "version" {
-		fmt.Println(version)
+		fmt.Println(version.Version)
 		return 0, nil
 	}
 

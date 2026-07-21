@@ -1,0 +1,65 @@
+# goreleaser config for yolorouter-ce. Push a `v*` tag to trigger a release
+# via .github/workflows/release.yml. See design doc §4.3.
+version: 2
+
+project_name: yolorouter-ce
+
+before:
+  hooks:
+    # embed-frontend (NOT just `make frontend`) clears web/dist and repopulates
+    # it from a real frontend build. web/embed_real.go reads web/dist under
+    # -tags embed, and web/dist is fully gitignored — so a clean CI checkout
+    # has no web/dist at all until this step runs, and `go build -tags embed`
+    # would otherwise fail its go:embed or ship a binary with no UI.
+    - make embed-frontend
+
+builds:
+  - id: yolorouter-ce
+    main: ./cmd/yolorouter-ce
+    binary: yolorouter-ce
+    tags:
+      - release
+      - embed
+    # goreleaser Go targets use the UNDERSCORE form (linux_amd64), not the
+    # linux/amd64 form — the slash form is silently rejected and produces no
+    # archives for that target.
+    targets:
+      - linux_amd64
+      - linux_arm64
+      - darwin_amd64
+      - darwin_arm64
+    ldflags:
+      - -s -w
+      # goreleaser's {{ .Version }} STRIPS the leading "v" from the tag, so
+      # re-add it: internal/version.Version must be "v0.1.0" (not "0.1.0") to
+      # match GitHub's tag_name, the archive name below, and
+      # golang.org/x/mod/semver's mandatory v-prefix. {{ .ShortCommit }} and
+      # {{ .Date }} are used verbatim. DEFAULT_GITHUB_REPO is injected from a
+      # repository Variable by the release workflow (empty until the repo is
+      # public — the update feature then relies on config.update.github_repo).
+      - -X github.com/yolorouter/yolorouter-ce/internal/version.Version=v{{ .Version }}
+      - -X github.com/yolorouter/yolorouter-ce/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/yolorouter/yolorouter-ce/internal/version.BuildTime={{ .Date }}
+      - -X github.com/yolorouter/yolorouter-ce/internal/version.DefaultGitHubRepo={{ .Env.DEFAULT_GITHUB_REPO }}
+
+archives:
+  - formats: [tar.gz]
+    # Archive name carries the leading v (v0.1.0) to match tag_name, so the
+    # `update` command's matchAsset — which keys off tag_name — finds the
+    # right file: yolorouter-ce_v{tag}_{os}_{arch}.tar.gz
+    name_template: yolorouter-ce_v{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: git
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+release:
+  disable: false
