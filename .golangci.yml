@@ -1,0 +1,19 @@
+# golangci-lint configuration.
+# Run locally with: golangci-lint run
+# Docs: https://golangci-lint.run/
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # The "standard" set: errcheck, govet, ineffassign, staticcheck, unused.
+  # This is the baseline the codebase already passes; add more deliberately
+  # rather than all at once so CI stays green.
+  default: standard
+  exclusions:
+    generated: lax
+
+formatters:
+  enable:
+    - gofmt

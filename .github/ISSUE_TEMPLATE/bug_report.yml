@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a problem with Yolorouter
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in the details
+        below so we can reproduce it quickly.
+
+        For security vulnerabilities, do **not** use this form — see
+        [SECURITY.md](../../SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure ...
+        2. Send request ...
+        3. See error ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `./yolorouter --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database driver
+      options:
+        - sqlite
+        - postgres
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / architecture
+      placeholder: e.g. linux/amd64, darwin/arm64
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any relevant log output. Redact secrets first.
+      render: shell
+    validations:
+      required: false

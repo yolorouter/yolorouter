@@ -1,0 +1,66 @@
+# CI: runs on every push to main and on pull requests.
+# The release workflow (release.yml) is separate and triggers on v* tags.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  lint:
+    name: Lint (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+      # v7+ of the action is required to run golangci-lint v2, which is what
+      # our .golangci.yml (version: "2") targets; v6 only supports v1.
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: latest
+
+  build:
+    name: Build (embedded binary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # Builds the frontend (incl. vue-tsc type-check) and copies it into
+      # web/dist so the -tags embed build below can go:embed a real UI.
+      - name: Build frontend + embed
+        run: make embed-frontend
+      - name: Build embedded binary
+        run: go build -tags embed -o /dev/null ./cmd/yolorouter
