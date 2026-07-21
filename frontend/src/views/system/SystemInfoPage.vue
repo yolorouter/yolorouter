@@ -3,7 +3,7 @@
   <div class="system-page">
     <PageHeader :eyebrow="t('system.eyebrow')" :title="t('system.pageTitle')" :description="t('system.pageDescription')" />
 
-    <n-descriptions label-placement="left" bordered :column="1" size="large" class="system-block">
+    <n-descriptions label-placement="left" bordered :column="1" size="large" class="system-block" :label-style="labelStyle">
       <n-descriptions-item :label="t('system.currentVersion')">
         <span class="system-version">{{ updateStore.version || '—' }}</span>
       </n-descriptions-item>
@@ -15,7 +15,7 @@
       <n-descriptions-item :label="t('system.database')">{{ updateStore.dbDriver || '—' }}</n-descriptions-item>
     </n-descriptions>
 
-    <n-descriptions label-placement="left" bordered :column="1" size="large" class="system-block">
+    <n-descriptions label-placement="left" bordered :column="1" size="large" class="system-block" :label-style="labelStyle">
       <n-descriptions-item :label="t('system.latestVersion')">
         <n-tag v-if="updateStore.checkFailed" type="warning" size="small">{{ t('system.checkFailed') }}</n-tag>
         <n-tag v-else-if="!updateStore.version" type="default" size="small">{{ t('system.loading') }}</n-tag>
@@ -48,6 +48,11 @@ import PageHeader from '../../components/PageHeader.vue'
 
 const { t } = useI18n()
 const updateStore = useUpdateStore()
+
+// Both descriptions tables auto-size their label column to their own content,
+// so their content dividers drift out of alignment. Pin a shared label width
+// to keep the vertical divider aligned across both blocks.
+const labelStyle = { width: '160px' }
 
 // Load through the shared store action (lastFetchId race-guarded) rather than
 // calling getSystemVersion directly: a direct /system load would race
