@@ -14,6 +14,8 @@ English · [简体中文](README_zh.md)
 
 [Quick start](#quick-start) · [Configuration](#configuration) · [Architecture](#architecture) · [Contributing](#contributing)
 
+⚡ **Low-overhead streaming proxy** · 📦 **Single binary, zero external deps** · 🔁 **Automatic failover + key rotation** · 📊 **Built-in cost & usage analytics**
+
 </div>
 
 ---
