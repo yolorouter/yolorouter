@@ -12,6 +12,8 @@
 
 English · [简体中文](README_zh.md)
 
+[Quick start](#quick-start) · [Configuration](#configuration) · [Architecture](#architecture) · [Contributing](#contributing)
+
 </div>
 
 ---
