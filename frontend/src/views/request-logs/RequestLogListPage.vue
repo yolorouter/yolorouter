@@ -51,6 +51,17 @@
         </div>
         <div class="filter-item">
           <NSelect
+            v-model:value="filter.api_key_id"
+            :options="callerOptions"
+            :placeholder="t('requestLogs.filterCaller')"
+            clearable
+            filterable
+            size="small"
+            @update:value="onSearch"
+          />
+        </div>
+        <div class="filter-item">
+          <NSelect
             v-model:value="filter.provider_id"
             :options="providerOptions"
             :placeholder="t('requestLogs.filterProvider')"
@@ -138,8 +149,9 @@ import {
   type StatusClass,
 } from '../../api/requestLogs'
 import { listProviders, type Provider } from '../../api/providers'
+import { listAPIKeys, toAPIKeyOptions, type APIKey } from '../../api/apiKeys'
 import { displayMessage } from '../../api/client'
-import { formatCents } from '../../utils/money'
+import { formatMicros } from '../../utils/money'
 import { columnTitle } from '../../utils/columnTitle'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -156,6 +168,7 @@ const message = useMessage()
 interface ListFilter {
   request_id: string
   model_name: string
+  api_key_id: number | null
   provider_id: number | null
   status: StatusClass | null
   is_stream: boolean | null
@@ -163,6 +176,7 @@ interface ListFilter {
 const filter = reactive<ListFilter>({
   request_id: '',
   model_name: '',
+  api_key_id: null,
   provider_id: null,
   status: null,
   is_stream: null,
@@ -190,6 +204,16 @@ const providers = ref<Provider[]>([])
 const providerOptions = computed<SelectOption[]>(() =>
   providers.value.map((p) => ({ label: p.name, value: p.id })),
 )
+
+// "使用人" (caller) filter reuses the existing api_key_id filter param — the
+// backend already filters request_logs by api_key_id, so no backend change is
+// needed. Options are the API keys (owner_label + key_prefix to disambiguate
+// keys that share an owner label or have none). Revoked keys are kept in the
+// list so historical logs of a since-revoked key stay filterable. One-shot
+// fetch on mount, same rationale as loadProviders above; 200 covers every
+// realistic v0.1 key count without a remote-search handshake.
+const apiKeys = ref<APIKey[]>([])
+const callerOptions = computed<SelectOption[]>(() => toAPIKeyOptions(apiKeys.value))
 
 const statusOptions = computed<SelectOption[]>(() => ([
   { label: t('requestLogs.status_success'), value: 'success' },
@@ -239,11 +263,17 @@ onBeforeUnmount(() => {
 onMounted(() => {
   void reload().catch((err) => message.error(displayMessage(err, t)))
   void loadProviders().catch((err) => message.error(displayMessage(err, t)))
+  void loadCallers().catch((err) => message.error(displayMessage(err, t)))
 })
 
 async function loadProviders() {
   const { list } = await listProviders()
   providers.value = list
+}
+
+async function loadCallers() {
+  const { list } = await listAPIKeys('', 1, 200)
+  apiKeys.value = list
 }
 
 function buildListParams(): RequestLogListParams {
@@ -253,6 +283,7 @@ function buildListParams(): RequestLogListParams {
   }
   if (filter.request_id.trim()) params.request_id = filter.request_id.trim()
   if (filter.model_name.trim()) params.model_name = filter.model_name.trim()
+  if (filter.api_key_id != null) params.api_key_id = filter.api_key_id
   if (filter.provider_id != null) params.provider_id = filter.provider_id
   if (filter.status) params.status = filter.status
   if (filter.is_stream != null) params.is_stream = filter.is_stream
@@ -310,6 +341,7 @@ async function onSearch() {
 function onReset() {
   filter.request_id = ''
   filter.model_name = ''
+  filter.api_key_id = null
   filter.provider_id = null
   filter.status = null
   filter.is_stream = null
@@ -399,14 +431,26 @@ function streamCell(row: RequestLogRow) {
 }
 
 function tokenCell(row: RequestLogRow) {
-  return h('span', { class: 'token-cell' }, `${row.input_tokens} / ${row.output_tokens}`)
+  const main = h('span', { class: 'token-main' }, `${row.input_tokens} / ${row.output_tokens}`)
+  // Second line surfaces cache write / read tokens, but only when the request
+  // actually had cache activity — a bare "0 / 0" on every non-cached row would
+  // be noise. Keeps the common (no-cache) row visually identical to before.
+  if (row.cache_write_tokens === 0 && row.cache_read_tokens === 0) {
+    return h('div', { class: 'token-cell' }, [main])
+  }
+  const cache = h(
+    'span',
+    { class: 'token-cache' },
+    `${t('requestLogs.cacheTokensShort')} ${row.cache_write_tokens} / ${row.cache_read_tokens}`,
+  )
+  return h('div', { class: 'token-cell token-cell--stacked' }, [main, cache])
 }
 
 function costCell(row: RequestLogRow) {
   if (!row.cost_known) {
     return h(NTag, { size: 'small', bordered: false, type: 'default' }, { default: () => t('requestLogs.costUnknown') })
   }
-  return h('span', { class: 'cost-cell' }, formatCents(row.cost_cents))
+  return h('span', { class: 'cost-cell' }, formatMicros(row.cost_micros))
 }
 
 function attemptsCell(row: RequestLogRow) {
@@ -483,7 +527,7 @@ const columns = computed<DataTableColumns<RequestLogRow>>(() => [
   {
     title: columnTitle(t('requestLogs.col_tokens'), t('requestLogs.col_tokens_tip')),
     key: 'tokens',
-    width: 150,
+    width: 170,
     align: 'right',
     render: (row) => tokenCell(row),
   },
@@ -591,6 +635,18 @@ const columns = computed<DataTableColumns<RequestLogRow>>(() => [
 :deep(.attempts-cell) {
   font-variant-numeric: tabular-nums;
   font-size: var(--text-xs);
+}
+
+:deep(.token-cell--stacked) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.3;
+}
+
+:deep(.token-cache) {
+  color: var(--color-text-muted, var(--color-text-secondary));
+  font-size: var(--text-2xs, 11px);
 }
 
 :deep(.cost-cell) {

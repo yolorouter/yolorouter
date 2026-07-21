@@ -3,7 +3,8 @@
 -- API Key management (PRD §6.4 / design doc §3). The plaintext key is shown
 -- only at create time; the row stores just key_hash + key_prefix. Each key's
 -- model allowlist lives in api_key_models. Limit columns are NULL = no cap;
--- budget is integer cents to avoid float drift on a cumulative hard cap.
+-- budget is integer micros (major-unit x 1e6, i.e. 6-decimal precision) to
+-- avoid float drift on a cumulative hard cap.
 --
 -- +goose Up
 CREATE TABLE api_keys (
@@ -17,8 +18,8 @@ CREATE TABLE api_keys (
     rpm_limit            INTEGER NULL,
     tpm_limit            INTEGER NULL,
     concurrency_limit    INTEGER NULL,
-    budget_limit_cents   INTEGER NULL,
-    budget_spent_cents   INTEGER NOT NULL DEFAULT 0,
+    budget_limit_micros   INTEGER NULL,
+    budget_spent_micros   INTEGER NOT NULL DEFAULT 0,
     created_at           DATETIME NOT NULL,
     revoked_at           DATETIME NULL,
     updated_at           DATETIME NOT NULL

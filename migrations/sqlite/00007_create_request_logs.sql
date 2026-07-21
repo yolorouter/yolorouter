@@ -20,7 +20,7 @@ CREATE TABLE request_logs (
     status_code    INTEGER NOT NULL,
     input_tokens   INTEGER NOT NULL DEFAULT 0,
     output_tokens  INTEGER NOT NULL DEFAULT 0,
-    cost_cents     INTEGER NOT NULL DEFAULT 0,
+    cost_micros     INTEGER NOT NULL DEFAULT 0,
     cost_known     INTEGER NOT NULL DEFAULT 0,
     fail_reason    TEXT NULL,
     attempts        INTEGER NOT NULL DEFAULT 1,

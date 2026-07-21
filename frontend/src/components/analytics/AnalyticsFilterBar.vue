@@ -84,7 +84,7 @@ import { NSelect, type SelectOption } from 'naive-ui'
 import TimeRangeSelect, { type RangePreset, type TimeRange } from './TimeRangeSelect.vue'
 import { listProviders } from '../../api/providers'
 import { listModels } from '../../api/models'
-import { listAPIKeys } from '../../api/apiKeys'
+import { listAPIKeys, toAPIKeyOptions } from '../../api/apiKeys'
 import type { AnalyticsFilter } from '../../api/analytics'
 import { displayMessage } from '../../api/client'
 import { useMessage } from 'naive-ui'
@@ -130,10 +130,7 @@ onMounted(async () => {
     ])
     providerOptions.value = providerPage.list.map((p) => ({ label: p.name, value: p.id }))
     modelOptions.value = modelPage.list.map((m) => ({ label: m.name, value: m.name }))
-    apiKeyOptions.value = apiKeyPage.list.map((k) => ({
-      label: k.owner_label ? `${k.owner_label} (${k.key_prefix}…)` : `${k.key_prefix}…`,
-      value: k.id,
-    }))
+    apiKeyOptions.value = toAPIKeyOptions(apiKeyPage.list)
   } catch (err) {
     // Filter selectors being empty is a degraded, not a broken, state — the
     // user can still type a model name manually if the catalog fetch fails.

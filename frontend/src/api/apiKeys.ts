@@ -1,3 +1,4 @@
+import type { SelectOption } from 'naive-ui'
 import { apiFetch } from './client'
 
 export interface APIKey {
@@ -11,8 +12,8 @@ export interface APIKey {
   rpm_limit: number | null
   tpm_limit: number | null
   concurrency_limit: number | null
-  budget_limit_cents: number | null
-  budget_spent_cents: number
+  budget_limit_micros: number | null
+  budget_spent_micros: number
   model_ids: number[]
   created_at: string
   updated_at: string
@@ -25,6 +26,18 @@ export interface APIKeyPage {
   list: APIKey[]
 }
 
+// toAPIKeyOptions maps API keys to naive-ui <select> options: owner_label
+// disambiguated by key_prefix (keys can share an owner label or have none).
+// Kept here — next to the APIKey type — so every api-key <select> (analytics
+// filter bar, request-log caller filter) maps the same way and can't drift on
+// label formatting.
+export function toAPIKeyOptions(keys: APIKey[]): SelectOption[] {
+  return keys.map((k) => ({
+    label: k.owner_label ? `${k.owner_label} (${k.key_prefix}…)` : `${k.key_prefix}…`,
+    value: k.id,
+  }))
+}
+
 export interface CreateAPIKeyInput {
   owner_label?: string
   remark?: string
@@ -33,7 +46,7 @@ export interface CreateAPIKeyInput {
   rpm_limit?: number
   tpm_limit?: number
   concurrency_limit?: number
-  budget_limit_cents?: number
+  budget_limit_micros?: number
 }
 
 export interface CreateAPIKeyResult {
@@ -53,7 +66,7 @@ export interface UpdateAPIKeyInput {
   rpm_limit?: number
   tpm_limit?: number
   concurrency_limit?: number
-  budget_limit_cents?: number
+  budget_limit_micros?: number
 }
 
 export function listAPIKeys(q: string, page: number, pageSize: number): Promise<APIKeyPage> {

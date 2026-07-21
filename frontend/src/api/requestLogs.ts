@@ -35,7 +35,9 @@ export interface RequestLogRow {
   status_class: StatusClass
   input_tokens: number
   output_tokens: number
-  cost_cents: number
+  cache_write_tokens: number
+  cache_read_tokens: number
+  cost_micros: number
   cost_known: boolean
   fail_reason: string | null
   attempts: number

@@ -332,7 +332,7 @@ func (s *RelayService) checkKeyStateAndLimits(c *gin.Context, rc *RelayContext, 
 		s.finalize(rc, http.StatusUnauthorized, "expired", start)
 		return false
 	}
-	if apiKey.BudgetLimitCents != nil && apiKey.BudgetSpentCents >= *apiKey.BudgetLimitCents {
+	if apiKey.BudgetLimitMicros != nil && apiKey.BudgetSpentMicros >= *apiKey.BudgetLimitMicros {
 		captureRejectedBody(c, rc)
 		WriteOpenAIErrorWithRequestID(c, http.StatusTooManyRequests, errTypeInsufficientQuota, "budget limit exceeded", rc.RequestID)
 		s.finalize(rc, http.StatusTooManyRequests, "budget_exceeded", start)

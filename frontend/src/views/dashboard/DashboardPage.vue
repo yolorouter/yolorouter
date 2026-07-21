@@ -36,7 +36,7 @@
             <div class="kpi__label">
               <HelpLabel :tip="t('dashboard.costCard_tip')">{{ t('dashboard.costCard') }}</HelpLabel>
             </div>
-            <div class="kpi__value">¥{{ formatCents(data?.today.total_cost_cents ?? 0) }}</div>
+            <div class="kpi__value">¥{{ formatMicros(data?.today.total_cost_micros ?? 0) }}</div>
             <div class="kpi__sub">{{ t('dashboard.costCard_sub') }}</div>
           </div>
         </div>
@@ -90,7 +90,7 @@
               <span class="caller-rank">{{ i + 1 }}</span>
               <span class="caller-label">{{ c.owner_label || t('dashboard.unknownCaller') }}</span>
               <span class="caller-meta">{{ formatNumber(c.calls) }} {{ t('dashboard.callsUnit') }}</span>
-              <span class="caller-cost">¥{{ formatCents(c.cost_cents) }}</span>
+              <span class="caller-cost">¥{{ formatMicros(c.cost_micros) }}</span>
             </li>
           </ul>
         </section>
@@ -169,7 +169,7 @@ import HelpLabel from '../../components/HelpLabel.vue'
 import TrendChart from '../../components/dashboard/TrendChart.vue'
 import { getDashboard, type DashboardData } from '../../api/analytics'
 import { displayMessage } from '../../api/client'
-import { formatCents } from '../../utils/money'
+import { formatMicros } from '../../utils/money'
 
 const { t } = useI18n()
 const router = useRouter()

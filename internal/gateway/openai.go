@@ -191,7 +191,7 @@ func EnsureStreamUsageInjection(body []byte, isStream, callerWantsUsage bool) ([
 // prompt_tokens / completion_tokens member is distinguishable from a
 // legitimate zero. OpenAI-compatible upstreams occasionally return {} or a
 // partial object; treating those as "known zero" would let computeCost
-// record cost_known=true cost_cents=0 — showing the request as free, which
+// record cost_known=true cost_micros=0 — showing the request as free, which
 // violates GATE-21 / PRD §6.7.6 (a missing usage must NOT be recorded as 0
 // cost). Only when BOTH prompt and completion counts are present is the
 // usage considered known.

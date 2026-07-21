@@ -75,7 +75,9 @@ type ModelReportRow struct {
 	SuccessRate      float64 `json:"success_rate" gorm:"-"`
 	InputTokens      int64   `json:"input_tokens" gorm:"column:input_tokens"`
 	OutputTokens     int64   `json:"output_tokens" gorm:"column:output_tokens"`
-	CostCents        int64   `json:"cost_cents" gorm:"column:cost_cents"`
+	CacheWriteTokens int64   `json:"cache_write_tokens" gorm:"column:cache_write_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens" gorm:"column:cache_read_tokens"`
+	CostMicros       int64   `json:"cost_micros" gorm:"column:cost_micros"`
 	UnknownCostCalls int64   `json:"unknown_cost_calls" gorm:"column:unknown_cost_calls"`
 }
 
@@ -94,7 +96,7 @@ type ProviderReportRow struct {
 	EndedCalls       int64   `json:"ended_calls" gorm:"column:ended_calls"`
 	SuccessRate      float64 `json:"success_rate" gorm:"-"`
 	AvgDurationMs    float64 `json:"avg_duration_ms" gorm:"column:avg_duration_ms"`
-	CostCents        int64   `json:"cost_cents" gorm:"column:cost_cents"`
+	CostMicros       int64   `json:"cost_micros" gorm:"column:cost_micros"`
 	UnknownCostCalls int64   `json:"unknown_cost_calls" gorm:"column:unknown_cost_calls"`
 }
 
@@ -114,7 +116,9 @@ type CallerReportRow struct {
 	SuccessRate      float64 `json:"success_rate" gorm:"-"`
 	InputTokens      int64   `json:"input_tokens" gorm:"column:input_tokens"`
 	OutputTokens     int64   `json:"output_tokens" gorm:"column:output_tokens"`
-	CostCents        int64   `json:"cost_cents" gorm:"column:cost_cents"`
+	CacheWriteTokens int64   `json:"cache_write_tokens" gorm:"column:cache_write_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens" gorm:"column:cache_read_tokens"`
+	CostMicros       int64   `json:"cost_micros" gorm:"column:cost_micros"`
 	UnknownCostCalls int64   `json:"unknown_cost_calls" gorm:"column:unknown_cost_calls"`
 }
 
@@ -140,7 +144,9 @@ type TimeReportRow struct {
 	SuccessRate      float64 `json:"success_rate"`
 	InputTokens      int64   `json:"input_tokens"`
 	OutputTokens     int64   `json:"output_tokens"`
-	CostCents        int64   `json:"cost_cents"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CostMicros       int64   `json:"cost_micros"`
 	UnknownCostCalls int64   `json:"unknown_cost_calls"`
 }
 
@@ -168,7 +174,9 @@ func AggregateByModel(db *gorm.DB, f *RequestLogFilter) ([]ModelReportRow, error
 		model_name,`[1:]+successEndedCols+`,
 		COALESCE(SUM(input_tokens), 0) AS input_tokens,
 		COALESCE(SUM(output_tokens), 0) AS output_tokens,
-		COALESCE(SUM(cost_cents), 0) AS cost_cents,
+		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(cost_micros), 0) AS cost_micros,
 		SUM(CASE WHEN cost_known = ? THEN 1 ELSE 0 END) AS unknown_cost_calls
 	`, false).Group("model_name").Order("calls DESC").Scan(&rows).Error
 	if err != nil {
@@ -192,7 +200,7 @@ func AggregateByProvider(db *gorm.DB, f *RequestLogFilter) ([]ProviderReportRow,
 	err := f.applyFilter(db).Select(`
 		provider_id,`[1:]+successEndedCols+`,
 		COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
-		COALESCE(SUM(cost_cents), 0) AS cost_cents,
+		COALESCE(SUM(cost_micros), 0) AS cost_micros,
 		SUM(CASE WHEN cost_known = ? THEN 1 ELSE 0 END) AS unknown_cost_calls
 	`, false).Group("provider_id").Order("calls DESC").Scan(&rows).Error
 	if err != nil {
@@ -249,7 +257,9 @@ func AggregateByCaller(db *gorm.DB, f *RequestLogFilter) ([]CallerReportRow, err
 		api_key_id,`[1:]+successEndedCols+`,
 		COALESCE(SUM(input_tokens), 0) AS input_tokens,
 		COALESCE(SUM(output_tokens), 0) AS output_tokens,
-		COALESCE(SUM(cost_cents), 0) AS cost_cents,
+		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(cost_micros), 0) AS cost_micros,
 		SUM(CASE WHEN cost_known = ? THEN 1 ELSE 0 END) AS unknown_cost_calls
 	`, false).Group("api_key_id").Order("calls DESC").Scan(&rows).Error
 	if err != nil {
@@ -334,7 +344,9 @@ func AggregateByTime(db *gorm.DB, f *RequestLogFilter, loc *time.Location, bucke
 			SuccessRate:      m.SuccessRate(),
 			InputTokens:      m.InputTokens,
 			OutputTokens:     m.OutputTokens,
-			CostCents:        m.KnownCostCents,
+			CacheWriteTokens: m.CacheWriteTokens,
+			CacheReadTokens:  m.CacheReadTokens,
+			CostMicros:       m.KnownCostMicros,
 			UnknownCostCalls: m.UnknownCostCalls,
 		}
 		result = append(result, row)

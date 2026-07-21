@@ -109,7 +109,7 @@ import { useApiKeysStore } from '../../store/apiKeys'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import type { CreateAPIKeyInput } from '../../api/apiKeys'
-import { toCents } from '../../utils/money'
+import { toMicros } from '../../utils/money'
 import HelpLabel from '../HelpLabel.vue'
 
 const props = defineProps<{ show: boolean }>()
@@ -177,7 +177,7 @@ async function onGenerate() {
       rpm_limit: form.rpm_limit ?? undefined,
       tpm_limit: form.tpm_limit ?? undefined,
       concurrency_limit: form.concurrency_limit ?? undefined,
-      budget_limit_cents: form.budget_amount != null ? toCents(form.budget_amount) : undefined,
+      budget_limit_micros: form.budget_amount != null ? toMicros(form.budget_amount) : undefined,
     }
     const res = await store.create(input)
     plaintext.value = res.plaintext_key

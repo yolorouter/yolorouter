@@ -18,12 +18,12 @@ import (
 
 // TodayMetricsDTO is the four today-card values the dashboard renders at the
 // top (PRD §6.6.2). SuccessRate is in [0, 1] — the frontend formats it as a
-// percentage. TotalCostCents sums cost_cents, which M5 finalize leaves at 0
+// percentage. TotalCostMicros sums cost_micros, which M5 finalize leaves at 0
 // whenever cost_known=false, so this sum equals the known-cost total without
 // a dialect-specific CASE on the boolean column.
 type TodayMetricsDTO struct {
 	Calls            int64   `json:"calls"`
-	TotalCostCents   int64   `json:"total_cost_cents"`
+	TotalCostMicros  int64   `json:"total_cost_micros"`
 	SuccessRate      float64 `json:"success_rate"`
 	UnknownCostCalls int64   `json:"unknown_cost_calls"`
 }
@@ -41,7 +41,7 @@ func GetTodayMetrics(db *gorm.DB, loc *time.Location) (*TodayMetricsDTO, error) 
 	}
 	return &TodayMetricsDTO{
 		Calls:            m.TotalCalls,
-		TotalCostCents:   m.KnownCostCents,
+		TotalCostMicros:  m.KnownCostMicros,
 		SuccessRate:      m.SuccessRate(),
 		UnknownCostCalls: m.UnknownCostCalls,
 	}, nil
@@ -49,9 +49,9 @@ func GetTodayMetrics(db *gorm.DB, loc *time.Location) (*TodayMetricsDTO, error) 
 
 // TrendPoint is one day's totals in the N-day trend chart.
 type TrendPoint struct {
-	Date      string `json:"date"`       // "2006-01-02", localized
-	Calls     int64  `json:"calls"`
-	CostCents int64  `json:"cost_cents"`
+	Date       string `json:"date"` // "2006-01-02", localized
+	Calls      int64  `json:"calls"`
+	CostMicros int64  `json:"cost_micros"`
 }
 
 // GetTrend returns per-day totals for the `days` calendar days ending today
@@ -72,20 +72,20 @@ func GetTrend(db *gorm.DB, days int, loc *time.Location) ([]TrendPoint, error) {
 		day := now.AddDate(0, 0, -i)
 		start, end := DayBoundsAt(loc, day)
 		var r struct {
-			Calls     int64
-			CostCents int64
+			Calls      int64
+			CostMicros int64
 		}
 		err := db.Model(&model.RequestLog{}).
 			Where("created_at >= ? AND created_at < ?", start, end).
-			Select("COUNT(*) AS calls, COALESCE(SUM(cost_cents), 0) AS cost_cents").
+			Select("COUNT(*) AS calls, COALESCE(SUM(cost_micros), 0) AS cost_micros").
 			Scan(&r).Error
 		if err != nil {
 			return nil, err
 		}
 		points = append(points, TrendPoint{
-			Date:      day.Format("2006-01-02"),
-			Calls:     r.Calls,
-			CostCents: r.CostCents,
+			Date:       day.Format("2006-01-02"),
+			Calls:      r.Calls,
+			CostMicros: r.CostMicros,
 		})
 	}
 	return points, nil
@@ -96,7 +96,7 @@ type TopCaller struct {
 	APIKeyID   uint   `json:"api_key_id"`
 	OwnerLabel string `json:"owner_label"`
 	Calls      int64  `json:"calls"`
-	CostCents  int64  `json:"cost_cents"`
+	CostMicros int64  `json:"cost_micros"`
 }
 
 // GetTopCallers returns the top `limit` API keys by known cost incurred
@@ -116,12 +116,12 @@ func GetTopCallers(db *gorm.DB, start, end time.Time, limit int) ([]TopCaller, e
 	var rows []TopCaller
 	err := db.Table("request_logs AS rl").
 		Select("rl.api_key_id AS api_key_id, COALESCE(ak.owner_label, '') AS owner_label, "+
-			"COUNT(*) AS calls, COALESCE(SUM(rl.cost_cents), 0) AS cost_cents").
+			"COUNT(*) AS calls, COALESCE(SUM(rl.cost_micros), 0) AS cost_micros").
 		Joins("INNER JOIN api_keys ak ON ak.id = rl.api_key_id").
 		Where("rl.created_at >= ? AND rl.created_at < ?", start, end).
 		Where("rl.api_key_id IS NOT NULL").
 		Group("rl.api_key_id, ak.owner_label").
-		Order("cost_cents DESC, rl.api_key_id ASC").
+		Order("cost_micros DESC, rl.api_key_id ASC").
 		Limit(limit).
 		Scan(&rows).Error
 	if err != nil {

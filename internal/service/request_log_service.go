@@ -68,23 +68,25 @@ type RequestLogListFilter struct {
 // api_keys / providers at this layer. StatusClass mirrors the list-filter
 // buckets so a row and its filter use one definition of "success".
 type RequestLogListItem struct {
-	RequestID    string    `json:"request_id"`
-	APIKeyID     *uint     `json:"api_key_id"`
-	OwnerLabel   string    `json:"owner_label"`
-	ModelName    string    `json:"model_name"`
-	ProviderID   *uint     `json:"provider_id"`
-	ProviderName string    `json:"provider_name"`
-	IsStream     bool      `json:"is_stream"`
-	StatusCode   int       `json:"status_code"`
-	StatusClass  string    `json:"status_class"`
-	InputTokens  int       `json:"input_tokens"`
-	OutputTokens int       `json:"output_tokens"`
-	CostCents    int64     `json:"cost_cents"`
-	CostKnown    bool      `json:"cost_known"`
-	FailReason   *string   `json:"fail_reason"`
-	Attempts     int       `json:"attempts"`
-	DurationMs   int64     `json:"duration_ms"`
-	CreatedAt    time.Time `json:"created_at"`
+	RequestID        string    `json:"request_id"`
+	APIKeyID         *uint     `json:"api_key_id"`
+	OwnerLabel       string    `json:"owner_label"`
+	ModelName        string    `json:"model_name"`
+	ProviderID       *uint     `json:"provider_id"`
+	ProviderName     string    `json:"provider_name"`
+	IsStream         bool      `json:"is_stream"`
+	StatusCode       int       `json:"status_code"`
+	StatusClass      string    `json:"status_class"`
+	InputTokens      int       `json:"input_tokens"`
+	OutputTokens     int       `json:"output_tokens"`
+	CacheWriteTokens int       `json:"cache_write_tokens"`
+	CacheReadTokens  int       `json:"cache_read_tokens"`
+	CostMicros       int64     `json:"cost_micros"`
+	CostKnown        bool      `json:"cost_known"`
+	FailReason       *string   `json:"fail_reason"`
+	Attempts         int       `json:"attempts"`
+	DurationMs       int64     `json:"duration_ms"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // RequestLogDetail is the single-row detail DTO. AttemptsDetail is parsed
@@ -106,7 +108,9 @@ type RequestLogDetail struct {
 	StatusClass          string                  `json:"status_class"`
 	InputTokens          int                     `json:"input_tokens"`
 	OutputTokens         int                     `json:"output_tokens"`
-	CostCents            int64                   `json:"cost_cents"`
+	CacheWriteTokens     int                     `json:"cache_write_tokens"`
+	CacheReadTokens      int                     `json:"cache_read_tokens"`
+	CostMicros           int64                   `json:"cost_micros"`
 	CostKnown            bool                    `json:"cost_known"`
 	FailReason           *string                 `json:"fail_reason"`
 	Attempts             int                     `json:"attempts"`
@@ -183,23 +187,25 @@ func (s *RequestLogService) toListItems(rows []model.RequestLog) ([]RequestLogLi
 	for i := range rows {
 		r := &rows[i]
 		items = append(items, RequestLogListItem{
-			RequestID:    r.RequestID,
-			APIKeyID:     r.APIKeyID,
-			OwnerLabel:   lookupName(r.APIKeyID, ownerLabels),
-			ModelName:    r.ModelName,
-			ProviderID:   r.ProviderID,
-			ProviderName: lookupName(r.ProviderID, providerNames),
-			IsStream:     r.IsStream,
-			StatusCode:   r.StatusCode,
-			StatusClass:  DeriveStatusClass(r.StatusCode, r.FailReason),
-			InputTokens:  r.InputTokens,
-			OutputTokens: r.OutputTokens,
-			CostCents:    r.CostCents,
-			CostKnown:    r.CostKnown,
-			FailReason:   r.FailReason,
-			Attempts:     r.Attempts,
-			DurationMs:   r.DurationMs,
-			CreatedAt:    r.CreatedAt,
+			RequestID:        r.RequestID,
+			APIKeyID:         r.APIKeyID,
+			OwnerLabel:       lookupName(r.APIKeyID, ownerLabels),
+			ModelName:        r.ModelName,
+			ProviderID:       r.ProviderID,
+			ProviderName:     lookupName(r.ProviderID, providerNames),
+			IsStream:         r.IsStream,
+			StatusCode:       r.StatusCode,
+			StatusClass:      DeriveStatusClass(r.StatusCode, r.FailReason),
+			InputTokens:      r.InputTokens,
+			OutputTokens:     r.OutputTokens,
+			CacheWriteTokens: r.CacheWriteTokens,
+			CacheReadTokens:  r.CacheReadTokens,
+			CostMicros:       r.CostMicros,
+			CostKnown:        r.CostKnown,
+			FailReason:       r.FailReason,
+			Attempts:         r.Attempts,
+			DurationMs:       r.DurationMs,
+			CreatedAt:        r.CreatedAt,
 		})
 	}
 	return items, nil
@@ -242,24 +248,26 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 	}
 
 	detail := &RequestLogDetail{
-		RequestID:      row.RequestID,
-		APIKeyID:       row.APIKeyID,
-		OwnerLabel:     lookupName(row.APIKeyID, ownerLabels),
-		ModelName:      row.ModelName,
-		ProviderID:     row.ProviderID,
-		ProviderName:   lookupName(row.ProviderID, providerNames),
-		IsStream:       row.IsStream,
-		StatusCode:     row.StatusCode,
-		StatusClass:    DeriveStatusClass(row.StatusCode, row.FailReason),
-		InputTokens:    row.InputTokens,
-		OutputTokens:   row.OutputTokens,
-		CostCents:      row.CostCents,
-		CostKnown:      row.CostKnown,
-		FailReason:     row.FailReason,
-		Attempts:       row.Attempts,
-		AttemptsDetail: attempts,
-		DurationMs:     row.DurationMs,
-		CreatedAt:      row.CreatedAt,
+		RequestID:        row.RequestID,
+		APIKeyID:         row.APIKeyID,
+		OwnerLabel:       lookupName(row.APIKeyID, ownerLabels),
+		ModelName:        row.ModelName,
+		ProviderID:       row.ProviderID,
+		ProviderName:     lookupName(row.ProviderID, providerNames),
+		IsStream:         row.IsStream,
+		StatusCode:       row.StatusCode,
+		StatusClass:      DeriveStatusClass(row.StatusCode, row.FailReason),
+		InputTokens:      row.InputTokens,
+		OutputTokens:     row.OutputTokens,
+		CacheWriteTokens: row.CacheWriteTokens,
+		CacheReadTokens:  row.CacheReadTokens,
+		CostMicros:       row.CostMicros,
+		CostKnown:        row.CostKnown,
+		FailReason:       row.FailReason,
+		Attempts:         row.Attempts,
+		AttemptsDetail:   attempts,
+		DurationMs:       row.DurationMs,
+		CreatedAt:        row.CreatedAt,
 	}
 	if bodyRow != nil {
 		detail.RequestHeaders = bodyRow.RequestHeaders // small (masked headers), never capped
@@ -473,13 +481,14 @@ func csvHeaderRow() []string {
 		"owner_label", "model_name", "provider_name",
 		"is_stream", "attempts", "duration_ms",
 		"input_tokens", "output_tokens",
-		"cost_cents", "cost_known", "fail_reason",
+		"cache_write_tokens", "cache_read_tokens",
+		"cost_micros", "cost_known", "fail_reason",
 	}
 }
 
 // csvRowFromItem renders one list-row DTO as a CSV record. time.Time uses
 // RFC3339 for round-trippability. cost_known=false is rendered as the
-// literal "false" rather than being conflated with cost_cents=0 so a
+// literal "false" rather than being conflated with cost_micros=0 so a
 // spreadsheet doesn't silently display a price-unknown row as "free".
 func csvRowFromItem(it RequestLogListItem) []string {
 	failReason := ""
@@ -499,7 +508,9 @@ func csvRowFromItem(it RequestLogListItem) []string {
 		strconv.FormatInt(it.DurationMs, 10),
 		strconv.Itoa(it.InputTokens),
 		strconv.Itoa(it.OutputTokens),
-		strconv.FormatInt(it.CostCents, 10),
+		strconv.Itoa(it.CacheWriteTokens),
+		strconv.Itoa(it.CacheReadTokens),
+		strconv.FormatInt(it.CostMicros, 10),
 		strconv.FormatBool(it.CostKnown),
 		failReason,
 	}

@@ -27,7 +27,7 @@ const (
 // APIKey display statuses returned to the UI. Computed at read time, never
 // stored — same "running status not persisted" pattern as M3's
 // ModelRunningStatus. Budget-exhausted is unreachable in M4 (nothing writes
-// budget_spent_cents until the gateway records per-request cost) but is kept
+// budget_spent_micros until the gateway records per-request cost) but is kept
 // here so the status is correct from day one once M5/M6 wires the spend write.
 const (
 	APIKeyDisplayActive    = "active"
@@ -49,32 +49,32 @@ func NewAPIKeyService(db *gorm.DB) *APIKeyService {
 // is the key's allowlist (never nil — empty array means "no models", per
 // PRD §6.4.7).
 type APIKeyView struct {
-	ID               uint       `json:"id"`
-	KeyPrefix        string     `json:"key_prefix"`
-	OwnerLabel       string     `json:"owner_label"`
-	Remark           string     `json:"remark"`
-	Status           int        `json:"status"`
-	DisplayStatus    string     `json:"display_status"`
-	ExpiresAt        *time.Time `json:"expires_at"`
-	RPMLimit         *int       `json:"rpm_limit"`
-	TPMLimit         *int       `json:"tpm_limit"`
-	ConcurrencyLimit *int       `json:"concurrency_limit"`
-	BudgetLimitCents *int64     `json:"budget_limit_cents"`
-	BudgetSpentCents int64      `json:"budget_spent_cents"`
-	ModelIDs         []uint     `json:"model_ids"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ID                uint       `json:"id"`
+	KeyPrefix         string     `json:"key_prefix"`
+	OwnerLabel        string     `json:"owner_label"`
+	Remark            string     `json:"remark"`
+	Status            int        `json:"status"`
+	DisplayStatus     string     `json:"display_status"`
+	ExpiresAt         *time.Time `json:"expires_at"`
+	RPMLimit          *int       `json:"rpm_limit"`
+	TPMLimit          *int       `json:"tpm_limit"`
+	ConcurrencyLimit  *int       `json:"concurrency_limit"`
+	BudgetLimitMicros *int64     `json:"budget_limit_micros"`
+	BudgetSpentMicros int64      `json:"budget_spent_micros"`
+	ModelIDs          []uint     `json:"model_ids"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 type CreateAPIKeyInput struct {
-	OwnerLabel       string
-	Remark           string
-	ModelIDs         []uint
-	ExpiresAt        *time.Time
-	RPMLimit         *int
-	TPMLimit         *int
-	ConcurrencyLimit *int
-	BudgetLimitCents *int64
+	OwnerLabel        string
+	Remark            string
+	ModelIDs          []uint
+	ExpiresAt         *time.Time
+	RPMLimit          *int
+	TPMLimit          *int
+	ConcurrencyLimit  *int
+	BudgetLimitMicros *int64
 }
 
 // CreateAPIKeyResult carries the plaintext key exactly once — PlaintextKey is
@@ -92,14 +92,14 @@ type CreateAPIKeyResult struct {
 // it, PRD §6.4.7). ExpiresAt has no clear-sentinel (no clean zero-value wire
 // representation) — to remove an expiry, revoke and create a new key.
 type UpdateAPIKeyInput struct {
-	OwnerLabel       *string
-	Remark           *string
-	ModelIDs         []uint
-	ExpiresAt        *time.Time
-	RPMLimit         *int
-	TPMLimit         *int
-	ConcurrencyLimit *int
-	BudgetLimitCents *int64
+	OwnerLabel        *string
+	Remark            *string
+	ModelIDs          []uint
+	ExpiresAt         *time.Time
+	RPMLimit          *int
+	TPMLimit          *int
+	ConcurrencyLimit  *int
+	BudgetLimitMicros *int64
 }
 
 func (s *APIKeyService) ListAPIKeys(q string, page, pageSize int) ([]APIKeyView, int64, error) {
@@ -144,16 +144,16 @@ func (s *APIKeyService) CreateAPIKey(input CreateAPIKeyInput, now time.Time) (*C
 		return nil, err
 	}
 	key := &model.APIKey{
-		KeyHash:          hashToken(rawKey),
-		KeyPrefix:        truncatePrefix(rawKey),
-		OwnerLabel:       input.OwnerLabel,
-		Remark:           input.Remark,
-		Status:           model.APIKeyStatusActive,
-		ExpiresAt:        input.ExpiresAt,
-		RPMLimit:         limitPtrOrNil(input.RPMLimit),
-		TPMLimit:         limitPtrOrNil(input.TPMLimit),
-		ConcurrencyLimit: limitPtrOrNil(input.ConcurrencyLimit),
-		BudgetLimitCents: limitPtrOrNil(input.BudgetLimitCents),
+		KeyHash:           hashToken(rawKey),
+		KeyPrefix:         truncatePrefix(rawKey),
+		OwnerLabel:        input.OwnerLabel,
+		Remark:            input.Remark,
+		Status:            model.APIKeyStatusActive,
+		ExpiresAt:         input.ExpiresAt,
+		RPMLimit:          limitPtrOrNil(input.RPMLimit),
+		TPMLimit:          limitPtrOrNil(input.TPMLimit),
+		ConcurrencyLimit:  limitPtrOrNil(input.ConcurrencyLimit),
+		BudgetLimitMicros: limitPtrOrNil(input.BudgetLimitMicros),
 	}
 	if err := repository.CreateAPIKey(s.db, key, modelIDs, now); err != nil {
 		return nil, err
@@ -205,8 +205,8 @@ func (s *APIKeyService) UpdateAPIKey(id uint, input UpdateAPIKeyInput, now time.
 	if input.ConcurrencyLimit != nil {
 		updates["concurrency_limit"] = numericOrClear(*input.ConcurrencyLimit)
 	}
-	if input.BudgetLimitCents != nil {
-		updates["budget_limit_cents"] = numericOrClear(*input.BudgetLimitCents)
+	if input.BudgetLimitMicros != nil {
+		updates["budget_limit_micros"] = numericOrClear(*input.BudgetLimitMicros)
 	}
 
 	// nil ModelIDs = leave whitelist untouched; non-nil (after dedup) replaces
@@ -265,8 +265,8 @@ func toAPIKeyView(k model.APIKey, modelIDs []uint) APIKeyView {
 		ID: k.ID, KeyPrefix: k.KeyPrefix, OwnerLabel: k.OwnerLabel, Remark: k.Remark,
 		Status: k.Status, DisplayStatus: computeAPIKeyDisplayStatus(k),
 		ExpiresAt: k.ExpiresAt, RPMLimit: k.RPMLimit, TPMLimit: k.TPMLimit,
-		ConcurrencyLimit: k.ConcurrencyLimit, BudgetLimitCents: k.BudgetLimitCents,
-		BudgetSpentCents: k.BudgetSpentCents, ModelIDs: modelIDs,
+		ConcurrencyLimit: k.ConcurrencyLimit, BudgetLimitMicros: k.BudgetLimitMicros,
+		BudgetSpentMicros: k.BudgetSpentMicros, ModelIDs: modelIDs,
 		CreatedAt: k.CreatedAt, UpdatedAt: k.UpdatedAt,
 	}
 }
@@ -281,7 +281,7 @@ func computeAPIKeyDisplayStatus(k model.APIKey) string {
 	if k.ExpiresAt != nil && k.ExpiresAt.Before(time.Now().UTC()) {
 		return APIKeyDisplayExpired
 	}
-	if k.BudgetLimitCents != nil && k.BudgetSpentCents >= *k.BudgetLimitCents {
+	if k.BudgetLimitMicros != nil && k.BudgetSpentMicros >= *k.BudgetLimitMicros {
 		return APIKeyDisplayBudgetHit
 	}
 	return APIKeyDisplayActive

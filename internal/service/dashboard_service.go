@@ -44,10 +44,10 @@ func NewDashboardService(db *gorm.DB) *DashboardService {
 // DashboardData is the GET /api/admin/dashboard response body (PRD §6.6).
 // Each section maps 1:1 to a card on the dashboard page.
 type DashboardData struct {
-	Today          repository.TodayMetricsDTO `json:"today"`
-	Trend          []repository.TrendPoint    `json:"trend"`
-	TopCallers     []repository.TopCaller     `json:"top_callers"`
-	RecentFailures []RecentFailureView        `json:"recent_failures"`
+	Today          repository.TodayMetricsDTO   `json:"today"`
+	Trend          []repository.TrendPoint      `json:"trend"`
+	TopCallers     []repository.TopCaller       `json:"top_callers"`
+	RecentFailures []RecentFailureView          `json:"recent_failures"`
 	UpstreamStatus repository.UpstreamStatusDTO `json:"upstream_status"`
 }
 

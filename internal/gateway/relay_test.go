@@ -455,8 +455,8 @@ func TestHandleEarlyRejectionCapturesRequestBody(t *testing.T) {
 			name: "budget_exceeded",
 			configureKey: func(k *model.APIKey) {
 				limit := int64(100)
-				k.BudgetLimitCents = &limit
-				k.BudgetSpentCents = 100
+				k.BudgetLimitMicros = &limit
+				k.BudgetSpentMicros = 100
 			},
 			wantStatus:  http.StatusTooManyRequests,
 			wantRespSub: "budget limit exceeded",
@@ -603,7 +603,7 @@ func TestRelayBudgetExceededReturnsInsufficientQuota(t *testing.T) {
 	apiKey := &model.APIKey{
 		KeyHash: ycrypto.HashToken("sk-yr-test"), KeyPrefix: "sk-yr-test------",
 		OwnerLabel: "tester", Status: model.APIKeyStatusActive,
-		BudgetLimitCents: &limit, BudgetSpentCents: 100,
+		BudgetLimitMicros: &limit, BudgetSpentMicros: 100,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(apiKey).Error; err != nil {

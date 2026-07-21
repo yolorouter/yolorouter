@@ -110,8 +110,14 @@
           <NDescriptionsItem :label="t('requestLogs.fieldOutputTokens')">
             {{ detail.output_tokens.toLocaleString() }}
           </NDescriptionsItem>
+          <NDescriptionsItem :label="t('requestLogs.fieldCacheWriteTokens')">
+            {{ detail.cache_write_tokens.toLocaleString() }}
+          </NDescriptionsItem>
+          <NDescriptionsItem :label="t('requestLogs.fieldCacheReadTokens')">
+            {{ detail.cache_read_tokens.toLocaleString() }}
+          </NDescriptionsItem>
           <NDescriptionsItem :label="t('requestLogs.fieldCost')" :span="2">
-            <span v-if="detail.cost_known" class="cost-cell">{{ formatCents(detail.cost_cents) }} {{ t('requestLogs.currencyUnit') }}</span>
+            <span v-if="detail.cost_known" class="cost-cell">{{ formatMicros(detail.cost_micros) }} {{ t('requestLogs.currencyUnit') }}</span>
             <NTag v-else size="small" :bordered="false" type="default">{{ t('requestLogs.costUnknown') }}</NTag>
           </NDescriptionsItem>
         </NDescriptions>
@@ -189,7 +195,7 @@ import {
   type RequestLogDetail,
 } from '../../api/requestLogs'
 import { APIError, displayMessage } from '../../api/client'
-import { formatCents } from '../../utils/money'
+import { formatMicros } from '../../utils/money'
 import { columnTitle } from '../../utils/columnTitle'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'

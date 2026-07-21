@@ -90,7 +90,7 @@ import { useApiKeysStore } from '../../store/apiKeys'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { getAPIKey, type APIKey, type UpdateAPIKeyInput } from '../../api/apiKeys'
-import { fromCents, toCents } from '../../utils/money'
+import { fromMicros, toMicros } from '../../utils/money'
 import HelpLabel from '../HelpLabel.vue'
 
 const props = defineProps<{ show: boolean; apiKeyId: number }>()
@@ -140,7 +140,7 @@ function fill(k: APIKey) {
   form.rpm_limit = k.rpm_limit
   form.tpm_limit = k.tpm_limit
   form.concurrency_limit = k.concurrency_limit
-  form.budget_amount = k.budget_limit_cents != null ? fromCents(k.budget_limit_cents) : null
+  form.budget_amount = k.budget_limit_micros != null ? fromMicros(k.budget_limit_micros) : null
 }
 
 onMounted(async () => {
@@ -186,7 +186,7 @@ async function onSave() {
       rpm_limit: form.rpm_limit ?? 0,
       tpm_limit: form.tpm_limit ?? 0,
       concurrency_limit: form.concurrency_limit ?? 0,
-      budget_limit_cents: form.budget_amount != null ? toCents(form.budget_amount) : 0,
+      budget_limit_micros: form.budget_amount != null ? toMicros(form.budget_amount) : 0,
     }
     await store.update(props.apiKeyId, input)
     emit('saved')

@@ -23,7 +23,7 @@ import { useI18n } from 'vue-i18n'
 // Single import registers every chart type / component we need (side effect)
 // and gives us the VChart component to render with.
 import { VChart } from '../../utils/echarts'
-import { formatCents } from '../../utils/money'
+import { formatMicros } from '../../utils/money'
 import type { TrendPoint } from '../../api/analytics'
 
 const props = defineProps<{ points: TrendPoint[] }>()
@@ -50,9 +50,9 @@ function formatAxisDate(s: string): string {
 const option = computed(() => {
   const dates = props.points.map((p) => formatAxisDate(p.date))
   const calls = props.points.map((p) => p.calls)
-  // Cost is shown in yuan (major unit); cost_cents/100 — same formatter as
+  // Cost is shown in yuan (major unit); cost_micros / 1e6 — same formatter as
   // the table column, so axis ticks and tooltip stay consistent with it.
-  const costs = props.points.map((p) => Number(formatCents(p.cost_cents)))
+  const costs = props.points.map((p) => Number(formatMicros(p.cost_micros)))
 
   return {
     // `axisPointer` lets the tooltip snap to the column under the cursor
@@ -68,9 +68,12 @@ const option = computed(() => {
         if (!Array.isArray(params) || !params.length) return ''
         const first = params[0] as { axisValueLabel?: string; name?: string }
         const header = first.axisValueLabel || first.name || ''
-        const lines = params.map((p: { seriesIndex: number; seriesName: string; marker: string; value: unknown }) => {
+        const lines = params.map((p: { seriesIndex: number; dataIndex: number; seriesName: string; marker: string; value: unknown }) => {
           const isCost = p.seriesIndex === 1
-          const val = isCost ? `¥${Number(p.value).toFixed(2)}` : String(p.value)
+          // Format cost via money.ts's formatMicros (the single precision
+          // source) from this bucket's original micros, rather than
+          // re-hardcoding the decimal count here.
+          const val = isCost ? `¥${formatMicros(props.points[p.dataIndex]?.cost_micros ?? 0)}` : String(p.value)
           return `${p.marker} ${p.seriesName}: ${val}`
         })
         return [header, ...lines].join('<br/>')

@@ -54,7 +54,7 @@ import { Plus, Search } from '@lucide/vue'
 import { useApiKeysStore } from '../../store/apiKeys'
 import { displayMessage } from '../../api/client'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
-import { formatCents } from '../../utils/money'
+import { formatMicros } from '../../utils/money'
 import type { APIKey } from '../../api/apiKeys'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -119,9 +119,9 @@ const pagination = computed<PaginationProps>(() => ({
 }))
 
 function budgetCell(row: APIKey): string {
-  const spent = formatCents(row.budget_spent_cents)
-  if (row.budget_limit_cents == null) return `${spent} / ${t('apiKeys.unlimited')}`
-  return `${spent} / ${formatCents(row.budget_limit_cents)}`
+  const spent = formatMicros(row.budget_spent_micros)
+  if (row.budget_limit_micros == null) return `${spent} / ${t('apiKeys.unlimited')}`
+  return `${spent} / ${formatMicros(row.budget_limit_micros)}`
 }
 
 function expiresCell(row: APIKey): string {

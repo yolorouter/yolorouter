@@ -12,7 +12,7 @@ import "time"
 // query/filter UI is a separate module (PRD §6.8); M5 only writes rows.
 //
 // CostKnown=false means price or token info was missing for this request —
-// CostCents is 0 but must NOT be displayed as "free" (GATE-21 / PRD §6.7.6).
+// CostMicros is 0 but must NOT be displayed as "free" (GATE-21 / PRD §6.7.6).
 type RequestLog struct {
 	ID               uint      `gorm:"column:id;primaryKey" json:"id"`
 	RequestID        string    `gorm:"column:request_id" json:"request_id"`
@@ -25,7 +25,7 @@ type RequestLog struct {
 	OutputTokens     int       `gorm:"column:output_tokens" json:"output_tokens"`
 	CacheWriteTokens int       `gorm:"column:cache_write_tokens" json:"cache_write_tokens"`
 	CacheReadTokens  int       `gorm:"column:cache_read_tokens" json:"cache_read_tokens"`
-	CostCents        int64     `gorm:"column:cost_cents" json:"cost_cents"`
+	CostMicros       int64     `gorm:"column:cost_micros" json:"cost_micros"`
 	CostKnown        bool      `gorm:"column:cost_known" json:"cost_known"`
 	FailReason       *string   `gorm:"column:fail_reason" json:"fail_reason"`
 	Attempts         int       `gorm:"column:attempts" json:"attempts"`

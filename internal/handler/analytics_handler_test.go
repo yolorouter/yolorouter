@@ -58,26 +58,43 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 	// 2 successes (cost-known), 1 server failure (cost-unknown),
 	// 1 caller-cancel (cost-unknown). Verify each metric below.
 	seedRequestLog(t, db, "r1", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 200
-		r.InputTokens = 100; r.OutputTokens = 50; r.CostCents = 10; r.CostKnown = true
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.InputTokens = 100
+		r.OutputTokens = 50
+		r.CostMicros = 10
+		r.CostKnown = true
 		r.DurationMs = 500
 	})
 	seedRequestLog(t, db, "r2", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 200
-		r.InputTokens = 200; r.OutputTokens = 100; r.CostCents = 20; r.CostKnown = true
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.InputTokens = 200
+		r.OutputTokens = 100
+		r.CostMicros = 20
+		r.CostKnown = true
 		r.DurationMs = 600
 	})
 	seedRequestLog(t, db, "r3", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 500; r.FailReason = analyticsStrPtr("upstream")
+		r.ModelName = "gpt-4"
+		r.StatusCode = 500
+		r.FailReason = analyticsStrPtr("upstream")
 		// Explicitly cost-unknown with zero tokens — seedRequestLog's
 		// defaults (InputTokens=10, OutputTokens=20, CostKnown=true) would
 		// otherwise skew the aggregate.
-		r.InputTokens = 0; r.OutputTokens = 0; r.CostCents = 0; r.CostKnown = false
+		r.InputTokens = 0
+		r.OutputTokens = 0
+		r.CostMicros = 0
+		r.CostKnown = false
 		r.DurationMs = 100
 	})
 	seedRequestLog(t, db, "r4", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 499
-		r.InputTokens = 0; r.OutputTokens = 0; r.CostCents = 0; r.CostKnown = false
+		r.ModelName = "gpt-4"
+		r.StatusCode = 499
+		r.InputTokens = 0
+		r.OutputTokens = 0
+		r.CostMicros = 0
+		r.CostKnown = false
 		r.DurationMs = 50
 	})
 
@@ -86,7 +103,7 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
 	var env struct {
-		Code int             `json:"code"`
+		Code int                 `json:"code"`
 		Data service.OverviewRow `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
@@ -110,8 +127,8 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 	if data.InputTokens != 300 || data.OutputTokens != 150 {
 		t.Fatalf("tokens = %d/%d, want 300/150", data.InputTokens, data.OutputTokens)
 	}
-	if data.CostCents != 30 {
-		t.Fatalf("CostCents = %d, want 30", data.CostCents)
+	if data.CostMicros != 30 {
+		t.Fatalf("CostMicros = %d, want 30", data.CostMicros)
 	}
 	if data.UnknownCostCalls != 2 {
 		t.Fatalf("UnknownCostCalls = %d, want 2 (r3 + r4)", data.UnknownCostCalls)
@@ -123,12 +140,20 @@ func TestGetAnalyticsOverviewRespectsTimeRange(t *testing.T) {
 	now := time.Now().UTC()
 	longAgo := now.Add(-30 * 24 * time.Hour)
 	seedRequestLog(t, db, "old", longAgo, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 200
-		r.InputTokens = 10; r.OutputTokens = 5; r.CostCents = 1; r.CostKnown = true
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.InputTokens = 10
+		r.OutputTokens = 5
+		r.CostMicros = 1
+		r.CostKnown = true
 	})
 	seedRequestLog(t, db, "new", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 200
-		r.InputTokens = 20; r.OutputTokens = 10; r.CostCents = 2; r.CostKnown = true
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.InputTokens = 20
+		r.OutputTokens = 10
+		r.CostMicros = 2
+		r.CostKnown = true
 	})
 
 	// Window covering only `now`.
@@ -172,8 +197,12 @@ func TestGetAnalyticsReportByModelGroupsAndOrdersByCalls(t *testing.T) {
 	now := time.Now().UTC()
 	mk := func(name string) func(*model.RequestLog) {
 		return func(r *model.RequestLog) {
-			r.ModelName = name; r.StatusCode = 200
-			r.InputTokens = 10; r.OutputTokens = 5; r.CostCents = 1; r.CostKnown = true
+			r.ModelName = name
+			r.StatusCode = 200
+			r.InputTokens = 10
+			r.OutputTokens = 5
+			r.CostMicros = 1
+			r.CostKnown = true
 		}
 	}
 	seedRequestLog(t, db, "a1", now, mk("gpt-4"))
@@ -227,8 +256,17 @@ func TestGetAnalyticsReportByModelComputesSuccessRateExcluding499(t *testing.T) 
 	r, db := newAnalyticsTestRouter(t)
 	now := time.Now().UTC()
 	// 1 success + 1 server-error (5xx, ended) + 1 caller-cancel (499, NOT ended).
-	seedRequestLog(t, db, "s", now, func(r *model.RequestLog) { r.ModelName = "gpt-4"; r.StatusCode = 200; r.CostKnown = true; r.CostCents = 1 })
-	seedRequestLog(t, db, "f", now, func(r *model.RequestLog) { r.ModelName = "gpt-4"; r.StatusCode = 500; r.FailReason = analyticsStrPtr("err") })
+	seedRequestLog(t, db, "s", now, func(r *model.RequestLog) {
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.CostKnown = true
+		r.CostMicros = 1
+	})
+	seedRequestLog(t, db, "f", now, func(r *model.RequestLog) {
+		r.ModelName = "gpt-4"
+		r.StatusCode = 500
+		r.FailReason = analyticsStrPtr("err")
+	})
 	seedRequestLog(t, db, "c", now, func(r *model.RequestLog) { r.ModelName = "gpt-4"; r.StatusCode = 499 })
 
 	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=model", nil, nil)
@@ -270,12 +308,18 @@ func TestGetAnalyticsReportByProviderResolvesNamesViaPostFetch(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	seedRequestLog(t, db, "p1", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.ProviderID = &prov.ID; r.StatusCode = 200
-		r.InputTokens = 10; r.OutputTokens = 5; r.CostCents = 1; r.CostKnown = true
+		r.ModelName = "gpt-4"
+		r.ProviderID = &prov.ID
+		r.StatusCode = 200
+		r.InputTokens = 10
+		r.OutputTokens = 5
+		r.CostMicros = 1
+		r.CostKnown = true
 		r.DurationMs = 100
 	})
 	seedRequestLog(t, db, "p2", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 200 // NULL-provider bucket
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200 // NULL-provider bucket
 	})
 
 	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=provider", nil, nil)
@@ -332,11 +376,17 @@ func TestGetAnalyticsReportByCallerResolvesOwnerLabels(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	seedRequestLog(t, db, "k1", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.APIKeyID = &key.ID; r.StatusCode = 200
-		r.InputTokens = 30; r.OutputTokens = 15; r.CostCents = 3; r.CostKnown = true
+		r.ModelName = "gpt-4"
+		r.APIKeyID = &key.ID
+		r.StatusCode = 200
+		r.InputTokens = 30
+		r.OutputTokens = 15
+		r.CostMicros = 3
+		r.CostKnown = true
 	})
 	seedRequestLog(t, db, "k2", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 200 // NULL-api_key bucket
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200 // NULL-api_key bucket
 	})
 
 	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=caller", nil, nil)
@@ -379,7 +429,12 @@ func TestGetAnalyticsReportByCallerResolvesOwnerLabels(t *testing.T) {
 func TestGetAnalyticsReportDefaultsDimensionToModel(t *testing.T) {
 	r, db := newAnalyticsTestRouter(t)
 	now := time.Now().UTC()
-	seedRequestLog(t, db, "d1", now, func(r *model.RequestLog) { r.ModelName = "gpt-4"; r.StatusCode = 200; r.CostKnown = true; r.CostCents = 1 })
+	seedRequestLog(t, db, "d1", now, func(r *model.RequestLog) {
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.CostKnown = true
+		r.CostMicros = 1
+	})
 
 	// No ?dimension= on the URL at all.
 	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report", nil, nil)
@@ -427,8 +482,18 @@ func TestGetAnalyticsReportByTimeDayBucketFillsGaps(t *testing.T) {
 	now := time.Now().UTC()
 	day3 := now.Add(-3 * 24 * time.Hour)
 	day1 := now.Add(-1 * 24 * time.Hour)
-	seedRequestLog(t, db, "g1", day3, func(r *model.RequestLog) { r.ModelName = "gpt-4"; r.StatusCode = 200; r.CostKnown = true; r.CostCents = 5 })
-	seedRequestLog(t, db, "g2", day1, func(r *model.RequestLog) { r.ModelName = "gpt-4"; r.StatusCode = 200; r.CostKnown = true; r.CostCents = 10 })
+	seedRequestLog(t, db, "g1", day3, func(r *model.RequestLog) {
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.CostKnown = true
+		r.CostMicros = 5
+	})
+	seedRequestLog(t, db, "g2", day1, func(r *model.RequestLog) {
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.CostKnown = true
+		r.CostMicros = 10
+	})
 
 	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=time&bucket=day", nil, nil)
 	if w.Code != http.StatusOK {
@@ -487,15 +552,25 @@ func TestAggregateByTimeWalksDayBucketsInUTC(t *testing.T) {
 	end := base.AddDate(0, 0, 3)
 
 	seedRequestLog(t, db, "d0-a", day0.Add(6*time.Hour), func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 200
-		r.InputTokens = 10; r.OutputTokens = 5; r.CostCents = 1; r.CostKnown = true
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.InputTokens = 10
+		r.OutputTokens = 5
+		r.CostMicros = 1
+		r.CostKnown = true
 	})
 	seedRequestLog(t, db, "d0-b", day0.Add(7*time.Hour), func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 200
-		r.InputTokens = 10; r.OutputTokens = 5; r.CostCents = 1; r.CostKnown = true
+		r.ModelName = "gpt-4"
+		r.StatusCode = 200
+		r.InputTokens = 10
+		r.OutputTokens = 5
+		r.CostMicros = 1
+		r.CostKnown = true
 	})
 	seedRequestLog(t, db, "d2-a", day2.Add(8*time.Hour), func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.StatusCode = 500; r.FailReason = analyticsStrPtr("err")
+		r.ModelName = "gpt-4"
+		r.StatusCode = 500
+		r.FailReason = analyticsStrPtr("err")
 	})
 
 	startUTC := day0
@@ -544,8 +619,13 @@ func TestExportAnalyticsCSVWritesBOMAndHeadersAndRows(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	seedRequestLog(t, db, "c1", now, func(r *model.RequestLog) {
-		r.ModelName = "gpt-4"; r.ProviderID = &prov.ID; r.StatusCode = 200
-		r.InputTokens = 10; r.OutputTokens = 5; r.CostCents = 1; r.CostKnown = true
+		r.ModelName = "gpt-4"
+		r.ProviderID = &prov.ID
+		r.StatusCode = 200
+		r.InputTokens = 10
+		r.OutputTokens = 5
+		r.CostMicros = 1
+		r.CostKnown = true
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/analytics/export?dimension=model", nil)
@@ -573,7 +653,7 @@ func TestExportAnalyticsCSVWritesBOMAndHeadersAndRows(t *testing.T) {
 	if len(records) < 2 {
 		t.Fatalf("expected header + at least 1 row, got %d records", len(records))
 	}
-	wantHeader := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cost_cents", "unknown_cost_calls"}
+	wantHeader := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls"}
 	if len(records[0]) != len(wantHeader) {
 		t.Fatalf("header len = %d, want %d (%v)", len(records[0]), len(wantHeader), records[0])
 	}

@@ -80,7 +80,7 @@ type OverviewRow struct {
 	UnknownCostCalls int64   `json:"unknown_cost_calls"`
 	InputTokens      int64   `json:"input_tokens"`
 	OutputTokens     int64   `json:"output_tokens"`
-	CostCents        int64   `json:"cost_cents"`
+	CostMicros       int64   `json:"cost_micros"`
 }
 
 // ReportResult is the GET /analytics/report body. Dimension echoes the
@@ -130,7 +130,7 @@ func (s *AnalyticsService) GetOverview(filter AnalyticsFilter, bucket string) (*
 		UnknownCostCalls: m.UnknownCostCalls,
 		InputTokens:      m.InputTokens,
 		OutputTokens:     m.OutputTokens,
-		CostCents:        m.KnownCostCents,
+		CostMicros:       m.KnownCostMicros,
 	}, nil
 }
 
@@ -251,7 +251,7 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 		if !ok {
 			return nil, nil, errCSVTypeMismatch("ModelReportRow")
 		}
-		headers := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cost_cents", "unknown_cost_calls"}
+		headers := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls"}
 		records := make([][]string, len(typed))
 		for i, r := range typed {
 			records[i] = []string{
@@ -260,7 +260,9 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 				formatRate(r.SuccessRate),
 				strconv.FormatInt(r.InputTokens, 10),
 				strconv.FormatInt(r.OutputTokens, 10),
-				strconv.FormatInt(r.CostCents, 10),
+				strconv.FormatInt(r.CacheWriteTokens, 10),
+				strconv.FormatInt(r.CacheReadTokens, 10),
+				strconv.FormatInt(r.CostMicros, 10),
 				strconv.FormatInt(r.UnknownCostCalls, 10),
 			}
 		}
@@ -270,7 +272,7 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 		if !ok {
 			return nil, nil, errCSVTypeMismatch("ProviderReportRow")
 		}
-		headers := []string{"provider_id", "provider_name", "calls", "success_rate", "avg_duration_ms", "cost_cents", "unknown_cost_calls"}
+		headers := []string{"provider_id", "provider_name", "calls", "success_rate", "avg_duration_ms", "cost_micros", "unknown_cost_calls"}
 		records := make([][]string, len(typed))
 		for i, r := range typed {
 			records[i] = []string{
@@ -279,7 +281,7 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 				strconv.FormatInt(r.Calls, 10),
 				formatRate(r.SuccessRate),
 				strconv.FormatFloat(r.AvgDurationMs, 'f', 2, 64),
-				strconv.FormatInt(r.CostCents, 10),
+				strconv.FormatInt(r.CostMicros, 10),
 				strconv.FormatInt(r.UnknownCostCalls, 10),
 			}
 		}
@@ -289,7 +291,7 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 		if !ok {
 			return nil, nil, errCSVTypeMismatch("CallerReportRow")
 		}
-		headers := []string{"api_key_id", "owner_label", "calls", "success_rate", "input_tokens", "output_tokens", "cost_cents", "unknown_cost_calls"}
+		headers := []string{"api_key_id", "owner_label", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls"}
 		records := make([][]string, len(typed))
 		for i, r := range typed {
 			records[i] = []string{
@@ -299,7 +301,9 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 				formatRate(r.SuccessRate),
 				strconv.FormatInt(r.InputTokens, 10),
 				strconv.FormatInt(r.OutputTokens, 10),
-				strconv.FormatInt(r.CostCents, 10),
+				strconv.FormatInt(r.CacheWriteTokens, 10),
+				strconv.FormatInt(r.CacheReadTokens, 10),
+				strconv.FormatInt(r.CostMicros, 10),
 				strconv.FormatInt(r.UnknownCostCalls, 10),
 			}
 		}
@@ -309,7 +313,7 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 		if !ok {
 			return nil, nil, errCSVTypeMismatch("TimeReportRow")
 		}
-		headers := []string{"bucket", "calls", "success_rate", "input_tokens", "output_tokens", "cost_cents", "unknown_cost_calls"}
+		headers := []string{"bucket", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls"}
 		records := make([][]string, len(typed))
 		for i, r := range typed {
 			records[i] = []string{
@@ -318,7 +322,9 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 				formatRate(r.SuccessRate),
 				strconv.FormatInt(r.InputTokens, 10),
 				strconv.FormatInt(r.OutputTokens, 10),
-				strconv.FormatInt(r.CostCents, 10),
+				strconv.FormatInt(r.CacheWriteTokens, 10),
+				strconv.FormatInt(r.CacheReadTokens, 10),
+				strconv.FormatInt(r.CostMicros, 10),
 				strconv.FormatInt(r.UnknownCostCalls, 10),
 			}
 		}

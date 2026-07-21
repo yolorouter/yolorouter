@@ -123,7 +123,7 @@ func TestExtractUsageMalformed(t *testing.T) {
 // TestExtractUsageEmptyObjectIsNil: GATE-21 — an empty usage object {} (or a
 // partial one missing completion_tokens) has no real counts, so it must NOT
 // be treated as known-zero (which would let computeCost record
-// cost_known=true cost_cents=0 and show the request as free).
+// cost_known=true cost_micros=0 and show the request as free).
 func TestExtractUsageEmptyObjectIsNil(t *testing.T) {
 	if got := extractUsage([]byte(`{"model":"x","usage":{}}`)); got != nil {
 		t.Fatalf("expected nil for empty usage {}, got %+v", got)

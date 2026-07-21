@@ -22,17 +22,17 @@ func CreateRequestLog(db *gorm.DB, log *model.RequestLog) error {
 	return db.Create(log).Error
 }
 
-// IncrementAPIKeyBudgetSpent atomically adds cents to one key's cumulative
+// IncrementAPIKeyBudgetSpent atomically adds micros to one key's cumulative
 // spend. The gateway is the only writer (M4 stored the column but never wrote
 // it). Used after a successful upstream response so budget exhaustion is
 // visible to the next request's pre-check (PRD §6.5 step 3 / GATE-02).
 //
-// UPDATE ... SET budget_spent_cents = budget_spent_cents + ? is a single
+// UPDATE ... SET budget_spent_micros = budget_spent_micros + ? is a single
 // statement, so concurrent gateway requests on the same key accumulate
 // correctly without a read-then-write race.
-func IncrementAPIKeyBudgetSpent(db *gorm.DB, apiKeyID uint, cents int64) error {
+func IncrementAPIKeyBudgetSpent(db *gorm.DB, apiKeyID uint, micros int64) error {
 	return db.Model(&model.APIKey{}).Where("id = ?", apiKeyID).
-		UpdateColumn("budget_spent_cents", gorm.Expr("budget_spent_cents + ?", cents)).Error
+		UpdateColumn("budget_spent_micros", gorm.Expr("budget_spent_micros + ?", micros)).Error
 }
 
 // UpsertRequestLogBody inserts or (on duplicate request_id) updates the 1:1

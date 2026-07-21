@@ -103,7 +103,7 @@ func seedRequestLog(t *testing.T, db *gorm.DB, requestID string, ts time.Time, m
 		StatusCode:   200,
 		InputTokens:  10,
 		OutputTokens: 20,
-		CostCents:    100,
+		CostMicros:   100,
 		CostKnown:    true,
 		Attempts:     1,
 		DurationMs:   42,

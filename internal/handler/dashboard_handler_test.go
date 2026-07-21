@@ -38,22 +38,22 @@ func newDashboardTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 // the handler test actually expects the API contract to be.
 type todayMetrics struct {
 	Calls            int64   `json:"calls"`
-	TotalCostCents   int64   `json:"total_cost_cents"`
+	TotalCostMicros  int64   `json:"total_cost_micros"`
 	SuccessRate      float64 `json:"success_rate"`
 	UnknownCostCalls int64   `json:"unknown_cost_calls"`
 }
 
 type trendPoint struct {
-	Date      string `json:"date"`
-	Calls     int64  `json:"calls"`
-	CostCents int64  `json:"cost_cents"`
+	Date       string `json:"date"`
+	Calls      int64  `json:"calls"`
+	CostMicros int64  `json:"cost_micros"`
 }
 
 type topCaller struct {
 	APIKeyID   uint   `json:"api_key_id"`
 	OwnerLabel string `json:"owner_label"`
 	Calls      int64  `json:"calls"`
-	CostCents  int64  `json:"cost_cents"`
+	CostMicros int64  `json:"cost_micros"`
 }
 
 type recentFailure struct {
@@ -75,11 +75,11 @@ type upstreamStatus struct {
 }
 
 type dashboardBody struct {
-	Today          todayMetrics   `json:"today"`
-	Trend          []trendPoint   `json:"trend"`
-	TopCallers     []topCaller    `json:"top_callers"`
+	Today          todayMetrics    `json:"today"`
+	Trend          []trendPoint    `json:"trend"`
+	TopCallers     []topCaller     `json:"top_callers"`
 	RecentFailures []recentFailure `json:"recent_failures"`
-	UpstreamStatus upstreamStatus `json:"upstream_status"`
+	UpstreamStatus upstreamStatus  `json:"upstream_status"`
 }
 
 // insertRequestLog is a thin helper around model.RequestLog construction.
@@ -97,7 +97,7 @@ func insertRequestLog(t *testing.T, db *gorm.DB, ts time.Time, mut func(*model.R
 		StatusCode:   200,
 		InputTokens:  10,
 		OutputTokens: 20,
-		CostCents:    100,
+		CostMicros:   100,
 		CostKnown:    true,
 		Attempts:     1,
 		DurationMs:   42,
@@ -126,7 +126,7 @@ func TestGetDashboardReturnsZeroEnvelopeOnFreshDB(t *testing.T) {
 	if err := json.Unmarshal(env.Data, &body); err != nil {
 		t.Fatalf("unmarshal dashboard body: %v", err)
 	}
-	if body.Today.Calls != 0 || body.Today.TotalCostCents != 0 ||
+	if body.Today.Calls != 0 || body.Today.TotalCostMicros != 0 ||
 		body.Today.SuccessRate != 0 || body.Today.UnknownCostCalls != 0 {
 		t.Fatalf("expected all-zero today section, got %+v", body.Today)
 	}
@@ -167,37 +167,37 @@ func TestGetDashboardTodayMetricsCountRowsInLocalDay(t *testing.T) {
 	now := time.Now().In(loc)
 
 	// Two clean successes (200, cost_known=true), one failure (500, 0 cost),
-	// one unknown-cost success (200, cost_known=false, cost_cents=0), one
+	// one unknown-cost success (200, cost_known=false, cost_micros=0), one
 	// caller-cancel (499 — counts toward total but NOT success rate).
 	insertRequestLog(t, db, now.Add(-5*time.Minute), func(r *model.RequestLog) {
 		r.StatusCode = 200
-		r.CostCents = 100
+		r.CostMicros = 100
 		r.CostKnown = true
 	})
 	insertRequestLog(t, db, now.Add(-4*time.Minute), func(r *model.RequestLog) {
 		r.StatusCode = 200
-		r.CostCents = 200
+		r.CostMicros = 200
 		r.CostKnown = true
 	})
 	insertRequestLog(t, db, now.Add(-3*time.Minute), func(r *model.RequestLog) {
 		r.StatusCode = 500
-		r.CostCents = 0
+		r.CostMicros = 0
 		r.CostKnown = true
 	})
 	insertRequestLog(t, db, now.Add(-2*time.Minute), func(r *model.RequestLog) {
 		r.StatusCode = 200
-		r.CostCents = 0
+		r.CostMicros = 0
 		r.CostKnown = false
 	})
 	insertRequestLog(t, db, now.Add(-1*time.Minute), func(r *model.RequestLog) {
 		r.StatusCode = 499
-		r.CostCents = 0
+		r.CostMicros = 0
 		r.CostKnown = true
 	})
 	// One row just before today's window — must NOT count toward today.
 	insertRequestLog(t, db, start.Add(-time.Second), func(r *model.RequestLog) {
 		r.StatusCode = 200
-		r.CostCents = 9999
+		r.CostMicros = 9999
 		r.CostKnown = true
 	})
 
@@ -215,8 +215,8 @@ func TestGetDashboardTodayMetricsCountRowsInLocalDay(t *testing.T) {
 		t.Fatalf("Calls: want 5, got %d", body.Today.Calls)
 	}
 	// Known cost sum: 100 + 200 + 0 (unknown) + 0 (fail) + 0 (cancel) = 300.
-	if body.Today.TotalCostCents != 300 {
-		t.Fatalf("TotalCostCents: want 300, got %d", body.Today.TotalCostCents)
+	if body.Today.TotalCostMicros != 300 {
+		t.Fatalf("TotalCostMicros: want 300, got %d", body.Today.TotalCostMicros)
 	}
 	// Success rate: 3 successes (clean succ + unknown-cost succ) / 4 ended
 	// (succ+fail+partial+rejected, cancels excluded) = 0.75.
@@ -240,11 +240,11 @@ func TestGetDashboardTrendIncludesTodayRowOnly(t *testing.T) {
 
 	// Two rows today, nothing on prior days.
 	insertRequestLog(t, db, now.Add(-1*time.Hour), func(r *model.RequestLog) {
-		r.CostCents = 150
+		r.CostMicros = 150
 		r.CostKnown = true
 	})
 	insertRequestLog(t, db, now.Add(-30*time.Minute), func(r *model.RequestLog) {
-		r.CostCents = 50
+		r.CostMicros = 50
 		r.CostKnown = true
 	})
 
@@ -264,12 +264,12 @@ func TestGetDashboardTrendIncludesTodayRowOnly(t *testing.T) {
 	if today.Date != wantToday {
 		t.Fatalf("today.Date: want %q, got %q", wantToday, today.Date)
 	}
-	if today.Calls != 2 || today.CostCents != 200 {
+	if today.Calls != 2 || today.CostMicros != 200 {
 		t.Fatalf("today trend: want {calls=2 cost=200}, got %+v", today)
 	}
 	// Every earlier day must be zero (no rows inserted there).
 	for i := 0; i < len(body.Trend)-1; i++ {
-		if body.Trend[i].Calls != 0 || body.Trend[i].CostCents != 0 {
+		if body.Trend[i].Calls != 0 || body.Trend[i].CostMicros != 0 {
 			t.Fatalf("expected zero trend point at index %d (%s), got %+v",
 				i, body.Trend[i].Date, body.Trend[i])
 		}
@@ -280,7 +280,7 @@ func TestGetDashboardTrendIncludesTodayRowOnly(t *testing.T) {
 	prev := now.AddDate(0, 0, -3)
 	dayStart, _ := repository.DayBoundsAt(loc, prev)
 	insertRequestLog(t, db, dayStart.Add(2*time.Hour), func(r *model.RequestLog) {
-		r.CostCents = 77
+		r.CostMicros = 77
 		r.CostKnown = true
 	})
 	w2, env2 := doJSON(t, r, http.MethodGet, "/api/admin/dashboard", nil, nil)
@@ -294,7 +294,7 @@ func TestGetDashboardTrendIncludesTodayRowOnly(t *testing.T) {
 	found := false
 	for _, p := range body.Trend {
 		if p.Date == wantDate {
-			if p.Calls != 1 || p.CostCents != 77 {
+			if p.Calls != 1 || p.CostMicros != 77 {
 				t.Fatalf("day-3 trend: want {calls=1 cost=77}, got %+v", p)
 			}
 			found = true
@@ -316,12 +316,12 @@ func TestGetDashboardTopCallersRankedByCost(t *testing.T) {
 	now := time.Now().In(loc)
 
 	// Create three api_keys. The dashboard's top-callers list should rank
-	// them by cost_cents DESC regardless of how many requests each made —
+	// them by cost_micros DESC regardless of how many requests each made —
 	// one expensive call beats many cheap ones.
 	keys := []struct {
-		label     string
-		costEach  int64
-		calls     int
+		label    string
+		costEach int64
+		calls    int
 	}{
 		{label: "big-spender", costEach: 500, calls: 1},
 		{label: "mid-spender", costEach: 100, calls: 3},
@@ -349,7 +349,7 @@ func TestGetDashboardTopCallersRankedByCost(t *testing.T) {
 			cost := k.costEach
 			insertRequestLog(t, db, now.Add(-time.Duration(j+1)*time.Minute), func(r *model.RequestLog) {
 				r.APIKeyID = &id
-				r.CostCents = cost
+				r.CostMicros = cost
 				r.CostKnown = true
 			})
 		}
@@ -368,9 +368,9 @@ func TestGetDashboardTopCallersRankedByCost(t *testing.T) {
 	}
 	// Rank: big-spender (500) > mid-spender (300) > tiny-spender (100).
 	want := []struct {
-		label     string
-		costCents int64
-		calls     int64
+		label      string
+		costMicros int64
+		calls      int64
 	}{
 		{"big-spender", 500, 1},
 		{"mid-spender", 300, 3},
@@ -378,9 +378,9 @@ func TestGetDashboardTopCallersRankedByCost(t *testing.T) {
 	}
 	for i, w := range want {
 		got := body.TopCallers[i]
-		if got.OwnerLabel != w.label || got.CostCents != w.costCents || got.Calls != w.calls {
+		if got.OwnerLabel != w.label || got.CostMicros != w.costMicros || got.Calls != w.calls {
 			t.Fatalf("TopCallers[%d]: want {label=%s cost=%d calls=%d}, got %+v",
-				i, w.label, w.costCents, w.calls, got)
+				i, w.label, w.costMicros, w.calls, got)
 		}
 	}
 }
@@ -400,13 +400,13 @@ func TestGetDashboardTopCallersExcludesRowsWithoutAPIKey(t *testing.T) {
 		t.Fatalf("create api_key: %v", err)
 	}
 	insertRequestLog(t, db, now.Add(-1*time.Minute), func(r *model.RequestLog) {
-		r.CostCents = 99999
+		r.CostMicros = 99999
 		r.CostKnown = true
 		r.APIKeyID = nil
 	})
 	realID := ak.ID
 	insertRequestLog(t, db, now.Add(-30*time.Second), func(r *model.RequestLog) {
-		r.CostCents = 5
+		r.CostMicros = 5
 		r.CostKnown = true
 		r.APIKeyID = &realID
 	})

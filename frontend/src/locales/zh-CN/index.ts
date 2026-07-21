@@ -370,6 +370,10 @@ export default {
     inputTokensColumn_tip: '该分组累计的输入 Token 数',
     outputTokensColumn: '输出 Token',
     outputTokensColumn_tip: '该分组累计的输出 Token 数',
+    cacheWriteTokensColumn: '缓存写入 Token',
+    cacheWriteTokensColumn_tip: '该分组累计的缓存写入（cache creation）Token 数',
+    cacheReadTokensColumn: '缓存读取 Token',
+    cacheReadTokensColumn_tip: '该分组累计的缓存读取（cache hit）Token 数',
     costColumn: '成本',
     costColumn_tip: '该分组已知成本累计（人民币元），未知成本的请求不纳入',
     unknownCostColumn: '费用未知',
@@ -400,6 +404,7 @@ export default {
     // Filters
     filterRequestId: '请求标识精确查找',
     filterModel: '对外模型名称',
+    filterCaller: '使用人',
     filterProvider: '供应商',
     filterStatus: '状态',
     filterStream: '调用方式',
@@ -443,7 +448,8 @@ export default {
     col_attempts: '尝试次数',
     col_attempts_tip: '该请求的上游尝试总次数，包含同候选的 Key 切换和不同候选的 failover；详情页可查看每次尝试',
     col_tokens: 'Token 输入 / 输出',
-    col_tokens_tip: '上游返回的输入与输出 Token 数量',
+    col_tokens_tip: '上游返回的输入与输出 Token 数量；有缓存命中时第二行显示缓存写入 / 读取 Token',
+    cacheTokensShort: '缓存',
     col_cost: '成本',
     col_cost_tip: '该请求的最终成本（人民币元），未知时显示"未知"而非零',
     col_duration: '耗时',
@@ -466,6 +472,8 @@ export default {
     fieldProviderModel: '最终供应商模型名',
     fieldInputTokens: '输入 Token',
     fieldOutputTokens: '输出 Token',
+    fieldCacheWriteTokens: '缓存写入 Token',
+    fieldCacheReadTokens: '缓存读取 Token',
     fieldCost: '最终成本',
 
     // Attempts table columns (§6.8.4). Each row is one candidate try, in

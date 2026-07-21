@@ -10,41 +10,43 @@ import (
 )
 
 func TestComputeCost(t *testing.T) {
-	// Candidate prices are CNY per million tokens (design doc §3.3).
-	// 1M input @ 1.0 + 0.5M output @ 2.0 = 1.0 + 1.0 = 2.0 CNY = 200 cents.
+	// Candidate prices are CNY per million tokens (design doc §3.3). Cost is
+	// stored as integer micros (CNY × 1e6, i.e. 6-decimal precision).
+	// 1M input @ 1.0 + 0.5M output @ 2.0 = 1.0 + 1.0 = 2.0 CNY = 2_000_000 micros.
 	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0}
 	usage := &Usage{PromptTokens: 1_000_000, CompletionTokens: 500_000}
-	cents, known := computeCost(cand, usage)
+	micros, known := computeCost(cand, usage)
 	if !known {
 		t.Fatal("expected cost to be known when usage + candidate present")
 	}
-	if cents != 200 {
-		t.Fatalf("cost = %d cents, want 200", cents)
+	if micros != 2_000_000 {
+		t.Fatalf("cost = %d micros, want 2_000_000", micros)
 	}
 }
 
-func TestComputeCostRoundsToCent(t *testing.T) {
-	// 1 token @ 1.0/M = 0.000001 CNY = 0.0001 cents -> rounds to 0 cents.
-	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 0}
+func TestComputeCostRoundsToMicro(t *testing.T) {
+	// Micros are the smallest stored unit (CNY × 1e6). 1 token @ 1.5/M =
+	// 0.0000015 CNY = 1.5 micros -> rounds to 2 micros.
+	cand := &model.ModelCandidate{InputPrice: 1.5, OutputPrice: 0}
 	usage := &Usage{PromptTokens: 1, CompletionTokens: 0}
-	cents, known := computeCost(cand, usage)
-	if !known || cents != 0 {
-		t.Fatalf("expected known 0 cents, got %d (known=%v)", cents, known)
+	micros, known := computeCost(cand, usage)
+	if !known || micros != 2 {
+		t.Fatalf("expected known 2 micros, got %d (known=%v)", micros, known)
 	}
 }
 
 func TestComputeCostMissingUsageIsUnknown(t *testing.T) {
 	// GATE-21: missing usage must be "unknown", never 0 cost.
 	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 1.0}
-	if cents, known := computeCost(cand, nil); known || cents != 0 {
-		t.Fatalf("expected unknown/0 for nil usage, got %d (known=%v)", cents, known)
+	if micros, known := computeCost(cand, nil); known || micros != 0 {
+		t.Fatalf("expected unknown/0 for nil usage, got %d (known=%v)", micros, known)
 	}
 }
 
 func TestComputeCostMissingCandidateIsUnknown(t *testing.T) {
 	usage := &Usage{PromptTokens: 100, CompletionTokens: 100}
-	if cents, known := computeCost(nil, usage); known || cents != 0 {
-		t.Fatalf("expected unknown/0 for nil candidate, got %d (known=%v)", cents, known)
+	if micros, known := computeCost(nil, usage); known || micros != 0 {
+		t.Fatalf("expected unknown/0 for nil candidate, got %d (known=%v)", micros, known)
 	}
 }
 

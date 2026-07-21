@@ -15,26 +15,27 @@ const (
 // is shown only at create time and never persisted; the row stores just
 // KeyHash (SHA-256) + KeyPrefix (first chars, list-distinguishing only — not
 // enough to reconstruct the full key). Limits are pointer-typed so NULL means
-// "no cap". Budget is integer cents (int64) to avoid float drift on a
-// cumulative hard cap. KeyHash and RevokedAt are json:"-": the hash must
+// "no cap". Budget is integer micros (int64, major-unit × 1e6) to avoid float
+// drift on a cumulative hard cap while keeping 6-decimal precision. KeyHash
+// and RevokedAt are json:"-": the hash must
 // never serialize back out, and revoked state surfaces via display_status
 // rather than a raw timestamp.
 type APIKey struct {
-	ID               uint       `gorm:"column:id;primaryKey" json:"id"`
-	KeyHash          string     `gorm:"column:key_hash" json:"-"`
-	KeyPrefix        string     `gorm:"column:key_prefix" json:"key_prefix"`
-	OwnerLabel       string     `gorm:"column:owner_label" json:"owner_label"`
-	Remark           string     `gorm:"column:remark" json:"remark"`
-	Status           int        `gorm:"column:status" json:"status"`
-	ExpiresAt        *time.Time `gorm:"column:expires_at" json:"expires_at"`
-	RPMLimit         *int       `gorm:"column:rpm_limit" json:"rpm_limit"`
-	TPMLimit         *int       `gorm:"column:tpm_limit" json:"tpm_limit"`
-	ConcurrencyLimit *int       `gorm:"column:concurrency_limit" json:"concurrency_limit"`
-	BudgetLimitCents *int64     `gorm:"column:budget_limit_cents" json:"budget_limit_cents"`
-	BudgetSpentCents int64      `gorm:"column:budget_spent_cents" json:"budget_spent_cents"`
-	CreatedAt        time.Time  `gorm:"column:created_at" json:"created_at"`
-	RevokedAt        *time.Time `gorm:"column:revoked_at" json:"-"`
-	UpdatedAt        time.Time  `gorm:"column:updated_at" json:"updated_at"`
+	ID                uint       `gorm:"column:id;primaryKey" json:"id"`
+	KeyHash           string     `gorm:"column:key_hash" json:"-"`
+	KeyPrefix         string     `gorm:"column:key_prefix" json:"key_prefix"`
+	OwnerLabel        string     `gorm:"column:owner_label" json:"owner_label"`
+	Remark            string     `gorm:"column:remark" json:"remark"`
+	Status            int        `gorm:"column:status" json:"status"`
+	ExpiresAt         *time.Time `gorm:"column:expires_at" json:"expires_at"`
+	RPMLimit          *int       `gorm:"column:rpm_limit" json:"rpm_limit"`
+	TPMLimit          *int       `gorm:"column:tpm_limit" json:"tpm_limit"`
+	ConcurrencyLimit  *int       `gorm:"column:concurrency_limit" json:"concurrency_limit"`
+	BudgetLimitMicros *int64     `gorm:"column:budget_limit_micros" json:"budget_limit_micros"`
+	BudgetSpentMicros int64      `gorm:"column:budget_spent_micros" json:"budget_spent_micros"`
+	CreatedAt         time.Time  `gorm:"column:created_at" json:"created_at"`
+	RevokedAt         *time.Time `gorm:"column:revoked_at" json:"-"`
+	UpdatedAt         time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (APIKey) TableName() string { return "api_keys" }

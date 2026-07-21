@@ -16,7 +16,7 @@ CREATE TABLE request_logs (
     status_code    INTEGER NOT NULL,
     input_tokens   INTEGER NOT NULL DEFAULT 0,
     output_tokens  INTEGER NOT NULL DEFAULT 0,
-    cost_cents     BIGINT NOT NULL DEFAULT 0,
+    cost_micros     BIGINT NOT NULL DEFAULT 0,
     cost_known     BOOLEAN NOT NULL DEFAULT FALSE,
     fail_reason    TEXT NULL,
     attempts        INTEGER NOT NULL DEFAULT 1,

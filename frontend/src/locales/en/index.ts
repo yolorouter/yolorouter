@@ -367,6 +367,10 @@ export default {
     inputTokensColumn_tip: 'Cumulative input tokens for this group',
     outputTokensColumn: 'Output Tokens',
     outputTokensColumn_tip: 'Cumulative output tokens for this group',
+    cacheWriteTokensColumn: 'Cache Write Tokens',
+    cacheWriteTokensColumn_tip: 'Cumulative cache-write (cache creation) tokens for this group',
+    cacheReadTokensColumn: 'Cache Read Tokens',
+    cacheReadTokensColumn_tip: 'Cumulative cache-read (cache hit) tokens for this group',
     costColumn: 'Cost',
     costColumn_tip: 'Known cost total for this group (CNY); unknown-cost requests are excluded',
     unknownCostColumn: 'Unknown Cost',
@@ -397,6 +401,7 @@ export default {
     // Filters
     filterRequestId: 'Find by request ID',
     filterModel: 'External model name',
+    filterCaller: 'Caller',
     filterProvider: 'Provider',
     filterStatus: 'Status',
     filterStream: 'Stream mode',
@@ -440,7 +445,8 @@ export default {
     col_attempts: 'Attempts',
     col_attempts_tip: 'Total upstream tries for this request, including same-candidate key rotations and cross-candidate failovers; detail page shows each try',
     col_tokens: 'Tokens In / Out',
-    col_tokens_tip: 'Input and output token counts reported by the upstream',
+    col_tokens_tip: 'Input and output token counts reported by the upstream; a second line shows cache write / read tokens when the request had cache activity',
+    cacheTokensShort: 'Cache',
     col_cost: 'Cost',
     col_cost_tip: 'Final cost of this request (CNY); shows "Unknown" rather than zero when pricing is unavailable',
     col_duration: 'Duration',
@@ -463,6 +469,8 @@ export default {
     fieldProviderModel: 'Provider Model Name',
     fieldInputTokens: 'Input Tokens',
     fieldOutputTokens: 'Output Tokens',
+    fieldCacheWriteTokens: 'Cache Write Tokens',
+    fieldCacheReadTokens: 'Cache Read Tokens',
     fieldCost: 'Final Cost',
 
     // Attempts table columns (§6.8.4). Each row is one candidate try, in

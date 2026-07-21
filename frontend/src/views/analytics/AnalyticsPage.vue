@@ -71,7 +71,7 @@
         <div class="metric__label">
           <HelpLabel :tip="t('analytics.costColumn_tip')">{{ t('analytics.totalCost') }}</HelpLabel>
         </div>
-        <div class="metric__value">¥{{ formatCents(overview?.cost_cents ?? 0) }}</div>
+        <div class="metric__value">¥{{ formatMicros(overview?.cost_micros ?? 0) }}</div>
         <div v-if="(overview?.unknown_cost_calls ?? 0) > 0" class="metric__sub">
           {{ t('analytics.unknownCostSub', { n: overview?.unknown_cost_calls ?? 0 }) }}
         </div>
@@ -157,7 +157,7 @@ import HelpLabel from '../../components/HelpLabel.vue'
 import AnalyticsFilterBar from '../../components/analytics/AnalyticsFilterBar.vue'
 import { type RangePreset, type TimeRange } from '../../components/analytics/TimeRangeSelect.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
-import { formatCents } from '../../utils/money'
+import { formatMicros } from '../../utils/money'
 import { displayMessage } from '../../api/client'
 import {
   exportAnalyticsCSV,
@@ -379,7 +379,7 @@ function callerRowKey(r: CallerReportRow): string {
 type MetricRow = {
   calls: number
   success_rate: number
-  cost_cents: number
+  cost_micros: number
   unknown_cost_calls: number
 }
 
@@ -404,10 +404,10 @@ function successRateColumn<T extends MetricRow>(): DataTableColumns<T>[number] {
 function costColumn<T extends MetricRow>(): DataTableColumns<T>[number] {
   return {
     title: columnTitle(t('analytics.costColumn'), t('analytics.costColumn_tip')),
-    key: 'cost_cents',
+    key: 'cost_micros',
     width: 140,
     align: 'right',
-    render: (r: T) => `¥${formatCents(r.cost_cents)}`,
+    render: (r: T) => `¥${formatMicros(r.cost_micros)}`,
   }
 }
 function unknownCostColumn<T extends MetricRow>(): DataTableColumns<T>[number] {
@@ -419,22 +419,21 @@ function unknownCostColumn<T extends MetricRow>(): DataTableColumns<T>[number] {
     render: (r: T) => formatNumber(r.unknown_cost_calls),
   }
 }
-function inputTokensColumn<T extends MetricRow & { input_tokens: number }>(): DataTableColumns<T>[number] {
+// tokenColumn is the shared factory for every right-aligned token count
+// (input / output / cache write / cache read). i18nKey names both the header
+// (`analytics.<i18nKey>`) and its tooltip (`analytics.<i18nKey>_tip`); the
+// column key is the row field to render. Replaces four near-identical factories.
+function tokenColumn<T extends MetricRow>(
+  key: keyof T & string,
+  i18nKey: string,
+  width = 140,
+): DataTableColumns<T>[number] {
   return {
-    title: columnTitle(t('analytics.inputTokensColumn'), t('analytics.inputTokensColumn_tip')),
-    key: 'input_tokens',
-    width: 140,
+    title: columnTitle(t(`analytics.${i18nKey}`), t(`analytics.${i18nKey}_tip`)),
+    key,
+    width,
     align: 'right',
-    render: (r: T) => formatNumber(r.input_tokens),
-  }
-}
-function outputTokensColumn<T extends MetricRow & { output_tokens: number }>(): DataTableColumns<T>[number] {
-  return {
-    title: columnTitle(t('analytics.outputTokensColumn'), t('analytics.outputTokensColumn_tip')),
-    key: 'output_tokens',
-    width: 140,
-    align: 'right',
-    render: (r: T) => formatNumber(r.output_tokens),
+    render: (r: T) => formatNumber(r[key] as number),
   }
 }
 
@@ -447,8 +446,10 @@ const modelColumns = computed<DataTableColumns<ModelReportRow>>(() => [
   },
   callsColumn<ModelReportRow>(),
   successRateColumn<ModelReportRow>(),
-  inputTokensColumn<ModelReportRow>(),
-  outputTokensColumn<ModelReportRow>(),
+  tokenColumn<ModelReportRow>('input_tokens', 'inputTokensColumn'),
+  tokenColumn<ModelReportRow>('output_tokens', 'outputTokensColumn'),
+  tokenColumn<ModelReportRow>('cache_write_tokens', 'cacheWriteTokensColumn', 150),
+  tokenColumn<ModelReportRow>('cache_read_tokens', 'cacheReadTokensColumn', 150),
   costColumn<ModelReportRow>(),
   unknownCostColumn<ModelReportRow>(),
 ])
@@ -482,8 +483,10 @@ const callerColumns = computed<DataTableColumns<CallerReportRow>>(() => [
   },
   callsColumn<CallerReportRow>(),
   successRateColumn<CallerReportRow>(),
-  inputTokensColumn<CallerReportRow>(),
-  outputTokensColumn<CallerReportRow>(),
+  tokenColumn<CallerReportRow>('input_tokens', 'inputTokensColumn'),
+  tokenColumn<CallerReportRow>('output_tokens', 'outputTokensColumn'),
+  tokenColumn<CallerReportRow>('cache_write_tokens', 'cacheWriteTokensColumn', 150),
+  tokenColumn<CallerReportRow>('cache_read_tokens', 'cacheReadTokensColumn', 150),
   costColumn<CallerReportRow>(),
   unknownCostColumn<CallerReportRow>(),
 ])
@@ -497,8 +500,10 @@ const timeColumns = computed<DataTableColumns<TimeReportRow>>(() => [
   },
   callsColumn<TimeReportRow>(),
   successRateColumn<TimeReportRow>(),
-  inputTokensColumn<TimeReportRow>(),
-  outputTokensColumn<TimeReportRow>(),
+  tokenColumn<TimeReportRow>('input_tokens', 'inputTokensColumn'),
+  tokenColumn<TimeReportRow>('output_tokens', 'outputTokensColumn'),
+  tokenColumn<TimeReportRow>('cache_write_tokens', 'cacheWriteTokensColumn', 150),
+  tokenColumn<TimeReportRow>('cache_read_tokens', 'cacheReadTokensColumn', 150),
   costColumn<TimeReportRow>(),
   unknownCostColumn<TimeReportRow>(),
 ])

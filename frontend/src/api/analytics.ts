@@ -15,7 +15,7 @@ import { apiFetch } from './client'
 
 export interface TodayMetrics {
   calls: number
-  total_cost_cents: number
+  total_cost_micros: number
   success_rate: number // [0,1] — frontend formats as percentage
   unknown_cost_calls: number
 }
@@ -23,14 +23,14 @@ export interface TodayMetrics {
 export interface TrendPoint {
   date: string // "2006-01-02", localized
   calls: number
-  cost_cents: number
+  cost_micros: number
 }
 
 export interface TopCaller {
   api_key_id: number
   owner_label: string
   calls: number
-  cost_cents: number
+  cost_micros: number
 }
 
 export interface RecentFailure {
@@ -95,7 +95,7 @@ export interface OverviewRow {
   unknown_cost_calls: number
   input_tokens: number
   output_tokens: number
-  cost_cents: number
+  cost_micros: number
 }
 
 // Dimension-specific row types. Each is the per-bucket aggregate the
@@ -109,7 +109,9 @@ export interface ModelReportRow {
   success_rate: number
   input_tokens: number
   output_tokens: number
-  cost_cents: number
+  cache_write_tokens: number
+  cache_read_tokens: number
+  cost_micros: number
   unknown_cost_calls: number
 }
 
@@ -121,7 +123,7 @@ export interface ProviderReportRow {
   ended_calls: number
   success_rate: number
   avg_duration_ms: number
-  cost_cents: number
+  cost_micros: number
   unknown_cost_calls: number
 }
 
@@ -134,7 +136,9 @@ export interface CallerReportRow {
   success_rate: number
   input_tokens: number
   output_tokens: number
-  cost_cents: number
+  cache_write_tokens: number
+  cache_read_tokens: number
+  cost_micros: number
   unknown_cost_calls: number
 }
 
@@ -146,7 +150,9 @@ export interface TimeReportRow {
   success_rate: number
   input_tokens: number
   output_tokens: number
-  cost_cents: number
+  cache_write_tokens: number
+  cache_read_tokens: number
+  cost_micros: number
   unknown_cost_calls: number
 }
 

@@ -249,7 +249,7 @@ func ListRequestLogsKeyset(db *gorm.DB, f *RequestLogFilter, cursor *RequestLogC
 // "Ended" = success + failed + partial + rejected — every request that
 // reached a real outcome — and explicitly EXCLUDES the 499 caller-cancel
 // bucket (PRD §6.6.3: caller cancels count toward total calls but NOT the
-// success rate). KnownCostCents sums cost_cents, which M5 finalize leaves at
+// success rate). KnownCostMicros sums cost_micros, which M5 finalize leaves at
 // 0 whenever cost_known=false, so the sum equals the known-cost total
 // without a dialect-specific CASE on the boolean column.
 type MetricTotals struct {
@@ -259,7 +259,9 @@ type MetricTotals struct {
 	UnknownCostCalls int64
 	InputTokens      int64
 	OutputTokens     int64
-	KnownCostCents   int64
+	CacheWriteTokens int64
+	CacheReadTokens  int64
+	KnownCostMicros  int64
 }
 
 // successRateOf returns success/ended, or 0 when no request has ended. It is
@@ -292,7 +294,9 @@ func AggregateRequestLogMetrics(db *gorm.DB, f *RequestLogFilter) (*MetricTotals
 		UnknownCostCalls int64
 		InputTokens      int64
 		OutputTokens     int64
-		KnownCostCents   int64
+		CacheWriteTokens int64
+		CacheReadTokens  int64
+		KnownCostMicros  int64
 	}
 	err := f.applyFilter(db).Select(`
 		COUNT(*) AS total_calls,
@@ -301,7 +305,9 @@ func AggregateRequestLogMetrics(db *gorm.DB, f *RequestLogFilter) (*MetricTotals
 		SUM(CASE WHEN cost_known = ? THEN 1 ELSE 0 END) AS unknown_cost_calls,
 		COALESCE(SUM(input_tokens), 0) AS input_tokens,
 		COALESCE(SUM(output_tokens), 0) AS output_tokens,
-		COALESCE(SUM(cost_cents), 0) AS known_cost_cents
+		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(cost_micros), 0) AS known_cost_micros
 	`, false).Scan(&r).Error
 	if err != nil {
 		return nil, err
@@ -313,6 +319,8 @@ func AggregateRequestLogMetrics(db *gorm.DB, f *RequestLogFilter) (*MetricTotals
 		UnknownCostCalls: r.UnknownCostCalls,
 		InputTokens:      r.InputTokens,
 		OutputTokens:     r.OutputTokens,
-		KnownCostCents:   r.KnownCostCents,
+		CacheWriteTokens: r.CacheWriteTokens,
+		CacheReadTokens:  r.CacheReadTokens,
+		KnownCostMicros:  r.KnownCostMicros,
 	}, nil
 }

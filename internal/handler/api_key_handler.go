@@ -18,11 +18,11 @@ import (
 // nullable ints where NULL/nil = "no cap" and 0 is the service-layer sentinel
 // for "clear this limit". binding min=0 lets the 0 sentinel through.
 type limitFields struct {
-	ExpiresAt        *time.Time `json:"expires_at" binding:"omitempty"`
-	RPMLimit         *int       `json:"rpm_limit" binding:"omitempty,min=0"`
-	TPMLimit         *int       `json:"tpm_limit" binding:"omitempty,min=0"`
-	ConcurrencyLimit *int       `json:"concurrency_limit" binding:"omitempty,min=0"`
-	BudgetLimitCents *int64     `json:"budget_limit_cents" binding:"omitempty,min=0"`
+	ExpiresAt         *time.Time `json:"expires_at" binding:"omitempty"`
+	RPMLimit          *int       `json:"rpm_limit" binding:"omitempty,min=0"`
+	TPMLimit          *int       `json:"tpm_limit" binding:"omitempty,min=0"`
+	ConcurrencyLimit  *int       `json:"concurrency_limit" binding:"omitempty,min=0"`
+	BudgetLimitMicros *int64     `json:"budget_limit_micros" binding:"omitempty,min=0"`
 }
 
 type createAPIKeyRequest struct {
@@ -112,7 +112,7 @@ func PostAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 		result, err := svc.CreateAPIKey(service.CreateAPIKeyInput{
 			OwnerLabel: req.OwnerLabel, Remark: req.Remark, ModelIDs: req.ModelIDs,
 			ExpiresAt: req.ExpiresAt, RPMLimit: req.RPMLimit, TPMLimit: req.TPMLimit,
-			ConcurrencyLimit: req.ConcurrencyLimit, BudgetLimitCents: req.BudgetLimitCents,
+			ConcurrencyLimit: req.ConcurrencyLimit, BudgetLimitMicros: req.BudgetLimitMicros,
 		}, timeNow())
 		if err != nil {
 			writeAPIKeyServiceError(c, err)
@@ -156,7 +156,7 @@ func PatchAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 		view, err := svc.UpdateAPIKey(id, service.UpdateAPIKeyInput{
 			OwnerLabel: req.OwnerLabel, Remark: req.Remark, ModelIDs: req.ModelIDs,
 			ExpiresAt: req.ExpiresAt, RPMLimit: req.RPMLimit, TPMLimit: req.TPMLimit,
-			ConcurrencyLimit: req.ConcurrencyLimit, BudgetLimitCents: req.BudgetLimitCents,
+			ConcurrencyLimit: req.ConcurrencyLimit, BudgetLimitMicros: req.BudgetLimitMicros,
 		}, timeNow())
 		if err != nil {
 			writeAPIKeyServiceError(c, err)
