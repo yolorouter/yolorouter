@@ -22,7 +22,8 @@ cd yolorouter
 ```
 
 Useful `./scripts/dev.sh` flags: `--backend`, `--frontend`, `--migrate`,
-`--restart`.
+`--restart`. Run `./scripts/dev.sh --help` for the full list; output language
+follows your locale and can be forced with `YOLO_LANG=zh|en`.
 
 ## Project layout
 

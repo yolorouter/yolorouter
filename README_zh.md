@@ -127,6 +127,7 @@ make build-embed    # -> ./bin/yolorouter（构建并嵌入前端）
 ./scripts/dev.sh              # 重建前后端、迁移、（重）启动
 ./scripts/dev.sh --backend    # 仅后端
 ./scripts/dev.sh --frontend   # 仅前端
+./scripts/dev.sh --help       # 全部模式 + 环境变量（YOLO_LANG、NO_COLOR）
 
 make test                     # go test ./...
 make vet                      # go vet（plain + -tags release）

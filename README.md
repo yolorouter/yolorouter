@@ -141,6 +141,7 @@ make build-embed    # -> ./bin/yolorouter (frontend built + embedded)
 ./scripts/dev.sh              # rebuild frontend + backend, migrate, (re)start
 ./scripts/dev.sh --backend    # backend only
 ./scripts/dev.sh --frontend   # frontend only
+./scripts/dev.sh --help       # all modes + env vars (YOLO_LANG, NO_COLOR)
 
 make test                     # go test ./...
 make vet                      # go vet (plain + -tags release)
