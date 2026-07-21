@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -201,6 +202,52 @@ func TestStreamUpstreamNoDoneReturnsTruncationError(t *testing.T) {
 	_, err := runStreamPump(t, body, true)
 	if !errors.Is(err, errStreamNoDoneTerminator) {
 		t.Fatalf("expected errStreamNoDoneTerminator, got %v", err)
+	}
+}
+
+// cancelAfterReader delivers all of its bytes on the first Read, then cancels
+// the request context and returns context.Canceled on the next Read — modeling
+// a caller that closes the connection right after receiving the full response
+// (including [DONE]), so the following upstream body read fails with a
+// ctx-canceled error.
+type cancelAfterReader struct {
+	data   []byte
+	off    int
+	cancel context.CancelFunc
+}
+
+func (r *cancelAfterReader) Read(p []byte) (int, error) {
+	if r.off < len(r.data) {
+		n := copy(p, r.data[r.off:])
+		r.off += n
+		return n, nil
+	}
+	r.cancel()
+	return 0, context.Canceled
+}
+
+// TestStreamUpstreamPostDoneDisconnectSucceeds: a stream that emits its data
+// frames and `data: [DONE]`, after which the caller disconnects (surfacing as
+// a ctx-canceled body read), must finish as SUCCESS — not
+// errClientDisconnected. OpenAI SDKs close the connection the moment they read
+// [DONE], before the pump reaches the trailing blank line, so the common case
+// for a fully-delivered stream is a post-[DONE] disconnect; labeling it 499
+// would mislabel the vast majority of successful streams (regression guard).
+func TestStreamUpstreamPostDoneDisconnectSucceeds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(&cancelAfterReader{data: []byte(body), cancel: cancel}),
+		Header:     make(http.Header),
+	}
+	rc := &RelayContext{OriginalModel: "ext", IsStream: true, WantsStreamUsage: true}
+	_, err := StreamUpstreamToClient(c, resp, rc)
+	if err != nil {
+		t.Fatalf("post-[DONE] disconnect must succeed, got %v", err)
 	}
 }
 

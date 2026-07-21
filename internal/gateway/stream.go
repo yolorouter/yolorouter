@@ -15,7 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"github.com/yolorouter/yolorouter-ce/pkg/logger"
+	"github.com/yolorouter/yolorouter/pkg/logger"
 )
 
 // errClientDisconnected is returned by the stream pump when the caller's
@@ -23,6 +23,25 @@ import (
 // — the relay loop records it as a distinct outcome so the request log shows
 // "caller cancelled", not "upstream failed".
 var errClientDisconnected = errors.New("client disconnected")
+
+// clientDisconnectOutcome maps a caller disconnect detected inside the stream
+// pump to a pump result, keeping the post-[DONE] completion semantics in ONE
+// place (both ctx-cancel exit paths — the in-loop select and the post-scan
+// scanner.Err branch — call this, so they can never drift apart).
+//
+// A disconnect AFTER the `data: [DONE]` terminator was forwarded is NOT a real
+// cancellation: the caller received the complete response and closed the
+// connection. OpenAI SDKs close the moment they read [DONE], before the pump
+// reaches the trailing blank line, so the very next ctx check fires — reporting
+// 499 there would mislabel a fully-delivered stream as client_disconnected (the
+// common case: most streams end this way). Only a disconnect BEFORE [DONE] is a
+// genuine caller cancel (GATE-20 -> 499).
+func clientDisconnectOutcome(usage *Usage, doneSeen bool) (*Usage, error) {
+	if doneSeen {
+		return usage, nil
+	}
+	return usage, errClientDisconnected
+}
 
 // errStreamNoDoneTerminator is returned when the upstream sent at least one
 // data frame but closed the stream without the `data: [DONE]` terminator.
@@ -123,7 +142,9 @@ func StreamUpstreamToClient(c *gin.Context, resp *http.Response, rc *RelayContex
 		// disconnect between chunks is caught promptly.
 		select {
 		case <-c.Request.Context().Done():
-			return usage, errClientDisconnected
+			// Post-[DONE] disconnect -> success; pre-[DONE] -> 499. See
+			// clientDisconnectOutcome for the full rationale.
+			return clientDisconnectOutcome(usage, doneSeen)
 		default:
 		}
 		// ScanLines strips the trailing newline; re-add it so writeStreamLine
@@ -179,7 +200,9 @@ func StreamUpstreamToClient(c *gin.Context, resp *http.Response, rc *RelayContex
 		// cancels on ctx.Done); recognize it so handleStream logs 499
 		// instead of an upstream stream fault.
 		if errors.Is(c.Request.Context().Err(), context.Canceled) {
-			return usage, errClientDisconnected
+			// Same post-[DONE] disconnect as the in-loop select guard, but
+			// surfaced here as a ctx-canceled body-read error instead.
+			return clientDisconnectOutcome(usage, doneSeen)
 		}
 		if errors.Is(err, bufio.ErrTooLong) {
 			return usage, fmt.Errorf("upstream stream line too long (max %d bytes)", maxStreamLineBytes)
