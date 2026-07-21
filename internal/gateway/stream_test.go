@@ -64,7 +64,7 @@ func TestRewriteStreamChunkNoModelNotInjected(t *testing.T) {
 
 // TestRewriteStreamChunkStripsUsageWhenNotKept: when the caller did not
 // request stream_options.include_usage, the usage field is stripped from the
-// forwarded payload (PRD §1114: injected usage is internal-only). The usage
+// forwarded payload (injected usage is internal-only). The usage
 // is still extracted and returned for the gateway's own cost accounting.
 func TestRewriteStreamChunkStripsUsageWhenNotKept(t *testing.T) {
 	payload := []byte(`{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`)
@@ -111,7 +111,7 @@ func TestUsageFromRawMap(t *testing.T) {
 	if usageFromRawMap(map[string]json.RawMessage{"usage": json.RawMessage(`null`)}) != nil {
 		t.Error("expected nil for literal-null usage")
 	}
-	// GATE-21: an empty usage object {} must NOT be treated as known-zero —
+	// An empty usage object {} must NOT be treated as known-zero —
 	// it has no prompt/completion counts, so it's "unknown".
 	if usageFromRawMap(map[string]json.RawMessage{"usage": json.RawMessage(`{}`)}) != nil {
 		t.Error("expected nil for empty usage object {}")
@@ -253,7 +253,7 @@ func TestStreamUpstreamPostDoneDisconnectSucceeds(t *testing.T) {
 
 // TestStreamUpstreamStripsInjectedUsage: with WantsStreamUsage=false, the
 // final usage frame the gateway requested upstream must NOT be forwarded to
-// the caller (PRD §1114). The pump still extracts usage internally — verified
+// the caller. The pump still extracts usage internally — verified
 // here by checking the recorder's body has no usage field.
 func TestStreamUpstreamStripsInjectedUsage(t *testing.T) {
 	body := "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\ndata: [DONE]\n\n"
@@ -279,7 +279,7 @@ func TestStreamUpstreamStripsInjectedUsage(t *testing.T) {
 }
 
 // runStreamPumpCapture is runStreamPump plus the BodiesDirContextKey value
-// and a RequestID (Task 5's stream body capture: internal/router/router.go
+// and a RequestID (stream body capture: internal/router/router.go
 // stashes the absolute bodies dir on every request's gin.Context; here the
 // test wires it directly instead of going through the real middleware). It
 // returns the RelayContext so callers can inspect streamBodyCaptured/
@@ -316,7 +316,7 @@ func sseDataFrames(n, payloadBytes int) string {
 	return b.String()
 }
 
-// TestStreamCaptureNoTruncation (Task 5, Codex #4): a >2MB SSE stream is
+// TestStreamCaptureNoTruncation: a >2MB SSE stream is
 // captured in full under data/bodies/<request_id>.stream — no truncation
 // below the 1GiB backstop — while the caller's own stream is unaffected.
 func TestStreamCaptureNoTruncation(t *testing.T) {
@@ -349,7 +349,7 @@ func TestStreamCaptureNoTruncation(t *testing.T) {
 	}
 }
 
-// TestStreamCaptureBackstopMarked (Task 5, Codex #4): once the (test-shrunk)
+// TestStreamCaptureBackstopMarked: once the (test-shrunk)
 // maxStreamBodyFileBytes cap is hit, streamBodyTruncated flips true, the
 // file stops growing past the cap, and the caller's own stream still
 // completes normally — the backstop only stops the disk audit copy, never
@@ -380,7 +380,7 @@ func TestStreamCaptureBackstopMarked(t *testing.T) {
 	}
 }
 
-// TestStreamCaptureVerbatim (Task 5): v0.1 does NOT scrub body content, so an
+// TestStreamCaptureVerbatim: v0.1 does NOT scrub body content, so an
 // SSE data line is persisted to the stream capture file exactly as it was
 // forwarded to the caller (the gateway only rewrites model/usage fields, never
 // arbitrary content).

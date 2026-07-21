@@ -1,10 +1,9 @@
-// Package repository additions for M6.1: dashboard aggregates per PRD §6.6.
-// Pure data-access — no business judgment, no HTTP shaping. See design doc
-// .claude/docs/2026-07-20-m6-analytics-design.md §4.2.
+// Package repository provides dashboard aggregates.
+// Pure data-access — no business judgment, no HTTP shaping.
 //
 // Every function here is a small wrapper over the shared RequestLogFilter
 // query layer (request_log_query.go) plus a handful of straight COUNT/SUM
-// queries against the M2/M3/M4 tables. The dashboard handler composes them
+// queries against the provider/model/api-key tables. The dashboard handler composes them
 // into one GET /api/admin/dashboard response.
 package repository
 
@@ -17,8 +16,8 @@ import (
 )
 
 // TodayMetricsDTO is the four today-card values the dashboard renders at the
-// top (PRD §6.6.2). SuccessRate is in [0, 1] — the frontend formats it as a
-// percentage. TotalCostMicros sums cost_micros, which M5 finalize leaves at 0
+// top. SuccessRate is in [0, 1] — the frontend formats it as a
+// percentage. TotalCostMicros sums cost_micros, which finalize leaves at 0
 // whenever cost_known=false, so this sum equals the known-cost total without
 // a dialect-specific CASE on the boolean column.
 type TodayMetricsDTO struct {
@@ -29,7 +28,7 @@ type TodayMetricsDTO struct {
 }
 
 // GetTodayMetrics returns calls / total known cost / success rate / unknown-
-// cost count for the calendar day containing now in loc (PRD §6.6.3: "today"
+// cost count for the calendar day containing now in loc ("today"
 // is by the system's current timezone). Delegates the bucketing math to
 // AggregateRequestLogMetrics so the dashboard's success-rate definition
 // stays identical to the analytics page's.
@@ -91,7 +90,7 @@ func GetTrend(db *gorm.DB, days int, loc *time.Location) ([]TrendPoint, error) {
 	return points, nil
 }
 
-// TopCaller is one row in the "top callers by cost" list (PRD §6.6.4).
+// TopCaller is one row in the "top callers by cost" list.
 type TopCaller struct {
 	APIKeyID   uint   `json:"api_key_id"`
 	OwnerLabel string `json:"owner_label"`
@@ -134,7 +133,7 @@ func GetTopCallers(db *gorm.DB, start, end time.Time, limit int) ([]TopCaller, e
 }
 
 // GetRecentFailures returns the most recent `limit` rows that fall into any
-// of the failed / partial / rejected status buckets (PRD §6.8.2). Caller-
+// of the failed / partial / rejected status buckets. Caller-
 // cancel (499) is deliberately excluded — it's a client-side abort, not a
 // system-side failure the admin needs to investigate.
 //
@@ -165,8 +164,8 @@ func GetRecentFailures(db *gorm.DB, limit int) ([]model.RequestLog, error) {
 }
 
 // UpstreamStatusDTO reports provider/key/model availability counts for the
-// dashboard's upstream-health card (PRD §6.6.5). Each count is a straight
-// COUNT against the corresponding M2/M3 table; no request_logs involvement.
+// dashboard's upstream-health card. Each count is a straight
+// COUNT against the corresponding provider/model table; no request_logs involvement.
 type UpstreamStatusDTO struct {
 	AvailableProviders int64 `json:"available_providers"`
 	AbnormalKeys       int64 `json:"abnormal_keys"`
@@ -174,7 +173,7 @@ type UpstreamStatusDTO struct {
 }
 
 // GetUpstreamStatus counts:
-//   - AvailableProviders: providers with management_status=Enabled (M2)
+//   - AvailableProviders: providers with management_status=Enabled
 //   - AbnormalKeys: provider_keys with management_status=Enabled but
 //     verification_status != Passed — i.e. keys that are supposed to be
 //     serving traffic but haven't passed (or have lost) verification

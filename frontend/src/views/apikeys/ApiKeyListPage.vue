@@ -227,7 +227,7 @@ const columns = computed<DataTableColumns<APIKey>>(() => [
     render: (row) => expiresCell(row),
   },
   {
-    // Actions column — no tooltip (per frontend-conventions.md).
+    // Actions column — no tooltip.
     title: t('common.actions'),
     key: 'actions',
     width: 150,

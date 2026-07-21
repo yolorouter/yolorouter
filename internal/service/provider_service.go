@@ -1,7 +1,6 @@
-// Package service additions for M2: business logic, the destination-
+// Package service additions: business logic, the destination-
 // version-aware running-status computation, and encryption calls around
-// internal/repository's pure data access. See design doc
-// .claude/docs/2026-07-18-m2-provider-design.md.
+// internal/repository's pure data access.
 package service
 
 import (
@@ -27,7 +26,7 @@ const (
 	RunningStatusUnavailable   = "unavailable"
 )
 
-// computeRunningStatus implements design doc §4's table: the provider's
+// computeRunningStatus derives the provider's
 // running status is derived at read time from its enabled keys' verification
 // status and destination-version alignment, never stored.
 func computeRunningStatus(keys []model.ProviderKey, destinationVersion int) string {
@@ -67,13 +66,13 @@ func computeRunningStatus(keys []model.ProviderKey, destinationVersion int) stri
 // providerKeyFingerprintProbe is a domain-separation token used by
 // VerifyMasterKeyFingerprint: it is encrypted with the master key and the
 // ciphertext is persisted, so startup can confirm the configured master key
-// still matches the one that encrypted existing provider data (design doc §5).
+// still matches the one that encrypted existing provider data.
 // The value itself is arbitrary and secret-free, but it must stay STABLE
 // across releases — changing it makes every existing database fail the startup
 // key-match check. Treat it as frozen once a release ships.
 const providerKeyFingerprintProbe = "yolorouter-provider-key-fingerprint-probe-v1"
 
-// minKeyPlaintextLength implements design doc §3's minimum-length rule: a
+// minKeyPlaintextLength enforces the minimum-length rule: a
 // key shorter than this would let key_prefix's "keep the last 4 chars
 // hidden" math expose most/all of a short secret if the database leaks.
 const minKeyPlaintextLength = 20
@@ -88,14 +87,14 @@ func NewProviderService(db *gorm.DB, masterKey []byte, client ProviderClient) *P
 	return &ProviderService{db: db, masterKey: masterKey, client: client}
 }
 
-// VerifyMasterKeyFingerprint implements design doc §5's startup check: on a
+// VerifyMasterKeyFingerprint runs the startup master-key check: on a
 // brand-new instance (no fingerprint row yet) it claims one; on an
 // existing instance, a decrypt failure means the current master key
 // doesn't match whatever key encrypted the stored probe — almost always a
 // database restored without its matching config.yaml. Must be called once
 // at startup, after migrations run, before the server accepts traffic.
 //
-// A codex adversarial review round found the original "check not-found,
+// The original "check not-found,
 // then unconditionally Save" sequence was itself a check-then-act race:
 // two instances booting concurrently against the same fresh database with
 // DIFFERENT master keys could both observe "not found" and both attempt to
@@ -136,9 +135,9 @@ type CreateProviderInput struct {
 	KeyLabel     string
 	KeyPlaintext string
 	// TestModel is the model name every test call for this key uses —
-	// admin-supplied since M2 has no real model mapping yet (PRD §6.2.8).
+	// admin-supplied since there is no real model mapping yet.
 	TestModel        string
-	ManagementStatus int // requested status; server independently re-verifies before honoring "enabled" (design doc §6)
+	ManagementStatus int // requested status; server independently re-verifies before honoring "enabled"
 }
 
 type UpdateProviderInput struct {
@@ -199,11 +198,11 @@ func (s *ProviderService) toProviderView(provider *model.Provider, keys []model.
 	}
 }
 
-// keyPrefixFor implements design doc §3's key_prefix formula:
+// keyPrefixFor computes the key_prefix:
 // min(10, max(0, len(plaintext)-4)) characters from the start, never
 // exposing the last 4+ characters of the secret.
 func keyPrefixFor(plaintext string) string {
-	// Rune-sliced, not byte-sliced: a code-review round found the byte
+	// Rune-sliced, not byte-sliced: the byte
 	// version could cut a multi-byte UTF-8 character in half if one
 	// happened to straddle the cutoff, producing an invalid UTF-8
 	// key_prefix that then round-trips through JSON as U+FFFD.
@@ -262,11 +261,11 @@ func (s *ProviderService) GetProviderDetail(id uint) (*ProviderView, error) {
 	return &view, nil
 }
 
-// CreateProvider implements design doc §6: provider + first key in one
+// CreateProvider creates a provider + first key in one
 // transaction, verification_status always starts untested regardless of
 // the caller's requested management_status, then (if enabled was
 // requested) a real out-of-transaction test decides the final status —
-// design doc §6's "服务端重新验证".
+// the "server-side re-verify" step.
 func (s *ProviderService) CreateProvider(ctx context.Context, input CreateProviderInput, now time.Time) (*ProviderView, error) {
 	if err := validatePlaintextLength(input.KeyPlaintext); err != nil {
 		return nil, err
@@ -305,7 +304,7 @@ func (s *ProviderService) CreateProvider(ctx context.Context, input CreateProvid
 	// the requested status, so a freshly created key's
 	// verification_status/last_test_* reflect a real test result rather
 	// than staying silently untested forever if the admin requested
-	// disabled — matches design doc §6's "先测试、后开事务" applied
+	// disabled — matches the "test first, then open the transaction" ordering applied
 	// uniformly. Enabling only happens if it passes. configVersion/
 	// testGeneration/snapshotVersion are all 1: CreateProviderWithKey just
 	// inserted this row with those exact defaults, so there is no prior
@@ -322,8 +321,8 @@ func (s *ProviderService) CreateProvider(ctx context.Context, input CreateProvid
 // UpdateProviderKey — Gin's own binding:"min=20" already blocks every
 // HTTP-originated request before it reaches here, so this only fires for
 // a non-HTTP caller of these exported service methods; kept as
-// defense-in-depth for that reason. A /simplify altitude-review finding:
-// this used to wrap errcode.ErrProviderTestFailed purely so
+// defense-in-depth for that reason.
+// This used to wrap errcode.ErrProviderTestFailed purely so
 // writeProviderServiceError's switch would have a matching case — but "key
 // too short" is not "the connection test failed", a misleading
 // classification if this ever actually fires. Uses its own sentinel now.
@@ -352,7 +351,7 @@ func isSortOrderUniqueViolation(err error) bool {
 }
 
 // UpdateProvider handles name/note (no version bump) and base_url (atomic
-// destination_version bump, design doc §3) separately, since only the
+// destination_version bump) separately, since only the
 // latter must invalidate every key's authorization.
 func (s *ProviderService) UpdateProvider(id uint, input UpdateProviderInput, now time.Time) (*ProviderView, error) {
 	provider, err := repository.FindProviderByID(s.db, id)
@@ -363,7 +362,7 @@ func (s *ProviderService) UpdateProvider(id uint, input UpdateProviderInput, now
 		return nil, err
 	}
 
-	// A max-effort code-review round found these two writes previously ran
+	// These two writes previously ran
 	// as independent, non-transactional statements: if UpdateProviderBaseURL
 	// committed (bumping destination_version, which instantly invalidates
 	// every key's authorization) and UpdateProviderNameNote then failed on a
@@ -396,12 +395,11 @@ func (s *ProviderService) SetProviderStatus(id uint, enabled bool, now time.Time
 	if enabled {
 		status = model.ProviderStatusEnabled
 	}
-	// A max-effort code-review round found this endpoint had no existence
-	// check at all: toggling a nonexistent provider ID matched zero rows,
-	// GORM reported no error, and the caller got a false 200 success. A
-	// later /simplify efficiency-review finding collapsed the separate
-	// FindProviderByID check into reading this write's own RowsAffected,
-	// rather than paying for two round trips.
+	// Without an existence check this endpoint would report a false success:
+	// toggling a nonexistent provider ID matches zero rows, GORM reports no
+	// error, and the caller gets a false 200. The separate FindProviderByID
+	// check is collapsed into reading this write's own RowsAffected, rather
+	// than paying for two round trips.
 	applied, err := repository.UpdateProviderManagementStatus(s.db, id, status, now)
 	if err != nil {
 		return err
@@ -415,19 +413,19 @@ func (s *ProviderService) SetProviderStatus(id uint, enabled bool, now time.Time
 type CreateKeyInput struct {
 	Label            string
 	Plaintext        string
-	TestModel        string // model name every test call for this key uses (PRD §6.2.8)
+	TestModel        string // model name every test call for this key uses
 	ManagementStatus int
 }
 
 type UpdateKeyInput struct {
 	Label            string
-	Plaintext        *string // nil = no plaintext change ("重测"/仅改标签路径)
+	Plaintext        *string // nil = no plaintext change ("retest"/label-only path)
 	TestModel        string
 	ManagementStatus *int // nil = not provided in this request, preserve current status
 }
 
 // CreateProviderKey appends a new key to an existing provider's pool
-// (design doc §8 POST .../keys). Always goes through the "提交新明文"
+// (POST .../keys). Always goes through the "submit new plaintext"
 // verify-then-commit flow since there is no prior plaintext to compare
 // against.
 func (s *ProviderService) CreateProviderKey(ctx context.Context, providerID uint, input CreateKeyInput, now time.Time) (*ProviderKeyView, error) {
@@ -455,7 +453,7 @@ func (s *ProviderService) CreateProviderKey(ctx context.Context, providerID uint
 	// NextSortOrder's read and CreateProviderKeyPendingTest's insert are not
 	// atomic, so two concurrent "add key" requests on the same provider can
 	// compute the same next sort_order and race on UNIQUE(provider_id,
-	// sort_order) — a max-effort code-review round found this was being
+	// sort_order) — this was being
 	// misreported as ErrProviderKeyLabelTaken (the two distinct UNIQUE
 	// constraints on this table were never told apart), confusing an admin
 	// whose label genuinely wasn't taken. sort_order is purely internal
@@ -480,8 +478,8 @@ func (s *ProviderService) CreateProviderKey(ctx context.Context, providerID uint
 		if err == nil {
 			break
 		}
-		// Checked BEFORE the generic isUniqueViolation fallback below — a
-		// max-effort code-review round found the original version fell
+		// Checked BEFORE the generic isUniqueViolation fallback below — the
+		// original version fell
 		// through to ErrProviderKeyLabelTaken once retries were exhausted,
 		// reintroducing the exact "sort_order collision misreported as a
 		// label conflict" bug this retry loop exists to fix. The label was
@@ -511,15 +509,15 @@ func (s *ProviderService) CreateProviderKey(ctx context.Context, providerID uint
 	return &view, nil
 }
 
-// runNewPlaintextTestAndCommit is the shared "先测试、后开事务" flow for any
-// brand-new plaintext (design doc §6): run the real test OUTSIDE any
-// transaction, classify per §5's three-tier rule, then commit via the
-// snapshot-based CAS (design doc §3). If the CAS is lost to a race, the
+// runNewPlaintextTestAndCommit is the shared "test first, then open the transaction" flow for any
+// brand-new plaintext: run the real test OUTSIDE any
+// transaction, classify per the three-tier rule, then commit via the
+// snapshot-based CAS. If the CAS is lost to a race, the
 // result is silently discarded — a later retest will pick up correctly,
 // and this is a best-effort verification convenience, not an operation
 // the caller must retry synchronously.
 //
-// A codex adversarial review round found the original version discarded
+// The original version discarded
 // TestChatCompletion's error return (`result, _ := ...`). Since TestSuccess
 // is TestOutcome's zero value, an error case (e.g. the client's own
 // concurrency cap rejecting the call before any network I/O happened) was
@@ -553,14 +551,13 @@ func (s *ProviderService) runNewPlaintextTestAndCommit(ctx context.Context, keyI
 	// management_status = Disabled SET management_status = Disabled) —
 	// wasted regardless of whether it applies, since a mismatched row
 	// (concurrent status change already flipped it) leaves the same
-	// no-op-with-CAS-miss outcome either way (a /simplify efficiency-review
-	// finding).
+	// no-op-with-CAS-miss outcome either way.
 	if result.Outcome == TestSuccess && requestEnable {
 		_, _ = repository.CASProviderKeyManagementStatus(s.db, keyID, model.ProviderKeyStatusDisabled, model.ProviderKeyStatusEnabled, now)
 	}
 }
 
-// classifyTestResult implements design doc §5's three-tier
+// classifyTestResult implements the three-tier
 // verification_status write rule. Returns (value-to-write-if-overwriting,
 // whether-to-overwrite-at-all, last_test_result-value-to-record).
 func classifyTestResult(result TestResult) (verificationStatus int, overwrite bool, lastTestResult *int) {
@@ -585,9 +582,9 @@ func classifyTestResult(result TestResult) (verificationStatus int, overwrite bo
 }
 
 // UpdateProviderKey handles both the label/status-only path (no plaintext
-// change — "重测" CAS if a retest is also requested) and the new-plaintext
-// path (design doc §8 PATCH .../keys/:keyId).
-// verifyKeyEnableAllowed enforces PRD §6.2.7 / design doc §6's rule that a
+// change — "retest" CAS if a retest is also requested) and the new-plaintext
+// path (PATCH .../keys/:keyId).
+// verifyKeyEnableAllowed enforces the rule that a
 // key can only be enabled if it has actually passed verification against
 // the CURRENT destination — shared by every entry point that can request
 // enabling a key WITHOUT itself running a fresh test first
@@ -595,7 +592,7 @@ func classifyTestResult(result TestResult) (verificationStatus int, overwrite bo
 // Entry points that DO run a fresh test (runNewPlaintextTestAndCommit)
 // decide enablement from that real result instead and never call this.
 //
-// A code-review round found both call sites had this gap independently:
+// Both call sites had this gap independently:
 // UpdateProviderKey's label-only path wrote ManagementStatus straight to
 // the DB with no check at all, and SetProviderKeyStatus checked
 // VerificationStatus but not AuthorizedDestinationVersion — so an admin
@@ -614,9 +611,9 @@ func verifyKeyEnableAllowed(key *model.ProviderKey, provider *model.Provider) er
 }
 
 // findKeyForProvider looks up a key by ID and verifies it belongs to
-// providerID (the :id path segment) — a /simplify altitude-review finding:
-// UpdateProviderKey, SetProviderKeyStatus, and TestProviderKey each
-// repeated this exact lookup+ownership-check+not-found-translation
+// providerID (the :id path segment). UpdateProviderKey,
+// SetProviderKeyStatus, and TestProviderKey each repeated this exact
+// lookup+ownership-check+not-found-translation
 // sequence. A keyID that's real but belongs to a DIFFERENT provider than
 // the URL claims is rejected identically to a genuinely-missing one, not a
 // distinct error, so a caller can't use this to probe which provider a
@@ -647,7 +644,7 @@ func (s *ProviderService) UpdateProviderKey(ctx context.Context, providerID, key
 
 	// input.ManagementStatus is *int (nil = "not provided in this
 	// request"), mirroring input.Plaintext's own nil-means-unchanged
-	// convention. A max-effort code-review round found the previous plain
+	// convention. The previous plain
 	// `int` field made "omitted" and "explicitly 0" indistinguishable: a
 	// label/test_model-only PATCH that left management_status out of the
 	// JSON body bound to Go's zero value 0, which was then written
@@ -655,7 +652,7 @@ func (s *ProviderService) UpdateProviderKey(ctx context.Context, providerID, key
 	// (management_status=1) into status 0, neither Enabled nor Disabled.
 	if input.Plaintext == nil {
 		// Label/test_model/status-only edit — never touches
-		// verification_status (design doc §8). Enabling still has to pass
+		// verification_status. Enabling still has to pass
 		// the same gate SetProviderKeyStatus enforces regardless of the
 		// key's prior state: this path runs no fresh test of its own, so
 		// it must never let an unverified/stale key end up enabled just
@@ -678,7 +675,7 @@ func (s *ProviderService) UpdateProviderKey(ctx context.Context, providerID, key
 		if enabling {
 			// CAS-guarded on the same verification_status/
 			// authorized_destination_version verifyKeyEnableAllowed just
-			// checked, above — a max-effort code-review round found the
+			// checked, above — the
 			// unconditional write below left a check-then-act window where
 			// a concurrent base_url change or retest could invalidate the
 			// key between that check and this write.
@@ -718,8 +715,8 @@ func (s *ProviderService) UpdateProviderKey(ctx context.Context, providerID, key
 	// SwapProviderKeyPlaintext atomically writes label + test_model +
 	// encrypted_key + key_prefix + management_status(disabled) +
 	// config_version bump + verification_status reset + test_generation
-	// claim in ONE transaction (codex adversarial review finding: the
-	// previous version split this across 3 separate statements —
+	// claim in ONE transaction (the previous version split this across
+	// 3 separate statements —
 	// UpdateProviderKeyLabelAndStatus, then a raw ciphertext/prefix
 	// update, then a separate BeginProviderKeyPlaintextSwap call — leaving
 	// a window where a crash or concurrent read between them could
@@ -735,9 +732,9 @@ func (s *ProviderService) UpdateProviderKey(ctx context.Context, providerID, key
 	}
 	// wantsEnabled resolves the caller's actual enable/disable intent for
 	// the fresh test about to run: explicit value if given, else the
-	// key's status before this edit (a /simplify simplification-review
-	// finding: this used to be computed above, before the branch split,
-	// even though only this plaintext branch reads it).
+	// key's status before this edit. This used to be computed above,
+	// before the branch split, even though only this plaintext branch
+	// reads it.
 	wantsEnabled := key.ManagementStatus == model.ProviderKeyStatusEnabled
 	if input.ManagementStatus != nil {
 		wantsEnabled = *input.ManagementStatus == model.ProviderKeyStatusEnabled
@@ -756,7 +753,7 @@ func (s *ProviderService) UpdateProviderKey(ctx context.Context, providerID, key
 // SetProviderKeyStatus enables/disables a key with no plaintext change.
 // Enabling a key whose verification_status isn't "passed", or whose
 // authorized_destination_version doesn't match the provider's current one
-// (needs re-entry), is rejected (PRD §6.2.7 / design doc §6) — the admin
+// (needs re-entry), is rejected — the admin
 // must run a real test first.
 func (s *ProviderService) SetProviderKeyStatus(providerID, keyID uint, enabled bool, now time.Time) error {
 	key, err := s.findKeyForProvider(providerID, keyID)
@@ -774,8 +771,8 @@ func (s *ProviderService) SetProviderKeyStatus(providerID, keyID uint, enabled b
 		return err
 	}
 	// CAS-guarded on the same verification_status/authorized_destination_
-	// version verifyKeyEnableAllowed just checked — a max-effort
-	// code-review round found the unconditional write below left a
+	// version verifyKeyEnableAllowed just checked — the
+	// unconditional write below left a
 	// check-then-act window where a concurrent base_url change or retest
 	// could invalidate the key between that check and this write.
 	applied, err := repository.SetProviderKeyManagementStatusIfVerified(s.db, keyID, model.ProviderKeyStatusEnabled,
@@ -789,12 +786,12 @@ func (s *ProviderService) SetProviderKeyStatus(providerID, keyID uint, enabled b
 	return nil
 }
 
-// ReorderProviderKey moves a key up/down one position (atomic swap,
-// design doc §8). A no-op at either boundary is not an error.
+// ReorderProviderKey moves a key up/down one position (atomic swap).
+// A no-op at either boundary is not an error.
 func (s *ProviderService) ReorderProviderKey(providerID, keyID uint, direction string, now time.Time) error {
 	_, err := repository.SwapProviderKeySortOrder(s.db, providerID, keyID, direction, now)
-	// A max-effort code-review round found this was the one key-lookup
-	// endpoint in this file that left gorm.ErrRecordNotFound untranslated,
+	// This is the one key-lookup endpoint in this file that would otherwise
+	// leave gorm.ErrRecordNotFound untranslated,
 	// answering 500 InternalError instead of the 400 ProviderKeyNotFound
 	// every sibling endpoint (UpdateProviderKey, SetProviderKeyStatus,
 	// TestProviderKey) returns for the identical unknown/cross-provider key
@@ -805,18 +802,18 @@ func (s *ProviderService) ReorderProviderKey(providerID, keyID uint, direction s
 	return err
 }
 
-// TestKeyPreview is the stateless, unpersisted preview (design doc §6
-// POST .../providers/test-key) — never writes to the database, never
+// TestKeyPreview is the stateless, unpersisted preview
+// (POST .../providers/test-key) — never writes to the database, never
 // trusted by any later request.
 func (s *ProviderService) TestKeyPreview(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
 	return s.client.TestChatCompletion(ctx, baseURL, apiKey, model)
 }
 
-// TestProviderKey retests an existing key's stored plaintext (design doc
-// §8 POST .../keys/:keyId/test). Rejects up front, without any network
+// TestProviderKey retests an existing key's stored plaintext
+// (POST .../keys/:keyId/test). Rejects up front, without any network
 // call, if the key needs re-entry (its authorized_destination_version
-// doesn't match the provider's current destination_version) — design doc
-// §3's availability rule.
+// doesn't match the provider's current destination_version) — the
+// availability rule.
 func (s *ProviderService) TestProviderKey(ctx context.Context, providerID, keyID uint, now time.Time) (*ProviderKeyView, error) {
 	key, err := s.findKeyForProvider(providerID, keyID)
 	if err != nil {
@@ -831,8 +828,8 @@ func (s *ProviderService) TestProviderKey(ctx context.Context, providerID, keyID
 	}
 
 	// Claim test_generation and atomically snapshot encrypted_key in the
-	// SAME statement — must happen BEFORE decrypting, not after (codex
-	// adversarial review finding). Reading/decrypting key.EncryptedKey
+	// SAME statement — must happen BEFORE decrypting, not after.
+	// Reading/decrypting key.EncryptedKey
 	// (fetched above, before this claim) would let a concurrent plaintext
 	// replacement race in between: the claim would then return the NEW
 	// config_version while the network test below still ran against the
@@ -854,8 +851,7 @@ func (s *ProviderService) TestProviderKey(ctx context.Context, providerID, keyID
 		// The client itself refused this call (e.g. concurrency cap
 		// exceeded) — not a real test outcome. Since TestSuccess is
 		// TestOutcome's zero value, silently proceeding to classify a
-		// zero-value TestResult here would incorrectly report success
-		// (codex adversarial review finding).
+		// zero-value TestResult here would incorrectly report success.
 		return nil, fmt.Errorf("provider test call could not be started: %w", testErr)
 	}
 	verificationStatus, overwrite, lastTestResult := classifyTestResult(result)
@@ -884,7 +880,7 @@ func (s *ProviderService) TestProviderKey(ctx context.Context, providerID, keyID
 	return &view, nil
 }
 
-// BatchTestResult is one row of TestAllProviderKeys' response (design doc §7).
+// BatchTestResult is one row of TestAllProviderKeys' response.
 type BatchTestResult struct {
 	KeyID        uint   `json:"key_id"`
 	Label        string `json:"label"`
@@ -924,7 +920,7 @@ func (s *ProviderService) TestAllProviderKeys(ctx context.Context, providerID ui
 
 		// Claim generation + read encrypted_key atomically — see
 		// TestProviderKey's comment for why decrypting a value read BEFORE
-		// this claim would be a race (codex adversarial review finding).
+		// this claim would be a race.
 		configVersion, testGeneration, encryptedKeySnapshot, beginErr := repository.BeginProviderKeyRetest(s.db, key.ID)
 		if beginErr != nil {
 			results = append(results, BatchTestResult{KeyID: key.ID, Label: key.Label, Skipped: true})
@@ -939,8 +935,8 @@ func (s *ProviderService) TestAllProviderKeys(ctx context.Context, providerID ui
 		result, testErr := s.client.TestChatCompletion(ctx, provider.BaseURL, plaintext, key.TestModel)
 		if testErr != nil {
 			// The client itself refused this call (e.g. concurrency cap
-			// exceeded) — not a real outcome, nothing to commit (codex
-			// adversarial review finding: TestSuccess is TestOutcome's
+			// exceeded) — not a real outcome, nothing to commit
+			// (TestSuccess is TestOutcome's
 			// zero value, so silently classifying an error+zero-value
 			// TestResult would incorrectly report success).
 			results = append(results, BatchTestResult{KeyID: key.ID, Label: key.Label, Skipped: true})

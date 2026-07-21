@@ -5,7 +5,7 @@ import "time"
 // AdminSession is an opaque server-side session. TokenHash is the SHA-256
 // digest of the raw session token (internal/repository's
 // hashSessionToken) — the raw token is only ever the session cookie's
-// value (design doc §4/§6); it is never constructed as, or read back out
+// value; it is never constructed as, or read back out
 // of, this struct. Deliberately not named ID/matching the cookie value
 // directly: a field that means "raw token" when building a new session
 // but "its hash" when read back from the database is exactly the kind of

@@ -53,7 +53,7 @@ func runDBReset(ctx context.Context, args []string) error {
 
 	// ResetPostgres acquires lockPath itself too (see pkg/database/reset_postgres.go) —
 	// both Reset* functions are self-contained about the mutual-exclusion
-	// precondition against a running `serve` instance (design doc §2.2).
+	// precondition against a running `serve` instance.
 	sqlDB, err := app.DB.DB()
 	if err != nil {
 		return err

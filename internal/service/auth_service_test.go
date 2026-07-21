@@ -95,7 +95,7 @@ func TestSetupRejectsSecondCall(t *testing.T) {
 // admins.singleton_guard UNIQUE constraint (migration
 // 00002_create_admin_auth.sql) and Setup's re-check-after-failure logic,
 // this used to be able to create more than one admin row — a direct
-// violation of PRD §3.1's single-admin invariant.
+// violation of the single-admin invariant.
 func TestConcurrentSetupOnlyCreatesOneAdmin(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC()

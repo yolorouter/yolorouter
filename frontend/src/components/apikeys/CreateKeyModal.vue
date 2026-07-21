@@ -1,7 +1,7 @@
 <!-- frontend/src/components/apikeys/CreateKeyModal.vue
      Two-step modal: form -> one-time plaintext reveal. The plaintext is the
-     only chance to see the full key (PRD §6.4 KEY-01/04); closing without
-     ticking "I have saved it" requires a second confirmation (KEY-03). -->
+     only chance to see the full key; closing without
+     ticking "I have saved it" requires a second confirmation. -->
 <template>
   <n-modal
     :show="show"
@@ -203,7 +203,7 @@ async function onCopy() {
 }
 
 // Closing the plaintext view without ticking "I have saved it" requires a
-// second confirmation — the full key is unrecoverable afterwards (KEY-03).
+// second confirmation — the full key is unrecoverable afterwards.
 function requestClose() {
   if (step.value === 'plaintext' && !saved.value) {
     dialog.warning({

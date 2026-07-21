@@ -1,9 +1,8 @@
-// Package repository: M6.1 shared request_logs query layer. The dashboard
-// (§6.6), analytics (§6.7), and request-log list (§6.8) all filter the same
+// Package repository provides the shared request_logs query layer. The dashboard,
+// analytics, and request-log list all filter the same
 // request_logs table the same way, so the filter + status-bucketing + basic
 // list/count/get + aggregate-totals helpers live here and are reused across
-// the three handlers. See design doc
-// .claude/docs/2026-07-20-m6-analytics-design.md §4.1.
+// the three handlers.
 package repository
 
 import (
@@ -15,9 +14,9 @@ import (
 	"github.com/yolorouter/yolorouter/internal/model"
 )
 
-// RequestLogStatusClass buckets a row into the PRD §6.8.2 status groups the
+// RequestLogStatusClass buckets a row into the status groups the
 // UI and analytics group by. Derived from status_code + fail_reason (set by
-// M5 finalize): a 2xx with no fail_reason is clean success; a 2xx WITH a
+// finalize): a 2xx with no fail_reason is clean success; a 2xx WITH a
 // fail_reason is a partial (stream truncated / no [DONE]); 499 is a caller
 // cancel; 401/403/429 are rejections (auth/rate/budget); everything else
 // non-2xx is a failure.
@@ -48,8 +47,8 @@ var ValidStatusClasses = map[string]struct{}{
 // and request-log list endpoints. All fields optional; zero value = no
 // constraint on that dimension.
 //
-// HasTools / KeySwitched / Failover filters are NOT applied in M6.1: they
-// need either JSON inspection of attempts_detail or new columns (M6.2). The
+// HasTools / KeySwitched / Failover filters are NOT applied yet: they
+// need either JSON inspection of attempts_detail or new columns. The
 // dashboard/analytics endpoints simply don't expose those filters yet.
 type RequestLogFilter struct {
 	RequestID   string
@@ -94,7 +93,7 @@ func (f *RequestLogFilter) applyFilter(db *gorm.DB) *gorm.DB {
 	return applyStatusClass(q, f.StatusClass)
 }
 
-// applyStatusClass layers the PRD §6.8.2 status bucket onto a query. Empty /
+// applyStatusClass layers the status bucket onto a query. Empty /
 // unknown class = no constraint.
 func applyStatusClass(q *gorm.DB, class string) *gorm.DB {
 	switch class {
@@ -147,9 +146,9 @@ func ListRequestLogs(db *gorm.DB, f *RequestLogFilter) (rows []model.RequestLog,
 	return rows, total, err
 }
 
-// GetRequestLogByRequestID returns the single row for a request id (PRD
-// §6.8.7: "可通过请求标识精确找到单次请求"). Returns gorm.ErrRecordNotFound
-// when absent.
+// GetRequestLogByRequestID returns the single row for a request id, so a
+// single request can be located precisely by its request identifier. Returns
+// gorm.ErrRecordNotFound when absent.
 func GetRequestLogByRequestID(db *gorm.DB, requestID string) (*model.RequestLog, error) {
 	var row model.RequestLog
 	if err := db.Where("request_id = ?", requestID).First(&row).Error; err != nil {
@@ -158,8 +157,8 @@ func GetRequestLogByRequestID(db *gorm.DB, requestID string) (*model.RequestLog,
 	return &row, nil
 }
 
-// GetRequestLogBodyByRequestID returns the 1:1 body row joined by request_id
-// (PRD §6.8.4). Returns (nil, nil) when absent (pre-migration rows or capture
+// GetRequestLogBodyByRequestID returns the 1:1 body row joined by request_id.
+// Returns (nil, nil) when absent (pre-migration rows or capture
 // failure) — the service treats nil as empty bodies, never an error. Mirrors
 // reference FindRelayLogBodyByRequestID (relay_log_dao.go:18-28).
 func GetRequestLogBodyByRequestID(db *gorm.DB, requestID string) (*model.RequestLogBody, error) {
@@ -177,7 +176,7 @@ func GetRequestLogBodyByRequestID(db *gorm.DB, requestID string) (*model.Request
 // GetStreamBodyPathByRequestID reads ONLY the stream_body_path column for
 // requestID, instead of loading the whole body row (which carries the large
 // request/response TEXT columns) just to read one short filename — the
-// stream-file serving endpoint needs nothing else (code-review finding).
+// stream-file serving endpoint needs nothing else.
 // Returns ("", nil) when there is no body row for the request.
 func GetStreamBodyPathByRequestID(db *gorm.DB, requestID string) (string, error) {
 	var paths []string
@@ -195,7 +194,7 @@ func GetStreamBodyPathByRequestID(db *gorm.DB, requestID string) (string, error)
 }
 
 // TodayBounds returns the [start, end) UTC timestamps covering the current
-// calendar day in the given location (PRD §6.6.3: "today" is by the system's
+// calendar day in the given location ("today" is by the system's
 // current timezone). created_at is stored UTC, so callers compare
 // created_at >= start AND created_at < end. end is exclusive.
 func TodayBounds(loc *time.Location) (start, end time.Time) {
@@ -248,8 +247,8 @@ func ListRequestLogsKeyset(db *gorm.DB, f *RequestLogFilter, cursor *RequestLogC
 //
 // "Ended" = success + failed + partial + rejected — every request that
 // reached a real outcome — and explicitly EXCLUDES the 499 caller-cancel
-// bucket (PRD §6.6.3: caller cancels count toward total calls but NOT the
-// success rate). KnownCostMicros sums cost_micros, which M5 finalize leaves at
+// bucket (caller cancels count toward total calls but NOT the
+// success rate). KnownCostMicros sums cost_micros, which finalize leaves at
 // 0 whenever cost_known=false, so the sum equals the known-cost total
 // without a dialect-specific CASE on the boolean column.
 type MetricTotals struct {
@@ -265,7 +264,7 @@ type MetricTotals struct {
 }
 
 // successRateOf returns success/ended, or 0 when no request has ended. It is
-// the single definition of the success-rate formula (PRD §6.6.3: "ended"
+// the single definition of the success-rate formula ("ended"
 // excludes the 499 caller-cancel bucket), shared by MetricTotals.SuccessRate
 // and every analytics report row's finalizeRate so the call sites can't drift.
 func successRateOf(successCalls, endedCalls int64) float64 {

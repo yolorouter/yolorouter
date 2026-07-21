@@ -1,5 +1,5 @@
 <!-- frontend/src/components/dashboard/TrendChart.vue
-     Dashboard "calls / cost over the last N days" trend (PRD §6.6.3).
+     Dashboard "calls / cost over the last N days" trend.
      Rendered with ECharts (bar + line, dual Y axis) via `vue-echarts`.
      Registration is centralized in `utils/echarts.ts` — importing it once
      here is enough; `VChart` is re-exported from there so a single import

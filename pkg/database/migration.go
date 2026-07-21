@@ -13,19 +13,19 @@ import (
 )
 
 // pgAdvisoryLockKey is an arbitrary fixed key used to serialize migrations
-// across concurrently-starting PostgreSQL instances (design doc §6). SQLite
+// across concurrently-starting PostgreSQL instances. SQLite
 // deployments are single-instance by design and don't need this.
 const pgAdvisoryLockKey = 8821_0714 // yolorouter, no particular significance beyond being a fixed constant
 
 // RunMigrations executes pending migrations for the given driver against db,
-// reading .sql files from the embedded migrationsFS (design doc §9 — the
+// reading .sql files from the embedded migrationsFS (the
 // single binary must be self-contained, so migrations are compiled in
 // rather than read from a path relative to the process's working directory;
 // see migrations.SQLiteFS / migrations.PostgresFS). dir is the
 // subdirectory within migrationsFS to read (goose.SetBaseFS roots all
 // migration discovery at migrationsFS). On failure it returns a wrapped
 // error with driver context; the caller (cmd/api) treats this as fatal and
-// refuses to start (design doc §6"迁移执行时机").
+// refuses to start.
 func RunMigrations(db *sql.DB, driver string, migrationsFS fs.FS, dir string) error {
 	if db == nil {
 		return fmt.Errorf("database connection is nil")
@@ -129,7 +129,7 @@ func prepareGoose(driver string, migrationsFS fs.FS) (cleanup func(), err error)
 // acquirePostgresAdvisoryLock blocks until this process holds the
 // session-level advisory lock, so that if several instances start at once
 // against the same PostgreSQL database, only one runs migrations at a time
-// and the rest wait for the lock instead of racing (design doc §6).
+// and the rest wait for the lock instead of racing.
 //
 // pg_advisory_lock/pg_advisory_unlock are session-scoped: the lock and its
 // release must happen on the exact same physical connection, or PostgreSQL
@@ -141,7 +141,7 @@ func prepareGoose(driver string, migrationsFS fs.FS) (cleanup func(), err error)
 // shrinking MaxOpenConns below the current MaxIdleConns silently shrinks
 // MaxIdleConns too, and restoring only MaxOpenConns afterward left the pool
 // permanently degraded to one idle connection for the rest of the
-// process's life (codex adversarial review, round 5). db.Conn acquires one
+// process's life. db.Conn acquires one
 // specific *sql.Conn from the pool and guarantees every call through it
 // hits that same session until Close — exactly what's needed here — without
 // touching the shared pool's settings at all. goose's own migration

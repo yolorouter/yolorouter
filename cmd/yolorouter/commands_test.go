@@ -35,7 +35,7 @@ func TestDispatchVersionExitZero(t *testing.T) {
 
 func TestDispatchSubcommandHelpExitZero(t *testing.T) {
 	// serve --help (and every other subcommand's --help) must exit 0 without
-	// initializing any resources (design doc §14 criterion 6), even though
+	// initializing any resources, even though
 	// the underlying flag.FlagSet.Parse surfaces flag.ErrHelp as an error.
 	code, err := dispatch(context.Background(), []string{"serve", "--help"})
 	if err != nil {
@@ -47,7 +47,7 @@ func TestDispatchSubcommandHelpExitZero(t *testing.T) {
 }
 
 func TestRegisteredCommandRunError(t *testing.T) {
-	// 注册一个必定报错的假命令，验证 dispatch 把 Run 的 error 正确传播
+	// Register a fake command that always errors, verifying dispatch propagates the Run error correctly
 	failing := Command{Name: "always-fails", Usage: "test", Run: func(ctx context.Context, args []string) error {
 		return errors.New("boom")
 	}}

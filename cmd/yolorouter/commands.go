@@ -50,8 +50,7 @@ func dispatch(ctx context.Context, args []string) (int, error) {
 			if err := cmd.Run(ctx, rest); err != nil {
 				// A subcommand's own `--help`/`-h` (parsed by its private
 				// flag.FlagSet in serve.go/db_commands.go) surfaces as
-				// flag.ErrHelp. That's a normal, successful exit (design
-				// doc §14 criterion 6: "serve --help 同样退出码 0"), not a
+				// flag.ErrHelp. That's a normal, successful exit, not a
 				// real failure — the flag package already printed usage.
 				if errors.Is(err, flag.ErrHelp) {
 					return 0, nil

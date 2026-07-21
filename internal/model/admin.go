@@ -1,12 +1,11 @@
-// Package model defines the GORM-mapped structs for M1's admin/session
+// Package model defines the GORM-mapped structs for the admin/session
 // tables. Schema itself lives in migrations/{sqlite,postgres}/00002_create_admin_auth.sql
 // — goose owns DDL, GORM here is query-only (no AutoMigrate).
 package model
 
 import "time"
 
-// Admin is the single-row (v0.1) administrator account — see design doc
-// .claude/docs/2026-07-17-m1-auth-design.md §4.
+// Admin is the single-row (v0.1) administrator account.
 //
 // PasswordHash and the lockout-state fields are explicitly json:"-":
 // handlers today only ever expose a hand-picked gin.H{"username": ...},

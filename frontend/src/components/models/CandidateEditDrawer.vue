@@ -177,8 +177,8 @@ function onUpdateShow(value: boolean) {
 }
 
 function openNewProviderDrawer() {
-  // NewProviderDrawer.vue only emits 'update:show' (M2's /simplify pass
-  // removed an unused 'created' emit) — so instead of listening for a
+  // NewProviderDrawer.vue only emits 'update:show' (an unused 'created'
+  // emit was removed) — so instead of listening for a
   // creation event, capture the highest existing provider id, then diff
   // against the refetched list once the drawer closes.
   providerIdBeforeCreate = providersStore.list.reduce((max, p) => Math.max(max, p.id), 0)

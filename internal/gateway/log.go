@@ -14,7 +14,7 @@ import (
 )
 
 // generateRequestID returns a fresh 16-hex-char id for one gateway request
-// (GATE-08: every failed response carries this so the admin can find the
+// (every failed response carries this so the admin can find the
 // row). crypto/rand keeps it unguessable — it's surfaced to the caller, so a
 // predictable counter would leak request volume / ordering.
 func generateRequestID() string {
@@ -33,22 +33,22 @@ func generateRequestID() string {
 const microsPerUnit = 1_000_000
 
 // computeCost returns the cost in integer micros (major-unit × 1e6, i.e. CNY
-// to 6 decimal places) and whether the cost is "known" (PRD §6.7.5, §6.7.6).
-// Unknown = usage missing (GATE-21) — the row records cost_micros=0 with
+// to 6 decimal places) and whether the cost is "known".
+// Unknown = usage missing — the row records cost_micros=0 with
 // cost_known=false so the dashboard never shows it as a free request.
-// Candidate prices are CNY per million tokens (design doc §3.3);
+// Candidate prices are CNY per million tokens;
 // cache-read/write pricing is deferred to a later module.
 func computeCost(cand *model.ModelCandidate, usage *Usage) (micros int64, known bool) {
 	if usage == nil || cand == nil {
 		return 0, false
 	}
-	// PRD §6.7.5: cost = (prompt − cache_read) × input_price
-	//                   + cache_read × cache_read_price
-	//                   + cache_write × cache_write_price
-	//                   + completion × output_price
+	// cost = (prompt − cache_read) × input_price
+	//      + cache_read × cache_read_price
+	//      + cache_write × cache_write_price
+	//      + completion × output_price
 	// cache_read tokens are a subset of prompt_tokens (OpenAI), so subtract
 	// them from the input line to avoid double-counting. Candidate prices
-	// are CNY per million tokens (design doc §3.3).
+	// are CNY per million tokens.
 	cacheRead := usage.CacheReadTokens
 	cacheWrite := usage.CacheWriteTokens
 	nonCacheInput := usage.PromptTokens - cacheRead
@@ -56,7 +56,7 @@ func computeCost(cand *model.ModelCandidate, usage *Usage) (micros int64, known 
 		nonCacheInput = 0 // defensive: upstream reporting cache_read > prompt
 	}
 	// Candidate without a configured cache price bills cache tokens at the
-	// input price (PRD §6.7.5: "候选未配置缓存价格时，对应缓存 Token 按输入单价计费").
+	// input price (when a candidate has no cache price configured, its cache tokens are billed at the input unit price).
 	cacheReadPrice := cand.InputPrice
 	if cand.CacheReadPrice != nil {
 		cacheReadPrice = *cand.CacheReadPrice
@@ -79,7 +79,7 @@ func computeCost(cand *model.ModelCandidate, usage *Usage) (micros int64, known 
 // safeUpstreamMessage produces the message shown to the caller for a 4xx
 // non-auth upstream failure. The upstream body is NOT forwarded verbatim —
 // it can echo back parts of the request (including the rewritten model) and,
-// for some providers, fragments of credential detail (GATE-07). A bare
+// for some providers, fragments of credential detail. A bare
 // "upstream returned status N" is enough for the caller to act on.
 func safeUpstreamMessage(status int) string {
 	return fmt.Sprintf("upstream returned status %d", status)
@@ -88,7 +88,7 @@ func safeUpstreamMessage(status int) string {
 // finalize writes the request_logs row and, when cost is known and positive,
 // accumulates the spend onto the API key's budget_spent_micros. Called on
 // every exit path (success, every failure class) so each gateway request
-// produces exactly one row (GATE-13). rc.Candidate/Provider/Usage may be nil
+// produces exactly one row. rc.Candidate/Provider/Usage may be nil
 // on early failures (before any candidate was tried); finalize is nil-safe
 // for all of them.
 //
@@ -141,8 +141,8 @@ func (s *RelayService) finalize(rc *RelayContext, statusCode int, failReason str
 		Attempts:         len(rc.Attempts),
 		DurationMs:       durationMs,
 	}
-	// GATE-13: keep every attempt's order / key label / failure cause, not
-	// just the count. Stored as JSON so the §6.8 query page can render it
+	// Keep every attempt's order / key label / failure cause, not
+	// just the count. Stored as JSON so the query page can render it
 	// later without a schema change; empty when no attempt ran (pre-check
 	// failure before any candidate was tried).
 	if len(rc.Attempts) > 0 {
@@ -162,12 +162,12 @@ func (s *RelayService) finalize(rc *RelayContext, statusCode int, failReason str
 		}
 	}
 
-	// PRD §6.8.4/§6.8.6/LOG-06: record obtainable request/response bodies
+	// Record obtainable request/response bodies
 	// (stored verbatim; v0.1 does not scrub body content — only request
 	// headers are masked, via SanitizeHeaders). Idempotent UPSERT (UNIQUE
 	// request_id) so retry/double-call never duplicates. Best-effort: a body-
 	// write failure is logged only — the billing row (above) is authoritative
-	// and must not roll back on a body failure (Codex #5).
+	// and must not roll back on a body failure.
 	//
 	// streamBodyPath is derived here (not stored on rc) rather than kept as a
 	// second string field alongside streamBodyCaptured (simplification: the

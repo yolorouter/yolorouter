@@ -1,5 +1,4 @@
-// Package repository additions for M4: APIKey / APIKeyModel pure data access.
-// See design doc .claude/docs/2026-07-19-m4-apikey-design.md §3.
+// Package repository provides APIKey / APIKeyModel pure data access.
 package repository
 
 import (
@@ -22,13 +21,13 @@ func FindAPIKeyByID(db *gorm.DB, id uint) (*model.APIKey, error) {
 // applyAPIKeySearch adds the free-text WHERE clause (matched against
 // key_prefix / owner_label / remark) when q is non-empty. LOWER() on both
 // sides keeps SQLite's case-sensitive LIKE and Postgres's case-sensitive LIKE
-// behaving identically — KEY-07 search must not depend on the driver.
+// behaving identically — search must not depend on the driver.
 func applyAPIKeySearch(tx *gorm.DB, q string) *gorm.DB {
 	if q == "" {
 		return tx
 	}
 	// Escape LIKE metacharacters so a search for "100%" or "a_b" matches
-	// literally rather than as wildcards (KEY-07). Backslash is the escape
+	// literally rather than as wildcards. Backslash is the escape
 	// char on both SQLite and Postgres.
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
 	like := "%" + escaped + "%"
@@ -56,7 +55,7 @@ func SearchAPIKeys(db *gorm.DB, q string, offset, limit int) ([]model.APIKey, er
 
 // CreateAPIKey inserts the key row then its allowlist rows in one transaction,
 // so a partial write can never leave a key with fewer whitelisted models than
-// requested (PRD §6.4.3 requires at least one at create time).
+// requested (at least one is required at create time).
 func CreateAPIKey(db *gorm.DB, key *model.APIKey, modelIDs []uint, now time.Time) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		key.CreatedAt = now
@@ -92,7 +91,7 @@ func FindAPIKeyModelIDs(db *gorm.DB, apiKeyID uint) ([]uint, error) {
 }
 
 // FindAPIKeyModelsByAPIKeyIDs batches the N+1 of per-key allowlist lookup when
-// listing keys (same fix shape as M3's ListModelCandidatesByModelIDs).
+// listing keys (the same fix shape used elsewhere, e.g. ListModelCandidatesByModelIDs).
 func FindAPIKeyModelsByAPIKeyIDs(db *gorm.DB, apiKeyIDs []uint) ([]model.APIKeyModel, error) {
 	if len(apiKeyIDs) == 0 {
 		return nil, nil
@@ -108,7 +107,7 @@ func FindAPIKeyModelsByAPIKeyIDs(db *gorm.DB, apiKeyIDs []uint) ([]model.APIKeyM
 // UpdateAPIKey applies a sparse column update (only keys present in updates)
 // and, when modelIDs is non-nil, replaces the allowlist — all in one
 // transaction. modelIDs == nil leaves the whitelist unchanged; modelIDs == []
-// clears it (PRD §6.4.7 allows an empty whitelist).
+// clears it (an empty whitelist is allowed).
 func UpdateAPIKey(db *gorm.DB, id uint, updates map[string]interface{}, modelIDs []uint, now time.Time) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		// updated_at is always bumped — even a whitelist-only change is a real
@@ -134,7 +133,7 @@ func UpdateAPIKey(db *gorm.DB, id uint, updates map[string]interface{}, modelIDs
 // deliberate defense-in-depth alongside service.RevokeAPIKey's pre-check
 // short-circuit, not redundant: the pre-check avoids the write on the common
 // "revoke an already-revoked key" path, this clause keeps the write correct
-// even if that pre-check read was stale (PRD §6.4.5 KEY-06).
+// even if that pre-check read was stale.
 func RevokeAPIKey(db *gorm.DB, id uint, now time.Time) error {
 	return db.Model(&model.APIKey{}).
 		Where("id = ? AND status = ?", id, model.APIKeyStatusActive).
@@ -145,8 +144,8 @@ func RevokeAPIKey(db *gorm.DB, id uint, now time.Time) error {
 		}).Error
 }
 
-// FindAPIKeyByHash looks up a key by its SHA-256 hash — the gateway auth path
-// (PRD §6.5 step 1). The plaintext is never stored or indexed; the caller
+// FindAPIKeyByHash looks up a key by its SHA-256 hash — the gateway auth path.
+// The plaintext is never stored or indexed; the caller
 // hashes the bearer token and looks the row up by hash. Returns
 // gorm.ErrRecordNotFound for an unknown key (the service layer maps that to
 // ErrAPIKeyInvalid — never "not found", to avoid leaking which keys exist).
@@ -158,10 +157,10 @@ func FindAPIKeyByHash(db *gorm.DB, hash string) (*model.APIKey, error) {
 	return &k, nil
 }
 
-// HasAPIKeyModelAccess reports whether modelID is in the key's allowlist
-// (PRD §6.5 step 5). Stored by id, so renaming a model does not break
-// whitelists (design doc §3 / M4 APIKeyModel). A key with an empty whitelist
-// matches nothing — M4 allows creating one, the gateway rejects every call.
+// HasAPIKeyModelAccess reports whether modelID is in the key's allowlist.
+// Stored by id, so renaming a model does not break
+// whitelists. A key with an empty whitelist
+// matches nothing — creating one is allowed, the gateway rejects every call.
 func HasAPIKeyModelAccess(db *gorm.DB, apiKeyID, modelID uint) (bool, error) {
 	var cnt int64
 	if err := db.Model(&model.APIKeyModel{}).

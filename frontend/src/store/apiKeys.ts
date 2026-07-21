@@ -12,8 +12,7 @@ interface ApiKeysState {
   error: unknown | null
   // Monotonic token so a stale list response can't clobber a newer one if a
   // second fetchList() starts before the first resolves (same guard pattern
-  // the models / providers stores use — see .claude/frontend-conventions.md
-  // "Pinia store").
+  // the models / providers stores use).
   lastFetchId: number
 }
 

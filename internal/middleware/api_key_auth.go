@@ -1,8 +1,8 @@
-// Package middleware additions for M5: gateway API key auth — the second
+// Package middleware additions for gateway API key auth — the second
 // auth path, independent of admin sessions. The caller presents a
 // Yolorouter API key (Authorization: Bearer sk-yr-...); we hash it with the
-// shared SHA-256 hex recipe (crypto.HashToken — the same one M4 stores and
-// the session-token path uses), look up the row, and store it on the context
+// shared SHA-256 hex recipe (crypto.HashToken — the same one the API-key store
+// and the session-token path use), look up the row, and store it on the context
 // for the gateway handler.
 //
 // Pre-call limit enforcement (state/expiry/budget/RPM/concurrency) runs in
@@ -31,8 +31,7 @@ import (
 // APIKeyAuth resolves an Authorization: Bearer <key> credential to its
 // APIKey row and stores it on the context via gateway.SetGatewayAuth. A
 // missing, malformed, or unknown key returns an OpenAI-compatible 401 — the
-// gateway namespace uses upstream's native error shape, NOT pkg/response
-// (design doc §3).
+// gateway namespace uses upstream's native error shape, NOT pkg/response.
 func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := extractBearerKey(c)
@@ -69,14 +68,14 @@ const authRejectionBodyCap = 16 << 10 // 16 KiB
 // at the auth gate (missing / unknown / lookup-failed API key). The gateway's
 // finalize never runs for these — Handle is never called — so without this
 // row the 401 attempts would be invisible to dashboard / analytics / request-
-// log audit views (Codex adversarial finding). Only the request id, a nil
+// log audit views. Only the request id, a nil
 // api_key_id, the rejection status, and a generic fail_reason are stored —
 // never the credential or header content.
 //
 // errType/message are the exact error.type/message gateway.WriteOpenAIError
 // is about to return to the caller (the call site right after this one) —
 // passed through rather than re-derived so the persisted response_body
-// matches what the caller actually received (PRD §6.8.4, Codex #2).
+// matches what the caller actually received.
 func logAuthRejection(c *gin.Context, db *gorm.DB, status int, reason, errType, message string) {
 	// RequestID middleware is always registered ahead of APIKeyAuth (router.go
 	// mounts it first on the root engine), so request_id is always set here.
@@ -95,19 +94,18 @@ func logAuthRejection(c *gin.Context, db *gorm.DB, status int, reason, errType, 
 			zap.String("request_id", requestID), zap.Error(err))
 	}
 
-	// LOG-06 (Codex #2): auth-rejected requests never reach gateway.Handle,
+	// auth-rejected requests never reach gateway.Handle,
 	// so its finalize() never runs and the request would otherwise have no
 	// request_log_bodies row at all. A body failure must never block the
 	// 401/500 response above, which ReadAuditBodyCapped's nil-on-failure
 	// contract already guarantees. Capped at authRejectionBodyCap (far below
 	// the 20 MiB post-auth cap): this path serves UNauthenticated callers, so
 	// a small ceiling keeps the audit useful without letting a keyless
-	// attacker inflate request_log_bodies with 20 MiB bodies per rejection
-	// (code-review finding).
+	// attacker inflate request_log_bodies with 20 MiB bodies per rejection.
 	var reqBody, reqHeaders []byte
 	if c.Request != nil {
 		reqBody = gateway.ReadAuditBodyCapped(c.Request.Body, authRejectionBodyCap)
-		// PRD §6.8.6: record the (masked) request headers even for an
+		// Record the (masked) request headers even for an
 		// auth-rejected request, mirroring gateway.Handle's own capture.
 		reqHeaders = gateway.SanitizeHeaders(c.Request.Header)
 	}

@@ -1,8 +1,7 @@
 // Package service additions: VersionService checks the latest GitHub release
 // for the configured repo, with a short positive cache (so a busy admin UI
 // doesn't hammer GitHub) and a short negative cache (so a flapping GitHub or
-// rate-limit doesn't either). See design doc
-// .claude/docs/2026-07-20-version-update-design.md §4.4.
+// rate-limit doesn't either).
 package service
 
 import (
@@ -77,7 +76,7 @@ func NewVersionService(repo string) *VersionService {
 // select on ctx.Done): the fetch itself runs on a service-owned
 // context.Background so a disconnecting caller can't cancel it for everyone.
 // client.Timeout bounds the fetch so a stalled GitHub can never hang an admin
-// request — design doc §4.4 / Codex review P2.
+// request.
 func (s *VersionService) Check(ctx context.Context) VersionStatus {
 	current := version.Version
 
@@ -98,7 +97,7 @@ func (s *VersionService) Check(ctx context.Context) VersionStatus {
 	// — a disconnecting first caller would otherwise cancel it for everyone).
 	// Each caller waits via select on ctx.Done() so a canceled caller stops
 	// waiting without aborting the shared fetch; client.Timeout bounds the
-	// fetch, and the closure writes the cache when it lands (Codex review P2).
+	// fetch, and the closure writes the cache when it lands.
 	ch := s.g.DoChan(s.repo, func() (any, error) {
 		entry := s.fetchLatest(context.Background())
 		s.mu.Lock()
@@ -149,8 +148,8 @@ func (s *VersionService) buildStatus(current string, entry *versionCacheEntry) V
 	// A dev build or a git-describe/RC prerelease is not — it must NOT be
 	// reported as "up to date", because the updater (currentUpdatable) refuses
 	// such builds and no comparison occurred. Surface it as check_failed so
-	// the UI shows "check failed" rather than a misleading "up to date"
-	// (Codex review P2). git-describe strings ("v1.2.3-dirty",
+	// the UI shows "check failed" rather than a misleading "up to date".
+	// git-describe strings ("v1.2.3-dirty",
 	// "v1.2.3-4-gabc") and RC tags ("v1.2.3-rc1") are semver prereleases
 	// ranked below their release, so comparing one against the tag would
 	// falsely report "has update" and let `update` downgrade a newer dirty
@@ -162,7 +161,7 @@ func (s *VersionService) buildStatus(current string, entry *versionCacheEntry) V
 	// latest must also be an exact-tag stable release: a prerelease latest
 	// (e.g. v1.3.0-rc1 published as /releases/latest) would install a build
 	// currentUpdatable then refuses to advance from, stranding the user on
-	// the RC. Treat it as incomparable (Codex review P2).
+	// the RC. Treat it as incomparable.
 	latestComparable := semver.IsValid(entry.latest) && semver.Prerelease(entry.latest) == ""
 	if !currentComparable || !latestComparable {
 		st.CheckFailed = true
@@ -218,7 +217,7 @@ func (s *VersionService) fetchLatest(ctx context.Context) *versionCacheEntry {
 	// refuses to install it and buildStatus reports CheckFailed. Cache it as
 	// a FAILURE (negTTL 1min) not a success (posTTL 10min), so a corrected
 	// stable release is picked up on the next negTTL cycle rather than being
-	// hidden for 10 minutes (Codex review P2).
+	// hidden for 10 minutes.
 	if semver.Prerelease(rel.TagName) != "" {
 		return s.failEntry()
 	}

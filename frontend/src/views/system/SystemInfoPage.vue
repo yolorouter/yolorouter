@@ -57,13 +57,13 @@ const labelStyle = { width: '160px' }
 // Load through the shared store action (lastFetchId race-guarded) rather than
 // calling getSystemVersion directly: a direct /system load would race
 // DefaultLayout's mount-time check, and an older delayed response could
-// overwrite the newer one in the shared badge / release-URL state (Codex
-// review P2). checkForUpdates swallows its own errors (a failed check is an
+// overwrite the newer one in the shared badge / release-URL state.
+// checkForUpdates swallows its own errors (a failed check is an
 // expected pre-public / GitHub-outage state), so fire-and-forget is safe.
 onMounted(() => {
   // checkForUpdates never rejects (store/update.ts documents "NEVER throws"
   // and wraps its entire body in try/catch); the store surfaces failures via
-  // checkFailed, not a rejected promise, so no .catch is needed (Codex P2).
+  // checkFailed, not a rejected promise, so no .catch is needed.
   void updateStore.checkForUpdates()
 })
 
@@ -74,7 +74,7 @@ const platform = computed(() => (updateStore.goos ? `${updateStore.goos} / ${upd
 const uptimeLabel = computed(() => {
   // Distinguish "not loaded / fetch failed" (version still empty) from a
   // legitimate uptime of 0 (a freshly-booted server): `!secs` would treat 0
-  // as not-loaded (JS falsy-zero) and render '—' instead of '0m' (Codex P2).
+  // as not-loaded (JS falsy-zero) and render '—' instead of '0m'.
   if (!updateStore.version) return '—'
   const secs = updateStore.uptimeSeconds
   const days = Math.floor(secs / 86400)

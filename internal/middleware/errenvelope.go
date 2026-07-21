@@ -28,8 +28,8 @@ func WriteAdminError(c *gin.Context, httpStatus int, code int) {
 
 // WriteAdminErrorWithData is WriteAdminError plus a Data payload —
 // pkg/response has no error-with-data helper of its own (it's kept a
-// verbatim copy of the reference project's package, see M0 design doc
-// §12, so the fix belongs here instead of there). AccountLoginLocked's
+// verbatim copy of the reference project's package, so the fix belongs
+// here instead of there). AccountLoginLocked's
 // `locked_until` field is the first caller; any future admin error that
 // also needs to carry structured data (e.g. a 429's retry_after) should
 // go through this one place rather than hand-rolling another
@@ -45,11 +45,10 @@ func WriteAdminErrorWithData(c *gin.Context, httpStatus int, code int, data any)
 }
 
 // gatewayError is an OpenAI-compatible error body — the shape every
-// OpenAI-API-compatible client already knows how to parse. M0 has no real
-// /v1 routes yet (that starts in M6), but the router's 404/405 fallback for
-// unmatched /v1 paths must commit to this shape now so M6's handlers land on
-// an already-consistent convention instead of two incompatible ones existing
-// side by side.
+// OpenAI-API-compatible client already knows how to parse. The router's
+// 404/405 fallback for unmatched /v1 paths commits to this shape so future
+// handlers land on an already-consistent convention instead of two
+// incompatible ones existing side by side.
 type gatewayError struct {
 	Error gatewayErrorBody `json:"error"`
 }
@@ -75,7 +74,7 @@ func IsAdminNamespace(path string) bool {
 }
 
 // IsGatewayNamespace reports whether path falls under the /v1/* gateway
-// namespace (OpenAI-compatible surface, real routes land in M6).
+// namespace (OpenAI-compatible surface).
 func IsGatewayNamespace(path string) bool {
 	return path == "/v1" || strings.HasPrefix(path, "/v1/")
 }
@@ -85,7 +84,7 @@ func IsGatewayNamespace(path string) bool {
 // /v1* gets the OpenAI-compatible shape — the two must never be mixed, since
 // gateway clients expect the OpenAI shape specifically. This is the single
 // place NoRoute, NoMethod, and Recovery all dispatch through, so a future
-// panic under /v1/* (once M6 registers real routes there) doesn't leak the
+// panic under /v1/* doesn't leak the
 // admin envelope the way a per-caller ad-hoc check would risk.
 func WriteNamespacedError(c *gin.Context, path string, httpStatus int, adminCode int) {
 	if !IsGatewayNamespace(path) {

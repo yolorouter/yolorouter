@@ -1,4 +1,4 @@
-// Package repository is the pure data-access layer for M1's admin/session
+// Package repository is the pure data-access layer for the admin/session
 // tables — no business judgment here (that's internal/service's job), just
 // reads and writes against internal/model structs.
 package repository
@@ -11,9 +11,8 @@ import (
 	"github.com/yolorouter/yolorouter/internal/model"
 )
 
-// CountAdmins reports how many admin rows exist — v0.1 only ever has 0 or 1
-// (see design doc §4), used to decide whether first-run setup is still
-// available.
+// CountAdmins reports how many admin rows exist — v0.1 only ever has 0 or 1,
+// used to decide whether first-run setup is still available.
 func CountAdmins(db *gorm.DB) (int64, error) {
 	var count int64
 	err := db.Model(&model.Admin{}).Count(&count).Error
@@ -26,9 +25,9 @@ func CreateAdmin(db *gorm.DB, admin *model.Admin) error {
 }
 
 // FindAdminByUsername returns gorm.ErrRecordNotFound if no admin has that
-// username — callers must not distinguish this from a wrong password (PRD
-// §6.1.3: never reveal whether an account exists, only "invalid username
-// or password").
+// username — callers must not distinguish this from a wrong password:
+// never reveal whether an account exists, only "invalid username
+// or password".
 func FindAdminByUsername(db *gorm.DB, username string) (*model.Admin, error) {
 	var admin model.Admin
 	if err := db.Where("username = ?", username).First(&admin).Error; err != nil {
@@ -53,8 +52,8 @@ func UpdateAdminPasswordHash(db *gorm.DB, id uint, passwordHash string, now time
 }
 
 // RecordLoginFailure atomically increments the admin's consecutive
-// failed-login counter and applies a lock once it reaches lockThreshold —
-// see design doc §4 for the full state-transition table. If the admin's
+// failed-login counter and applies a lock once it reaches lockThreshold.
+// If the admin's
 // previous lock has already expired (locked_until <= now), this failure
 // starts a fresh count of 1 instead of continuing the old count: otherwise
 // the very first retry after a lock expires would immediately re-trigger

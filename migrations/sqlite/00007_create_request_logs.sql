@@ -1,13 +1,13 @@
 -- migrations/sqlite/00007_create_request_logs.sql
 --
--- Gateway request logs (PRD §6.5 GATE-13/21, §6.8). One row per gateway
+-- Gateway request logs. One row per gateway
 -- business request — a failover still counts as ONE row, with the attempts
--- column recording how many candidates were tried (GATE-13). v0.1 stores no
--- request/response bodies: there is no §6.8 query page yet, so the optional
+-- column recording how many candidates were tried. v0.1 stores no
+-- request/response bodies: there is no query page yet, so the optional
 -- body-capture switch from the reference project is omitted entirely.
 --
 -- cost_known = 0 marks "price or token missing, do NOT display as zero cost"
--- (GATE-21 / PRD §6.7.6) — the row still records the request happened.
+-- — the row still records the request happened.
 --
 -- +goose Up
 CREATE TABLE request_logs (

@@ -18,7 +18,7 @@ const AdminIDKey = "admin_id"
 
 // SessionCookieName is the single cookie name used for the whole admin
 // session lifecycle (set on login/setup, cleared on logout/password
-// change) — see design doc §6. Exported so internal/handler (which writes
+// change). Exported so internal/handler (which writes
 // and clears the cookie) and this package (which reads it) share one
 // symbol instead of each hardcoding the literal.
 const SessionCookieName = "session_id"

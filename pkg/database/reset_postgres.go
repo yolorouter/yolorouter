@@ -18,7 +18,7 @@ import (
 // each Reset* function self-contained means a future destructive operation
 // can't be added without it.
 //
-// Known limitation (accepted, not an oversight — design doc §11): this lock
+// Known limitation (accepted, not an oversight): this lock
 // is a local file lock (flock), so it only protects against another
 // instance on the *same host*. If multiple `serve` instances are deployed
 // on different hosts against the same remote Postgres — already outside

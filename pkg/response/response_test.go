@@ -11,7 +11,7 @@ import (
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
-// TestErrorMapsInvalidParamTo400 guards the /simplify altitude-review fix:
+// TestErrorMapsInvalidParamTo400 guards the altitude-review fix:
 // errcode.InvalidParam (50003) numerically falls in the "50xxx = system
 // error" bucket httpStatusForCode otherwise maps to 500, even though its
 // meaning is a 400 client error. Two handlers (auth_handler.go's bindJSON,

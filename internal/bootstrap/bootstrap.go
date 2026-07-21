@@ -1,7 +1,7 @@
 // Package bootstrap provides the shared initialization sequence (config
 // load/generate + validate -> logger -> database connection) used by every
 // resource-initializing subcommand (serve, db:migrate, db:rollback, db:status,
-// ...). help/version/unknown-command paths never call Init (design doc §2.2).
+// ...). help/version/unknown-command paths never call Init.
 package bootstrap
 
 import (

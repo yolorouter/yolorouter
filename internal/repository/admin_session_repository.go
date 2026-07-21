@@ -13,7 +13,7 @@ import (
 // recipe shared with the gateway's bearer-key lookup (middleware) and the
 // API-key hash (service). admin_sessions.id stores only this digest, never
 // the raw token: the raw token is what's sent to the browser as the cookie
-// value (design doc §4/§6), so a leaked database file or backup (see
+// value, so a leaked database file or backup (see
 // pkg/database's db:backup) would otherwise hand out directly-replayable,
 // still-valid admin sessions for up to SessionTTL. Reversing a SHA-256
 // digest back to the original token is infeasible, so a leaked row alone
@@ -63,7 +63,7 @@ func DeleteSession(db *gorm.DB, id string) error {
 
 // DeleteAllSessionsForAdmin removes every session belonging to an admin —
 // used by ChangePassword to force every existing login (including the
-// caller's own) to re-authenticate, per PRD AUTH-07.
+// caller's own) to re-authenticate.
 func DeleteAllSessionsForAdmin(db *gorm.DB, adminID uint) error {
 	return db.Where("admin_id = ?", adminID).Delete(&model.AdminSession{}).Error
 }
@@ -73,12 +73,10 @@ func DeleteAllSessionsForAdmin(db *gorm.DB, adminID uint) error {
 // its own (only an explicit Logout or ChangePassword deletes a row) — an
 // admin who simply lets the 24h TTL lapse without logging out (the common
 // case) would otherwise leave that row behind forever, one dead row per
-// login with no ceiling. This mirrors the identical fix already applied
-// to .claude/reference-projects/yolorouter-deprecated's `sessions`
-// table (DeleteExpiredOrRevokedSessionsInTx, closing its own codex
-// adversarial review round 7) — called from inside Login's existing
-// transaction (service.Login) so the cleanup cost is amortized across
-// normal logins rather than needing a separate cleanup worker/cron.
+// login with no ceiling. This mirrors an established cleanup pattern:
+// called from inside Login's existing transaction (service.Login) so the
+// cleanup cost is amortized across normal logins rather than needing a
+// separate cleanup worker/cron.
 func DeleteExpiredSessions(db *gorm.DB, now time.Time) error {
 	return db.Where("expires_at <= ?", now).Delete(&model.AdminSession{}).Error
 }

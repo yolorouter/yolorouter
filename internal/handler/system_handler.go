@@ -1,7 +1,6 @@
-// Package handler additions: the system info endpoint (GET
+// Package handler exposes the system info endpoint (GET
 // /api/admin/system/version). It reports build/runtime metadata plus the
-// latest-release check result. See design doc
-// .claude/docs/2026-07-20-version-update-design.md §4.4.
+// latest-release check result.
 package handler
 
 import (

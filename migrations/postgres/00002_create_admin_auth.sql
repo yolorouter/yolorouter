@@ -1,5 +1,5 @@
 -- migrations/postgres/00002_create_admin_auth.sql
--- Mirrors migrations/sqlite/00002_create_admin_auth.sql for the same reasons (design doc §4).
+-- Mirrors migrations/sqlite/00002_create_admin_auth.sql for the same reasons.
 
 -- +goose Up
 CREATE TABLE admins (
@@ -10,9 +10,9 @@ CREATE TABLE admins (
     locked_until        TIMESTAMPTZ NULL,
     -- Every row defaults to the same value under a UNIQUE constraint, so
     -- the database itself rejects a second row regardless of username —
-    -- v0.1 is single-admin only (PRD §3.1), and an app-level "count
+    -- v0.1 is single-admin only, and an app-level "count
     -- admins, then insert" check alone is a check-then-act race under
-    -- concurrent first-run setup requests (design doc §4 / §9).
+    -- concurrent first-run setup requests.
     singleton_guard     SMALLINT NOT NULL DEFAULT 1 UNIQUE,
     created_at          TIMESTAMPTZ NOT NULL,
     updated_at          TIMESTAMPTZ NOT NULL

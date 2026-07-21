@@ -1,5 +1,5 @@
 -- migrations/sqlite/00004_create_providers.sql
--- M2: provider management (design doc .claude/docs/2026-07-18-m2-provider-design.md §3)
+-- Provider management
 
 -- +goose Up
 CREATE TABLE providers (
@@ -10,7 +10,7 @@ CREATE TABLE providers (
     note                 VARCHAR(200) NULL,
     management_status    SMALLINT NOT NULL DEFAULT 1,
     -- Bumped atomically (same UPDATE as base_url) every time the address
-    -- changes — design doc §3 "目的地版本绑定". A provider_keys row's
+    -- changes — the "destination version binding" invariant. A provider_keys row's
     -- authorized_destination_version must equal this value before its
     -- plaintext may be decrypted for any test or relay call.
     destination_version  INTEGER NOT NULL DEFAULT 1,
@@ -27,8 +27,8 @@ CREATE TABLE provider_keys (
     sort_order                      INTEGER NOT NULL,
     -- The model name to send in every test call for this key (single-key
     -- test, batch test, and the server-side re-verify on create/edit).
-    -- Admin-supplied since M2 has no real model mapping yet (that's M3,
-    -- PRD §6.2.8's "临时输入模型名进行测试"); required on every create/edit.
+    -- Admin-supplied since there is no real model mapping yet — the
+    -- "enter a model name ad hoc to run a test" flow; required on every create/edit.
     test_model                      VARCHAR(100) NOT NULL,
     management_status               SMALLINT NOT NULL DEFAULT 1,
     verification_status             SMALLINT NOT NULL DEFAULT 0,
@@ -38,7 +38,7 @@ CREATE TABLE provider_keys (
     last_test_duration_ms           INTEGER NULL,
     last_tested_at                  DATETIME NULL,
     -- Bumped whenever a new plaintext is submitted (create / edit-with-new-key
-    -- / re-entry) — part of the write-back CAS, design doc §3.
+    -- / re-entry) — part of the write-back CAS.
     config_version                  INTEGER NOT NULL DEFAULT 1,
     -- Claimed (+1) at the start of every test attempt so an
     -- earlier-started-but-later-finishing test can't overwrite a
@@ -56,7 +56,7 @@ CREATE INDEX idx_provider_keys_provider_id ON provider_keys(provider_id);
 -- provider_master_key, checked at startup so a mismatched master key
 -- (e.g. a DB-only backup restore without its matching config.yaml) fails
 -- loudly at boot instead of silently making every encrypted_key
--- undecryptable (design doc §5).
+-- undecryptable.
 CREATE TABLE provider_key_fingerprint (
     id              INTEGER PRIMARY KEY,
     encrypted_probe TEXT NOT NULL,

@@ -9,7 +9,7 @@ import (
 // window (not sliding) is deliberately coarse — RPM's job is to protect the
 // upstream from a single hot key, not to bill precisely, and the boundary
 // jitter is acceptable. The minute key is unix epoch / 60 so it's
-// timezone-independent (PRD §6.6's "today by system timezone" rule is about
+// timezone-independent (the "today by system timezone" rule is about
 // the dashboard, not the rate counter).
 type minuteWindow struct {
 	minute int64
@@ -43,7 +43,7 @@ type keySlot struct {
 // Limiter enforces per-API-key concurrency + RPM in memory. v0.1 is
 // process-local: a single-binary deployment has one gateway, so per-process
 // counters match per-instance state. TPM pre-enforcement needs prompt-token
-// estimation and is deferred (design doc §1.2).
+// estimation and is deferred.
 //
 // Slots are stored in a sync.Map so a hot key's accounting never serializes
 // against an unrelated key's slot lookup (a single shared mutex + map was

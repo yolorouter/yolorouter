@@ -10,7 +10,7 @@ import (
 )
 
 func TestComputeCost(t *testing.T) {
-	// Candidate prices are CNY per million tokens (design doc §3.3). Cost is
+	// Candidate prices are CNY per million tokens. Cost is
 	// stored as integer micros (CNY × 1e6, i.e. 6-decimal precision).
 	// 1M input @ 1.0 + 0.5M output @ 2.0 = 1.0 + 1.0 = 2.0 CNY = 2_000_000 micros.
 	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0}
@@ -36,7 +36,7 @@ func TestComputeCostRoundsToMicro(t *testing.T) {
 }
 
 func TestComputeCostMissingUsageIsUnknown(t *testing.T) {
-	// GATE-21: missing usage must be "unknown", never 0 cost.
+	// Missing usage must be "unknown", never 0 cost.
 	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 1.0}
 	if micros, known := computeCost(cand, nil); known || micros != 0 {
 		t.Fatalf("expected unknown/0 for nil usage, got %d (known=%v)", micros, known)
@@ -50,7 +50,7 @@ func TestComputeCostMissingCandidateIsUnknown(t *testing.T) {
 	}
 }
 
-// TestFinalizeWritesBodyRow (Codex #5, PRD §6.8.4/§6.8.6/LOG-06): finalize
+// TestFinalizeWritesBodyRow: finalize
 // persists the four body fields (stored verbatim; v0.1 does not scrub body
 // content) into request_log_bodies, keyed by request_id, alongside the
 // request_logs row.
@@ -104,7 +104,7 @@ func TestFinalizeWritesBodyRow(t *testing.T) {
 	}
 }
 
-// TestFinalizeBodyWriteFailureDoesNotRollbackBilling (Codex #5): the
+// TestFinalizeBodyWriteFailureDoesNotRollbackBilling: the
 // request_log_bodies write is best-effort — a failure there must not roll
 // back or block the request_logs row (billing/audit trail), which is written
 // first and is authoritative.

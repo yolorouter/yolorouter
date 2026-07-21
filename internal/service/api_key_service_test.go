@@ -53,7 +53,7 @@ func TestCreateAPIKeySucceeds(t *testing.T) {
 	}
 
 	// The stored row keeps a hash, never the plaintext — the plaintext must
-	// be unrecoverable from the database after create (PRD KEY-04).
+	// be unrecoverable from the database after create.
 	var stored model.APIKey
 	if err := db.First(&stored, result.APIKey.ID).Error; err != nil {
 		t.Fatalf("load stored key: %v", err)

@@ -44,7 +44,7 @@ func TestCreateProviderWithKeyPersistsBothRowsInOneTransaction(t *testing.T) {
 	}
 }
 
-// TestMarkProviderKeyVerificationFailedIfCurrentCAS: GATE-16 — the gateway
+// TestMarkProviderKeyVerificationFailedIfCurrentCAS: the gateway
 // invalidates a key after a real upstream 401 by CAS-writing
 // verification_status=Failed, but ONLY when the row still matches (Passed +
 // the destination the key was just sent to). A destination mismatch (admin
@@ -311,8 +311,7 @@ func TestCreateProviderKeyPendingTestSnapshotsCurrentDestinationVersion(t *testi
 }
 
 // TestCreateProviderKeyPendingTestSortOrderCollisionErrorNamesSortOrder is
-// the direct regression test for a max-effort code-review finding:
-// isUniqueViolation couldn't distinguish UNIQUE(provider_id, label) from
+// the direct regression test for: isUniqueViolation couldn't distinguish UNIQUE(provider_id, label) from
 // UNIQUE(provider_id, sort_order) violations on this table, so a
 // concurrent "add key" race that only collided on sort_order (an internal
 // bookkeeping value the caller never chose) was misreported to the admin
@@ -372,7 +371,7 @@ func TestSwapProviderKeyPlaintextAtomicallyWritesEverythingAndSnapshotsVersion(t
 	if reloaded.VerificationStatus != model.VerificationStatusUntested {
 		t.Fatalf("expected verification_status forced to untested, got %d", reloaded.VerificationStatus)
 	}
-	// The whole point of this function (codex review finding): label,
+	// The whole point of this function: label,
 	// test_model, ciphertext, prefix, and management_status must all land
 	// in the SAME atomic write as the version bookkeeping above — not
 	// three separate statements a crash could interrupt partway through.
@@ -576,8 +575,7 @@ func TestUpdateProviderKeyLabelAndStatus(t *testing.T) {
 
 // TestUpdateProviderKeyLabelAndStatusIfVerifiedAppliesWhenVerified and
 // TestUpdateProviderKeyLabelAndStatusIfVerifiedSkipsWhenStale are the
-// direct regression tests for a max-effort code-review finding:
-// UpdateProviderKey's enable path used to check verifyKeyEnableAllowed
+// direct regression tests for: UpdateProviderKey's enable path used to check verifyKeyEnableAllowed
 // (verification_status/authorized_destination_version) and then write
 // management_status with a plain, unconditional UPDATE — a
 // check-then-act gap where a concurrent base_url change or retest could
@@ -704,8 +702,7 @@ func TestSetProviderKeyManagementStatus(t *testing.T) {
 }
 
 // TestCASProviderKeyManagementStatusSkipsWhenCurrentValueChanged is the
-// direct regression test for a max-effort code-review finding:
-// runNewPlaintextTestAndCommit's final "enable/disable per the original
+// direct regression test for: runNewPlaintextTestAndCommit's final "enable/disable per the original
 // request" write used to be an unconditional SetProviderKeyManagementStatus
 // call, so a legitimate concurrent PATCH .../status change landing between
 // the CAS-committed verification result and that write could be silently
@@ -831,13 +828,13 @@ func TestProviderKeyFingerprintClaimAndGet(t *testing.T) {
 }
 
 // TestProviderKeyFingerprintClaimNeverOverwritesExistingRow is the direct
-// regression test for the codex-review finding: two instances racing on
+// regression test for: two instances racing on
 // first boot with DIFFERENT master keys must not let the later one's claim
 // silently overwrite the earlier one's row — ClaimProviderKeyFingerprintIfAbsent
 // is a DO NOTHING insert, so the first writer's probe always wins and the
 // second caller's own probe is simply discarded (its caller then correctly
 // fails the decrypt-verify step in service.VerifyMasterKeyFingerprint,
-// covered in Task 8's tests).
+// covered in its own tests).
 // TestCreateProviderWithKeyFailsWhenProviderNameAlreadyExists covers the
 // tx.Create(provider) error branch with a genuine DB error (a UNIQUE
 // constraint violation), not gorm.ErrRecordNotFound.
@@ -905,7 +902,7 @@ func TestUpdateProviderManagementStatusTogglesStatus(t *testing.T) {
 }
 
 // TestUpdateProviderManagementStatusReturnsNotAppliedForUnknownProvider is
-// the direct regression test for a /simplify efficiency-review finding:
+// the direct regression test for an efficiency finding:
 // SetProviderStatus (service layer) used to do a separate FindProviderByID
 // existence check before this write; it now relies on this function's own
 // applied=false return instead, so this pins down that RowsAffected==0
@@ -977,7 +974,7 @@ func TestSwapProviderKeyPlaintextFailsWhenKeyMissing(t *testing.T) {
 // fetch's error branch (the parent provider row itself is missing) by
 // disabling FK enforcement just long enough to orphan an existing key —
 // something that can never happen through this repository's own normal
-// write paths (providers are never deleted, design doc §1), only exercised
+// write paths (providers are never deleted), only exercised
 // here to reach a defensive branch that guards against DB-level corruption.
 func TestSwapProviderKeyPlaintextFailsWhenProviderMissing(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)

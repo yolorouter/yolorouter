@@ -16,7 +16,7 @@ const redactedHeaderValue = "[REDACTED]"
 
 // sensitiveHeaderSubstrings are credential-suggesting fragments; ANY header
 // whose (lowercased) name contains one is masked by default. This fail-closed
-// substring match is the whole mechanism (code-review finding): providers use
+// substring match is the whole mechanism: providers use
 // many spellings — "X-Api-Key", "Api-Key" (Azure), "X-Goog-Api-Key",
 // "Anthropic-Api-Key", "X-Auth-Token", "X-Amz-Security-Token", "X-Secret",
 // etc. An exact allowlist silently persisted every unrecognized one in
@@ -56,7 +56,7 @@ func isSensitiveHeader(name string) bool {
 
 // SanitizeHeaders returns the caller's request headers as a JSON object with
 // every credential-bearing header value replaced by "[REDACTED]" and all
-// other headers kept verbatim (PRD §6.8.6). A header is treated as
+// other headers kept verbatim. A header is treated as
 // credential-bearing if its name contains a credential word
 // (isSensitiveHeader) — redact-by-default so an unrecognized auth header name
 // can't leak a live provider key into the admin log. This is

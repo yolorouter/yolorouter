@@ -1,7 +1,6 @@
-// Package model additions for M2: Provider / ProviderKey / ProviderKeyFingerprint.
+// Package model defines Provider / ProviderKey / ProviderKeyFingerprint.
 // Schema lives in migrations/{sqlite,postgres}/00004_create_providers.sql —
-// goose owns DDL, GORM here is query-only (no AutoMigrate). See design doc
-// .claude/docs/2026-07-18-m2-provider-design.md §3.
+// goose owns DDL, GORM here is query-only (no AutoMigrate).
 package model
 
 import "time"
@@ -17,8 +16,7 @@ const (
 )
 
 // VerificationStatus* answers "was this credential ever confirmed valid" —
-// not "is the provider healthy right now" (design doc §3/§5's explicit M2/M6
-// scope boundary).
+// not "is the provider healthy right now".
 const (
 	VerificationStatusUntested = 0
 	VerificationStatusPassed   = 1
@@ -30,7 +28,7 @@ const (
 // Kept in this package (not internal/service) so the model layer doesn't
 // import service; internal/service/provider_client.go's TestOutcome
 // constants are numerically identical by construction (both start at 0 and
-// list the same 8 outcomes in the same order per design doc §5).
+// list the same 8 outcomes in the same order).
 const (
 	LastTestResultSuccess          = 0
 	LastTestResultAuthFailed       = 1
@@ -42,13 +40,13 @@ const (
 	LastTestResultUpstreamError    = 7
 )
 
-// Provider is one upstream connection target (PRD §6.2). Deleting a
-// provider is not supported by design (§1) — only management_status
+// Provider is one upstream connection target. Deleting a
+// provider is not supported by design — only management_status
 // toggles it off.
 type Provider struct {
 	ID   uint   `gorm:"column:id;primaryKey" json:"id"`
 	Name string `gorm:"column:name" json:"name"`
-	// ProviderType is fixed to "openai" in v0.1 (design doc §3) — kept as a
+	// ProviderType is fixed to "openai" in v0.1 — kept as a
 	// column (not a hardcoded constant) so a later version can add more
 	// provider types without a schema migration.
 	ProviderType     string `gorm:"column:provider_type" json:"provider_type"`
@@ -56,7 +54,7 @@ type Provider struct {
 	Note             string `gorm:"column:note" json:"note"`
 	ManagementStatus int    `gorm:"column:management_status" json:"management_status"`
 	// DestinationVersion is json:"-": it's an internal CAS/versioning
-	// primitive (design doc §3), never something the frontend reads or
+	// primitive, never something the frontend reads or
 	// writes directly.
 	DestinationVersion int       `gorm:"column:destination_version" json:"-"`
 	CreatedAt          time.Time `gorm:"column:created_at" json:"created_at"`
@@ -65,8 +63,8 @@ type Provider struct {
 
 func (Provider) TableName() string { return "providers" }
 
-// ProviderKey is one upstream API key belonging to a Provider's key pool
-// (design doc §3). EncryptedKey is never serialized; KeyPrefix is the only
+// ProviderKey is one upstream API key belonging to a Provider's key pool.
+// EncryptedKey is never serialized; KeyPrefix is the only
 // display-safe representation of the plaintext.
 type ProviderKey struct {
 	ID           uint   `gorm:"column:id;primaryKey" json:"id"`
@@ -76,8 +74,8 @@ type ProviderKey struct {
 	KeyPrefix    string `gorm:"column:key_prefix" json:"key_prefix"`
 	SortOrder    int    `gorm:"column:sort_order" json:"sort_order"`
 	// TestModel is the model name every test call for this key uses
-	// (design doc addendum: M2 has no real model mapping yet, so the admin
-	// supplies a temporary test model per key — PRD §6.2.8).
+	// (there is no real model mapping yet, so the admin
+	// supplies a temporary test model per key).
 	TestModel string `gorm:"column:test_model" json:"test_model"`
 
 	ManagementStatus   int `gorm:"column:management_status" json:"management_status"`
@@ -85,7 +83,7 @@ type ProviderKey struct {
 	// AuthorizedDestinationVersion is json:"-": an internal CAS field the
 	// frontend never reads directly — "needs re-entry" is derived from it
 	// server-side and exposed as a separate boolean in API responses (see
-	// handler DTOs in Task 9), not this raw version number.
+	// handler DTOs), not this raw version number.
 	AuthorizedDestinationVersion int `gorm:"column:authorized_destination_version" json:"-"`
 
 	LastTestResult     *int       `gorm:"column:last_test_result" json:"last_test_result"`
@@ -103,7 +101,7 @@ type ProviderKey struct {
 func (ProviderKey) TableName() string { return "provider_keys" }
 
 // ProviderKeyFingerprint is the single-row table used to detect a
-// master-key/database mismatch at startup (design doc §5).
+// master-key/database mismatch at startup.
 type ProviderKeyFingerprint struct {
 	ID             uint      `gorm:"column:id;primaryKey" json:"-"`
 	EncryptedProbe string    `gorm:"column:encrypted_probe" json:"-"`

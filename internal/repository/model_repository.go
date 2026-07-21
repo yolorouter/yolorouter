@@ -1,5 +1,4 @@
-// Package repository additions for M3: Model / ModelCandidate pure data
-// access. See design doc .claude/docs/2026-07-18-m3-model-config-design.md §3.
+// Package repository provides Model / ModelCandidate pure data access.
 package repository
 
 import (
@@ -53,7 +52,7 @@ func ListModelCandidatesByModelID(db *gorm.DB, modelID uint) ([]model.ModelCandi
 }
 
 // ListModelCandidatesByModelIDs batches the N+1 that a naive per-model
-// candidate lookup would cause when listing models (same fix as M2's
+// candidate lookup would cause when listing models (the same fix used for
 // ListProviderKeysByProviderIDs).
 func ListModelCandidatesByModelIDs(db *gorm.DB, modelIDs []uint) ([]model.ModelCandidate, error) {
 	if len(modelIDs) == 0 {
@@ -118,9 +117,8 @@ func SetModelCandidateManagementStatus(db *gorm.DB, id uint, status int, now tim
 
 // SetModelCandidateManagementStatusIfVerified CAS-guards enabling a
 // candidate on verification_status still reading Passed — closes the
-// check-then-act window M2 round 4 found between the service layer's gate
-// check and an unconditional write (same fix, same reasoning, applied here
-// from day one instead of needing its own review round to discover).
+// check-then-act window between the service layer's gate
+// check and an unconditional write (same fix, same reasoning applied here).
 func SetModelCandidateManagementStatusIfVerified(db *gorm.DB, id uint, status int, now time.Time) (bool, error) {
 	result := db.Model(&model.ModelCandidate{}).
 		Where("id = ? AND verification_status = ?", id, model.ModelVerificationStatusPassed).
@@ -143,8 +141,8 @@ func CommitModelCandidateBasicTestResult(db *gorm.DB, id uint, verificationStatu
 
 // CommitModelCandidateCapabilityTestResult writes the result of a
 // streaming or function-calling test — these never touch
-// verification_status (design doc §3: they're independent capability
-// flags, not a re-run of the basic-text gate).
+// verification_status: they're independent capability
+// flags, not a re-run of the basic-text gate.
 func CommitModelCandidateCapabilityTestResult(db *gorm.DB, id uint, capability string, passed bool, lastTestResult *int, durationMs int64, now time.Time) error {
 	column := "supports_streaming"
 	if capability == "function_calling" {
@@ -162,8 +160,8 @@ func CommitModelCandidateCapabilityTestResult(db *gorm.DB, id uint, capability s
 // SwapModelCandidateSortOrder atomically swaps sort_order between
 // candidateID and its immediate neighbor in the given direction, scoped to
 // modelID (a candidate's route-chain position is only meaningful within
-// its own model — design doc §3). Same intermediate-negative-value pattern
-// as M2's SwapProviderKeySortOrder to avoid momentarily violating
+// its own model). Same intermediate-negative-value pattern
+// as SwapProviderKeySortOrder to avoid momentarily violating
 // UNIQUE(model_id, sort_order) mid-swap.
 func SwapModelCandidateSortOrder(db *gorm.DB, modelID, candidateID uint, direction string) (bool, error) {
 	var applied bool

@@ -1,5 +1,5 @@
 <!-- frontend/src/components/analytics/AnalyticsFilterBar.vue
-     The AnalyticsPage filter bar (PRD §6.7 filter row). Wraps TimeRangeSelect
+     The AnalyticsPage filter bar. Wraps TimeRangeSelect
      + ApiKey / Model / Provider / Status selectors. Each selector fetches its
      own option list in onMounted and emits an analytics.AnalyticsFilter
      payload upstream whenever any selector changes.

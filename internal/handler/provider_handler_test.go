@@ -585,7 +585,7 @@ func TestPatchProviderKeyOrderMovesKeyAndReturns200(t *testing.T) {
 }
 
 // TestPatchProviderKeyOrderReturns400ForUnknownKey is the direct
-// regression test for a max-effort code-review finding: reordering a
+// regression test: reordering a
 // nonexistent key used to hit repository.SwapProviderKeySortOrder's plain
 // gorm.ErrRecordNotFound untranslated, giving a 500 InternalError instead
 // of the 400 ProviderKeyNotFound every sibling key-lookup endpoint in this
@@ -630,7 +630,7 @@ func TestPostProviderKeyTestReturns400WhenNeedsReentry(t *testing.T) {
 	providerID, keyID := createProviderForTest(t, r, "needs-reentry-provider")
 
 	// Changing base_url bumps destination_version, leaving the existing
-	// key's authorized_destination_version stale (design doc §3).
+	// key's authorized_destination_version stale.
 	w, _ := doJSON(t, r, http.MethodPatch, fmt.Sprintf("/api/admin/providers/%d", providerID),
 		map[string]interface{}{"name": "needs-reentry-provider", "base_url": "https://changed.example.com/v1"}, nil)
 	if w.Code != http.StatusOK {

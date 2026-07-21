@@ -26,7 +26,7 @@ import (
 // error body on top of already-sent bytes would produce a malformed
 // response — worse, to an unsuspecting client it can look like a complete,
 // successful response that just happens to be truncated, rather than a
-// visible failure (design doc §9). Re-panicking with http.ErrAbortHandler
+// visible failure. Re-panicking with http.ErrAbortHandler
 // is the sentinel net/http's own per-connection recover specifically
 // checks for: it aborts the connection (without re-logging — we already
 // captured the stack above) instead of silently completing the response as

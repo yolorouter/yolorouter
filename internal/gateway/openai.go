@@ -6,9 +6,9 @@ import (
 )
 
 // parsedRequest is the gateway's one-pass view of an OpenAI chat-completions
-// request: just the fields it needs to route and validate (PRD §6.5.3 steps
-// 4-7). Everything else in the raw body is forwarded to the upstream
-// untouched by rewriteModelField.
+// request: just the fields it needs to route and validate. Everything else
+// in the raw body is forwarded to the upstream untouched by
+// rewriteModelField.
 type parsedRequest struct {
 	Model            string
 	Stream           bool
@@ -22,14 +22,14 @@ type parsedTool struct {
 }
 
 // hasTools reports whether the request carries a non-empty tools array —
-// used by the candidate capability filter (PRD §6.5.3 step 7: a request with
-// tools must skip candidates whose supports_function_calling is false).
+// used by the candidate capability filter (a request with tools must skip
+// candidates whose supports_function_calling is false).
 func (p *parsedRequest) hasTools() bool { return len(p.Tools) > 0 }
 
-// validate checks the structural invariants the gateway itself cares about
-// (PRD §6.5.3 step 6): messages must be a non-empty array, and any tool
-// definition must be type=function (PRD §6.5.10 — only function tools are
-// supported in v0.1). Unknown/extended fields are NOT validated here — they
+// validate checks the structural invariants the gateway itself cares about:
+// messages must be a non-empty array, and any tool definition must be
+// type=function (only function tools are supported in v0.1). Unknown/extended
+// fields are NOT validated here — they
 // pass through to the upstream.
 func (p *parsedRequest) validate() error {
 	if len(p.Messages) == 0 {
@@ -37,7 +37,7 @@ func (p *parsedRequest) validate() error {
 	}
 	for i, t := range p.Tools {
 		if t.Type != "function" {
-			return fmt.Errorf("tools[%d]: only type=function is supported (PRD §6.5.10)", i)
+			return fmt.Errorf("tools[%d]: only type=function is supported", i)
 		}
 	}
 	return nil
@@ -70,7 +70,7 @@ func parseRequest(body []byte) (*parsedRequest, error) {
 			return nil, fmt.Errorf("tools must be an array: %w", err)
 		}
 	}
-	// PRD §1114: the gateway always asks the upstream for final usage (for
+	// The gateway always asks the upstream for final usage (for
 	// cost accounting) even when the caller didn't — but only FORWARDS that
 	// usage when the caller set stream_options.include_usage=true. Capture
 	// the caller's intent here so EnsureStreamUsageInjection knows whether
@@ -154,8 +154,8 @@ func RewriteRequestModel(body []byte, providerModelName string) ([]byte, error) 
 
 // EnsureStreamUsageInjection forces stream_options.include_usage=true on a
 // stream request bound for the upstream when the caller did NOT already
-// request usage (PRD §1114: the system always requests final usage from the
-// upstream for its own cost accounting; the injected usage is stripped from
+// request usage (the system always requests final usage from the upstream for
+// its own cost accounting; the injected usage is stripped from
 // forwarded frames in StreamUpstreamToClient when the caller didn't ask).
 // Returns body unchanged for non-stream requests or when the caller already
 // requested usage.
@@ -192,7 +192,7 @@ func EnsureStreamUsageInjection(body []byte, isStream, callerWantsUsage bool) ([
 // legitimate zero. OpenAI-compatible upstreams occasionally return {} or a
 // partial object; treating those as "known zero" would let computeCost
 // record cost_known=true cost_micros=0 — showing the request as free, which
-// violates GATE-21 / PRD §6.7.6 (a missing usage must NOT be recorded as 0
+// is wrong (a missing usage must NOT be recorded as 0
 // cost). Only when BOTH prompt and completion counts are present is the
 // usage considered known.
 type wireUsage struct {
@@ -243,8 +243,8 @@ func (w *wireUsage) toUsage() *Usage {
 // extractUsage pulls prompt/completion/total tokens out of an
 // OpenAI-compatible response body. Returns nil if no usage object is present
 // OR if the object lacks both required token counts — the caller treats nil
-// as "unknown", never as zero (GATE-21 / PRD §6.7.6: a missing usage must
-// not be recorded as 0 cost).
+// as "unknown", never as zero (a missing usage must not be recorded as 0
+// cost).
 func extractUsage(body []byte) *Usage {
 	var resp struct {
 		Usage *wireUsage `json:"usage"`

@@ -1,5 +1,5 @@
 // Package migrations embeds the SQL migration files into the compiled
-// binary so the single-binary deployment (design doc §9) is actually
+// binary so the single-binary deployment is actually
 // self-contained — earlier this package didn't exist and migrations were
 // read from a "migrations/<driver>" path relative to the process's working
 // directory, which breaks for any deployment that doesn't run from the repo

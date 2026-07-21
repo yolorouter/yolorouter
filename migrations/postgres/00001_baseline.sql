@@ -1,5 +1,5 @@
 -- migrations/postgres/00001_baseline.sql
--- 与 migrations/sqlite/00001_baseline.sql 镜像，理由相同。
+-- Mirrors migrations/sqlite/00001_baseline.sql, for the same reason.
 
 -- +goose Up
 

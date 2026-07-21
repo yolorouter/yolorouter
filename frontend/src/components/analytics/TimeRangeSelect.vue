@@ -5,8 +5,7 @@
 
      Preset list: Today / Yesterday / Last 7d / Last 30d / Custom. "Custom"
      reveals an NDatePicker range panel; NDatePicker is not in main.ts's
-     create() components list, so it's imported explicitly per
-     .claude/frontend-conventions.md 坑1. -->
+     create() components list, so it's imported explicitly. -->
 <template>
   <div class="time-range">
     <NSelect
@@ -62,8 +61,8 @@ const authStore = useAuthStore()
 // back to the browser's own timezone, preserving the pre-fix behavior for the
 // dev case where server and browser share a zone. Offset-based computation
 // avoids pulling a timezone library; DST is correct for "today" because the
-// server's CURRENT offset is what's in effect right now (PRD §6.6.3: today
-// is by the system's current timezone).
+// server's CURRENT offset is what's in effect right now (today is by the
+// system's current timezone).
 function startOfTodayInZone(offsetMinutes: number | null): Date {
   const offset = offsetMinutes ?? -new Date().getTimezoneOffset()
   const serverNowMs = Date.now() + offset * 60_000

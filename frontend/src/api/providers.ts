@@ -124,11 +124,10 @@ export function testProviderKey(providerId: number, keyId: number): Promise<Prov
   return apiFetch(`/api/admin/providers/${providerId}/keys/${keyId}/test`, { method: 'POST' })
 }
 
-// design doc §7: batch test can legitimately exceed apiFetch's default
-// 30s timeout — passes timeoutMs (Task 11 also modifies apiFetch itself to
-// honor this override; see client.ts). A codex adversarial review round
-// found an earlier version tried to work around this with an extra
-// AbortController instead — that only added a SECOND, later abort signal
+// Batch test can legitimately exceed apiFetch's default
+// 30s timeout — passes timeoutMs (apiFetch itself honors this
+// override; see client.ts). An earlier version tried to work around this
+// with an extra AbortController instead — that only added a SECOND, later abort signal
 // on top of apiFetch's own hardcoded 30s internal timer, which still fired
 // first regardless, so slow multi-key batches kept failing at 30s anyway.
 export function testAllProviderKeys(

@@ -20,7 +20,7 @@ export interface LoginLockedData {
 }
 
 /**
- * Design doc §7 "unified 401 handling": every call in this module that hits an
+ * Unified 401 handling: every call in this module that hits an
  * admin-session-gated route funnels through here, so an AccountSessionInvalid
  * response (session expired, or the cookie was never valid) always clears
  * local auth state and sends the user back to /login — no matter which

@@ -41,7 +41,7 @@ func TestClassifyUpstreamStatus(t *testing.T) {
 	}
 }
 
-// TestWriteOpenAIErrorStashesResponseBody (Task 7, Codex #1): when a
+// TestWriteOpenAIErrorStashesResponseBody: when a
 // RelayContext is on the gin context (as Handle installs it), the local
 // error JSON WriteOpenAIErrorWithRequestID returns to the caller is also
 // stashed into rc.ResponseBody, so request_log_bodies.response_body reflects

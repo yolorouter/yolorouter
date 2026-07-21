@@ -1,7 +1,6 @@
-// Package service tests for M6.2: GetRequestLogDetail's body-field
+// Package service tests for GetRequestLogDetail's body-field
 // composition (RequestLogDetail's 7 body columns, sourced from
-// repository.GetRequestLogBodyByRequestID). See design doc
-// .claude/docs/2026-07-20-m6-2-request-log-bodies-plan.md Task 8.
+// repository.GetRequestLogBodyByRequestID).
 package service
 
 import (

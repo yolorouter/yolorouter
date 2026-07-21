@@ -235,8 +235,8 @@ func TestSetModelCandidateManagementStatus(t *testing.T) {
 
 // TestSetModelCandidateManagementStatusIfVerifiedAppliesWhenVerified and
 // TestSetModelCandidateManagementStatusIfVerifiedSkipsWhenUntested are the
-// direct regression tests for the CAS guard on enabling a candidate — same
-// check-then-act race class M2 round 4 found and fixed for provider keys,
+// direct regression tests for the CAS guard on enabling a candidate — the
+// same check-then-act race class found and fixed for provider keys,
 // applied here from the start.
 func TestSetModelCandidateManagementStatusIfVerifiedAppliesWhenVerified(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -302,7 +302,7 @@ func TestCommitModelCandidateBasicTestResult(t *testing.T) {
 }
 
 // TestCommitModelCandidateCapabilityTestResultDoesNotTouchVerificationStatus
-// is the direct regression test for design doc §3's rule: streaming and
+// is the direct regression test for the rule that streaming and
 // function-calling test results are independent of the basic-text
 // verification gate.
 func TestCommitModelCandidateCapabilityTestResultDoesNotTouchVerificationStatus(t *testing.T) {

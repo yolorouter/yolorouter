@@ -106,7 +106,7 @@ func TestRewriteNonStreamResponse(t *testing.T) {
 }
 
 func TestExtractUsageMissing(t *testing.T) {
-	// GATE-21: a response without a usage object yields nil, NOT a zero
+	// A response without a usage object yields nil, NOT a zero
 	// Usage — the caller must treat nil as "unknown" so cost is never
 	// recorded as 0 for a usage-less request.
 	if got := extractUsage([]byte(`{"model":"x","choices":[]}`)); got != nil {
@@ -120,7 +120,7 @@ func TestExtractUsageMalformed(t *testing.T) {
 	}
 }
 
-// TestExtractUsageEmptyObjectIsNil: GATE-21 — an empty usage object {} (or a
+// TestExtractUsageEmptyObjectIsNil: an empty usage object {} (or a
 // partial one missing completion_tokens) has no real counts, so it must NOT
 // be treated as known-zero (which would let computeCost record
 // cost_known=true cost_micros=0 and show the request as free).
@@ -133,7 +133,7 @@ func TestExtractUsageEmptyObjectIsNil(t *testing.T) {
 	}
 }
 
-// TestEnsureStreamUsageInjection: PRD §1114 — for a stream request where the
+// TestEnsureStreamUsageInjection: for a stream request where the
 // caller did NOT set stream_options.include_usage, the gateway injects it
 // upstream so final usage arrives for cost accounting. Non-stream and
 // caller-already-wants-usage bodies are returned unchanged.

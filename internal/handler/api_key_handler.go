@@ -1,5 +1,4 @@
-// Package handler additions for M4: API Key management HTTP layer. See
-// design doc .claude/docs/2026-07-19-m4-apikey-design.md §5.
+// Package handler provides the API Key management HTTP layer.
 package handler
 
 import (
@@ -28,7 +27,7 @@ type limitFields struct {
 type createAPIKeyRequest struct {
 	OwnerLabel string `json:"owner_label" binding:"omitempty,max=50"`
 	Remark     string `json:"remark" binding:"omitempty,max=200"`
-	// ModelIDs is required and must have at least one entry (PRD §6.4.3);
+	// ModelIDs is required and must have at least one entry;
 	// dive,required rejects a 0 id (models are 1-indexed autoincrement).
 	ModelIDs []uint `json:"model_ids" binding:"required,min=1,dive,required"`
 	limitFields
@@ -38,7 +37,7 @@ type createAPIKeyRequest struct {
 // (nil) from "set to empty/zero". For the numeric limits, a non-nil 0 is the
 // sentinel meaning "clear this limit" (no cap). ModelIDs is a non-pointer
 // slice: nil/omitted means "leave the whitelist unchanged"; an explicit []
-// (non-nil empty slice) means "clear the whitelist" (PRD §6.4.7). Go's
+// (non-nil empty slice) means "clear the whitelist". Go's
 // encoding/json does distinguish these ([] -> non-nil empty, omitted -> nil),
 // and service.UpdateAPIKey keys off `ModelIDs != nil` to tell them apart.
 type updateAPIKeyRequest struct {
@@ -50,7 +49,7 @@ type updateAPIKeyRequest struct {
 
 // parseAPIKeyPagination reads page / page_size query params (1-indexed page,
 // 20 rows default, 200 cap). This is the first paginated list endpoint in the
-// project — M2/M3 return full lists — so the helper lives here.
+// project — the provider/model lists return full lists — so the helper lives here.
 func parseAPIKeyPagination(c *gin.Context) (page, pageSize int) {
 	page = 1
 	pageSize = 20
@@ -63,8 +62,8 @@ func parseAPIKeyPagination(c *gin.Context) (page, pageSize int) {
 	return page, pageSize
 }
 
-// validateExpiryFuture rejects an expiry that isn't strictly after now (PRD
-// §6.4.3 requires the expiry to be later than the current time). nil expiry
+// validateExpiryFuture rejects an expiry that isn't strictly after now (the
+// expiry must be later than the current time). nil expiry
 // (no expiry) is allowed. Returns false (and writes a 400) on violation.
 func validateExpiryFuture(c *gin.Context, expiry *time.Time) bool {
 	if expiry != nil && !expiry.After(timeNow()) {
@@ -98,8 +97,7 @@ func GetAPIKeys(svc *service.APIKeyService) gin.HandlerFunc {
 }
 
 // PostAPIKey creates a key and returns the plaintext exactly once — the
-// "plaintext_key" field is never derivable or re-shown afterwards (PRD §6.4
-// KEY-01/04).
+// "plaintext_key" field is never derivable or re-shown afterwards.
 func PostAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createAPIKeyRequest

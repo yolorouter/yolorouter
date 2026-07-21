@@ -31,7 +31,7 @@ func TestResetSQLiteRecreatesDatabase(t *testing.T) {
 	}
 	_ = db.Close()
 
-	// 模拟 WAL sidecar 文件存在
+	// simulate the presence of WAL sidecar files
 	if err := os.WriteFile(dbPath+"-wal", []byte("wal"), 0o600); err != nil {
 		t.Fatalf("write -wal sidecar fixture: %v", err)
 	}

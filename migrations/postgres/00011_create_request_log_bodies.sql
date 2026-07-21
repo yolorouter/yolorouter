@@ -1,5 +1,5 @@
 -- migrations/postgres/00011_create_request_log_bodies.sql
--- Same shape as sqlite 00011; TIMESTAMPTZ per PITFALLS M5#4.
+-- Same shape as sqlite 00011; uses TIMESTAMPTZ.
 --
 -- +goose Up
 CREATE TABLE request_log_bodies (

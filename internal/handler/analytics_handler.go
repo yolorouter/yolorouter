@@ -1,7 +1,6 @@
-// Package handler additions for M6.1: analytics endpoints per PRD §6.7.
+// Package handler exposes the analytics endpoints.
 // Thin HTTP adapter over AnalyticsService — all composition lives in the
-// service, all SQL lives in the repository. See design doc
-// .claude/docs/2026-07-20-m6-analytics-design.md §4.5.
+// service, all SQL lives in the repository.
 //
 // Three routes:
 //   - GET /api/admin/analytics/overview  aggregate MetricTotals for filter

@@ -1,5 +1,5 @@
 // ProviderClient abstracts the outbound "test a provider connection" call
-// (design doc §5) so provider_service.go can be unit-tested with a fake
+// so provider_service.go can be unit-tested with a fake
 // implementation, never triggering a real network request.
 package service
 
@@ -18,7 +18,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/service/safehttp"
 )
 
-// TestOutcome is one of the 8 PRD §6.2.8 test-result categories. Its
+// TestOutcome is one of the 8 test-result categories. Its
 // numeric values are stored verbatim in provider_keys.last_test_result
 // (see model.LastTestResult* constants, which must stay numerically
 // identical to this list).
@@ -42,7 +42,7 @@ type TestResult struct {
 	// IsModelScoped is only meaningful when Outcome == TestPermissionDenied:
 	// true if the response body structurally names the tested model as the
 	// reason (error.param == "model", or the message references it). The
-	// service layer's verification_status write rules (design doc §5)
+	// service layer's verification_status write rules
 	// depend on this bit and never re-parse the raw HTTP body themselves.
 	IsModelScoped bool
 }
@@ -52,13 +52,12 @@ type TestResult struct {
 type ProviderClient interface {
 	TestChatCompletion(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
 	// TestStreamingCompletion validates that baseURL+model can serve a
-	// streaming response (M3 design doc §5 / PRD §6.3.8 streaming test):
+	// streaming response:
 	// success requires at least one structurally valid `delta` chunk
 	// followed by a normal `data: [DONE]` termination.
 	TestStreamingCompletion(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
 	// TestFunctionCalling validates that baseURL+model can return a
-	// structurally valid tool_calls response to a minimal tool definition
-	// (M3 design doc §5).
+	// structurally valid tool_calls response to a minimal tool definition.
 	TestFunctionCalling(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
 }
 
@@ -66,7 +65,7 @@ const (
 	providerClientTimeout      = 15 * time.Second
 	providerClientMaxBodyBytes = 64 * 1024
 	// providerClientConcurrency caps simultaneous in-flight real provider
-	// test calls across the whole process (design doc §5) — chosen
+	// test calls across the whole process — chosen
 	// generously enough for a single admin clicking several test buttons in
 	// quick succession or one batch test, without letting an unbounded
 	// number of outbound sockets accumulate.
@@ -75,7 +74,7 @@ const (
 
 // HTTPProviderClient is the production ProviderClient: a real minimal
 // /chat/completions call through safehttp's SSRF-safe transport, with a
-// hard per-call timeout and a shared concurrency cap (design doc §5).
+// hard per-call timeout and a shared concurrency cap.
 type HTTPProviderClient struct {
 	httpClient *http.Client
 	limiter    *middleware.Semaphore
@@ -89,7 +88,7 @@ func NewHTTPProviderClient(allowPrivate bool) *HTTPProviderClient {
 	return &HTTPProviderClient{
 		httpClient: &http.Client{
 			Transport: safehttp.NewTransport(allowPrivate),
-			// Design doc §5 item 5: never follow redirects. Without this,
+			// Never follow redirects. Without this,
 			// Go's default http.Client follows up to 10 redirect hops and
 			// may carry the Authorization header (the decrypted upstream
 			// key) to a host the admin never confirmed.
@@ -132,8 +131,8 @@ type chatCompletionSuccessBody struct {
 // cap as every other in-flight test call.
 //
 // On a transport-level failure (network/timeout/SSRF-blocked dial), handle
-// is never invoked and TestUnreachable is returned directly, matching design
-// doc §5 item 7's "don't leak which kind of failure this was" rule.
+// is never invoked and TestUnreachable is returned directly, matching the
+// "don't leak which kind of failure this was" rule.
 func (c *HTTPProviderClient) runTestRequest(
 	ctx context.Context, baseURL, apiKey string, reqPayload interface{},
 	handle func(resp *http.Response, durationMs int64) (TestResult, error),
@@ -360,7 +359,7 @@ func classifyResponse(resp *http.Response, body []byte, model string, durationMs
 	}
 }
 
-// isValidSuccessBody implements design doc §5's "成功判定不能只看状态码":
+// isValidSuccessBody enforces the "success cannot be judged by the status code alone" rule:
 // Content-Type must be application/json, the body must parse, and it must
 // contain the OpenAI-compatible minimal structure with no top-level error.
 func isValidSuccessBody(resp *http.Response, body []byte) bool {
@@ -388,7 +387,7 @@ func parseErrorBody(body []byte) *chatCompletionErrorBody {
 }
 
 // isModelScopedError reports whether a 403 body structurally names the
-// tested model as the reason (design doc §5) — either via error.param
+// tested model as the reason — either via error.param
 // (OpenAI's convention for field-specific errors) or the message text
 // mentioning the model name.
 func isModelScopedError(body []byte, model string) bool {

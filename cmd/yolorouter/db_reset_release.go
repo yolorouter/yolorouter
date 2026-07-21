@@ -9,7 +9,7 @@ import (
 )
 
 // runDBReset is disabled in release builds before any config loading or
-// resource initialization happens — see design doc §2.2. It still parses
+// resource initialization happens. It still parses
 // its own flags first (mirroring the dev build's --yes/--config surface)
 // rather than ignoring args entirely — otherwise "db:reset --help" would
 // return this disabled-error with exit code 1 instead of the usual

@@ -1,4 +1,4 @@
-// Package handler tests for M6.1 §6.7 analytics endpoints. Exercises the
+// Package handler tests for the analytics endpoints. Exercises the
 // full HTTP → service → repository stack against a migrated SQLite DB;
 // repository-only tests for the time-bucket walk live alongside (they'd
 // require an awkward HTTP shim to drive a fixed *time.Location otherwise).

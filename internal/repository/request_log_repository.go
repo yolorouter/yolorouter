@@ -1,6 +1,5 @@
-// Package repository additions for M5: RequestLog write path. Query/filter
-// (PRD §6.8) is a separate module — M5 only writes rows. See design doc
-// .claude/docs/2026-07-20-m5-gateway-design.md §3.2.
+// Package repository provides the RequestLog write path. Query/filter
+// is a separate module — this file only writes rows.
 package repository
 
 import (
@@ -23,9 +22,8 @@ func CreateRequestLog(db *gorm.DB, log *model.RequestLog) error {
 }
 
 // IncrementAPIKeyBudgetSpent atomically adds micros to one key's cumulative
-// spend. The gateway is the only writer (M4 stored the column but never wrote
-// it). Used after a successful upstream response so budget exhaustion is
-// visible to the next request's pre-check (PRD §6.5 step 3 / GATE-02).
+// spend. The gateway is the only writer. Used after a successful upstream
+// response so budget exhaustion is visible to the next request's pre-check.
 //
 // UPDATE ... SET budget_spent_micros = budget_spent_micros + ? is a single
 // statement, so concurrent gateway requests on the same key accumulate
@@ -36,12 +34,12 @@ func IncrementAPIKeyBudgetSpent(db *gorm.DB, apiKeyID uint, micros int64) error 
 }
 
 // UpsertRequestLogBody inserts or (on duplicate request_id) updates the 1:1
-// body row for one gateway request (PRD §6.8.4, Codex #5). UNIQUE(request_id)
+// body row for one gateway request. UNIQUE(request_id)
 // + ON CONFLICT DO UPDATE makes finalize idempotent under retry/double-call
 // and enforces true 1:1. Best-effort caller (gateway finalize): a failure is
 // logged, not escalated — the request_logs billing row is already written.
 //
-// created_at is deliberately excluded from DoUpdates (code-review finding):
+// created_at is deliberately excluded from DoUpdates:
 // it must keep recording when the row was FIRST created, not get bumped
 // forward by a later conflicting write.
 func UpsertRequestLogBody(db *gorm.DB, body *model.RequestLogBody) error {

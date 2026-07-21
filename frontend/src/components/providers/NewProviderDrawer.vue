@@ -180,7 +180,7 @@ async function onSubmit() {
       key_label: keyForm.label,
       key_plaintext: keyForm.plaintext,
       test_model: keyForm.testModel,
-      management_status: 1, // this drawer's fixed behavior: the first key is always submitted requesting enabled (server independently re-verifies before honoring it, design doc §6)
+      management_status: 1, // this drawer's fixed behavior: the first key is always submitted requesting enabled (server independently re-verifies before honoring it)
     })
     onUpdateShow(false)
   } catch (err) {

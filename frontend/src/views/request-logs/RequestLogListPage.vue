@@ -1,9 +1,9 @@
 <!-- frontend/src/views/request-logs/RequestLogListPage.vue
-     M6.1 §6.8 request-log list. Server-side paged with a filter set
+     Request-log list. Server-side paged with a filter set
      matching what the backend handler actually accepts
      (request_log_handler.go): request_id / model_name / provider_id /
-     status_class / is_stream / start / end. The PRD §6.8.2 list of filters
-     also mentions owner_label and api_key prefix, but the M6.1 backend
+     status_class / is_stream / start / end. Owner_label and api_key prefix
+     filtering is not wired up yet, because the backend
      exposes the filter as api_key_id (an admin-facing internal id, not a
      user-typable string) — owner/free-text filtering lands with a later
      backend add, not by silently wiring up a UI control that doesn't work.
@@ -22,9 +22,9 @@
     </PageHeader>
 
     <!-- Filter row. NDatePicker / NSelect are not in main.ts's create()
-         list, so they're imported explicitly below (frontend-conventions
-         坑1 — silently rendering as unknown elements is the worst-case
-         failure mode here, not a typecheck error). -->
+         list, so they're imported explicitly below. Silently rendering as
+         unknown elements is the worst-case failure mode here, not a
+         typecheck error. -->
     <div class="filter-panel">
       <div class="filter-grid">
         <div class="filter-item filter-item--grow">
@@ -205,7 +205,7 @@ const providerOptions = computed<SelectOption[]>(() =>
   providers.value.map((p) => ({ label: p.name, value: p.id })),
 )
 
-// "使用人" (caller) filter reuses the existing api_key_id filter param — the
+// The "caller" filter reuses the existing api_key_id filter param — the
 // backend already filters request_logs by api_key_id, so no backend change is
 // needed. Options are the API keys (owner_label + key_prefix to disambiguate
 // keys that share an owner label or have none). Revoked keys are kept in the
@@ -456,8 +456,8 @@ function costCell(row: RequestLogRow) {
 function attemptsCell(row: RequestLogRow) {
   // The backend list-row DTO exposes a single `attempts` count — total
   // candidate tries, including both key rotations within a candidate and
-  // candidate failovers. PRD §6.8.3 lists "Key 切换" and "failover" as two
-  // columns, but the M6.1 wire schema collapses them into one number; the
+  // candidate failovers. "key rotation" and "failover" are conceptually two
+  // columns, but the wire schema collapses them into one number; the
   // detail page's attempts_detail array shows the full sequence so the
   // breakdown is still recoverable per-request. A zero-count badge helps
   // spot pre-route rejects (no attempt ever fired).
@@ -546,7 +546,7 @@ const columns = computed<DataTableColumns<RequestLogRow>>(() => [
     render: (row) => h('span', { class: 'mono-cell' }, formatDuration(row.duration_ms)),
   },
   {
-    // Actions column — no tooltip (per frontend-conventions.md). The row
+    // Actions column — no tooltip. The row
     // itself is already clickable end-to-end (rowProps), so this button is
     // an explicit affordance, not the only entry point.
     title: t('common.actions'),

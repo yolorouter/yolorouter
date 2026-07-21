@@ -1,6 +1,6 @@
 // Package database provides GORM database connection initialization.
 // Supports SQLite (default, zero-dependency single file) and PostgreSQL
-// (production/multi-instance), selected via Config.Driver — design doc §6.
+// (production/multi-instance), selected via Config.Driver.
 package database
 
 import (
@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/glebarez/sqlite" // pure-Go sqlite driver: no cgo, keeps cross-compilation simple (design doc §9)
+	"github.com/glebarez/sqlite" // pure-Go sqlite driver: no cgo, keeps cross-compilation simple
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -118,8 +118,9 @@ func Init(cfg Config) error {
 	}
 
 	if cfg.Driver == "sqlite" {
-		// SQLite 部署形态本身只支持单服务实例（设计文档 §6），单连接即可避免
-		// "database is locked" 类并发写冲突。
+		// The SQLite deployment only supports a single service instance, so a
+		// single connection is enough to avoid "database is locked" concurrent
+		// write conflicts.
 		// foreign_keys is enabled via the DSN's _pragma=foreign_keys(1) above
 		// (see the comment there), not a one-off Exec here — that would only
 		// cover whichever single physical connection happened to be open at

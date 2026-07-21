@@ -160,7 +160,7 @@ func TestRelayNonStreamSuccess(t *testing.T) {
 	}
 }
 
-// TestFinalizeNonStreamCapturesBodies (Codex #1, PRD §6.8.4/LOG-06): a 2xx
+// TestFinalizeNonStreamCapturesBodies: a 2xx
 // non-stream upstream response is captured into the RelayContext's 4 body
 // fields — the caller's original request, the rewritten (provider model
 // name) request actually sent upstream, the raw upstream response (provider
@@ -168,7 +168,7 @@ func TestRelayNonStreamSuccess(t *testing.T) {
 // name). response_body and upstream_response_body must differ (only the
 // model field), proving both are recorded independently and neither is a
 // copy of the other. It asserts the RelayContext fields directly via
-// testHookHandleDone AND (now that Task 6's finalize persists the row) that
+// testHookHandleDone AND (now that finalize persists the row) that
 // the same four values landed in request_log_bodies.
 func TestFinalizeNonStreamCapturesBodies(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -215,14 +215,14 @@ func TestFinalizeNonStreamCapturesBodies(t *testing.T) {
 		t.Error("ResponseBody and UpstreamResponseBody must differ (post- vs pre-rewrite model field)")
 	}
 
-	// Task 6: finalize must persist the same four values into
+	// finalize must persist the same four values into
 	// request_log_bodies, keyed by request_id (UPSERT, 1:1 with request_logs).
 	dbBody, err := repository.GetRequestLogBodyByRequestID(db, captured.RequestID)
 	if err != nil {
 		t.Fatalf("GetRequestLogBodyByRequestID: %v", err)
 	}
 	if dbBody == nil {
-		t.Fatal("expected a request_log_bodies row to be persisted by finalize (Task 6)")
+		t.Fatal("expected a request_log_bodies row to be persisted by finalize")
 	}
 	if dbBody.RequestBody != string(captured.RequestBody) {
 		t.Errorf("persisted RequestBody = %q, want %q", dbBody.RequestBody, captured.RequestBody)
@@ -238,7 +238,7 @@ func TestFinalizeNonStreamCapturesBodies(t *testing.T) {
 	}
 }
 
-// TestRelayKeyRotation (GATE-09): the first key gets a 401, so the gateway
+// TestRelayKeyRotation: the first key gets a 401, so the gateway
 // rotates to the second key on the same provider and succeeds.
 func TestRelayKeyRotation(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -273,7 +273,7 @@ func TestRelayKeyRotation(t *testing.T) {
 	}
 }
 
-// TestRelayCandidateFailover (GATE-10): the first candidate's provider
+// TestRelayCandidateFailover: the first candidate's provider
 // returns 500; the gateway fails over to the second candidate and succeeds.
 // Each attempt must use its own candidate's provider_model_name.
 func TestRelayCandidateFailover(t *testing.T) {
@@ -329,13 +329,13 @@ func TestRelayCandidateFailover(t *testing.T) {
 	if len(seenModels) != 2 || seenModels[0] != "c1-model" || seenModels[1] != "c2-model" {
 		t.Fatalf("expected attempts with [c1-model, c2-model], got %v", seenModels)
 	}
-	// GATE-14: each attempt used the current candidate's provider name.
+	// Each attempt used the current candidate's provider name.
 	if !bytes.Contains(w.Body.Bytes(), []byte(`"model":"gpt-4o"`)) {
 		t.Errorf("final response model not rewritten back to external: %s", w.Body.String())
 	}
 }
 
-// TestRelayClientErrorNoSwitch (GATE-11): a 400 from the upstream is the
+// TestRelayClientErrorNoSwitch: a 400 from the upstream is the
 // caller's problem — no rotation, no failover, surfaced as-is.
 func TestRelayClientErrorNoSwitch(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -365,7 +365,7 @@ func TestRelayClientErrorNoSwitch(t *testing.T) {
 	}
 }
 
-// TestRelayModelNotAllowed (GATE-02): a model outside the key's allowlist is
+// TestRelayModelNotAllowed: a model outside the key's allowlist is
 // rejected with 403 and never reaches the upstream.
 func TestRelayModelNotAllowed(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -393,7 +393,7 @@ func TestRelayModelNotAllowed(t *testing.T) {
 	}
 }
 
-// TestRelayRevokedKey (GATE-02): a revoked key is rejected with 401 and
+// TestRelayRevokedKey: a revoked key is rejected with 401 and
 // never reaches the upstream.
 func TestRelayRevokedKey(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -420,7 +420,7 @@ func TestRelayRevokedKey(t *testing.T) {
 	}
 }
 
-// TestHandleEarlyRejectionCapturesRequestBody (Task 7, Codex #1/#2): every
+// TestHandleEarlyRejectionCapturesRequestBody: every
 // early-rejection branch that runs before Handle's normal io.ReadAll(body)
 // call — revoked/expired/budget (checkKeyStateAndLimits), concurrency, RPM —
 // still records the caller's request body (bounded read) and the local
@@ -575,9 +575,9 @@ func TestRelayAllCandidatesFailed(t *testing.T) {
 	if log.FailReason == nil || *log.FailReason == "" {
 		t.Error("expected non-empty fail_reason for an all-candidates-failed request")
 	}
-	// GATE-13: attempts_detail records every candidate try as JSON.
+	// attempts_detail records every candidate try as JSON.
 	if log.AttemptsDetail == nil {
-		t.Error("expected attempts_detail to be populated (GATE-13)")
+		t.Error("expected attempts_detail to be populated")
 	}
 }
 

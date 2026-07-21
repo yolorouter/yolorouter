@@ -9,14 +9,14 @@ interface AuthStoreState {
   username: string | null
   /** Minutes east of UTC for the server's timezone, or null before /auth/me
    *  resolves. The analytics time-range picker uses it to align preset
-   *  windows with the server's natural day (PRD §6.6.3). */
+   *  windows with the server's natural day. */
   serverTimezoneOffset: number | null
   /**
    * Set whenever handleSessionExpired fires (a genuinely mid-use session
    * expiry, caught by withSessionInvalidHandling on some later
    * authenticated call — never by checkState() itself, see its comment
    * below) — LoginPage reads and consumes this via
-   * consumeSessionExpiredNotice to show PRD §6.1.5's required
+   * consumeSessionExpiredNotice to show the required
    * session-expired message (errcode ACCOUNT_SESSION_INVALID,
    * locales/zh-CN/errcodes.ts). Without this, the most common path to
    * /login (the 24h session TTL simply expiring) silently drops the user

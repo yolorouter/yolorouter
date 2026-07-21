@@ -61,7 +61,7 @@ func TestComputeRunningStatusPartialWhenGoodKeyCoexistsWithUntestedEnabledKey(t 
 		{ManagementStatus: model.ProviderKeyStatusEnabled, VerificationStatus: model.VerificationStatusUntested, AuthorizedDestinationVersion: 1},
 	}
 	if got := computeRunningStatus(keys, 1); got != RunningStatusPartial {
-		t.Fatalf("expected partial (design doc §4 explicitly includes untested enabled keys), got %q", got)
+		t.Fatalf("expected partial (untested enabled keys are explicitly included), got %q", got)
 	}
 }
 
@@ -245,7 +245,7 @@ func TestKeyPrefixForClampsToPlaintextLength(t *testing.T) {
 		{"exactly 4 chars clamps to empty", "abcd", ""},
 		{"between 4 and 14 chars uses len-4", "abcdefgh", "abcd"},
 		{"caps at 10 chars for long plaintext", "sk-abcdefghijklmnopqrstuvwxyz1234", "sk-abcdefg"},
-		// Regression: a code-review round found the original byte-sliced
+		// Regression: the original byte-sliced
 		// implementation could cut a multi-byte UTF-8 character in half if
 		// one straddled the cutoff, producing invalid UTF-8. Each of these
 		// multi-byte runes (é = 2 bytes, 中 = 3 bytes) sits exactly at the
@@ -344,7 +344,7 @@ func TestUpdateProviderRejectsDuplicateNameOnRename(t *testing.T) {
 }
 
 // TestUpdateProviderRollsBackBaseURLWhenNameConflicts is the direct
-// regression test for a max-effort code-review finding: base_url (and its
+// regression test for a bug: base_url (and its
 // destination_version bump, which instantly invalidates every key's
 // authorization) and name/note used to be written as two independent,
 // non-transactional statements. If the base_url write committed and the
@@ -436,7 +436,7 @@ func TestSetProviderStatusEnablesAndDisables(t *testing.T) {
 }
 
 // TestSetProviderStatusReturnsNotFoundForUnknownProvider is the direct
-// regression test for a max-effort code-review finding: this was the only
+// regression test for a bug: this was the only
 // provider-scoped mutation with no prior existence check, so toggling a
 // nonexistent provider ID matched zero rows, GORM reported no error, and
 // the caller got a false success instead of ErrProviderNotFound.
@@ -808,7 +808,7 @@ func TestUpdateProviderKeyLabelOnlyDoesNotRetrigger(t *testing.T) {
 }
 
 // TestUpdateProviderKeyLabelOnlyEditWithOmittedStatusPreservesCurrentStatus
-// is the direct regression test for a max-effort code-review finding:
+// is the direct regression test for a bug:
 // UpdateKeyInput.ManagementStatus used to be a plain int, so a request that
 // legally omits management_status entirely (updateKeyRequest's JSON tag is
 // binding:"omitempty,oneof=1 2") bound to Go's zero value 0 and was written
@@ -844,7 +844,7 @@ func TestUpdateProviderKeyLabelOnlyEditWithOmittedStatusPreservesCurrentStatus(t
 }
 
 // TestUpdateProviderKeyLabelOnlyEditCannotEnableUnverifiedKey is the direct
-// regression test for a code-review finding: this path used to write
+// regression test for a bug: this path used to write
 // ManagementStatus straight to the DB with no verification check at all,
 // unlike SetProviderKeyStatus — so a label-only edit could silently enable
 // a key that had never passed a real test.
@@ -898,7 +898,7 @@ func TestUpdateProviderKeyLabelOnlyEditCannotEnableKeyNeedingReentry(t *testing.
 }
 
 // TestSetProviderKeyStatusRejectsReenablingKeyThatNeedsReentry is the
-// direct regression test for a code-review finding: this path only
+// direct regression test for a bug: this path only
 // checked VerificationStatus, never AuthorizedDestinationVersion — so a
 // key that passed verification against an address the provider no longer
 // points at could still be re-enabled via the plain status toggle, even
@@ -926,7 +926,7 @@ func TestSetProviderKeyStatusRejectsReenablingKeyThatNeedsReentry(t *testing.T) 
 // TestUpdateProviderKeyRejectsKeyBelongingToDifferentProvider,
 // TestSetProviderKeyStatusRejectsKeyBelongingToDifferentProvider, and
 // TestTestProviderKeyRejectsKeyBelongingToDifferentProvider are the direct
-// regression tests for a code-review finding: all three previously looked
+// regression tests for a bug: all three previously looked
 // a key up purely by keyID and never checked it against the providerID in
 // the URL, unlike SwapProviderKeySortOrder (used by the reorder endpoint),
 // which correctly conditions its update on "id = ? AND provider_id = ?".
@@ -1615,7 +1615,7 @@ func TestTestAllProviderKeysSkipsWhenClientCallErrors(t *testing.T) {
 }
 
 // TestTestAllProviderKeysSkipsWhenCommitLosesCASRace exercises the "lost
-// CAS race" discard path (design doc §3): the fake client's side effect
+// CAS race" discard path: the fake client's side effect
 // simulates a concurrent plaintext edit (bumping config_version) landing
 // WHILE this key's batch test is in flight, so the write-back CAS condition
 // no longer matches by the time the commit runs and the result must be
@@ -2020,7 +2020,7 @@ func TestReorderProviderKeySwapsOrder(t *testing.T) {
 }
 
 // TestReorderProviderKeyReturnsNotFoundForUnknownKey is the direct
-// regression test for a max-effort code-review finding: this used to
+// regression test for a bug: this used to
 // return SwapProviderKeySortOrder's raw gorm.ErrRecordNotFound
 // untranslated, unlike UpdateProviderKey/SetProviderKeyStatus/
 // TestProviderKey in this same file, which all map the identical

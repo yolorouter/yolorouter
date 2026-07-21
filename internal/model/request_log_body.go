@@ -1,5 +1,5 @@
-// Package model additions for M6.2: RequestLogBody — the request/response
-// bodies for one gateway request (PRD §6.8.4/§6.8.6, LOG-06/08). Schema lives
+// RequestLogBody — the request/response
+// bodies for one gateway request. Schema lives
 // in migrations/{sqlite,postgres}/00011_create_request_log_bodies.sql — goose
 // owns DDL, GORM here is query-only (no AutoMigrate), mirroring RequestLog.
 package model
@@ -13,8 +13,8 @@ import "time"
 // upstream_response_body are empty and the sent SSE lives at stream_body_path.
 //
 // RequestHeaders is the caller's request headers as a JSON object with
-// sensitive headers already masked (gateway.SanitizeHeaders) — PRD §6.8.6
-// excludes only the auth headers themselves from logging, not all headers.
+// sensitive headers already masked (gateway.SanitizeHeaders) — only the
+// auth headers themselves are excluded from logging, not all headers.
 type RequestLogBody struct {
 	ID                   uint      `gorm:"column:id;primaryKey" json:"id"`
 	RequestID            string    `gorm:"column:request_id;uniqueIndex" json:"request_id"`

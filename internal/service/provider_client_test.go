@@ -76,8 +76,8 @@ func TestTestChatCompletionRejects200WithNullMessage(t *testing.T) {
 	}
 }
 
-// TestTestChatCompletionDoesNotFollowRedirects proves the wiring for design
-// doc §5 item 5: a server returning a 302 to a second, success-returning
+// TestTestChatCompletionDoesNotFollowRedirects proves the wiring for the
+// no-redirect rule: a server returning a 302 to a second, success-returning
 // server must NOT be transparently followed — the redirect response itself
 // (302, no valid success body) is what gets classified, never the target's
 // content. Without CheckRedirect set, Go's default client would follow it
@@ -386,7 +386,7 @@ func TestTestChatCompletionRejectsConcurrencyOverCap(t *testing.T) {
 		t.Fatalf("expected the call over the concurrency cap to be rejected")
 	}
 
-	// A max-effort code-review round found errCh was collected but never
+	// errCh was collected but never
 	// read: the test only ever proved the (providerClientConcurrency+1)th
 	// call was rejected, not that all providerClientConcurrency in-flight
 	// calls it was supposed to make room for actually succeeded — an

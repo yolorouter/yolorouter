@@ -13,7 +13,7 @@ func TestSanitizeCellPrefixesFormulaChars(t *testing.T) {
 		{"", ""},
 		{"价格未知", "价格未知"},
 		// Adversarial: leading control/whitespace bytes must NOT evade the
-		// formula check (Codex adversarial finding). The sanitizer strips them
+		// formula check. The sanitizer strips them
 		// first, so =/+/-/@ is still detected and the cell is text-prefixed.
 		{"\t=evil", "\t=evil"}, // leading tab stripped, = detected, re-prefixed
 		{"\n=evil", "\t=evil"},

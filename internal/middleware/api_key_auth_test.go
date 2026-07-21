@@ -57,7 +57,7 @@ func TestExtractBearerKey(t *testing.T) {
 	}
 }
 
-// TestAuthRejectionWritesBodyRow (Task 7, Codex #2): a request rejected at
+// TestAuthRejectionWritesBodyRow: a request rejected at
 // the auth gate (missing / unknown key) never reaches gateway.Handle, so its
 // finalize() never runs — without logAuthRejection also writing the
 // request_log_bodies row, both bodies would be permanently unrecorded for

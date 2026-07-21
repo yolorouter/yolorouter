@@ -191,7 +191,7 @@ func runDBBackup(ctx context.Context, args []string) error {
 
 // migrationsFor returns the embedded migration filesystem and goose
 // subdirectory for driver, so every subcommand that runs migrations picks
-// the same source (design doc §9 — the binary must be self-contained; see
+// the same source (the binary must be self-contained; see
 // migrations.SQLiteFS / migrations.PostgresFS).
 func migrationsFor(driver string) (fs.FS, string) {
 	if driver == "postgres" {
@@ -202,7 +202,7 @@ func migrationsFor(driver string) (fs.FS, string) {
 
 // instanceLockPath returns the cross-process instance lock file path shared
 // by `serve` (holds it for its whole lifetime) and `db:reset` (must acquire
-// it exclusively before deleting anything) — design doc §2.2. This applies
+// it exclusively before deleting anything). This applies
 // to both drivers: even on the Postgres branch, config.go always resolves
 // Database.SQLitePath to an absolute path alongside the config file, so it
 // doubles as a stable per-deployment location for the lock file.

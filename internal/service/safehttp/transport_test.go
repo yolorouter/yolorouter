@@ -118,8 +118,8 @@ func TestTransportRejectsConnectionToLoopback(t *testing.T) {
 	}
 }
 
-// TestDialContextTriesEachResolvedIPAndSkipsDenied covers "DNS 应答里混有
-// 安全和不安全 IP" (design doc §5 item 6) at the resolver-abstraction level:
+// TestDialContextTriesEachResolvedIPAndSkipsDenied covers the case where the
+// DNS response contains a mix of safe and unsafe IPs at the resolver-abstraction level:
 // a resolver that returns a denied IP first and an allowed one second must
 // still let the safe one through, not fail outright on the first hit.
 func TestDialContextTriesEachResolvedIPAndSkipsDenied(t *testing.T) {

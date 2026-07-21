@@ -1,9 +1,9 @@
 <!-- frontend/src/views/request-logs/RequestLogDetailPage.vue
-     M6.1 §6.8.4 request-log detail. Renders the metadata sections defined
-     in the M6.1 wire schema (service.RequestLogDetail): basic info, model
-     info, attempts sequence, usage + cost. PRD §6.8.4 also lists 流式信息 /
-     函数调用 / 请求正文 / 响应正文 — those land in M6.2 with the schema
-     migration (design doc §9), so this page surfaces a single M6.2 notice
+     Request-log detail. Renders the metadata sections defined
+     in the wire schema (service.RequestLogDetail): basic info, model
+     info, attempts sequence, usage + cost. The streaming-info /
+     function-calls / request-body / response-body fields land later with the schema
+     migration, so this page surfaces a single notice
      rather than rendering empty placeholders for fields the backend
      doesn't return yet.
 
@@ -123,7 +123,7 @@
         </NDescriptions>
       </section>
 
-      <!-- Bodies (M6.2 §6.8.4/§6.8.6): request/response bodies stored verbatim
+      <!-- Bodies: request/response bodies stored verbatim
            server-side (v0.1 does not scrub body content — only request headers
            are masked). Each inline body is capped server-side (maxInlineBodyBytes)
            with a visible marker so a pathological large body can't freeze the
@@ -131,18 +131,18 @@
            before the body was read) and renders as NEmpty rather than an empty
            code block. Stream requests carry the sent SSE on disk instead of in
            response_body/upstream_response_body — that card is lazy-loaded via
-           body/stream (LOG-08: full content, no mid-stream truncation, only a
+           body/stream (full content, no mid-stream truncation, only a
            1GiB anti-OOM backstop). -->
       <div class="body-cards">
-        <!-- Request headers (PRD §6.8.6): the caller's headers as a JSON
+        <!-- Request headers: the caller's headers as a JSON
              object with sensitive headers already masked server-side. Only
              shown when captured. -->
         <NCard v-if="detail.request_headers" size="small" :title="t('requestLogs.requestHeaders')">
           <BodyViewer :raw="detail.request_headers" />
         </NCard>
 
-        <!-- The four non-stream bodies differ only by title + bound field
-             (code-review simplification finding) — one v-for replaces four
+        <!-- The four non-stream bodies differ only by title + bound field,
+             so one v-for replaces four
              near-identical copy-pasted NCard blocks. The stream-body card
              below stays separate: its content is a raw SSE transcript (not a
              single JSON value) and it is lazy-loaded with preview/backstop
@@ -258,7 +258,7 @@ function onBack() {
   router.push('/request-logs')
 }
 
-// ---------- Body sections (M6.2) ----------
+// ---------- Body sections ----------
 
 // The stream body is fetched separately from the JSON detail envelope
 // (handler.GetRequestLogBodyStream serves raw bytes off disk, not the
@@ -268,7 +268,7 @@ const streamBody = ref('')
 const streamLoading = ref(false)
 const streamLoaded = ref(false)
 // True when the fetched preview is only a prefix of a larger on-disk capture
-// (code-review finding: never buffer/render the full up-to-1GiB capture in
+// (never buffer/render the full up-to-1GiB capture in
 // this page's own JS string/DOM) — the "view full file" link below lets the
 // browser handle the rest outside this component entirely.
 const streamPreviewTruncated = ref(false)
@@ -288,9 +288,8 @@ async function loadStreamBody() {
   }
 }
 
-// The four non-stream body cards, driven by the v-for above (code-review
-// simplification finding — was four copy-pasted NCard blocks differing only
-// by title + bound field).
+// The four non-stream body cards, driven by the v-for above (was four
+// copy-pasted NCard blocks differing only by title + bound field).
 const bodySections = computed(() => [
   { key: 'request', title: t('requestLogs.requestBody'), body: detail.value?.request_body ?? '' },
   { key: 'upstreamRequest', title: t('requestLogs.upstreamRequestBody'), body: detail.value?.upstream_request_body ?? '' },
@@ -331,7 +330,7 @@ const attemptColumns = computed<DataTableColumns<AttemptRecord>>(() => [
   {
     // 1-indexed attempt sequence — the gateway writes attempts in the
     // order they happened, so index+1 = the human-friendly "1st, 2nd,
-    // 3rd try" label PRD §6.8.4 asks for.
+    // 3rd try" label.
     title: columnTitle(t('requestLogs.attempt_index'), t('requestLogs.attempt_index_tip')),
     key: 'index',
     width: 80,

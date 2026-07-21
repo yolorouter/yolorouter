@@ -3,7 +3,7 @@
      Neither page renders inside DefaultLayout (they're top-level routes,
      not its children — see router/index.ts), so DefaultLayout's own
      locale <select> never reaches them; this is the only other place a
-     language switcher can live, and PRD §11.1 requires one on both pages. -->
+     language switcher can live, and both pages require one. -->
 <template>
   <div class="auth-page">
     <LocaleSwitcher class="auth-locale-select" />

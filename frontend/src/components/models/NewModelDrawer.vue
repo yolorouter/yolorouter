@@ -64,7 +64,7 @@ async function onSubmit() {
   try {
     const created = await store.create(form.name)
     onUpdateShow(false)
-    // PRD §6.3.4: saving a model auto-navigates into its detail page.
+    // Saving a model auto-navigates into its detail page.
     router.push(`/models/${created.id}`)
   } catch (err) {
     message.error(displayMessage(err, t))

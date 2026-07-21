@@ -1,6 +1,5 @@
-// Package repository additions for M6.1 §6.7 analytics — by-dimension GROUP
-// BY aggregations on top of the shared RequestLogFilter (see design doc
-// .claude/docs/2026-07-20-m6-analytics-design.md §4.3). Pure data-access
+// Package repository provides by-dimension GROUP
+// BY analytics aggregations on top of the shared RequestLogFilter. Pure data-access
 // only: no HTTP shaping, no CSV, no business judgment. The service layer
 // (internal/service/analytics_service.go) composes these into the report
 // envelope and the CSV export.
@@ -9,8 +8,7 @@
 // layer the shared WHERE shape, then adds its own SELECT / GROUP BY.
 // success_rate is computed here from the SQL-emitted success_calls and
 // ended_calls counters so the SQL stays the single source of truth for the
-// success/ended definition (identical to AggregateRequestLogMetrics —
-// PRD §6.6.3 / §6.7).
+// success/ended definition (identical to AggregateRequestLogMetrics).
 //
 // The provider and caller dimensions deliberately avoid a LEFT JOIN to
 // providers / api_keys: applyFilter emits UNqualified WHERE conditions
@@ -65,7 +63,7 @@ var ErrInvalidBucket = errors.New("invalid bucket; must be 'day' or 'hour'")
 // === Row types ===========================================================
 
 // ModelReportRow is one row of the dimension=model report. UnknownCostCalls
-// counts rows where cost_known=false (price/token missing — PRD §6.7.6: must
+// counts rows where cost_known=false (price/token missing — must
 // NOT display as zero cost). SuccessRate is computed in Go via finalizeRate.
 type ModelReportRow struct {
 	ModelName        string  `json:"model_name" gorm:"column:model_name"`
@@ -156,14 +154,14 @@ type TimeReportRow struct {
 // caller dimensions: emits success_calls and ended_calls counters so the
 // success_rate denominator/numerator come from one SQL definition of
 // "success" (identical to AggregateRequestLogMetrics). "Ended" excludes 499
-// caller-cancels per PRD §6.6.3. Unqualified column references are safe here
+// caller-cancels. Unqualified column references are safe here
 // because these dimensions don't introduce a JOIN — see package doc.
 const successEndedCols = `
 		COUNT(*) AS calls,
 		SUM(CASE WHEN status_code >= 200 AND status_code < 300 AND (fail_reason IS NULL OR fail_reason = '') THEN 1 ELSE 0 END) AS success_calls,
 		SUM(CASE WHEN status_code = 499 THEN 0 ELSE 1 END) AS ended_calls`
 
-// AggregateByModel groups by model_name (PRD §6.7 dimension "model").
+// AggregateByModel groups by model_name (dimension "model").
 // Rows ordered by calls DESC. UnknownCostCalls is parameterized on
 // cost_known = ? so the binding translates false → 0 (SQLite) / FALSE
 // (Postgres) per driver, letting the boolean check live inside the
@@ -191,7 +189,7 @@ func AggregateByModel(db *gorm.DB, f *RequestLogFilter) ([]ModelReportRow, error
 	return rows, nil
 }
 
-// AggregateByProvider groups by provider_id (PRD §6.7 dimension "provider").
+// AggregateByProvider groups by provider_id (dimension "provider").
 // NULL provider_id forms its own bucket (ProviderName resolved to "" via the
 // post-fetch lookup). AvgDurationMs is AVG(duration_ms); rows with no
 // successful duration still aggregate at 0 via COALESCE.
@@ -248,7 +246,7 @@ func resolveProviderNames(db *gorm.DB, rows []ProviderReportRow) error {
 	return nil
 }
 
-// AggregateByCaller groups by api_key_id (PRD §6.7 dimension "caller"). NULL
+// AggregateByCaller groups by api_key_id (dimension "caller"). NULL
 // api_key_id forms its own bucket (OwnerLabel resolved to "" — typically
 // requests that failed auth before being associated with a key).
 func AggregateByCaller(db *gorm.DB, f *RequestLogFilter) ([]CallerReportRow, error) {
@@ -364,7 +362,7 @@ func AggregateByTime(db *gorm.DB, f *RequestLogFilter, loc *time.Location, bucke
 }
 
 // timeBucketConfig maps bucket to (time format layout, advance function).
-// Empty bucket defaults to "day" (the common case in the PRD example).
+// Empty bucket defaults to "day" (the common case).
 // advance uses AddDate(0,0,1) for day so DST transitions don't shift the
 // local-midnight boundary; hour uses Add(1h) which is DST-safe by definition
 // (DST jumps are 1h maximum, so the next hour-bucket start is still

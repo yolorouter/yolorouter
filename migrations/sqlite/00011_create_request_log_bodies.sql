@@ -1,6 +1,6 @@
 -- migrations/sqlite/00011_create_request_log_bodies.sql
 --
--- Request/response bodies for one gateway request (PRD §6.8.4/§6.8.6, LOG-06/08).
+-- Request/response bodies for one gateway request.
 -- 1:1 with request_logs via request_id (UNIQUE — enforced 1:1 + idempotent
 -- UPSERT). No FK, per reference repo relay_log_bodies. Stream sent-SSE lives
 -- at stream_body_path (data/bodies/<request_id>.stream) — the response_body /
@@ -8,8 +8,8 @@
 --
 -- request_headers is the caller's request headers as a JSON object, with
 -- sensitive headers (Authorization/Cookie/X-Api-Key/...) already replaced by
--- "[REDACTED]" server-side (gateway.SanitizeHeaders) — PRD §6.8.6 excludes
--- only the auth headers themselves, not the whole header set.
+-- "[REDACTED]" server-side (gateway.SanitizeHeaders) — only the auth headers
+-- themselves are excluded, not the whole header set.
 --
 -- +goose Up
 CREATE TABLE request_log_bodies (

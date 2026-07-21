@@ -1,10 +1,8 @@
-// Package service additions for M4: API Key management business logic — key
+// Package service additions: API Key management business logic — key
 // generation/hashing, sparse PATCH with 0-sentinel limit clearing, runtime
 // display-status computation, and free-text search. Limit *enforcement*
 // (RPM/TPM/concurrency/budget rejection at request time) is deliberately NOT
-// here — it belongs to the gateway module (M5/M6), which is the same boundary
-// M3 draws by deferring route execution to M6. See design doc
-// .claude/docs/2026-07-19-m4-apikey-design.md.
+// here — it belongs to the gateway module.
 package service
 
 import (
@@ -19,16 +17,16 @@ import (
 )
 
 const (
-	apiKeyPrefixTag    = "sk-yr-" // PRD §6.4.2 example format
+	apiKeyPrefixTag    = "sk-yr-" // example format
 	apiKeyDisplayChars = 16       // KeyPrefix display length, list-distinguishing only
 	randKeyBytes       = 32       // 32 random bytes -> ~43 base64 chars, far longer than the prefix
 )
 
 // APIKey display statuses returned to the UI. Computed at read time, never
-// stored — same "running status not persisted" pattern as M3's
-// ModelRunningStatus. Budget-exhausted is unreachable in M4 (nothing writes
+// stored — same "running status not persisted" pattern as
+// ModelRunningStatus. Budget-exhausted is currently unreachable (nothing writes
 // budget_spent_micros until the gateway records per-request cost) but is kept
-// here so the status is correct from day one once M5/M6 wires the spend write.
+// here so the status is correct from day one once the gateway wires the spend write.
 const (
 	APIKeyDisplayActive    = "active"
 	APIKeyDisplayExpired   = "expired"
@@ -46,8 +44,7 @@ func NewAPIKeyService(db *gorm.DB) *APIKeyService {
 
 // APIKeyView is the API-facing shape. Status is the stored active/revoked
 // value; DisplayStatus is the runtime-computed value the UI shows. ModelIDs
-// is the key's allowlist (never nil — empty array means "no models", per
-// PRD §6.4.7).
+// is the key's allowlist (never nil — empty array means "no models").
 type APIKeyView struct {
 	ID                uint       `json:"id"`
 	KeyPrefix         string     `json:"key_prefix"`
@@ -78,7 +75,7 @@ type CreateAPIKeyInput struct {
 }
 
 // CreateAPIKeyResult carries the plaintext key exactly once — PlaintextKey is
-// never persisted and never obtainable again afterwards (PRD §6.4 KEY-01/04).
+// never persisted and never obtainable again afterwards.
 type CreateAPIKeyResult struct {
 	PlaintextKey string
 	APIKey       APIKeyView
@@ -89,7 +86,7 @@ type CreateAPIKeyResult struct {
 // this limit" (no cap) — same convention as the reference project, so a PATCH
 // touching only one field can't silently wipe the others. ModelIDs is nil =
 // leave whitelist unchanged; a non-nil slice replaces it (empty slice clears
-// it, PRD §6.4.7). ExpiresAt has no clear-sentinel (no clean zero-value wire
+// it). ExpiresAt has no clear-sentinel (no clean zero-value wire
 // representation) — to remove an expiry, revoke and create a new key.
 type UpdateAPIKeyInput struct {
 	OwnerLabel        *string
@@ -211,7 +208,7 @@ func (s *APIKeyService) UpdateAPIKey(id uint, input UpdateAPIKeyInput, now time.
 
 	// nil ModelIDs = leave whitelist untouched; non-nil (after dedup) replaces
 	// it. assertModelsExist is skipped for an empty replacement — clearing the
-	// whitelist is a valid state (PRD §6.4.7).
+	// whitelist is a valid state.
 	var modelIDs []uint
 	if input.ModelIDs != nil {
 		modelIDs = uniqueUint(input.ModelIDs)
@@ -288,7 +285,7 @@ func computeAPIKeyDisplayStatus(k model.APIKey) string {
 }
 
 // generateAPIKey produces a new plaintext key: 32 random bytes, base64
-// URL-safe encoded, with the sk-yr- prefix (PRD §6.4.2). Reuses the same
+// URL-safe encoded, with the sk-yr- prefix. Reuses the same
 // generateRandomToken recipe as session tokens — one implementation, not two.
 func generateAPIKey() (string, error) {
 	return generateRandomToken(randKeyBytes, apiKeyPrefixTag)

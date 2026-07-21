@@ -1,8 +1,9 @@
 -- migrations/sqlite/00009_request_logs_request_id_index.sql
 --
 -- Index for request_id lookups: the request-log detail endpoint and the
--- exact request_id list filter both run against this column (PRD §6.8.7:
--- "可通过请求标识精确找到单次请求"). Without it, every detail lookup degrades to
+-- exact request_id list filter both run against this column
+-- (locating a single request precisely by its request identifier). Without it,
+-- every detail lookup degrades to
 -- a full table scan as request_logs grows. request_id is effectively unique
 -- (gateway generateRequestID is crypto/rand hex), but the index is non-unique
 -- so a hypothetical collision can never fail the gateway's log write.

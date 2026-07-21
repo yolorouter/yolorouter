@@ -35,7 +35,7 @@ const maxNonStreamResponseBytes = 32 * 1024 * 1024 // 32 MiB
 
 // BodyAuditCap bounds every early-rejection audit read of the caller's
 // request body (captureRejectedBody here, and middleware.logAuthRejection's
-// own read for the auth-gate rejection paths — code-review finding: the two
+// own read for the auth-gate rejection paths — the two
 // packages each defined their own identical copy of this constant, which
 // nothing enforced staying in sync). Exported so middleware can share this
 // single definition instead of duplicating it. Mirrors the /v1 route group's
@@ -58,8 +58,8 @@ func ReadAuditBody(r io.Reader) []byte {
 // the UNauthenticated auth-rejection path (middleware.logAuthRejection) can
 // bound its capture far below BodyAuditCap: without a valid key, an attacker
 // could otherwise make the gateway read + persist a 20 MiB body per rejected
-// request and inflate request_log_bodies without ever authenticating
-// (code-review finding). Best-effort: nil on a read error or a nil/absent
+// request and inflate request_log_bodies without ever authenticating.
+// Best-effort: nil on a read error or a nil/absent
 // body, never an error the caller must handle.
 func ReadAuditBodyCapped(r io.Reader, limit int64) []byte {
 	if r == nil {
@@ -73,7 +73,7 @@ func ReadAuditBodyCapped(r io.Reader, limit int64) []byte {
 }
 
 // captureRejectedBody drains the caller request body for the audit row, so
-// LOG-06 records the request body even when the request is rejected before
+// records the request body even when the request is rejected before
 // the normal body read (revoked/expired/budget/concurrency/RPM, all before
 // io.ReadAll in Handle).
 func captureRejectedBody(c *gin.Context, rc *RelayContext) {
@@ -133,7 +133,7 @@ func requestIDFor(c *gin.Context) string {
 
 // Handle is POST /v1/chat/completions. apiKey is the already-authenticated
 // caller key (middleware.APIKeyAuth resolved and validated it). The handler
-// runs the full PRD §6.5.3 pipeline: pre-checks → model lookup → allowlist →
+// runs the full pipeline: pre-checks → model lookup → allowlist →
 // validate → candidate chain with Key rotation + failover → response rewrite
 // → log. Every exit path writes exactly one request_logs row via finalize.
 func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
@@ -142,19 +142,19 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 		RequestID: requestIDFor(c),
 		APIKeyID:  apiKey.ID,
 	}
-	// PRD §6.8.4/Codex #1: put rc on the gin context so WriteOpenAIError*
+	// Put rc on the gin context so WriteOpenAIError*
 	// (called from many exit paths below, and potentially from further down
 	// the chain) can stash the local error JSON into rc.ResponseBody without
 	// every call site threading an *RelayContext parameter through.
 	c.Set(relayContextKey, rc)
-	// PRD §6.8.6: capture the caller's request headers once at entry (masked
+	// Capture the caller's request headers once at entry (masked
 	// via SanitizeHeaders) so even an early rejection below still records
 	// them. c.Request is always non-nil here (gin populates it), but guard
 	// anyway for direct-call tests.
 	if c.Request != nil {
 		rc.RequestHeaders = SanitizeHeaders(c.Request.Header)
 	}
-	// Panic-recovery safety net for GATE-13: if any sub-call panics (nil
+	// Panic-recovery safety net: if any sub-call panics (nil
 	// deref, index OOB, type assertion), gin's Recovery middleware catches
 	// it upstream, but finalize would otherwise never run and the request
 	// would leave no audit/cost row. finalize is idempotent (logWritten
@@ -166,8 +166,8 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 		}
 		// Test-only hook: Handle doesn't return its internal RelayContext, so
 		// tests that need to assert on the captured bodies (RequestBody/
-		// UpstreamRequestBody/ResponseBody/UpstreamResponseBody, PRD §6.8.4)
-		// hook in here instead of depending on Task 6's DB persistence. Never
+		// UpstreamRequestBody/ResponseBody/UpstreamResponseBody)
+		// hook in here instead of depending on DB persistence. Never
 		// set outside _test.go.
 		if testHookHandleDone != nil {
 			testHookHandleDone(rc)
@@ -225,7 +225,7 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 		s.finalize(rc, status, reason, start)
 		return
 	}
-	// PRD §6.8.4/LOG-06: stash the caller-facing request body for the
+	// Stash the caller-facing request body for the
 	// request_log_bodies row, verbatim (v0.1 does not scrub body content).
 	rc.RequestBody = body
 
@@ -248,8 +248,8 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 	rc.IsStream = parsed.Stream
 	rc.WantsStreamUsage = parsed.WantsStreamUsage
 
-	// Step 4: model exists and is enabled (PRD §6.5.3). A model disabled via
-	// MOD-01 must not route even if its candidates are still enabled.
+	// Step 4: model exists and is enabled. A model disabled by an admin
+	// must not route even if its candidates are still enabled.
 	m, err := repository.FindModelByName(s.db, parsed.Model)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -318,7 +318,7 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 // release: status (revoked), expiry, budget (read-only here — the gateway
 // writes the spend in finalize), and RPM. Concurrency is handled separately
 // in Handle because it needs a deferred release. captureRejectedBody is
-// called on each rejection (PRD §6.8.4/LOG-06: these three checks all run
+// called on each rejection (these three checks all run
 // before Handle's normal body read, so the audit row would otherwise have an
 // empty request_body).
 func (s *RelayService) checkKeyStateAndLimits(c *gin.Context, rc *RelayContext, apiKey *model.APIKey, start time.Time) bool {
@@ -390,9 +390,9 @@ func (s *RelayService) relayCandidates(c *gin.Context, rc *RelayContext, candida
 		upstreamBody, err := RewriteRequestModel(body, cand.ProviderModelName)
 		if err != nil {
 			rc.Attempts = append(rc.Attempts, makeAttempt(cand, provider, nil, 0, AttemptBadStatus, "rewrite model: "+err.Error()))
-			continue // mapping failure -> skip candidate (PRD §6.5.3 step 9)
+			continue // mapping failure -> skip candidate
 		}
-		// PRD §1114: for a stream request where the caller didn't ask for
+		// For a stream request where the caller didn't ask for
 		// usage, force stream_options.include_usage=true upstream so the
 		// final usage frame arrives and budget/cost accounting works — the
 		// injected usage is stripped before forwarding (StreamUpstreamToClient).
@@ -422,11 +422,11 @@ const (
 // response (success OR a non-switchable failure) has been written to the
 // client, or outcomeNextCandidate when every key on this provider failed
 // with a key-rotation error and the chain should move to the next candidate
-// (GATE-09: same-provider no usable key, THEN failover; GATE-10).
+// (same-provider no usable key, THEN failover).
 func (s *RelayService) tryKeys(c *gin.Context, rc *RelayContext, cand *model.ModelCandidate, provider *model.Provider, keys []model.ProviderKey, upstreamBody []byte, start time.Time) relayOutcome {
 	for i := range keys {
 		pk := keys[i]
-		// Destination-version guard (M2 credential-scope mechanism): a key
+		// Destination-version guard (credential-scope mechanism): a key
 		// is only authorized for the provider destination it was verified
 		// against. When an admin changes BaseURL, DestinationVersion bumps
 		// while existing keys keep their old AuthorizedDestinationVersion —
@@ -453,7 +453,7 @@ func (s *RelayService) tryKeys(c *gin.Context, rc *RelayContext, cand *model.Mod
 			return outcomeNextCandidate
 		}
 	}
-	// Every key failed with a key-rotation error → failover (GATE-09/10).
+	// Every key failed with a key-rotation error → failover.
 	return outcomeNextCandidate
 }
 
@@ -462,17 +462,17 @@ type attemptResult int
 
 const (
 	attemptSuccess       attemptResult = iota
-	attemptTerminal                    // 4xx client error — surfaced to caller, no switch (GATE-11)
-	attemptRotateKey                   // 401/429 — try next key (GATE-09)
-	attemptNextCandidate               // 5xx / conn / timeout — try next candidate (GATE-10)
+	attemptTerminal                    // 4xx client error — surfaced to caller, no switch
+	attemptRotateKey                   // 401/429 — try next key
+	attemptNextCandidate               // 5xx / conn / timeout — try next candidate
 )
 
 // attemptOne sends one upstream request with one decrypted key and routes
 // the response. Transport failures, 5xx, and pre-first-byte stream failures
 // are candidate-level (failover); 401/429 are key-level (rotate); 2xx is
-// success; other 4xx is terminal (caller's problem, GATE-11).
+// success; other 4xx is terminal (caller's problem).
 func (s *RelayService) attemptOne(c *gin.Context, rc *RelayContext, cand model.ModelCandidate, provider *model.Provider, pk model.ProviderKey, plaintext string, upstreamBody []byte, start time.Time) attemptResult {
-	// PRD §6.8.4/LOG-06: record the rewritten (provider_model_name) request
+	// Record the rewritten (provider_model_name) request
 	// actually sent upstream, verbatim. Overwritten on every attempt — the
 	// last write wins, matching the "successful attempt, else the last
 	// attempt" rule.
@@ -506,14 +506,14 @@ func (s *RelayService) attemptOne(c *gin.Context, rc *RelayContext, cand model.M
 	}
 
 	statusCode := resp.StatusCode
-	// LOG-06: capture the obtainable upstream error body before close (Codex
-	// #2/#3), verbatim. Error bodies are small; cap at 1MiB — beyond that is
+	// Capture the obtainable upstream error body before close, verbatim.
+	// Error bodies are small; cap at 1MiB — beyond that is
 	// truncation of an error diagnostic, not a response body, and 1MiB is
 	// ample for debugging. Unconditionally overwritten (even when empty) so
 	// this matches rc.UpstreamRequestBody's "last attempt wins" rule above —
 	// an empty errBody from THIS attempt must clear out a stale non-empty body
-	// left by an earlier failed candidate, not leave it looking current
-	// (code-review finding). A subsequent SUCCESSFUL stream candidate clears
+	// left by an earlier failed candidate, not leave it looking current.
+	// A subsequent SUCCESSFUL stream candidate clears
 	// it entirely — see handleStream.
 	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	rc.UpstreamResponseBody = errBody
@@ -524,7 +524,7 @@ func (s *RelayService) attemptOne(c *gin.Context, rc *RelayContext, cand model.M
 	rc.Attempts = append(rc.Attempts, makeAttempt(cand, provider, &pk, statusCode, class.Outcome, note))
 	switch class.Category {
 	case statusRotateKey:
-		// GATE-16: a 401 means the credential itself was rejected —
+		// A 401 means the credential itself was rejected —
 		// persist verification_status=Failed so subsequent requests skip
 		// this key (filterEnabledKeys checks verification_status) instead
 		// of retrying the dead credential first. 429 (rate limit) is NOT
@@ -543,7 +543,7 @@ func (s *RelayService) attemptOne(c *gin.Context, rc *RelayContext, cand model.M
 		return attemptRotateKey
 	case statusFailover:
 		return attemptNextCandidate
-	default: // statusTerminalClient — caller's request is the problem, no switch (GATE-11).
+	default: // statusTerminalClient — caller's request is the problem, no switch.
 		if !c.Writer.Written() {
 			WriteOpenAIErrorWithRequestID(c, statusCode, class.ErrorType, safeUpstreamMessage(statusCode), rc.RequestID)
 		}
@@ -559,7 +559,7 @@ func (s *RelayService) handleNonStream(c *gin.Context, rc *RelayContext, cand mo
 	// "last attempt wins"). The three failover returns below (read error /
 	// oversize / rewrite error) don't refresh it, so without this clear a
 	// stale earlier-candidate error body would be persisted as THIS request's
-	// upstream response (code-review finding). Only the success path re-sets
+	// upstream response. Only the success path re-sets
 	// both fields.
 	rc.UpstreamResponseBody = nil
 	rc.ResponseBody = nil
@@ -591,9 +591,9 @@ func (s *RelayService) handleNonStream(c *gin.Context, rc *RelayContext, cand mo
 		rc.Attempts = append(rc.Attempts, makeAttempt(cand, provider, &pk, resp.StatusCode, AttemptBadStatus, "rewrite: "+err.Error()))
 		return attemptNextCandidate
 	}
-	// PRD §6.8.4/LOG-06: raw upstream (pre-rewrite, provider model name) vs.
+	// Raw upstream (pre-rewrite, provider model name) vs.
 	// caller-facing (post-rewrite, external model name) — these two differ
-	// only in the model field, but both must be recorded (Codex #1). Stored
+	// only in the model field, but both must be recorded. Stored
 	// verbatim (v0.1 does not scrub body content).
 	rc.UpstreamResponseBody = body
 	rc.ResponseBody = rewritten
@@ -613,17 +613,17 @@ func (s *RelayService) handleStream(c *gin.Context, rc *RelayContext, cand model
 	// contract is that both stay empty for stream requests. Now that we've
 	// committed to streaming a 2xx candidate, drop any stale error body so the
 	// detail page doesn't show a previous candidate's error as this (successful)
-	// request's "upstream response" (code-review finding).
+	// request's "upstream response".
 	rc.UpstreamResponseBody = nil
 	rc.ResponseBody = nil
 	usage, err := StreamUpstreamToClient(c, resp, rc)
 	// StreamUpstreamToClient deliberately leaves the capture file open past
-	// its own return (code-review finding) so the writeStreamErrorEvent call
+	// its own return, so the writeStreamErrorEvent call
 	// below can still append to it; this handleStream call is the single
 	// place responsible for closing it, on every exit path.
 	defer closeStreamBodyFile(rc)
 	if usage != nil {
-		rc.Usage = usage // preserve partial usage even on error paths (GATE-21)
+		rc.Usage = usage // preserve partial usage even on error paths
 	}
 	// If the stream never produced a sent byte, the capture file (if any)
 	// is empty — remove it so the detail page never shows an empty "stream
@@ -652,7 +652,7 @@ func (s *RelayService) handleStream(c *gin.Context, rc *RelayContext, cand model
 		return attemptSuccess
 	}
 	if rc.FirstByteSent {
-		// Mid-stream failure after the first byte — can't switch (GATE-19),
+		// Mid-stream failure after the first byte — can't switch,
 		// can't change HTTP status; emit one inline SSE error event + close.
 		writeStreamErrorEvent(c, rc)
 		rc.Attempts = append(rc.Attempts, makeAttempt(cand, provider, &pk, resp.StatusCode, AttemptServerError, "stream mid: "+err.Error()))
@@ -683,7 +683,7 @@ func (s *RelayService) allCandidatesFailed(c *gin.Context, rc *RelayContext, sta
 
 // filterCandidates returns the subset of candidates eligible for this
 // request: enabled, and supporting the stream / function-calling capability
-// the caller asked for (PRD §6.5.3 step 7). anyEnabled is reported in the
+// the caller asked for. anyEnabled is reported in the
 // same pass so the caller can distinguish "no candidate at all" from "no
 // candidate matched the capability" without walking the slice twice. Order
 // is preserved (sort_order was applied by the repository) so failover still
@@ -704,7 +704,7 @@ func filterCandidates(all []model.ModelCandidate, isStream, hasTools bool) (rout
 		// leaving management status enabled, and ModelService's own
 		// routability check (model_service.go) already rejects these —
 		// the gateway must match that gate or it routes a known-broken
-		// mapping (PRD §6.5.3 step 7).
+		// mapping.
 		if c.VerificationStatus != model.ModelVerificationStatusPassed {
 			continue
 		}

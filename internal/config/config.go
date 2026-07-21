@@ -1,5 +1,5 @@
-// Package config 提供配置文件加载与管理功能：内置默认值、strict YAML 解析、
-// 首次自动生成 configs/config.yaml（见设计文档 §2.2）。
+// Package config loads and manages the config file: built-in defaults, strict
+// YAML parsing, and auto-generation of configs/config.yaml on first run.
 package config
 
 import (
@@ -348,7 +348,7 @@ var validLogLevels = map[string]bool{
 // validateMasterKey requires a standard-base64-encoded 32-byte AES-256 key,
 // matching what randomMasterKey generates — not just "non-empty", since a
 // malformed or wrong-length key would only surface as a confusing failure
-// later, at first encrypt/decrypt use in M2.
+// later, at first encrypt/decrypt use.
 func validateMasterKey(key string) error {
 	if key == "" {
 		return fmt.Errorf("must not be empty")

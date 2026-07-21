@@ -1,7 +1,7 @@
 // Package response provides the unified JSON response envelope used by all
 // admin-backend handlers. The proxied /v1/chat/completions traffic itself is
 // passed through in the upstream's native shape and does NOT use this
-// envelope (design doc §3).
+// envelope.
 package response
 
 import (

@@ -99,9 +99,10 @@ export default {
     verificationUntested: '未测试',
     verificationPassed: '通过',
     verificationFailed: '失败',
-    // TestOutcome 的 8 种分类文案（design doc §5 / service.TestOutcome），
-    // 批量测试逐 Key 结果展示用（codex adversarial review 发现前端曾丢弃
-    // 逐 Key 结果，只展示汇总数字，已改为展示每个 Key 自己的 outcome）。
+    // The 8 outcome-category labels for TestOutcome (service.TestOutcome),
+    // used to show per-key results in batch testing (the frontend once
+    // discarded per-key results and showed only the summary count; it now
+    // shows each key's own outcome).
     outcomeSuccess: '通过',
     outcomeAuthFailed: '鉴权失败',
     outcomePermissionDenied: '权限不足',
@@ -427,8 +428,8 @@ export default {
     stream_true: '流式',
     stream_false: '非流式',
 
-    // List columns (§6.8.3). The "尝试次数" column carries the total count
-    // of every candidate try — M6.1 wire schema collapses Key 切换 and
+    // List columns. The "Attempts" column carries the total count
+    // of every candidate try — the wire schema collapses key rotation and
     // candidate failover into one number; the detail page shows the full
     // attempts array so the breakdown is recoverable per-request.
     col_created: '时间',
@@ -476,7 +477,7 @@ export default {
     fieldCacheReadTokens: '缓存读取 Token',
     fieldCost: '最终成本',
 
-    // Attempts table columns (§6.8.4). Each row is one candidate try, in
+    // Attempts table columns. Each row is one candidate try, in
     // the order the gateway relay loop actually executed.
     attempt_index: '顺序',
     attempt_index_tip: '该次尝试在请求过程中的序号，1 表示首次尝试',
@@ -494,7 +495,7 @@ export default {
     attempt_failReason_tip: '该次尝试失败时记录的具体原因，成功时为空',
 
     // Attempt outcome tags — colour group mirrors the relay loop's switch
-    // decision, not the raw HTTP status: green = success, amber = Key 切换
+    // decision, not the raw HTTP status: green = success, amber = key rotation
     // triggers, red = failover triggers / terminal errors.
     attempt_outcome_success: '成功',
     attempt_outcome_auth_failed: '鉴权失败',
@@ -506,7 +507,7 @@ export default {
 
     attemptsEmpty: '该请求未记录任何上游尝试（可能在路由前就被拒绝）',
 
-    // M6.2 body sections (§6.8.4/§6.8.6): the four non-stream bodies
+    // Body sections: the four non-stream bodies
     // (stored verbatim, capped inline) embedded in the detail response, plus
     // the lazily-loaded stream body served from disk via body/stream.
     requestHeaders: '请求头',

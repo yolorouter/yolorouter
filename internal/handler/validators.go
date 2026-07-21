@@ -1,4 +1,4 @@
-// Package handler is the HTTP layer for M1's auth module: Gin binding +
+// Package handler is the HTTP layer for the auth module: Gin binding +
 // validation, calling internal/service for all business logic, and mapping
 // service-layer errors to the unified response envelope.
 package handler
@@ -20,7 +20,7 @@ var (
 // RegisterValidators adds this package's custom `binding` tags
 // ("alnum_dash", "alnum_mixed", "bcrypt_len") to Gin's global validator
 // engine. Must be called exactly once before any route using these tags is
-// registered — internal/router.New calls it (design doc §5).
+// registered — internal/router.New calls it.
 func RegisterValidators() error {
 	v, ok := binding.Validator.Engine().(*validator.Validate)
 	if !ok {
@@ -36,7 +36,7 @@ func RegisterValidators() error {
 }
 
 // validateAlnumDash implements the admin username charset: 3-32 letters,
-// digits, hyphens, and underscores (PRD §6.1.2). The `{3,32}` in
+// digits, hyphens, and underscores. The `{3,32}` in
 // usernamePattern already enforces the length bound too, not just the
 // character class — the struct tags' `min=3,max=32` duplicates the same
 // length limit as defense in depth (so a caller that binds a request
@@ -49,7 +49,7 @@ func validateAlnumDash(fl validator.FieldLevel) bool {
 }
 
 // validateAlnumMixed implements the admin password rule: must contain at
-// least one letter AND at least one digit (PRD §6.1.2). Length is enforced
+// least one letter AND at least one digit. Length is enforced
 // separately via `min=10`/`bcrypt_len` in the struct tags.
 func validateAlnumMixed(fl validator.FieldLevel) bool {
 	s := fl.Field().String()

@@ -1,4 +1,4 @@
-<!-- BodyViewer renders a captured request/response body (PRD §6.8.4 request-log
+<!-- BodyViewer renders a captured request/response body (request-log
      detail). When the raw string parses as JSON it uses vue-json-pretty for a
      syntax-highlighted, collapsible tree (deep=2 keeps large payloads readable
      without expanding everything; virtual scrolling keeps a huge body — up to

@@ -62,7 +62,7 @@ const form = reactive({ label: '', plaintext: '', testModel: '', enabled: false 
 
 // computed: the plaintext field is required when adding a brand-new key
 // (no prior ciphertext to fall back on) but optional when editing an
-// existing one (blank = "keep the current key unchanged", design doc §8).
+// existing one (blank = "keep the current key unchanged").
 // Rule factories live in utils/providerValidators.ts (shared with
 // NewProviderDrawer.vue).
 const rules = computed<FormRules>(() => ({
@@ -71,7 +71,7 @@ const rules = computed<FormRules>(() => ({
   testModel: testModelRule(t),
 }))
 
-// A max-effort code-review round found the plaintext placeholder always
+// The plaintext placeholder previously always
 // showed the "please resubmit" hint whenever ANY key was being edited,
 // even a healthy, already-passing one — wrongly implying it was broken.
 // Only a key that genuinely needs_reentry should show that hint; any
@@ -106,7 +106,7 @@ async function onSubmit() {
   try {
     if (props.editingKey) {
       // Only send management_status when the toggle actually changed —
-      // a max-effort code-review round found this always sent an explicit
+      // this previously always sent an explicit
       // value, defeating the backend's nil-means-unchanged contract for
       // this field (internal/service/provider_service.go's UpdateKeyInput):
       // a pure label/test_model rename on a key that's enabled-but-needs-

@@ -1,5 +1,5 @@
 <!-- frontend/src/views/analytics/AnalyticsPage.vue
-     Usage report (PRD §6.7). Combines:
+     Usage report. Combines:
        - Filter bar (time range / api key / model / provider / status)
        - Dimension tabs (model / provider / time / caller)
        - Overview metric row (calls / success rate / tokens / cost)
@@ -242,7 +242,7 @@ async function reload() {
   const mySeq = ++reloadSeq
   loading.value = true
   // Clear previous results IMMEDIATELY so a failed reload under new filters
-  // can't leave stale financial data on screen (Codex adversarial finding).
+  // can't leave stale financial data on screen.
   // The user sees a brief loading state rather than the previous filter's
   // numbers; on error the results stay cleared (not the stale values).
   overview.value = null
@@ -252,7 +252,7 @@ async function reload() {
   timeRows.value = []
   // Effective bucket: the time dimension honors the caller's bucket; every
   // other dimension uses 'day' for range resolution, so overview and non-time
-  // reports clamp to the SAME cap (Codex: switching hour→model left overview
+  // reports clamp to the SAME cap (switching hour→model left overview
   // on the 30d hour cap while model used the 90d day cap).
   const effectiveBucket = dimension.value === 'time' ? bucket.value : 'day'
   // Two parallel round trips — overview and report are independent given

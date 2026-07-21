@@ -1,18 +1,17 @@
-// Package model additions for M5: RequestLog — one row per gateway business
-// request (PRD §6.5 GATE-13/21). Schema lives in
+// RequestLog — one row per gateway business
+// request. Schema lives in
 // migrations/{sqlite,postgres}/00007_create_request_logs.sql — goose owns
-// DDL, GORM here is query-only (no AutoMigrate). See design doc
-// .claude/docs/2026-07-20-m5-gateway-design.md §3.2.
+// DDL, GORM here is query-only (no AutoMigrate).
 package model
 
 import "time"
 
 // RequestLog is the gateway's per-request audit/cost row. A failover is still
-// ONE row — Attempts records how many candidates were tried (GATE-13). The
-// query/filter UI is a separate module (PRD §6.8); M5 only writes rows.
+// ONE row — Attempts records how many candidates were tried. The
+// query/filter UI is a separate module; this layer only writes rows.
 //
 // CostKnown=false means price or token info was missing for this request —
-// CostMicros is 0 but must NOT be displayed as "free" (GATE-21 / PRD §6.7.6).
+// CostMicros is 0 but must NOT be displayed as "free".
 type RequestLog struct {
 	ID               uint      `gorm:"column:id;primaryKey" json:"id"`
 	RequestID        string    `gorm:"column:request_id" json:"request_id"`

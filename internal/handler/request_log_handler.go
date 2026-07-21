@@ -1,15 +1,11 @@
-// Package handler additions for M6.1: request-log list + detail endpoints per
-// PRD §6.8. Thin HTTP adapter over RequestLogService — all composition lives
-// in the service, all SQL lives in the repository. See design doc
-// .claude/docs/2026-07-20-m6-analytics-design.md §4.5.
+// Package handler exposes the request-log list + detail endpoints.
+// Thin HTTP adapter over RequestLogService — all composition lives
+// in the service, all SQL lives in the repository.
 //
-// M6.1 ships three routes:
+// Three routes:
 //   - GET /api/admin/request-logs           paginated list + filter
 //   - GET /api/admin/request-logs/:requestId single-row detail (no body)
 //   - GET /api/admin/request-logs/export    CSV stream of the current filter
-//
-// Request/response bodies, stream chunks, and tool-call details land in
-// M6.2 with a schema migration (design doc §9).
 package handler
 
 import (
@@ -64,9 +60,8 @@ func GetRequestLogs(svc *service.RequestLogService) gin.HandlerFunc {
 }
 
 // GetRequestLogDetail handles GET /api/admin/request-logs/:requestId — a
-// single row with attempts_detail parsed into []AttemptRecord. PRD §6.8.7:
-// "可通过请求标识精确找到单次请求". M6.1 returns metadata only; request/response
-// bodies are M6.2 (design doc §9).
+// single row with attempts_detail parsed into []AttemptRecord. This
+// returns metadata only; request/response bodies are served separately.
 func GetRequestLogDetail(svc *service.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := c.Param("requestId")
@@ -89,7 +84,7 @@ func GetRequestLogDetail(svc *service.RequestLogService) gin.HandlerFunc {
 
 // GetRequestLogBodyStream handles GET /api/admin/request-logs/:requestId/body/stream
 // — serves the raw sent-SSE bytes captured on disk for a streaming request
-// (design doc §9, gateway/stream.go's per-chunk disk append). Deliberately
+// (gateway/stream.go's per-chunk disk append). Deliberately
 // separate from GetRequestLogDetail's JSON envelope: a stream body can be
 // arbitrarily large (up to the 1GiB backstop) and is plain text, not JSON,
 // so it is served as its own endpoint with http.ServeContent (Range/If-*
@@ -148,8 +143,8 @@ func ExportRequestLogsCSV(svc *service.RequestLogService) gin.HandlerFunc {
 
 		// Build rows BEFORE writing any CSV bytes to the wire so a DB /
 		// name-resolution failure returns a JSON 500 envelope, not a
-		// truncated CSV that the frontend accepts as success (Codex
-		// adversarial finding). Only after the full row set is built do we
+		// truncated CSV that the frontend accepts as success. Only after the
+		// full row set is built do we
 		// commit the HTTP 200 + CSV headers + body.
 		items, err := svc.BuildExportRows(filter)
 		if err != nil {

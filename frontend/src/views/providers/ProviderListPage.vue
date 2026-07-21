@@ -78,7 +78,7 @@ function rowProps(row: Provider) {
 
 // Single lookup table keyed by the same 5 running-status values instead of
 // a separate map + switch that were always consulted together for the
-// same row (a /simplify simplification-review finding).
+// same row.
 const RUNNING_STATUS_DISPLAY: Record<string, { i18nKey: string; type: 'default' | 'success' | 'warning' | 'error' }> = {
   not_configured: { i18nKey: 'NotConfigured', type: 'default' },
   pending_test: { i18nKey: 'Pending', type: 'default' },
@@ -116,8 +116,8 @@ function onToggleStatus(row: Provider, enable: boolean) {
   void proceed()
 }
 
-// computed, not a plain const: a max-effort code-review round found this
-// was captured once at setup time, so column TITLES (unlike each cell's
+// computed, not a plain const: this was previously captured once at setup
+// time, so column TITLES (unlike each cell's
 // own render(), which re-evaluates t() every render) never re-translated
 // after a locale switch — the sibling ProviderDetailPage.vue's keyColumns
 // already gets this right via computed().

@@ -1,6 +1,6 @@
 -- migrations/sqlite/00010_request_logs_cache_tokens.sql
 --
--- Cache token columns for request_logs (PRD §6.7.5). Modern models bill
+-- Cache token columns for request_logs. Modern models bill
 -- prompt-cache reads/writes separately from plain input/output, and the
 -- gateway now extracts these from the upstream usage object
 -- (OpenAI prompt_tokens_details.cached_tokens, Anthropic

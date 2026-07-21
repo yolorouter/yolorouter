@@ -1,11 +1,10 @@
-// Package service additions for M6.1: request-log list + detail composition
-// per PRD §6.8. Strict 3-layer: handler → service → repository. The service
+// Package service additions: request-log list + detail composition.
+// Strict 3-layer: handler → service → repository. The service
 // owns the business-DTO shape (RequestLogListItem / RequestLogDetail), the
 // owner_label / provider_name JOIN post-fetch, the attempts_detail JSON
 // parse, the status-class derivation at the row level, and the CSV stream
 // assembly. The repository owns the SQL filter / pagination / aggregate
-// helpers (request_log_query.go). See design doc
-// .claude/docs/2026-07-20-m6-analytics-design.md §4.4/§4.5.
+// helpers (request_log_query.go).
 package service
 
 import (
@@ -29,9 +28,9 @@ import (
 )
 
 // RequestLogService is the stateless composition layer over
-// request_log_query.go. M6.1 has no caching, masking, or permission post-
+// request_log_query.go. It has no caching, masking, or permission post-
 // processing — those concerns will hang off this struct in later milestones
-// (PRD §6.8.6 owner_label masking per admin role is a likely M6.2 add).
+// (owner_label masking per admin role is a likely add).
 type RequestLogService struct {
 	db *gorm.DB
 }
@@ -61,8 +60,8 @@ type RequestLogListFilter struct {
 	PageSize    int
 }
 
-// RequestLogListItem is the list-row DTO. Per PRD §6.8.6 it carries no
-// plaintext key material (M5 only stores id/prefix anyway) and no
+// RequestLogListItem is the list-row DTO. It carries no
+// plaintext key material (only id/prefix are stored anyway) and no
 // attempts_detail blob — only the attempt count, with full attempts reserved
 // for the detail endpoint. OwnerLabel and ProviderName are JOIN'd from
 // api_keys / providers at this layer. StatusClass mirrors the list-filter
@@ -92,7 +91,7 @@ type RequestLogListItem struct {
 // RequestLogDetail is the single-row detail DTO. AttemptsDetail is parsed
 // from the stored JSON string into []gateway.AttemptRecord so the frontend
 // can render failover order directly without re-parsing. The 7 body fields
-// (M6.2, PRD §6.8.4/§6.8.6) are sourced from the 1:1 request_log_bodies row
+// are sourced from the 1:1 request_log_bodies row
 // via repository.GetRequestLogBodyByRequestID — when that row is absent
 // (pre-migration rows or capture failure) they degrade to zero values and
 // the detail page shows "not recorded" rather than erroring.
@@ -211,8 +210,8 @@ func (s *RequestLogService) toListItems(rows []model.RequestLog) ([]RequestLogLi
 	return items, nil
 }
 
-// GetRequestLogDetail returns the single row for requestID (PRD §6.8.7:
-// "可通过请求标识精确找到单次请求"), with attempts_detail parsed into
+// GetRequestLogDetail returns the single row for requestID
+// (locate a single request precisely by its request identifier), with attempts_detail parsed into
 // []gateway.AttemptRecord. Returns errcode.ErrRequestLogNotFound when the
 // row is absent; the handler maps that to a 404 envelope.
 func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDetail, error) {
@@ -276,7 +275,7 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 		// body has), so a pathological multi-MiB body — e.g. a 20 MiB non-JSON
 		// request body captured before the parse — would otherwise be shipped
 		// in full and frozen into the admin's DOM. Cap each with a visible
-		// marker (code-review finding).
+		// marker.
 		detail.RequestBody = truncateInlineBody(bodyRow.RequestBody)
 		detail.UpstreamRequestBody = truncateInlineBody(bodyRow.UpstreamRequestBody)
 		detail.ResponseBody = truncateInlineBody(bodyRow.ResponseBody)
@@ -311,12 +310,12 @@ func (s *RequestLogService) GetStreamBodyPath(requestID string) (string, error) 
 // service's read path on the shared repository.ListRequestLogs, the same
 // code the list endpoint uses. v0.1 admin exports are time-windowed and
 // small enough that the COUNT + N-page overhead is negligible; a streaming
-// cursor can replace this in M6.2 if export volumes ever justify it.
+// cursor can replace this later if export volumes ever justify it.
 // BuildExportRows pulls every row matching filter (keyset pagination so
 // concurrent inserts can't drift the result set) and converts it to the wire
 // DTO. Split from WriteCSVRows so the handler can fail BEFORE committing the
 // HTTP 200 / CSV headers — a mid-pull DB error returns a JSON envelope, not a
-// truncated CSV reported as success (Codex adversarial finding).
+// truncated CSV reported as success.
 func (s *RequestLogService) BuildExportRows(filter RequestLogListFilter) ([]RequestLogListItem, error) {
 	const pageSize = 200
 	rf := toRepoFilterFromList(filter)
@@ -365,8 +364,7 @@ func buildCSVRecords(items []RequestLogListItem) [][]string {
 // is NULL) surface as empty strings in the DTO via lookupName. Two small
 // SELECTs rather than one JOIN keeps the read path on the shared
 // repository.ListRequestLogs — adding batch-by-id repository helpers
-// purely for this display-name lookup isn't worth the layering overhead
-// at M6.1.
+// purely for this display-name lookup isn't worth the layering overhead.
 func (s *RequestLogService) fetchRelatedNames(rows []model.RequestLog) (ownerLabels map[uint]string, providerNames map[uint]string, err error) {
 	apiKeyIDs := make([]uint, 0)
 	providerIDs := make([]uint, 0)

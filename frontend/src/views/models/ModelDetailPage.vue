@@ -198,7 +198,7 @@ function onToggleModelStatus() {
   )
 }
 
-// Actions column collapses into an NDropdown — the M2 convention established
+// Actions column collapses into an NDropdown — a convention established
 // after flat buttons pushed the table into horizontal scroll.
 const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => [
   { title: columnTitle(t('models.provider'), t('models.provider_tip')), key: 'provider_name', minWidth: 140 },

@@ -175,10 +175,10 @@ func TestSetupRejectsPasswordWithoutDigit(t *testing.T) {
 }
 
 // TestSetupRejectsWrongJSONTypeWithoutLeakingStructName guards the other
-// bind-failure shape a round-2 fix's regex-style cleaning didn't cover: a
+// bind-failure shape the regex-style cleaning didn't cover: a
 // JSON field of the wrong type reaches ShouldBindJSON as a
 // *json.UnmarshalTypeError, not a validator.ValidationErrors, and its
-// Error() text embeds the Go struct name directly (round 3's finding).
+// Error() text embeds the Go struct name directly.
 func TestSetupRejectsWrongJSONTypeWithoutLeakingStructName(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	r := newAuthTestRouter(t, db)

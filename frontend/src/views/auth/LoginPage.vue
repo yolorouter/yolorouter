@@ -60,7 +60,7 @@ const authStore = useAuthStore()
 const formRef = ref<FormInst | null>(null)
 const submitting = ref(false)
 const errorMessage = ref('')
-// PRD §6.1.5: landing here because the session expired (the 24h TTL, or
+// Landing here because the session expired (the 24h TTL, or
 // any mid-use AccountSessionInvalid) must show the ACCOUNT_SESSION_INVALID
 // message — not a blank form with no explanation. consumeSessionExpiredNotice reads and
 // clears the store flag in one step, so a later, unrelated login attempt

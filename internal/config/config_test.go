@@ -38,7 +38,7 @@ func TestLoadGeneratesDefaultConfigWhenMissing(t *testing.T) {
 		t.Fatalf("expected configs/config.yaml to be written: %v", err)
 	}
 
-	// 第二次加载必须复用同一个密钥
+	// The second load must reuse the same key
 	cfg2, err := Load("")
 	if err != nil {
 		t.Fatalf("second Load failed: %v", err)
@@ -96,7 +96,7 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 func TestLoadRejectsEmptyRequiredFieldInExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	// 显式提供的配置文件里 provider_master_key 是空的——必须报错，不能静默补全
+	// provider_master_key is empty in the explicitly provided config file — must error out, not silently fill it in
 	if err := os.WriteFile(path, []byte("server:\n  port: 8080\ndatabase:\n  driver: sqlite\n  sqlite_path: ./data/x.db\nsecurity:\n  provider_master_key: \"\"\n"), 0o600); err != nil {
 		t.Fatalf("write test config: %v", err)
 	}
@@ -267,8 +267,8 @@ func TestAtomicWriteConfigConcurrentRaceHasExactlyOneWinner(t *testing.T) {
 // TestDefaultsSetsUpdateEnabled guards the update-feature default: defaults()
 // must set Enabled=true so an auto-generated or legacy config that omits the
 // whole `update` section keeps updates ON. A zero-value UpdateConfig (Enabled
-// false) would silently disable the feature — exactly the regression Codex
-// review flagged on the v1 design.
+// false) would silently disable the feature — exactly the regression this
+// test guards against.
 func TestDefaultsSetsUpdateEnabled(t *testing.T) {
 	cfg := defaults()
 	if !cfg.Update.Enabled {

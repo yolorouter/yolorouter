@@ -1,7 +1,6 @@
-// Package repository additions for M2: pure data access for
+// Package repository provides pure data access for
 // providers/provider_keys — no business judgment here (that's
-// internal/service/provider_service.go's job). See design doc
-// .claude/docs/2026-07-18-m2-provider-design.md §3.
+// internal/service/provider_service.go's job).
 package repository
 
 import (
@@ -15,8 +14,7 @@ import (
 )
 
 // CreateProviderWithKey inserts a Provider and its first ProviderKey in one
-// transaction (design doc §6: "同一个事务内建 Provider + ProviderKey 两
-// 行", mirroring M1's Setup's admin+session pattern). Caller must have
+// transaction (mirroring the Setup admin+session pattern). Caller must have
 // already populated key.AuthorizedDestinationVersion == provider's intended
 // DestinationVersion (1 for a brand-new provider) before calling.
 func CreateProviderWithKey(db *gorm.DB, provider *model.Provider, key *model.ProviderKey) error {
@@ -52,7 +50,7 @@ func FindProviderByName(db *gorm.DB, name string) (*model.Provider, error) {
 
 // ListProviders returns every provider, ordered by name for a stable list
 // display (v0.1 has no pagination — provider counts are expected to be
-// small, design doc §9).
+// small).
 func ListProviders(db *gorm.DB) ([]model.Provider, error) {
 	var providers []model.Provider
 	if err := db.Order("name ASC").Find(&providers).Error; err != nil {
@@ -62,17 +60,16 @@ func ListProviders(db *gorm.DB) ([]model.Provider, error) {
 }
 
 // UpdateProviderNameNote updates only name/note — must never touch
-// destination_version (that's UpdateProviderBaseURL's sole responsibility,
-// design doc §3).
+// destination_version (that's UpdateProviderBaseURL's sole responsibility).
 func UpdateProviderNameNote(db *gorm.DB, id uint, name, note string, now time.Time) error {
 	return db.Model(&model.Provider{}).Where("id = ?", id).
 		Updates(map[string]interface{}{"name": name, "note": note, "updated_at": now}).Error
 }
 
 // UpdateProviderBaseURL atomically writes the new base_url and bumps
-// destination_version in the SAME UPDATE statement (design doc §3's
-// "目的地版本绑定": the address change and the version bump must never be
-// two separable writes). Returns the resulting destination_version.
+// destination_version in the SAME UPDATE statement (the address change and
+// the version bump must never be two separable writes). Returns the resulting
+// destination_version.
 func UpdateProviderBaseURL(db *gorm.DB, id uint, baseURL string, now time.Time) (int, error) {
 	var result struct {
 		DestinationVersion int `gorm:"column:destination_version"`
@@ -89,9 +86,9 @@ func UpdateProviderBaseURL(db *gorm.DB, id uint, baseURL string, now time.Time) 
 	return result.DestinationVersion, nil
 }
 
-// UpdateProviderManagementStatus enables/disables a provider (PRD §6.2.6).
+// UpdateProviderManagementStatus enables/disables a provider.
 // UpdateProviderManagementStatus returns applied=false (no error) if id
-// doesn't exist — a /simplify efficiency-review finding: the service layer
+// doesn't exist: the service layer
 // used to do a separate FindProviderByID existence check before this write;
 // RowsAffected already tells the caller whether a row existed, collapsing
 // two round trips into one.
@@ -123,7 +120,7 @@ func FindProviderKeyByLabel(db *gorm.DB, providerID uint, label string) (*model.
 }
 
 // ListProviderKeysByProvider returns every key for a provider ordered by
-// sort_order (the display/routing order PRD §6.2.7 requires).
+// sort_order (the display/routing order).
 func ListProviderKeysByProvider(db *gorm.DB, providerID uint) ([]model.ProviderKey, error) {
 	var keys []model.ProviderKey
 	if err := db.Where("provider_id = ?", providerID).Order("sort_order ASC").Find(&keys).Error; err != nil {
@@ -167,8 +164,8 @@ func NextSortOrder(db *gorm.DB, providerID uint) (int, error) {
 // the parent provider's current destination_version into
 // key.AuthorizedDestinationVersion. config_version and test_generation are
 // forced to 1 regardless of whatever the caller set (a just-created row has
-// no prior test attempt to race against, so both start "already claimed" —
-// design doc §3). Returns the snapshot version the caller must test
+// no prior test attempt to race against, so both start "already claimed").
+// Returns the snapshot version the caller must test
 // against and later pass to CommitProviderKeyPlaintextTestResult.
 //
 // No explicit row lock is taken on the provider read: the real guard
@@ -207,7 +204,7 @@ func CreateProviderKeyPendingTest(db *gorm.DB, key *model.ProviderKey, now time.
 // while reading the parent provider's current destination_version as the
 // snapshot the caller must test against.
 //
-// A codex adversarial review round found that doing this as 3 separate
+// Doing this as 3 separate
 // statements (label/status update, then a separate ciphertext/prefix
 // update, then a separate config_version/verification_status/generation
 // update) left a window where a crash, DB error, or concurrent read
@@ -256,10 +253,10 @@ func SwapProviderKeyPlaintext(db *gorm.DB, keyID uint, label, testModel, encrypt
 // BeginProviderKeyRetest claims a new test_generation for a retest (same
 // plaintext, no config_version bump, verification_status untouched),
 // reads the current config_version so it can be passed back unchanged to
-// CommitProviderKeyRetestResult's CAS condition (design doc §3's "重测"),
+// CommitProviderKeyRetestResult's CAS condition (the retest path),
 // and atomically returns the current encrypted_key in the SAME statement.
 //
-// A codex adversarial review round found that a caller reading and
+// A caller reading and
 // decrypting encrypted_key BEFORE calling this to claim a generation could
 // race against a concurrent plaintext replacement: the claim would then
 // return the NEW config_version while the network test actually ran
@@ -286,8 +283,8 @@ func BeginProviderKeyRetest(db *gorm.DB, keyID uint) (configVersion, testGenerat
 
 // CommitProviderKeyPlaintextTestResult writes back a test result for a key
 // that just received brand-new plaintext (creation, edit-with-new-key, or
-// re-entry) — design doc §3's "提交新明文" CAS. overwriteVerification is
-// the service layer's design-doc-§5 classification decision: when false,
+// re-entry) — the new-plaintext CAS. overwriteVerification is
+// the service layer's classification decision: when false,
 // verification_status is left OUT of the SET clause entirely (it was
 // already forced to untested by CreateProviderKeyPendingTest's insert or
 // BeginProviderKeyPlaintextSwap, so "leave untouched" correctly means
@@ -345,7 +342,7 @@ func execReturningApplied(db *gorm.DB, query string, args ...interface{}) (bool,
 
 // UpdateProviderKeyLabelAndStatus updates label + test_model + management_status
 // only (no plaintext change) — does not touch verification_status/config_version
-// (design doc §8: "改标签/顺序不影响 verification_status"). test_model can
+// (changing label/order doesn't affect verification_status). test_model can
 // still be changed here (which model a future test uses) independently of
 // whether the plaintext itself changes.
 func UpdateProviderKeyLabelAndStatus(db *gorm.DB, keyID uint, label, testModel string, managementStatus int, now time.Time) error {
@@ -362,7 +359,7 @@ func SetProviderKeyManagementStatus(db *gorm.DB, keyID uint, status int, now tim
 
 // UpdateProviderKeyLabelAndStatusIfVerified is UpdateProviderKeyLabelAndStatus's
 // CAS-guarded counterpart for the one transition that matters: writing
-// management_status=Enabled. A max-effort code-review round found the
+// management_status=Enabled. The
 // service layer's verifyKeyEnableAllowed check (verification_status/
 // authorized_destination_version) and the actual write were two separate
 // steps with no guard between them — a concurrent base_url change or
@@ -392,8 +389,8 @@ func SetProviderKeyManagementStatusIfVerified(db *gorm.DB, keyID uint, status,
 }
 
 // CASProviderKeyManagementStatus writes management_status only if the row's
-// current value still matches expectedCurrent — a max-effort code-review
-// round found runNewPlaintextTestAndCommit's final "enable if the test
+// current value still matches expectedCurrent —
+// runNewPlaintextTestAndCommit's final "enable if the test
 // passed" write used SetProviderKeyManagementStatus's unconditional
 // UPDATE, so a legitimate concurrent PATCH .../status call landing in the
 // window between the CAS-committed verification result and this write
@@ -459,21 +456,21 @@ func SwapProviderKeySortOrder(db *gorm.DB, providerID, keyID uint, direction str
 }
 
 // ClaimProviderKeyFingerprintIfAbsent atomically inserts the single
-// fingerprint row ONLY if it doesn't already exist — design doc §5's
+// fingerprint row ONLY if it doesn't already exist — the
 // master-key/backup-restore mismatch detector. Uses gorm's
 // clause.OnConflict{DoNothing: true}, which GORM translates to the correct
 // per-dialect syntax (SQLite's "INSERT OR IGNORE", Postgres's "ON CONFLICT
 // DO NOTHING"), so it never overwrites an existing row regardless of
 // driver.
 //
-// A codex adversarial review round found the original "check not-found,
+// The original "check not-found,
 // then unconditionally Save" sequence was itself a check-then-act race:
 // two instances booting concurrently against the same fresh database with
 // DIFFERENT master keys could both observe "not found" and both attempt to
 // write, with the later Save silently overwriting the earlier one's probe
 // — leaving one instance's key permanently, silently mismatched with no
 // error at that moment. Because this call can never overwrite a winner,
-// service.VerifyMasterKeyFingerprint (Task 8) always re-reads and
+// service.VerifyMasterKeyFingerprint always re-reads and
 // decrypt-verifies AFTER calling this, regardless of whether its own
 // claim actually won or lost — the losing instance correctly fails that
 // verification instead of silently believing it succeeded.
@@ -493,7 +490,7 @@ func GetProviderKeyFingerprint(db *gorm.DB) (*model.ProviderKeyFingerprint, erro
 }
 
 // CommitProviderKeyRetestResult writes back a retest result (plaintext
-// unchanged) — design doc §3's "重测" CAS: guards config_version (no
+// unchanged) — the retest CAS: guards config_version (no
 // concurrent plaintext edit happened), test_generation (no later-claimed
 // retest raced ahead), and a DIRECT comparison of
 // authorized_destination_version against the current destination_version
@@ -520,15 +517,15 @@ func CommitProviderKeyRetestResult(
 }
 
 // MarkProviderKeyVerificationFailedIfCurrent is the gateway's CAS write to
-// invalidate a provider key after a real upstream 401 (GATE-16). Unlike the
-// M2 test-flow CAS functions above (CommitProviderKeyPlaintextTestResult /
+// invalidate a provider key after a real upstream 401. Unlike the
+// test-flow CAS functions above (CommitProviderKeyPlaintextTestResult /
 // CommitProviderKeyRetestResult, which guard on config_version +
 // test_generation because they belong to a plaintext/retest lifecycle), this
 // guards only on verification_status=Passed AND authorized_destination_version
 // = the destination the key was just sent to — i.e. "the key was valid for
 // exactly this destination, and the upstream rejected the credential".
 // CommitProviderKeyRetestResult's CAS does NOT check verification_status, so
-// a gateway-invalidated key can still be recovered by a later M2 retest.
+// a gateway-invalidated key can still be recovered by a later retest.
 // Returns applied=false (no error) if the row no longer matches (concurrent
 // edit, destination change, or already invalidated) — callers treat that as
 // a benign lost race, not an error.

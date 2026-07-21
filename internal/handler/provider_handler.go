@@ -19,8 +19,8 @@ type createProviderRequest struct {
 	Note         string `json:"note" binding:"max=200"`
 	KeyLabel     string `json:"key_label" binding:"required,min=2,max=30"`
 	KeyPlaintext string `json:"key_plaintext" binding:"required,min=20"`
-	// TestModel is required: M2 has no real model mapping yet, so the
-	// admin supplies a temporary model name every test call uses (PRD §6.2.8).
+	// TestModel is required: there is no real model mapping yet, so the
+	// admin supplies a temporary model name every test call uses.
 	TestModel        string `json:"test_model" binding:"required,max=100"`
 	ManagementStatus int    `json:"management_status" binding:"omitempty,oneof=1 2"`
 }
@@ -79,10 +79,9 @@ func parseUintParam(c *gin.Context, name string) (uint, bool) {
 }
 
 // parseProviderAndKeyIDs parses both the ":id" and ":keyId" path segments,
-// writing a 400 and returning ok=false on the first failure — a /simplify
-// simplification-review finding: PatchProviderKey, PatchProviderKeyOrder,
-// PatchProviderKeyStatus, and PostProviderKeyTest each repeated this exact
-// pair of parseUintParam calls.
+// writing a 400 and returning ok=false on the first failure. PatchProviderKey,
+// PatchProviderKeyOrder, PatchProviderKeyStatus, and PostProviderKeyTest each
+// repeated this exact pair of parseUintParam calls.
 func parseProviderAndKeyIDs(c *gin.Context) (providerID, keyID uint, ok bool) {
 	providerID, ok = parseUintParam(c, "id")
 	if !ok {
@@ -123,8 +122,8 @@ func writeProviderServiceError(c *gin.Context, err error) {
 		// branch instead of the intended 400.
 		response.Error(c, errcode.ProviderKeyTooShort, errcode.GetMessage(errcode.ProviderKeyTooShort))
 	default:
-		// A max-effort code-review round flagged the previous err.Error()
-		// here as leaking internal details (wrapped crypto/gorm error text)
+		// The previous err.Error()
+		// here was leaking internal details (wrapped crypto/gorm error text)
 		// to the client — every other handler (see auth_handler.go) always
 		// substitutes a fixed generic message for unmatched errors instead.
 		response.Error(c, errcode.InternalError, errcode.GetMessage(errcode.InternalError))
@@ -221,8 +220,8 @@ func PostProviderTestKey(svc *service.ProviderService) gin.HandlerFunc {
 		}
 		result, err := svc.TestKeyPreview(c.Request.Context(), req.BaseURL, req.APIKey, req.Model)
 		if err != nil {
-			// Same fix as writeProviderServiceError's default branch (round
-			// 2): a max-effort code-review round found this call site was
+			// Same fix as writeProviderServiceError's default branch:
+			// this call site was
 			// missed, still leaking the raw client-call error (e.g. "too
 			// many concurrent provider test calls in flight") verbatim.
 			response.Error(c, errcode.ProviderTestFailed, errcode.GetMessage(errcode.ProviderTestFailed))

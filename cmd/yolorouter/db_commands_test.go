@@ -45,7 +45,7 @@ func TestBootstrapCommandRejectsExtraArgsBeforeInit(t *testing.T) {
 }
 
 // TestRunDBRollbackRejectsFlagAfterPositionalVersion is the exact scenario
-// from the review finding: "db:rollback 1 --config prod.yaml" — Go's flag
+// from a real invocation: "db:rollback 1 --config prod.yaml" — Go's flag
 // package stops parsing at "1" and leaves "--config"/"prod.yaml" as
 // unconsumed extra args. Silently ignoring them would roll back the
 // default database instead of prod.yaml; this must error instead.

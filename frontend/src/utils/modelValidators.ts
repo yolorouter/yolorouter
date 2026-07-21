@@ -2,7 +2,7 @@ import type { FormItemRule } from 'naive-ui'
 
 // Mirrors the backend's own binding tags (createModelRequest / createCandidateRequest
 // in internal/handler/model_handler.go), same convention as
-// utils/providerValidators.ts established in M2.
+// utils/providerValidators.ts.
 
 export function modelNameRule(t: (key: string) => string): FormItemRule[] {
   return [

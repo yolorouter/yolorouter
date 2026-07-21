@@ -150,8 +150,8 @@ async function reload() {
   provider.value = await store.fetchDetail(providerId)
 }
 
-// Models referencing this provider as a candidate (the "模型映射" tab). M3
-// left this tab as an EmptyState placeholder; this joins modelsStore.list
+// Models referencing this provider as a candidate (the "model mapping" tab). This
+// tab was previously an EmptyState placeholder; this joins modelsStore.list
 // (every model with its candidates) on candidate.provider_id.
 type LinkedModelRow = { candidateId: number; modelName: string; candidate: ModelCandidate }
 
@@ -185,7 +185,7 @@ const modelColumns = computed<DataTableColumns<LinkedModelRow>>(() => [
     // model-level status — so the tooltip must describe candidate
     // semantics ("skips this candidate only"), not model semantics
     // ("model rejects all requests"). Reusing models.managementStatusColumn
-    // here would mislabel the column (codex review finding).
+    // here would mislabel the column.
     title: columnTitle(t('providers.candidateStatus'), t('providers.candidateStatus_tip')),
     key: 'management_status',
     width: 100,
@@ -346,10 +346,9 @@ async function onReorder(keyId: number, direction: 'up' | 'down') {
 }
 
 // A key actually contributes to routing only when it's enabled AND has
-// passed verification AND doesn't need re-entry (design doc §4's
-// availability rule) — "enabled" alone (management_status === 1) is not
-// the same thing, and a max-effort code-review round found the warning
-// below used the weaker enabled-count check, so it silently skipped the
+// passed verification AND doesn't need re-entry — "enabled" alone
+// (management_status === 1) is not the same thing, and the warning
+// below previously used the weaker enabled-count check, so it silently skipped the
 // "you're about to disable the only key actually keeping this provider
 // available" warning whenever another merely-enabled-but-unverified key
 // was also present.

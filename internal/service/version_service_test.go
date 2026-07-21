@@ -103,7 +103,7 @@ func TestCheckDevBuildNeverReportsUpdate(t *testing.T) {
 	st := svc.Check(context.Background())
 	// "dev" is not comparable: HasUpdate must stay false AND CheckFailed must
 	// be true, so the UI shows "check failed" rather than a misleading "up to
-	// date" for a build the updater refuses (Codex review P2).
+	// date" for a build the updater refuses.
 	if st.HasUpdate {
 		t.Fatalf("HasUpdate must be false for a dev (non-semver) current")
 	}
@@ -113,7 +113,7 @@ func TestCheckDevBuildNeverReportsUpdate(t *testing.T) {
 }
 
 // TestCheckPrereleaseCurrentNeverReportsUpdate guards the
-// downgrade-via-git-describe regression (Codex review P1): a current built
+// downgrade-via-git-describe regression: a current built
 // from "v1.2.3-dirty" / "v1.2.3-4-gabc" / "v1.2.3-rc1" is a semver
 // prerelease, ranked BELOW its release. Without the Prerelease guard,
 // Compare(latest, current) would report the tag as newer and the admin UI
@@ -141,7 +141,7 @@ func TestCheckPrereleaseCurrentNeverReportsUpdate(t *testing.T) {
 // v1.3.0-rc1 published as /releases/latest) is incomparable — installing it
 // would strand the user on an RC currentUpdatable refuses to advance from.
 // Must report CheckFailed (not HasUpdate), matching the `update` CLI's
-// rejection of prerelease latests (Codex review P2).
+// rejection of prerelease latests.
 func TestCheckPrereleaseLatestNeverReportsUpdate(t *testing.T) {
 	withVersion(t, "v1.2.0")
 	for _, latest := range []string{"v1.3.0-rc1", "v1.3.0-beta"} {

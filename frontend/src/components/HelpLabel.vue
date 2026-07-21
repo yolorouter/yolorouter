@@ -20,8 +20,7 @@
 <script setup lang="ts">
 // NTooltip/NIcon are NOT in main.ts's create() components list (only ~28
 // common ones are). Import them explicitly, or they silently render as
-// unknown elements (vue-tsc / vite build stay green). See
-// .claude/frontend-conventions.md 坑1.
+// unknown elements (vue-tsc / vite build stay green).
 import { NTooltip, NIcon } from 'naive-ui'
 import { CircleHelp } from '@lucide/vue'
 

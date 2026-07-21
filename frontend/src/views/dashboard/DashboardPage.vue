@@ -1,5 +1,5 @@
 <!-- frontend/src/views/dashboard/DashboardPage.vue
-     Overview dashboard (PRD §6.6). Renders today's KPI cards, a 7-day trend
+     Overview dashboard. Renders today's KPI cards, a 7-day trend
      chart, top callers, recent failures, and upstream status — all from one
      GET /api/admin/dashboard round trip.
 
@@ -187,7 +187,7 @@ const isEmpty = computed(() => {
   const d = data.value
   // Upstream health is meaningful even with zero request traffic — a freshly
   // set-up deployment with abnormal keys or unavailable models must NOT be
-  // hidden behind "no data" (Codex adversarial finding). Show the dashboard
+  // hidden behind "no data". Show the dashboard
   // as long as any provider/model signal exists.
   const hasUpstreamSignal =
     d.upstream_status.available_providers > 0 ||
@@ -253,7 +253,7 @@ function formatRelativeTime(rfc3339: string): string {
 }
 
 function goToRequestLog(requestId: string) {
-  // Route is registered by the main router task at the end of M6.1; if the
+  // Route is registered by the main router; if the
   // route isn't there yet, vue-router will log a warning and stay put —
   // safe failure mode for a forward reference.
   router.push(`/request-logs/${requestId}`).catch(() => {

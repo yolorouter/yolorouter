@@ -10,14 +10,14 @@ import (
 // relayContextKey is the gin.Context key Handle stores the in-flight
 // RelayContext under (relay.go: c.Set(relayContextKey, rc)), so
 // WriteOpenAIError* can stash the local error JSON it is about to return
-// into rc.ResponseBody (PRD §6.8.4/LOG-06) without threading an
+// into rc.ResponseBody without threading an
 // *RelayContext parameter through every call site. Absent on paths that
 // never call Handle (e.g. unit tests, or middleware.APIKeyAuth's own 401s
 // before Handle ever runs) — stashLocalErrorBody is then a no-op.
 const relayContextKey = "relay_context"
 
 // openaiErrorBody is the OpenAI-compatible error envelope. Gateway traffic
-// uses upstream's native wire format, NOT pkg/response (design doc §3) — so
+// uses upstream's native wire format, NOT pkg/response — so
 // these responses intentionally do not carry the admin API's Code/Message
 // envelope.
 type openaiErrorBody struct {
@@ -34,7 +34,7 @@ type openaiError struct {
 // middleware.logAuthRejection (a different package, rejecting requests
 // before Handle — and any RelayContext — ever exists) can build the exact
 // same response_body JSON for its own request_log_bodies row instead of
-// duplicating the envelope shape (PITFALLS: single source of truth for
+// duplicating the envelope shape (single source of truth for
 // shared logic).
 func LocalErrorBody(errType, message string) []byte {
 	b, _ := json.Marshal(openaiErrorBody{Error: openaiError{Message: message, Type: errType}})
@@ -43,7 +43,7 @@ func LocalErrorBody(errType, message string) []byte {
 
 // stashLocalErrorBody records the local error JSON WriteOpenAIError is about
 // to return, as response_body for this request's request_log_bodies row
-// (PRD §6.8.4, Codex #1). No-op when no RelayContext is on the context. The
+// No-op when no RelayContext is on the context. The
 // body is a gateway-generated error envelope (no caller/upstream content), so
 // it is stored verbatim — v0.1 does not scrub body content.
 func stashLocalErrorBody(c *gin.Context, errType, message string) {
@@ -58,7 +58,7 @@ func stashLocalErrorBody(c *gin.Context, errType, message string) {
 	rc.ResponseBody = LocalErrorBody(errType, message)
 }
 
-// OpenAI error "type" values (PRD §6.5.9 maps each failure class to one of
+// OpenAI error "type" values (each failure class maps to one of
 // these). Kept as untyped string constants — they only appear at the
 // WriteOpenAIError call sites and in tests.
 const (
@@ -85,7 +85,7 @@ func WriteOpenAIError(c *gin.Context, status int, errType, message string) {
 
 // WriteOpenAIErrorWithRequestID is WriteOpenAIError with the request id
 // appended to the message, so a caller reporting an error can quote the id
-// and the admin can find the row (GATE-08).
+// and the admin can find the row.
 func WriteOpenAIErrorWithRequestID(c *gin.Context, status int, errType, message, requestID string) {
 	if requestID != "" {
 		message = message + " (request: " + requestID + ")"
@@ -94,20 +94,20 @@ func WriteOpenAIErrorWithRequestID(c *gin.Context, status int, errType, message,
 }
 
 // statusCategory classifies a non-2xx upstream HTTP status into the relay
-// loop's three branches (PRD §6.5.7): rotate to another Key on the same
+// loop's three branches: rotate to another Key on the same
 // provider, failover to the next candidate, or surface as terminal (no
 // switch).
 type statusCategory int
 
 const (
-	statusRotateKey      statusCategory = iota // 401/429: Key-scoped, try next key (GATE-09)
-	statusFailover                             // 5xx: provider-scoped, try next candidate (GATE-10)
-	statusTerminalClient                       // other 4xx: caller's problem, no switch (GATE-11)
+	statusRotateKey      statusCategory = iota // 401/429: Key-scoped, try next key
+	statusFailover                             // 5xx: provider-scoped, try next candidate
+	statusTerminalClient                       // other 4xx: caller's problem, no switch
 )
 
 // upstreamStatusClass is the full classification attemptOne needs from one
-// upstream HTTP status: which branch to take, what outcome label to log
-// (GATE-13), and (for terminal 4xx) which OpenAI error type to surface.
+// upstream HTTP status: which branch to take, what outcome label to log,
+// and (for terminal 4xx) which OpenAI error type to surface.
 type upstreamStatusClass struct {
 	Category  statusCategory
 	Outcome   string

@@ -1,6 +1,6 @@
 -- migrations/postgres/00007_create_request_logs.sql
 --
--- Gateway request logs (PRD §6.5 GATE-13/21, §6.8). See the sqlite twin for
+-- Gateway request logs. See the sqlite twin for
 -- the full rationale. Postgres uses BIGINT/BOOLEAN/TIMESTAMPTZ; the
 -- cost_known sentinel is a real BOOLEAN here rather than the 0/1 SMALLINT
 -- convention on sqlite.

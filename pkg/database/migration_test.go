@@ -35,7 +35,8 @@ func TestRunMigrationsAppliesBaselineOnSQLite(t *testing.T) {
 		t.Fatalf("RunMigrations failed: %v", err)
 	}
 
-	// goose 元数据表必须存在，且版本至少为 1（baseline 迁移已应用）
+	// the goose metadata table must exist and the version must be at least 1
+	// (baseline migration applied)
 	var version int64
 	row := db.QueryRow("SELECT version_id FROM goose_db_version ORDER BY id DESC LIMIT 1")
 	if err := row.Scan(&version); err != nil {

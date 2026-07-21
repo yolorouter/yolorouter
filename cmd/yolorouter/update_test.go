@@ -323,7 +323,7 @@ func TestSameExeIdentity(t *testing.T) {
 	}
 	// Simulate a concurrent update replacing the binary: different size and
 	// mtime must break the identity, so the in-flight updater aborts rather
-	// than downgrade (Codex review P1).
+	// than downgrade.
 	if err := os.WriteFile(p, []byte("v2-different-length"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestAcquireUpdateLock(t *testing.T) {
 	defer func() { _ = f1.Close(); _ = os.Remove(lockPath) }()
 	// A second concurrent acquire must fail — the second updater must abort
 	// rather than race to replaceBinary, which would let its stale downloaded
-	// bytes overwrite the newer binary the first invocation installs (Codex P1).
+	// bytes overwrite the newer binary the first invocation installs.
 	if _, _, err := acquireUpdateLock(dir); err == nil {
 		t.Fatalf("second acquire must fail while the first holds the lock")
 	}

@@ -74,7 +74,7 @@ func TestBackupSQLiteProducesReadableSnapshot(t *testing.T) {
 	sourcePath := filepath.Join(dir, "source.db")
 	outputPath := filepath.Join(dir, "backup.db.gz")
 
-	// 建一个有实际数据的源库
+	// create a source db with actual data
 	db, err := sql.Open("sqlite", sourcePath)
 	if err != nil {
 		t.Fatalf("open source db: %v", err)
@@ -91,7 +91,7 @@ func TestBackupSQLiteProducesReadableSnapshot(t *testing.T) {
 		t.Fatalf("BackupSQLite failed: %v", err)
 	}
 
-	// 确认没有残留临时文件
+	// confirm no leftover temp files remain
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read dir: %v", err)

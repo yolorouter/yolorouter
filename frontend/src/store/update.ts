@@ -10,7 +10,7 @@ import { router } from '../router'
 // read. It is a shared Pinia singleton — DefaultLayout's onMounted fires the
 // one background check on app boot, and SystemInfoPage reloads on mount — so
 // both read one race-guarded source instead of each issuing its own request
-// and racing (frontend-conventions: any store action reachable from more than
+// and racing (any store action reachable from more than
 // one component carries the fetch-token guard).
 interface UpdateStoreState {
   // Build/runtime metadata (mirrors SystemVersion's build fields).
@@ -83,14 +83,14 @@ export const useUpdateStore = defineStore('update', {
         // is now stale: an older overlapping check that receives
         // ACCOUNT_SESSION_INVALID after a newer one started still means the
         // admin's session lapsed, and must trigger reauth — the fetch-token
-        // guard suppresses update-state writes, not session-expiry handling
-        // (Codex review P2).
+        // guard suppresses update-state writes, not session-expiry
+        // handling.
         if (err instanceof APIError && err.code === ACCOUNT_SESSION_INVALID) {
           useAuthStore().handleSessionExpired()
           // handleSessionExpired only clears Pinia state + sets the notice;
           // the caller must navigate to /login (route guards don't rerun on
           // store change), otherwise the protected shell + stale admin data
-          // stay visible (Codex review P2).
+          // stay visible.
           router.push('/login')
           return
         }
@@ -99,7 +99,7 @@ export const useUpdateStore = defineStore('update', {
         // flag, which is a normal 200 response): keep the badge off, clear
         // stale latest/releaseUrl so a failed check doesn't leave the page
         // showing a previous release's URL as if current, and mark the check
-        // as failed so the page can say so (Codex review P2).
+        // as failed so the page can say so.
         this.latest = ''
         this.releaseUrl = ''
         this.hasUpdate = false

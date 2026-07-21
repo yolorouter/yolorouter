@@ -1,4 +1,4 @@
-// Package handler tests for M6.1 request-log list + detail endpoints. Uses
+// Package handler tests for the request-log list + detail endpoints. Uses
 // a real RequestLogService over a migrated SQLite DB — the logic worth
 // verifying is the SQL → service (JOIN + status derivation + attempts JSON
 // parse) → handler → envelope chain, not boilerplate mock interactions, so
@@ -27,7 +27,7 @@ import (
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
-// newRequestLogTestRouter wires up the M6.1/M6.2 request-log routes over a
+// newRequestLogTestRouter wires up the request-log routes over a
 // fresh migrated SQLite DB, using t.TempDir() as the bodies directory. Uses
 // a real RequestLogService — see the package doc comment for why.
 func newRequestLogTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, *service.RequestLogService) {
@@ -676,9 +676,9 @@ func TestExportRequestLogsCSVReturnsBOMAndHeaderAndRows(t *testing.T) {
 		t.Fatalf("expected both request IDs in CSV, got: %s", text)
 	}
 	// Desensitization: no plaintext key material is ever stored on the
-	// row (M5 only kept id/prefix), so the CSV's owner_label column is the
-	// admin label "alice" — never a key string. The JOIN'd rows satisfy
-	// §6.8.6 by construction; assert the label appears.
+	// row (only id/prefix are kept), so the CSV's owner_label column is the
+	// admin label "alice" — never a key string. The JOIN'd rows are
+	// desensitized by construction; assert the label appears.
 	if !strings.Contains(text, "alice") {
 		t.Fatalf("expected owner_label 'alice' in CSV, got: %s", text)
 	}

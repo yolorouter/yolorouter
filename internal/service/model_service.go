@@ -1,6 +1,5 @@
-// Package service additions for M3: model configuration business logic,
-// running-status computation, and candidate test orchestration. See design
-// doc .claude/docs/2026-07-18-m3-model-config-design.md.
+// Package service additions: model configuration business logic,
+// running-status computation, and candidate test orchestration.
 package service
 
 import (
@@ -68,11 +67,11 @@ type ModelView struct {
 	CreatedAt        time.Time       `json:"created_at"`
 }
 
-// isCandidateRoutable implements design doc §4's exhaustive list — this
-// deliberately does NOT check anything resembling M2's
+// isCandidateRoutable implements the exhaustive routable-candidate list —
+// this deliberately does NOT check anything resembling the
 // authorized_destination_version/destination_version staleness gate; a
 // candidate's mapping validity and a provider key's credential validity are
-// different dimensions (design doc §4's own rationale).
+// different dimensions.
 func isCandidateRoutable(c model.ModelCandidate, providerEnabled, providerHasAvailableKey bool) bool {
 	if c.ManagementStatus != model.ModelCandidateStatusEnabled {
 		return false
@@ -111,7 +110,7 @@ func computeModelRunningStatus(candidates []CandidateView) string {
 	return ModelRunningStatusUnavailable
 }
 
-// providerHasAvailableKey applies the same "available key" rule M2's
+// providerHasAvailableKey applies the same "available key" rule
 // computeRunningStatus uses: enabled + verified + authorized for the
 // provider's current destination_version.
 func providerHasAvailableKey(keys []model.ProviderKey, destinationVersion int) bool {
@@ -272,11 +271,11 @@ type CreateCandidateInput struct {
 	CacheWritePrice   *float64
 	CacheReadPrice    *float64
 	MaxOutput         int
-	ManagementStatus  int // requested target status; only ==Enabled triggers the server-side retest (design doc §5)
+	ManagementStatus  int // requested target status; only ==Enabled triggers the server-side retest
 }
 
-// TestCandidateMappingPreview is the stateless, unpersisted preview (design
-// doc §5 POST .../candidates/test-mapping) — never writes to the database,
+// TestCandidateMappingPreview is the stateless, unpersisted preview
+// (POST .../candidates/test-mapping) — never writes to the database,
 // used by the "add candidate" drawer before the candidate is saved.
 // providerModelName is optional — an admin leaving it blank means "use the
 // model's own external name upstream unchanged", so it's resolved against
@@ -372,7 +371,7 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 	}
 
 	// Server-side re-verification, not trusting the client's preview test
-	// result (design doc §5, same principle as M2 §6): only requested when
+	// result: only requested when
 	// the caller asked for the candidate to be enabled; "save as disabled"
 	// never triggers this.
 	if input.ManagementStatus == model.ModelCandidateStatusEnabled {
@@ -387,7 +386,7 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 }
 
 // reverifyAndCommitNewCandidate runs the real basic-text test outside any
-// database transaction (same "先测试、后开事务" ordering as M2's
+// database transaction (same "test first, then open the transaction" ordering as
 // runNewPlaintextTestAndCommit) and commits the result — best-effort: any
 // failure to find a provider/key or run the test just leaves the candidate
 // at its already-committed Disabled/Untested state, it's not surfaced as
@@ -478,9 +477,8 @@ func (s *ModelService) UpdateModelCandidate(id uint, input UpdateCandidateInput,
 	return s.toCandidateView(*reloaded)
 }
 
-// verifyCandidateEnableAllowed mirrors M2's verifyKeyEnableAllowed (design
-// doc §5): enabling a candidate requires it to have passed its basic-text
-// mapping test.
+// verifyCandidateEnableAllowed mirrors verifyKeyEnableAllowed: enabling a
+// candidate requires it to have passed its basic-text mapping test.
 func verifyCandidateEnableAllowed(c *model.ModelCandidate) error {
 	if c.VerificationStatus != model.ModelVerificationStatusPassed {
 		return errcode.ErrModelCandidateNotVerified
@@ -504,8 +502,8 @@ func (s *ModelService) SetCandidateStatus(id uint, enabled bool, now time.Time) 
 	}
 	// CAS-guarded on the same verification_status just checked above — a
 	// max-effort-review-style fix applied from day one instead of needing
-	// its own round to discover (M2 round 4 found the same class of
-	// check-then-act race for provider keys).
+	// its own round to discover (the same class of check-then-act race
+	// exists for provider keys).
 	applied, err := repository.SetModelCandidateManagementStatusIfVerified(s.db, id, model.ModelCandidateStatusEnabled, now)
 	if err != nil {
 		return err

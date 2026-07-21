@@ -1,5 +1,5 @@
-// Package service additions for M6.1: analytics composition per PRD §6.7.
-// Strict 3-layer handler → service → repository, same shape as M1-M4 and the
+// Package service additions: analytics composition.
+// Strict 3-layer handler → service → repository, same shape as the
 // sibling DashboardService / RequestLogService. This service owns:
 //
 //   - the analytics filter shape (AnalyticsFilter) — service-level mirror of
@@ -96,9 +96,9 @@ type ReportResult struct {
 // === Service =============================================================
 
 // AnalyticsService is the stateless composition layer over
-// analytics_repository. M6.1 has no caching, masking, or permission post-
+// analytics_repository. It has no caching, masking, or permission post-
 // processing — those concerns will hang off this struct in later milestones
-// (PRD §6.7.6 cost-masking per admin role is a likely M6.2 add).
+// (cost-masking per admin role is a likely add).
 type AnalyticsService struct {
 	db *gorm.DB
 }
@@ -111,8 +111,8 @@ func NewAnalyticsService(db *gorm.DB) *AnalyticsService {
 	return &AnalyticsService{db: db}
 }
 
-// GetOverview returns the aggregate MetricTotals for the filter (PRD §6.7:
-// overview). Reuses AggregateRequestLogMetrics so the overview's success-rate
+// GetOverview returns the aggregate MetricTotals for the filter.
+// Reuses AggregateRequestLogMetrics so the overview's success-rate
 // definition stays identical to the dashboard's today-card.
 func (s *AnalyticsService) GetOverview(filter AnalyticsFilter, bucket string) (*OverviewRow, error) {
 	// Clamp the window on the same bucket cap the report uses, so the overview

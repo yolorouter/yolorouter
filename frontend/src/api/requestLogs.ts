@@ -1,6 +1,6 @@
 // frontend/src/api/requestLogs.ts
 //
-// API client for M6.1 request-log list + detail + CSV export per PRD §6.8.
+// API client for request-log list + detail + CSV export.
 // Mirrors the backend DTOs defined in
 // internal/service/request_log_service.go (RequestLogListItem /
 // RequestLogDetail) and the AttemptRecord shape in
@@ -69,7 +69,7 @@ export interface AttemptRecord {
   fail_reason: string
 }
 
-// Mirrors service.RequestLogDetail's M6.2 body fields (PRD §6.8.4/§6.8.6).
+// Mirrors service.RequestLogDetail's body fields.
 // The four *_body strings are the redacted, non-stream bodies embedded
 // directly in the detail response; empty string means "not recorded" (early
 // failure before body capture, or a stream request where the response body
@@ -77,7 +77,7 @@ export interface AttemptRecord {
 export interface RequestLogDetail extends RequestLogRow {
   attempts_detail: AttemptRecord[]
   // request_headers is the caller's headers as a JSON object string, with
-  // sensitive headers masked server-side (PRD §6.8.6). Empty = not captured.
+  // sensitive headers masked server-side. Empty = not captured.
   request_headers: string
   request_body: string
   upstream_request_body: string
@@ -140,8 +140,8 @@ export function getRequestLogDetail(requestId: string): Promise<RequestLogDetail
 // page loads into a JS string / the DOM. The backend allows a capture up to
 // 1GiB (gateway/stream.go's maxStreamBodyFileBytes) before it even starts
 // truncating — buffering that much into one JS string and handing it to
-// NCode for syntax highlighting can hang or crash the admin's browser tab
-// (code-review finding). handler.GetRequestLogBodyStream serves the file via
+// NCode for syntax highlighting can hang or crash the admin's browser tab.
+// handler.GetRequestLogBodyStream serves the file via
 // http.ServeContent, which already supports Range requests, so a Range
 // header caps what we actually transfer and hold in memory.
 export const STREAM_BODY_PREVIEW_CAP = 2 * 1024 * 1024 // 2 MiB
@@ -173,7 +173,7 @@ export async function streamRequestLogBody(
   // its own abort timeout — otherwise a stalled on-disk file serve (slow disk,
   // near-1GiB file, wedged connection) leaves `await res.text()` hanging
   // forever, spinning the detail page's "stream chunks" loader with no way to
-  // recover (code-review finding). The signal covers the body read too, not
+  // recover. The signal covers the body read too, not
   // just the initial response.
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)

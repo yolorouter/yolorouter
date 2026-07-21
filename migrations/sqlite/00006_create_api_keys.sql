@@ -1,6 +1,6 @@
 -- migrations/sqlite/00006_create_api_keys.sql
 --
--- API Key management (PRD §6.4 / design doc §3). The plaintext key is shown
+-- API Key management. The plaintext key is shown
 -- only at create time; the row stores just key_hash + key_prefix. Each key's
 -- model allowlist lives in api_key_models. Limit columns are NULL = no cap;
 -- budget is integer micros (major-unit x 1e6, i.e. 6-decimal precision) to

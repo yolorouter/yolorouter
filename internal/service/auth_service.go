@@ -12,18 +12,17 @@ import (
 )
 
 const (
-	// LoginLockThreshold and LoginLockDuration implement PRD AUTH-04's
-	// tentative "lock for 15 minutes after 5 consecutive failures" rule
-	// (design doc §9 / PRD TBD-03).
+	// LoginLockThreshold and LoginLockDuration implement the tentative
+	// "lock for 15 minutes after 5 consecutive failures" rule.
 	LoginLockThreshold = 5
 	LoginLockDuration  = 15 * time.Minute
-	// SessionTTL implements PRD AUTH-08's tentative 24-hour session TTL.
+	// SessionTTL is the tentative 24-hour session TTL.
 	SessionTTL = 24 * time.Hour
 )
 
 // LockedError carries the exact unlock time for an AccountLoginLocked
 // response — a plain sentinel error can't carry this per-call value, and
-// the frontend needs it to render a countdown (design doc §5).
+// the frontend needs it to render a countdown.
 type LockedError struct {
 	LockedUntil time.Time
 }
@@ -40,7 +39,7 @@ func CheckState(db *gorm.DB) (bool, error) {
 }
 
 // Setup creates the first (and, in v0.1, only) admin and immediately signs
-// them in — PRD §5.1 step 4: creation success lands on the empty-state
+// them in — creation success lands on the empty-state
 // overview. Returns the new admin and a freshly issued session id.
 //
 // The CountAdmins check below is only a fast-path optimization (skip
@@ -95,16 +94,16 @@ func Setup(db *gorm.DB, username, password string, now time.Time) (*model.Admin,
 // doesn't exist — bcrypt is deliberately slow, so skipping it entirely for
 // unknown usernames would make "wrong password" and "no such account"
 // distinguishable by response time alone, even though both already return
-// the identical errcode.ErrAccountInvalidCredentials (PRD §6.1.3: never
+// the identical errcode.ErrAccountInvalidCredentials (never
 // reveal whether an account exists). This does not eliminate every timing
 // signal (DB query cost, GC, network jitter still vary), just the
 // dominant one.
 const dummyPasswordHashForTiming = "$2a$10$vpIoHknMZAeHODNlCkCaIOQl4f3oxTgUd1mR3rKuDld2LOwsXakbu"
 
-// Login verifies username+password, applies the lockout state machine
-// (design doc §4), and on success issues a new session. A wrong password
+// Login verifies username+password, applies the lockout state machine,
+// and on success issues a new session. A wrong password
 // and an unknown username return the exact same
-// errcode.ErrAccountInvalidCredentials — PRD §6.1.3: never reveal whether
+// errcode.ErrAccountInvalidCredentials — never reveal whether
 // an account exists.
 func Login(db *gorm.DB, username, password string, now time.Time) (*model.Admin, string, error) {
 	admin, err := repository.FindAdminByUsername(db, username)
@@ -169,14 +168,14 @@ func Me(db *gorm.DB, adminID uint) (*model.Admin, error) {
 
 // ChangePassword verifies the caller's current password, stores the new
 // hash, and deletes every session belonging to this admin — including the
-// caller's own — per PRD AUTH-07: changing the password invalidates the
+// caller's own — changing the password invalidates the
 // current login and returns to the login page.
 //
 // The password update and session deletion run inside one transaction: if
 // the caller ended up "changed but still logged in on the old sessions"
 // because the second write failed after the first committed, that would
-// directly violate AUTH-07 — a partial failure here must undo the password
-// change too, not leave it half-applied.
+// directly violate that invariant — a partial failure here must undo the
+// password change too, not leave it half-applied.
 func ChangePassword(db *gorm.DB, adminID uint, currentPassword, newPassword string, now time.Time) error {
 	admin, err := repository.FindAdminByID(db, adminID)
 	if err != nil {
@@ -200,8 +199,7 @@ func ChangePassword(db *gorm.DB, adminID uint, currentPassword, newPassword stri
 
 // createSession generates a fresh opaque token and persists it with a
 // SessionTTL expiry. The raw token is the exact value stored as both
-// admin_sessions.id (hashed) and the session cookie's value (design doc
-// §4/§6).
+// admin_sessions.id (hashed) and the session cookie's value.
 func createSession(db *gorm.DB, adminID uint, now time.Time) (string, error) {
 	sessionID, err := generateRandomToken(32, "")
 	if err != nil {

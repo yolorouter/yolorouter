@@ -1,7 +1,6 @@
-// Package model additions for M3: Model / ModelCandidate.
+// Package model defines Model / ModelCandidate.
 // Schema lives in migrations/{sqlite,postgres}/00005_create_models.sql —
-// goose owns DDL, GORM here is query-only (no AutoMigrate). See design doc
-// .claude/docs/2026-07-18-m3-model-config-design.md §3.
+// goose owns DDL, GORM here is query-only (no AutoMigrate).
 package model
 
 import "time"
@@ -18,7 +17,7 @@ const (
 
 // ModelVerificationStatus* answers "has this candidate's basic-text mapping
 // ever been confirmed" — streaming/function-calling are separate bool flags
-// on ModelCandidate, not folded into this (design doc §3: a candidate can
+// on ModelCandidate, not folded into this (a candidate can
 // pass basic-text and never have run a streaming test at all, which is not
 // the same thing as having failed one).
 const (
@@ -32,8 +31,8 @@ const (
 // LastTestResult* constants, which already cover this exact value set and
 // are reused here rather than duplicated.
 
-// Model is one externally-exposed model name (PRD §6.3). No delete —
-// only management_status toggles it off (MOD-01).
+// Model is one externally-exposed model name. No delete —
+// only management_status toggles it off.
 type Model struct {
 	ID               uint      `gorm:"column:id;primaryKey" json:"id"`
 	Name             string    `gorm:"column:name" json:"name"`
@@ -45,7 +44,7 @@ type Model struct {
 func (Model) TableName() string { return "models" }
 
 // ModelCandidate is one provider's offering of a Model — the external name
-// resolves to this candidate's ProviderModelName when routed (design doc §3).
+// resolves to this candidate's ProviderModelName when routed.
 type ModelCandidate struct {
 	ID                      uint       `gorm:"column:id;primaryKey" json:"id"`
 	ModelID                 uint       `gorm:"column:model_id" json:"model_id"`
@@ -69,9 +68,9 @@ type ModelCandidate struct {
 
 	// Provider is populated via an explicit preload in repository queries
 	// that need it (e.g. listing candidates with provider name/status) —
-	// never relied upon to be populated by default (same convention as M2's
-	// ProviderKey.Provider, which doesn't exist there because M2 never
-	// needed the reverse direction; this field is new to M3).
+	// never relied upon to be populated by default (same convention as
+	// ProviderKey.Provider, which doesn't exist there because the provider
+	// layer never needed the reverse direction).
 	Provider *Provider `gorm:"foreignKey:ProviderID" json:"provider,omitempty"`
 }
 

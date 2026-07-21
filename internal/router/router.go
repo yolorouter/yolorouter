@@ -143,7 +143,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	}
 	r.GET("/healthz", healthz)
-	r.HEAD("/healthz", healthz) // design doc §10/§14 criterion 7: /healthz accepts GET and HEAD
+	r.HEAD("/healthz", healthz) // /healthz accepts GET and HEAD
 
 	// NoMethod covers a wrong-method request against an already-registered
 	// route (e.g. POST /healthz); without this, Gin's built-in NoMethod
@@ -178,7 +178,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 		}
 
 		// Requests under the hashed static-asset directory (Vite's
-		// build convention, design doc §7) are real asset lookups, not
+		// build convention) are real asset lookups, not
 		// SPA client routes — a miss here must be a genuine 404, or a
 		// stale/incorrect asset reference would silently "succeed" by
 		// serving index.html instead of surfacing as broken.
@@ -206,7 +206,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	}
 
 	admin := r.Group("/api/admin")
-	admin.Use(middleware.BodySizeLimit(1 << 20)) // 1MiB, per design doc §5 / M0 §8 limit
+	admin.Use(middleware.BodySizeLimit(1 << 20)) // 1MiB limit
 
 	// Public auth routes — the only /api/admin endpoints that don't require
 	// a session. Every other route on this group, including every future
@@ -272,9 +272,9 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	protected.PATCH("/api-keys/:id", handler.PatchAPIKey(apiKeySvc))
 	protected.PATCH("/api-keys/:id/revoke", handler.PatchAPIKeyRevoke(apiKeySvc))
 
-	// M6.1: dashboard / analytics / request logs (PRD §6.6 / §6.7 / §6.8).
-	// All three are read-only queries over request_logs (written by the M5
-	// gateway), layered handler → service → repository like M1-M4. The
+	// Dashboard / analytics / request logs.
+	// All three are read-only queries over request_logs (written by the
+	// gateway), layered handler → service → repository. The
 	// /request-logs/export route MUST be registered before /request-logs/:requestId
 	// or gin treats "export" as a requestId.
 	dashboardSvc := service.NewDashboardService(db)
@@ -307,14 +307,14 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 		DBDriver:  db.Dialector.Name(), //nolint:staticcheck // QF1008 false-positive — gorm.DB exposes the driver name only via Dialector.Name(); there is no db.Name()
 	}, versionSvc))
 
-	// Gateway: POST /v1/chat/completions — the second auth path (PRD §6.5).
+	// Gateway: POST /v1/chat/completions — the second auth path.
 	// The caller presents an API key in Authorization: Bearer, not a session
-	// cookie. The 20MiB body cap is M0's gateway limit (design doc §5/§8),
+	// cookie. The 20MiB body cap is the gateway limit,
 	// larger than the admin JSON API's 1MiB to leave room for long histories
 	// and tool definitions.
 	relaySvc := gateway.NewRelayService(db, providerMasterKey, allowPrivateUpstreams)
 	v1 := r.Group("/v1", middleware.BodySizeLimit(20<<20), middleware.APIKeyAuth(db))
-	// M6.2: stash the absolute bodies dir on the request context so the
+	// Stash the absolute bodies dir on the request context so the
 	// gateway package (which cannot import app config without a cycle) can
 	// resolve where to append its stream capture file via
 	// gateway.BodiesDirContextKey — see internal/gateway/stream.go's
@@ -329,8 +329,8 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 }
 
 // isStaticAssetNamespace reports whether path falls under the embedded
-// frontend's hashed static-asset directory (Vite's `assets/` build output,
-// design doc §7). Unlike arbitrary SPA client routes, a miss here is a real
+// frontend's hashed static-asset directory (Vite's `assets/` build output).
+// Unlike arbitrary SPA client routes, a miss here is a real
 // 404, not an index.html fallback.
 func isStaticAssetNamespace(path string) bool {
 	return path == "/assets" || strings.HasPrefix(path, "/assets/")

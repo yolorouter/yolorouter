@@ -1,6 +1,6 @@
 // Package safehttp provides an SSRF-safe outbound HTTP transport shared by
-// M2's provider connection tests and (per design doc §5) intended for
-// future M6 gateway relay calls. Every dial validates the resolved IP
+// provider connection tests and intended for
+// future gateway relay calls. Every dial validates the resolved IP
 // before connecting; proxy environment variables are disabled; redirects
 // are not followed by callers that use http.Client{CheckRedirect} (left to
 // the caller, since this package only controls the Transport).
@@ -68,14 +68,14 @@ func parseCIDRs(ranges []string) []*net.IPNet {
 // always-denied ranges (deniedCIDRs) are rejected unconditionally; the
 // loopback/private/link-local ranges (privateCIDRs) are rejected only when
 // allowPrivate is false. Both lists are a best-effort snapshot, not a
-// guaranteed-exhaustive one — design doc §5 notes they should be cross-checked
+// guaranteed-exhaustive one — they should be cross-checked
 // against the IANA Special-Purpose Address Registry as it evolves.
 func checkIPAllowed(ip net.IP, allowPrivate bool) error {
 	normalized := ip
 	if v4 := ip.To4(); v4 != nil {
 		// Normalize IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) before
 		// checking — otherwise this exact form bypasses a pure IPv4 CIDR
-		// match (design doc §5 item 1).
+		// match.
 		normalized = v4
 	}
 	if err := matchCIDR(normalized, ip, deniedCIDRs); err != nil {
@@ -114,7 +114,7 @@ func matchCIDR(normalized, original net.IP, cidrs []*net.IPNet) error {
 func NewTransport(allowPrivate bool) *http.Transport {
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	return &http.Transport{
-		Proxy: nil, // design doc §5 item 3: never honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY
+		Proxy: nil, // never honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return safeDialContext(ctx, dialer, network, addr, allowPrivate)
 		},
@@ -123,8 +123,8 @@ func NewTransport(allowPrivate bool) *http.Transport {
 
 // safeDialContext resolves addr's host exactly once, validates every
 // returned IP, and connects directly to the first one that passes — the
-// original hostname is never re-resolved for the actual connection (design
-// doc §5 item 2: a second, independent resolution would reopen a
+// original hostname is never re-resolved for the actual connection (a
+// second, independent resolution would reopen a
 // DNS-rebinding window between "checked" and "connected").
 func safeDialContext(ctx context.Context, dialer *net.Dialer, network, addr string, allowPrivate bool) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)

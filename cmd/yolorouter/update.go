@@ -37,7 +37,7 @@ const binaryName = "yolorouter"
 // runUpdate is the `yolorouter update` command: a semi-automatic upgrade
 // that resolves the latest release, verifies its checksum, backs up the
 // running binary, and atomically replaces it — then leaves the actual
-// restart to the operator (see design doc §4.5). It deliberately does NOT
+// restart to the operator. It deliberately does NOT
 // go through bootstrap.Init: an upgrade only needs config.update.*, never a
 // live database connection (same shape as db:backup).
 func runUpdate(ctx context.Context, args []string) error {
@@ -59,7 +59,7 @@ func runUpdate(ctx context.Context, args []string) error {
 	client := &http.Client{Timeout: githubAPITimeout}
 	// Asset downloads (binary archive + checksums.txt) can be tens of MB; the
 	// 30s metadata timeout fails them on slower links. Use a longer timeout
-	// for downloads while keeping the short metadata timeout (Codex review P2).
+	// for downloads while keeping the short metadata timeout.
 	downloadClient := &http.Client{Timeout: 5 * time.Minute}
 
 	// Windows can't atomically replace a running .exe (the file is locked),
@@ -86,7 +86,7 @@ func runUpdate(ctx context.Context, args []string) error {
 	// during the release lookup or asset download would otherwise be missed
 	// by a post-download stat (it'd record the newer binary as the baseline,
 	// the post-prompt re-stat would pass, and our stale downloaded bytes
-	// would overwrite the newer install — Codex review P1).
+	// would overwrite the newer install).
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve current executable: %w", err)
@@ -94,7 +94,7 @@ func runUpdate(ctx context.Context, args []string) error {
 	// os.Executable may return a symlink path on macOS (its contract permits
 	// it); operating on the link would replace the symlink, not the real
 	// target a service invokes, so the service would stay on the old binary
-	// despite reported success. Resolve to the real path (Codex review P2).
+	// despite reported success. Resolve to the real path.
 	if real, evalErr := filepath.EvalSymlinks(exe); evalErr == nil && real != "" {
 		exe = real
 	}
@@ -111,14 +111,14 @@ func runUpdate(ctx context.Context, args []string) error {
 	// A non-semver latest tag (empty tag_name, or a release whose tag isn't
 	// semver) makes Compare treat it as older than current, printing a
 	// misleading "already up to date". Validate the way VersionService does,
-	// surfacing a config/release error instead (Codex review P2).
+	// surfacing a config/release error instead.
 	if !semver.IsValid(rel.TagName) {
 		return fmt.Errorf("latest release tag %q is not a valid semver; check update.github_repo / release source configuration", rel.TagName)
 	}
 	// Reject a prerelease latest (e.g. v1.3.0-rc1 published as
 	// /releases/latest): installing it would make current a prerelease,
 	// which currentUpdatable then refuses to advance from — the user gets
-	// stuck on the RC. CE only updates to exact-tag stable releases (Codex P2).
+	// stuck on the RC. CE only updates to exact-tag stable releases.
 	if semver.Prerelease(rel.TagName) != "" {
 		return fmt.Errorf("latest release %q is a prerelease; the updater only installs stable tags. Pin to a stable release or wait for it", rel.TagName)
 	}
@@ -186,7 +186,7 @@ func runUpdate(ctx context.Context, args []string) error {
 	// original binary, then race to replaceBinary — the loser would rename its
 	// stale downloaded bytes over the newer binary the winner installed,
 	// silently downgrading. The lock serializes revalidation+replace so the
-	// second acquirer aborts (Codex review P1).
+	// second acquirer aborts.
 	lockPath, lock, err := acquireUpdateLock(filepath.Dir(exe))
 	if err != nil {
 		return err
@@ -212,7 +212,7 @@ func runUpdate(ctx context.Context, args []string) error {
 	// Re-validate immediately before the rename: an external package manager
 	// could have replaced the binary during staging/fsync (the update lock
 	// only serializes update-vs-update, not external tools). If it changed,
-	// abort rather than overwrite the newer installation (Codex review P2).
+	// abort rather than overwrite the newer installation.
 	preRename, err := os.Stat(exe)
 	if err != nil {
 		_ = os.Remove(staging)
@@ -224,7 +224,7 @@ func runUpdate(ctx context.Context, args []string) error {
 	// Preserve the original uid/gid (e.g. root:yolorouter) — writeStagedBinary
 	// created the staging as root:root under sudo, and a service account in
 	// the original group couldn't execute the replaced binary. chown clears
-	// setuid/setgid on Unix, so reapply the mode afterward (Codex P1/P2).
+	// setuid/setgid on Unix, so reapply the mode afterward.
 	if uid, gid := ownershipOf(preRename); uid >= 0 || gid >= 0 {
 		if err := os.Chown(staging, uid, gid); err != nil {
 			_ = os.Remove(staging)
@@ -236,7 +236,7 @@ func runUpdate(ctx context.Context, args []string) error {
 		}
 		// chown/chmod dirtied inode metadata AFTER writeStagedBinary's
 		// Sync+Close, so fsync the staging file again — otherwise a crash
-		// before the rename could lose the ownership/mode change (Codex P2).
+		// before the rename could lose the ownership/mode change.
 		if f, syncErr := os.Open(staging); syncErr == nil {
 			_ = f.Sync()
 			_ = f.Close()
@@ -256,7 +256,7 @@ func runUpdate(ctx context.Context, args []string) error {
 		// Atomic rename creates a fresh inode; Linux file capabilities
 		// (security.capability xattr, e.g. cap_net_bind_service via setcap)
 		// do not carry over, so a non-root service binding a privileged port
-		// would fail to restart. Tell the operator to reapply them (Codex P2).
+		// would fail to restart. Tell the operator to reapply them.
 		fmt.Println("note: if this binary uses Linux file capabilities (e.g. cap_net_bind_service),")
 		fmt.Println("      reapply them on the new binary — atomic rename does not preserve xattrs.")
 	}
@@ -342,7 +342,7 @@ func currentUpdatable(current string) error {
 // `update` replace this binary": a rename installs a fresh inode whose mtime
 // differs from the one recorded at release-selection time. It isn't a perfect
 // identity (same-second + same-size collisions), but it's enough to catch the
-// common overlap without a cross-platform file lock (Codex review P1).
+// common overlap without a cross-platform file lock.
 func sameExeIdentity(a, b os.FileInfo) bool {
 	return a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
 }
@@ -351,7 +351,7 @@ func sameExeIdentity(a, b os.FileInfo) bool {
 // (-1, -1) when not available (non-unix, or Sys() doesn't expose them). -1
 // means "don't change" to os.Chown. Reflection avoids a platform-specific
 // syscall.Stat_t type assertion that wouldn't compile on windows (where
-// update is a no-op anyway) (Codex review P1).
+// update is a no-op anyway).
 func ownershipOf(info os.FileInfo) (uid, gid int) {
 	if info == nil {
 		return -1, -1
@@ -401,7 +401,7 @@ func ownershipOf(info os.FileInfo) (uid, gid int) {
 // silently downgrading). The lock is a same-directory file created with
 // O_CREATE|O_EXCL (atomic on POSIX); held through backup+rename, released on
 // return. A crash leaves the lock file behind — the error message tells the
-// operator to remove it (Codex review P1).
+// operator to remove it.
 func acquireUpdateLock(dir string) (string, *os.File, error) {
 	lockPath := filepath.Join(dir, ".yolorouter-update.lock")
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -411,8 +411,7 @@ func acquireUpdateLock(dir string) (string, *os.File, error) {
 		}
 		// EACCES (dir not writable), EROFS (read-only fs), etc. — NOT a lock
 		// collision. Wrap distinctly so the operator fixes the real cause
-		// rather than being told to remove a lock that was never created
-		// (Codex review P2).
+		// rather than being told to remove a lock that was never created.
 		return lockPath, nil, fmt.Errorf("create update lock %s: %w (check directory write permissions / filesystem)", lockPath, err)
 	}
 	_, _ = fmt.Fprintf(f, "pid=%d\n", os.Getpid())
@@ -426,7 +425,7 @@ func acquireUpdateLock(dir string) (string, *os.File, error) {
 // the literal escape sequence inside a comment). Go's %q produces a
 // double-quoted string where $, backticks, and dollar-parens still expand or
 // execute when an operator pastes a printed command — unsafe for paths the
-// user will paste (config path, rollback mv operands) (Codex review P2).
+// user will paste (config path, rollback mv operands).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -564,7 +563,7 @@ func isExecutable(data []byte) bool {
 // chmod'd to mode AFTER creation — CreateTemp creates with 0600 and a
 // restrictive umask (e.g. 077) would otherwise strip the executable bit from
 // an os.OpenFile mode arg, leaving the replaced binary unrunnable under a
-// service account (Codex review P1/P2). On any error the file is removed so a
+// service account. On any error the file is removed so a
 // half-written staging file can never be mistaken for a valid upgrade.
 func writeStagedBinary(dir string, data []byte, mode os.FileMode) (string, error) {
 	f, err := os.CreateTemp(dir, "yolorouter.new.*")
@@ -581,7 +580,7 @@ func writeStagedBinary(dir string, data []byte, mode os.FileMode) (string, error
 	// already carries it — CreateTemp creates with 0600, and a chmod after
 	// Sync dirties inode metadata without a follow-up fsync, so a crash could
 	// leave the installed binary non-executable. f.Chmod on the open handle
-	// also avoids umask masking an os.OpenFile mode arg (Codex review P2).
+	// also avoids umask masking an os.OpenFile mode arg.
 	if err := f.Chmod(mode); err != nil {
 		cleanup()
 		return "", err
@@ -600,7 +599,7 @@ func writeStagedBinary(dir string, data []byte, mode os.FileMode) (string, error
 // replaceBinary backs up the current binary to currentPath+".bak" and then
 // atomically renames the staging path over it. On linux/mac the rename
 // overwrites the running binary's path while the running process keeps the
-// old inode until restart (design doc §4.5). The parent directory is fsync'd
+// old inode until restart. The parent directory is fsync'd
 // so the rename itself survives a crash.
 func replaceBinary(currentPath, stagingPath string, initialInfo os.FileInfo) (string, error) {
 	backupPath := currentPath + ".bak"
@@ -610,7 +609,7 @@ func replaceBinary(currentPath, stagingPath string, initialInfo os.FileInfo) (st
 	// Re-validate immediately before the rename: an external installer could
 	// have replaced the binary during the backup copy (the update lock only
 	// serializes update-vs-update). If it changed since initialInfo, abort
-	// rather than overwrite the newer installation (Codex review P2).
+	// rather than overwrite the newer installation.
 	preRename, err := os.Stat(currentPath)
 	if err != nil {
 		return "", fmt.Errorf("re-stat current executable before rename: %w", err)
@@ -625,7 +624,7 @@ func replaceBinary(currentPath, stagingPath string, initialInfo os.FileInfo) (st
 	// failure only weakens crash-durability, not the upgrade itself. Don't
 	// return an error — that would make runUpdate exit non-zero after an
 	// irreversible mutation, leaving the operator with neither success nor
-	// rollback guidance (Codex review P2).
+	// rollback guidance.
 	_ = fsyncDir(filepath.Dir(currentPath))
 	return backupPath, nil
 }
@@ -636,7 +635,7 @@ func replaceBinary(currentPath, stagingPath string, initialInfo os.FileInfo) (st
 // writeStagedBinary's hardening: an interrupted copy can't leave a truncated
 // .bak a user might mistake for a rollback, two overlapping copies can't
 // truncate each other, and a predictable .bak.tmp can't be symlink-clobbered
-// in a sticky dir (Codex review P1/P2).
+// in a sticky dir.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -663,7 +662,7 @@ func copyFile(src, dst string) error {
 	// .bak as root:root under sudo, and an advertised rollback would be
 	// unrunnable under the original service account. chown BEFORE chmod:
 	// chown clears setuid/setgid on Unix, so apply ownership first then let
-	// the chmod re-establish any special bits (Codex review P1/P2).
+	// the chmod re-establish any special bits.
 	if uid, gid := ownershipOf(info); uid >= 0 || gid >= 0 {
 		if err := os.Chown(tmp, uid, gid); err != nil {
 			cleanup()
@@ -671,7 +670,7 @@ func copyFile(src, dst string) error {
 		}
 	}
 	// chmod BEFORE Sync so the persisted temp already carries src's mode — a
-	// chmod after Sync dirties metadata without a follow-up fsync (Codex P2).
+	// chmod after Sync dirties metadata without a follow-up fsync.
 	if err := out.Chmod(info.Mode()); err != nil {
 		cleanup()
 		return err
@@ -686,7 +685,7 @@ func copyFile(src, dst string) error {
 	}
 	if err := os.Rename(tmp, dst); err != nil {
 		// Remove the fully-written temp so repeated update attempts don't
-		// leak another binary-sized file beside the executable (Codex P3).
+		// leak another binary-sized file beside the executable.
 		_ = os.Remove(tmp)
 		return err
 	}

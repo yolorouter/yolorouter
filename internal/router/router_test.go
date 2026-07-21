@@ -55,8 +55,8 @@ func TestProviderRoutesAreRegisteredUnderProtectedGroup(t *testing.T) {
 	}
 }
 
-// TestNewFailsFastWhenEmbeddedFrontendIsBroken is the integration test the
-// -tags embed adversarial-review round asked for: a distFS with real files
+// TestNewFailsFastWhenEmbeddedFrontendIsBroken is the integration test for
+// -tags embed builds: a distFS with real files
 // but no index.html (a broken frontend build — e.g. a Vite output-path
 // misconfiguration — that still exited 0) must make New() itself fail,
 // not just degrade a specific route at request time. This is the whole
@@ -171,7 +171,7 @@ func TestHealthzRejectsPost(t *testing.T) {
 		t.Fatalf("expected 405, got %d", w.Code)
 	}
 	// NoMethod must route through the same unified envelope as NoRoute,
-	// not Gin's default plain-text 405 (design doc §8).
+	// not Gin's default plain-text 405.
 	if ct := w.Header().Get("Content-Type"); ct != "application/json; charset=utf-8" {
 		t.Fatalf("expected JSON envelope content-type, got %q, body: %s", ct, w.Body.String())
 	}
@@ -280,7 +280,7 @@ func TestAssetsDirectoryReturns404(t *testing.T) {
 // TestUnknownV1PathReturnsOpenAICompatibleEnvelope guards the /api vs /v1
 // namespace split: /v1/* must never leak the admin pkg/response envelope
 // (code/message/data/timestamp) — gateway clients expect the OpenAI-style
-// {"error": {message, type, code}} shape instead (design doc §7/§9).
+// {"error": {message, type, code}} shape instead.
 func TestUnknownV1PathReturnsOpenAICompatibleEnvelope(t *testing.T) {
 	r := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/does-not-exist", nil)
@@ -295,7 +295,7 @@ func TestUnknownV1PathReturnsOpenAICompatibleEnvelope(t *testing.T) {
 
 // TestV1WrongMethodReturnsOpenAICompatibleEnvelope drives the NoMethod path
 // specifically (not NoRoute) by registering a real GET route under /v1 and
-// hitting it with POST — M0 has no real /v1 routes yet, but the dispatcher
+// hitting it with POST — there are no real /v1 routes yet, but the dispatcher
 // itself (shared with NoRoute and Recovery via middleware.WriteNamespacedError)
 // is already exercisable this way.
 func TestV1WrongMethodReturnsOpenAICompatibleEnvelope(t *testing.T) {

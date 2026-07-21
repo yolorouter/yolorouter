@@ -29,7 +29,7 @@ func runServe(ctx context.Context, args []string) error {
 
 	// serve holds the exclusive instance lock for its entire lifetime so that
 	// db:reset (which must acquire the same lock) fails fast instead of racing
-	// a live server for the database file (design doc §2.2 / §14 criterion 10).
+	// a live server for the database file.
 	lockPath := instanceLockPath(app.Config.Database.SQLitePath)
 	unlockInstance, err := database.AcquireInstanceLock(lockPath)
 	if err != nil {
@@ -57,7 +57,7 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("decode provider master key: %w", err)
 	}
 
-	// M6.2: stream sent-SSE bodies live under data/bodies/, next to the
+	// Stream sent-SSE bodies live under data/bodies/, next to the
 	// per-deployment data directory. Config always resolves SQLitePath to an
 	// absolute path alongside the config file (and defaults it) regardless of
 	// driver, so its parent doubles as the stable data dir even on Postgres —
@@ -122,7 +122,7 @@ func runServe(ctx context.Context, args []string) error {
 		WriteTimeout:   0,
 	}
 
-	// M0: empty task supervisor. No real periodic task exists yet, so there is
+	// Empty task supervisor. No real periodic task exists yet, so there is
 	// nothing for taskWG to Add/Done against. When a later module (e.g. log
 	// retention) introduces a real background goroutine, it should create its
 	// own cancellable context at that point and register with taskWG here.
@@ -213,7 +213,7 @@ func gracefulShutdown(srv *http.Server, taskWG *sync.WaitGroup, sigCh <-chan os.
 
 	// Phase 3: wait for background goroutines to finish. taskWG.Wait()
 	// returns immediately when no goroutine has ever called Add (the case for
-	// all of M0, which has no real background tasks) — no need for a
+	// all current builds, which have no real background tasks) — no need for a
 	// separate fixed-duration "drain" phase on top of this.
 	//
 	// Known limitation: if taskWG.Wait() itself never returns (a future
@@ -223,7 +223,7 @@ func gracefulShutdown(srv *http.Server, taskWG *sync.WaitGroup, sigCh <-chan os.
 	// function returns), but whichever module first registers a real
 	// long-lived task against taskWG should give that task its own
 	// cancellable context so this can be select'd on a done signal instead —
-	// there's nothing to cancel yet in M0, so that plumbing doesn't exist here.
+	// there's nothing to cancel yet, so that plumbing doesn't exist here.
 	waitCh := make(chan struct{})
 	go func() {
 		taskWG.Wait()
@@ -235,8 +235,8 @@ func gracefulShutdown(srv *http.Server, taskWG *sync.WaitGroup, sigCh <-chan os.
 		logger.Error("background goroutines did not exit within budget, continuing shutdown")
 	}
 
-	// Every phase above already logs its own errors as they happen (design
-	// doc §9: each phase's timeout/failure is "记录警告，继续往下走", not a
+	// Every phase above already logs its own errors as they happen (each
+	// phase's timeout/failure is "log a warning and keep going", not a
 	// fatal top-level failure) — the process still shut down, just not
 	// entirely gracefully, so this returns nil rather than surfacing
 	// shutdownErr as the CLI command's overall result.

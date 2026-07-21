@@ -33,7 +33,7 @@ type changePasswordRequest struct {
 	NewPassword     string `json:"new_password" binding:"required,min=10,alnum_mixed,bcrypt_len"`
 }
 
-// writeSessionCookie centralizes every cookie attribute (design doc §6) —
+// writeSessionCookie centralizes every cookie attribute —
 // Setup/Login/Logout/ChangePassword must never diverge on
 // Path/HttpOnly/SameSite by accident. Pass a positive maxAge to set the
 // cookie, or -1 to clear it (the standard net/http convention for cookie
@@ -164,7 +164,7 @@ func PostLogin(db *gorm.DB, limiter *middleware.Semaphore) gin.HandlerFunc {
 		switch {
 		case errors.As(err, &lockedErr):
 			// AccountLoginLocked is the one error response that carries an
-			// extra "locked_until" field (design doc §5).
+			// extra "locked_until" field.
 			middleware.WriteAdminErrorWithData(c, http.StatusForbidden, errcode.AccountLoginLocked,
 				gin.H{"locked_until": lockedErr.LockedUntil.Unix()})
 			return
@@ -200,7 +200,7 @@ func PostLogout(db *gorm.DB) gin.HandlerFunc {
 // current timezone offset (minutes east of UTC). The offset lets the browser
 // resolve "Today"/"Yesterday" preset windows in the SERVER's natural day
 // rather than the browser's, so dashboard/analytics ranges line up with the
-// backend's time.Local-based aggregation (PRD §6.6.3).
+// backend's time.Local-based aggregation.
 func GetMe(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		adminID := c.MustGet(middleware.AdminIDKey).(uint)

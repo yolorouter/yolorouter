@@ -424,8 +424,8 @@ export default {
     stream_true: 'Stream',
     stream_false: 'Non-stream',
 
-    // List columns (§6.8.3). The "Attempts" column carries the total count
-    // of every candidate try — the M6.1 wire schema collapses key rotation
+    // List columns. The "Attempts" column carries the total count
+    // of every candidate try — the wire schema collapses key rotation
     // and candidate failover into one number; the detail page shows the
     // full attempts array so the breakdown is recoverable per-request.
     col_created: 'Time',
@@ -473,7 +473,7 @@ export default {
     fieldCacheReadTokens: 'Cache Read Tokens',
     fieldCost: 'Final Cost',
 
-    // Attempts table columns (§6.8.4). Each row is one candidate try, in
+    // Attempts table columns. Each row is one candidate try, in
     // the order the gateway relay loop actually executed.
     attempt_index: '#',
     attempt_index_tip: 'Sequence number of this attempt; 1 means the first try',
@@ -503,7 +503,7 @@ export default {
 
     attemptsEmpty: 'No upstream attempts recorded for this request (it may have been rejected before routing).',
 
-    // M6.2 body sections (§6.8.4/§6.8.6): the four non-stream bodies
+    // Body sections: the four non-stream bodies
     // (stored verbatim, capped inline) embedded in the detail response, plus
     // the lazily-loaded stream body served from disk via body/stream.
     requestHeaders: 'Request headers',

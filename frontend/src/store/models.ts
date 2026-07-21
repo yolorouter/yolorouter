@@ -13,8 +13,8 @@ interface ModelsState {
   // leaves the Models list while a request is in flight, then
   // ProviderDetailPage's onMounted calls fetchList() again on the same
   // store; if the newer request resolves before the older one rejects,
-  // the stale rejection overwrites valid rows with a network error
-  // (codex review finding).
+  // the stale rejection overwrites valid rows with a network
+  // error.
   lastFetchId: number
 }
 

@@ -19,7 +19,7 @@ import (
 )
 
 // errClientDisconnected is returned by the stream pump when the caller's
-// request context is cancelled (GATE-20). It is not a real upstream failure
+// request context is cancelled. It is not a real upstream failure
 // — the relay loop records it as a distinct outcome so the request log shows
 // "caller cancelled", not "upstream failed".
 var errClientDisconnected = errors.New("client disconnected")
@@ -35,7 +35,7 @@ var errClientDisconnected = errors.New("client disconnected")
 // reaches the trailing blank line, so the very next ctx check fires — reporting
 // 499 there would mislabel a fully-delivered stream as client_disconnected (the
 // common case: most streams end this way). Only a disconnect BEFORE [DONE] is a
-// genuine caller cancel (GATE-20 -> 499).
+// genuine caller cancel (-> 499).
 func clientDisconnectOutcome(usage *Usage, doneSeen bool) (*Usage, error) {
 	if doneSeen {
 		return usage, nil
@@ -63,7 +63,7 @@ const maxPreambleBytes = 64 * 1024
 const maxStreamLineBytes = 1 * 1024 * 1024 // 1 MiB
 
 // maxStreamBodyFileBytes is a HARD anti-OOM disk backstop, NOT a content
-// truncation (PRD §6.8.6/LOG-08: the stream capture must record every SENT
+// truncation (the stream capture must record every SENT
 // SSE fragment, never cut short for length). A normal chat stream never
 // approaches this; only a hostile/buggy upstream maxing bandwidth within the
 // 120s upstream timeout could. Hitting it sets stream_body_truncated=true
@@ -74,15 +74,15 @@ var maxStreamBodyFileBytes int64 = 1 << 30 // 1 GiB
 
 // StreamUpstreamToClient pipes an SSE stream from upstream to the client,
 // rewriting the model field in every `data: {json}` chunk back to the
-// external name (PRD §6.5.5). Returns the usage from the final usage chunk
+// external name. Returns the usage from the final usage chunk
 // if the upstream sent one, and an error only for transport-level failures.
 //
 // Header is deferred until the first data frame: if the upstream returns 2xx
 // but EOFs (or errors) before emitting any data, nothing has been written to
 // the client yet and the relay loop can still failover to the next candidate
-// (PRD §6.5.5 lifecycle table — "received upstream response, first chunk not
+// (lifecycle table — "received upstream response, first chunk not
 // yet sent to caller → failover allowed"). Once a data frame is forwarded,
-// rc.FirstByteSent flips true and no more switching is allowed (GATE-19).
+// rc.FirstByteSent flips true and no more switching is allowed.
 //
 // Leading non-data lines before the first data frame (commentary / SSE
 // preamble) are skipped — OpenAI chat streams open with `data:` directly, so
@@ -96,20 +96,20 @@ var maxStreamBodyFileBytes int64 = 1 << 30 // 1 GiB
 //
 // When the caller did NOT request stream_options.include_usage but the
 // gateway injected it upstream (EnsureStreamUsageInjection), the usage field
-// is stripped from forwarded frames (PRD §1114: injected usage is for the
+// is stripped from forwarded frames (injected usage is for the
 // gateway's internal cost accounting only).
 func StreamUpstreamToClient(c *gin.Context, resp *http.Response, rc *RelayContext) (*Usage, error) {
 	defer func() { _ = resp.Body.Close() }()
 
-	// M6.2 (Codex #4): append every SENT SSE line (post-rewrite, post-usage-
-	// strip = caller-facing, satisfying PRD §6.8.4 "sent fragments") to a
+	// Append every SENT SSE line (post-rewrite, post-usage-
+	// strip = caller-facing) to a
 	// per-request file under data/bodies/. Memory stays bounded (one line at
 	// a time); the full stream is persisted without truncation. The 1GiB
 	// backstop only sets a truncation flag (never silent) for a hostile
 	// upstream.
 	//
 	// The file is opened here but deliberately NOT closed before this
-	// function returns (code-review finding): a mid-stream failure after the
+	// function returns: a mid-stream failure after the
 	// first byte causes handleStream to call writeStreamErrorEvent, which
 	// writes one more inline SSE error frame + a synthetic [DONE] straight to
 	// the client — those bytes must also land in the capture file, so the
@@ -137,7 +137,7 @@ func StreamUpstreamToClient(c *gin.Context, resp *http.Response, rc *RelayContex
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamLineBytes)
 	for scanner.Scan() {
-		// GATE-20: caller disconnect -> stop reading upstream and release
+		// Caller disconnect -> stop reading upstream and release
 		// the concurrency slot. Checked before each forwarded line so a
 		// disconnect between chunks is caught promptly.
 		select {
@@ -152,8 +152,8 @@ func StreamUpstreamToClient(c *gin.Context, resp *http.Response, rc *RelayContex
 		line := append(scanner.Bytes(), '\n')
 		switch {
 		case headerWritten:
-			// Flush to the client BEFORE the capture-file append (code-review
-			// efficiency finding): the append does a redact pass (regexes +
+			// Flush to the client BEFORE the capture-file append for
+			// efficiency: the append does a redact pass (regexes +
 			// a conditional JSON decode/marshal) plus a disk write, neither
 			// of which the caller should wait on before seeing bytes it
 			// already received — capture is best-effort persistence, not
@@ -180,7 +180,7 @@ func StreamUpstreamToClient(c *gin.Context, resp *http.Response, rc *RelayContex
 				// The preamble bytes were just sent to the caller — capture
 				// them too, or the persisted stream body silently starts
 				// after whatever heartbeat/event:/id:/retry: lines the
-				// upstream opened with (code-review finding).
+				// upstream opened with.
 				appendStreamBodyLine(rc, preamble)
 				preamble = nil
 			}
@@ -227,8 +227,8 @@ func StreamUpstreamToClient(c *gin.Context, resp *http.Response, rc *RelayContex
 // (first-byte marker), the running usage pointer (final-frame tokens), and
 // the [DONE] terminator flag. It returns the exact bytes written to the
 // client (post model-rewrite, post usage-strip) so the caller can append
-// the same caller-facing bytes to the stream capture file (Task 5,
-// PRD §6.8.4 "sent fragments") — never the raw pre-rewrite upstream line.
+// the same caller-facing bytes to the stream capture file — never the raw
+// pre-rewrite upstream line.
 func forwardStreamLine(c *gin.Context, rc *RelayContext, line []byte, usage **Usage, doneSeen *bool) []byte {
 	wroteData, u, done, sent := writeStreamLine(c.Writer, line, rc.OriginalModel, rc.WantsStreamUsage)
 	if wroteData {
@@ -267,7 +267,7 @@ func isDataLine(line []byte) bool {
 // usage extracted from this chunk (the final usage chunk carries
 // prompt/completion tokens), done=true if the line was the [DONE]
 // terminator, and sent = the exact bytes written to w (caller-facing,
-// post-rewrite/post-usage-strip) — the stream body capture (Task 5) appends
+// post-rewrite/post-usage-strip) — the stream body capture appends
 // this, never the raw pre-rewrite input line.
 func writeStreamLine(w io.Writer, line []byte, externalModel string, keepUsage bool) (wroteData bool, usage *Usage, done bool, sent []byte) {
 	trimmed := bytes.TrimRight(line, "\r\n")
@@ -308,7 +308,7 @@ func writeStreamLine(w io.Writer, line []byte, externalModel string, keepUsage b
 // When keepUsage is false (caller did not request stream_options.include_usage
 // but the gateway injected it upstream), the usage field is stripped from the
 // forwarded payload — the gateway still returns the extracted usage for its
-// own cost accounting, but does not forward it to the caller (PRD §1114).
+// own cost accounting, but does not forward it to the caller.
 func rewriteStreamChunk(payload []byte, externalModel string, keepUsage bool) ([]byte, *Usage) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &m); err != nil {
@@ -329,7 +329,7 @@ func rewriteStreamChunk(payload []byte, externalModel string, keepUsage bool) ([
 	}
 	usage := usageFromRawMap(m)
 	// Strip the usage field from forwarded frames unless the caller asked
-	// for it (PRD §1114: usage the gateway injected for its own cost
+	// for it (usage the gateway injected for its own cost
 	// accounting is internal-only and must not be forwarded to a caller
 	// that did not request stream_options.include_usage). The extracted
 	// usage above is still returned for internal cost/budget accounting.
@@ -345,7 +345,7 @@ func rewriteStreamChunk(payload []byte, externalModel string, keepUsage bool) ([
 
 // usageFromRawMap decodes just the "usage" sub-value out of an already-parsed
 // SSE/JSON object map. Returns nil when there's no usage field — the relay
-// loop treats nil as "unknown", never zero (GATE-21).
+// loop treats nil as "unknown", never zero.
 func usageFromRawMap(m map[string]json.RawMessage) *Usage {
 	raw, ok := m["usage"]
 	if !ok || len(raw) == 0 || string(raw) == "null" {
@@ -356,13 +356,13 @@ func usageFromRawMap(m map[string]json.RawMessage) *Usage {
 		return nil
 	}
 	// toUsage returns nil when prompt/completion counts are missing — a
-	// partial usage frame must NOT be treated as known-zero (GATE-21).
+	// partial usage frame must NOT be treated as known-zero.
 	return w.toUsage()
 }
 
 // writeStreamErrorEvent writes one SSE data frame carrying an error, used
 // when the upstream stream breaks AFTER the first byte has already gone to
-// the client (GATE-19: can't switch, can't change status — only emit an
+// the client (can't switch, can't change status — only emit an
 // inline error event and close). The caller has already verified the
 // response is mid-stream.
 //
@@ -370,13 +370,13 @@ func usageFromRawMap(m map[string]json.RawMessage) *Usage {
 // deliberately leaves it open past its own return, see openStreamBodyFile's
 // call site) — both frames written here are also appended to it, or the
 // persisted "sent stream chunks" capture would end one frame short of what
-// the real client actually received (code-review finding). The caller
+// the real client actually received. The caller
 // (handleStream) closes the file once this function returns.
 func writeStreamErrorEvent(c *gin.Context, rc *RelayContext) {
 	requestID := rc.RequestID
 	msg := "upstream stream interrupted"
 	if requestID != "" {
-		msg = msg + " (request: " + requestID + ")" // GATE-08: caller can quote the id
+		msg = msg + " (request: " + requestID + ")" // caller can quote the id
 	}
 	evt := fmt.Sprintf(`data: {"error":{"message":%q,"type":"upstream_error"}}`+"\n\n", msg)
 	evtBytes := []byte(evt)
@@ -394,8 +394,8 @@ func writeStreamErrorEvent(c *gin.Context, rc *RelayContext) {
 }
 
 // openStreamBodyFile opens (create+append) the per-request stream capture
-// file under the configured bodies directory (data/bodies/<request_id>.stream,
-// PRD §6.8.4/§6.8.6). Failure to resolve the directory or open the file is
+// file under the configured bodies directory (data/bodies/<request_id>.stream).
+// Failure to resolve the directory or open the file is
 // NOT fatal to the request — the caller's own SSE stream is completely
 // unaffected either way; only the audit capture is skipped (and, for a real
 // OS-level open error, logged so an unwritable data/bodies dir is visible
@@ -442,7 +442,7 @@ func closeStreamBodyFile(rc *RelayContext) {
 // or the 1GiB backstop already fired for this request.
 //
 // maxStreamBodyFileBytes is a HARD anti-OOM disk backstop, NOT a content
-// truncation (PRD §6.8.6/LOG-08: the capture must record every sent SSE
+// truncation (the capture must record every sent SSE
 // fragment, never cut short for length) — a normal chat stream never comes
 // close to it; only a hostile/buggy upstream maxing bandwidth within the
 // 120s upstream timeout could. Hitting it sets rc.streamBodyTruncated=true
@@ -456,7 +456,7 @@ func appendStreamBodyLine(rc *RelayContext, line []byte) {
 	// (initialized once from a real Stat() in openStreamBodyFile) — checking
 	// the backstop this way, instead of Stat()-ing the file on every single
 	// appended line, turns what could be hundreds of syscalls per stream
-	// into zero (code-review efficiency finding).
+	// into zero.
 	if rc.streamBodyBytesWritten+int64(len(line)) > maxStreamBodyFileBytes {
 		rc.streamBodyTruncated = true
 		return
@@ -492,7 +492,7 @@ func removeEmptyStreamBodyFile(c *gin.Context, rc *RelayContext) {
 	if err != nil || info.Size() != 0 {
 		return
 	}
-	// Close the fd BEFORE unlinking (code-review finding): leaving it open
+	// Close the fd BEFORE unlinking: leaving it open
 	// past os.Remove would let any later appendStreamBodyLine write to an
 	// unlinked inode (bytes silently lost), and on Windows os.Remove of an
 	// open file fails outright, leaving a stale empty stream_body_path. This
@@ -507,7 +507,7 @@ func removeEmptyStreamBodyFile(c *gin.Context, rc *RelayContext) {
 // middleware stashes the absolute data/bodies/ directory for every gateway
 // request. Exported and shared so the setter (internal/router/router.go) and
 // this reader can't silently drift apart into two mismatched string literals
-// that would disable stream capture with no error (code-review finding).
+// that would disable stream capture with no error.
 const BodiesDirContextKey = "bodies_dir"
 
 // streamBodiesDir resolves the absolute data/bodies/ directory for this

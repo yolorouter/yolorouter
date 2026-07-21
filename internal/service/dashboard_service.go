@@ -1,10 +1,9 @@
-// Package service additions for M6.1: dashboard composition per PRD §6.6.
+// Package service additions: dashboard composition.
 // Composes the dashboard envelope from the dashboard_repository aggregation
-// queries — strict 3-layer handler → service → repository, same as M1-M4.
+// queries — strict 3-layer handler → service → repository.
 // The service owns the business-DTO shape (DashboardData / RecentFailureView);
 // the repository owns the SQL aggregation row types (TodayMetricsDTO /
-// TrendPoint / TopCaller / UpstreamStatusDTO). See design doc
-// .claude/docs/2026-07-20-m6-analytics-design.md §4.2/§4.5.
+// TrendPoint / TopCaller / UpstreamStatusDTO).
 package service
 
 import (
@@ -16,7 +15,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/repository"
 )
 
-// Dashboard card / list sizes — PRD §6.6. PRD doesn't pin a trend window;
+// Dashboard card / list sizes. There's no pinned trend window;
 // seven days is the smallest window that still shows a week-over-week
 // pattern, and is what every reference dashboard (Vercel, Stripe, etc.)
 // defaults to.
@@ -27,9 +26,9 @@ const (
 )
 
 // DashboardService is the stateless composition layer over
-// dashboard_repository. M6.1 has no caching, masking, or permission post-
+// dashboard_repository. It has no caching, masking, or permission post-
 // processing — those concerns will hang off this struct in later milestones
-// (e.g. M6.2 may redact owner_label per admin role).
+// (e.g. it may redact owner_label per admin role).
 type DashboardService struct {
 	db *gorm.DB
 }
@@ -41,7 +40,7 @@ func NewDashboardService(db *gorm.DB) *DashboardService {
 	return &DashboardService{db: db}
 }
 
-// DashboardData is the GET /api/admin/dashboard response body (PRD §6.6).
+// DashboardData is the GET /api/admin/dashboard response body.
 // Each section maps 1:1 to a card on the dashboard page.
 type DashboardData struct {
 	Today          repository.TodayMetricsDTO   `json:"today"`
@@ -52,8 +51,8 @@ type DashboardData struct {
 }
 
 // RecentFailureView is the display-safe projection of a RequestLog row in
-// the recent-failures list — no plaintext key material (M5 only stores ids
-// and prefixes anyway), no attempts_detail JSON blob, no internal id.
+// the recent-failures list — no plaintext key material (only ids
+// and prefixes are stored anyway), no attempts_detail JSON blob, no internal id.
 // CreatedAt is RFC3339 so the frontend can parse it with native Date without
 // guessing the format.
 type RecentFailureView struct {
@@ -73,7 +72,7 @@ type RecentFailureView struct {
 // dashboard can't meaningfully render with a missing section, and returning
 // a half-populated envelope would just hide the real error behind zeroes.
 //
-// All time windowing uses time.Local per PRD §6.6.3 / design doc D4 — the
+// All time windowing uses time.Local — the
 // dashboard's "today" follows the server's configured timezone.
 func (s *DashboardService) GetDashboard() (*DashboardData, error) {
 	loc := time.Local

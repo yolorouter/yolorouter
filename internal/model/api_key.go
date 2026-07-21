@@ -1,7 +1,6 @@
-// Package model additions for M4: APIKey / APIKeyModel.
+// Package model defines APIKey / APIKeyModel.
 // Schema lives in migrations/{sqlite,postgres}/00006_create_api_keys.sql —
-// goose owns DDL, GORM here is query-only (no AutoMigrate). See design doc
-// .claude/docs/2026-07-19-m4-apikey-design.md §3.
+// goose owns DDL, GORM here is query-only (no AutoMigrate).
 package model
 
 import "time"
@@ -11,7 +10,7 @@ const (
 	APIKeyStatusRevoked = 2
 )
 
-// APIKey is one Yolorouter calling credential (PRD §6.4). The plaintext key
+// APIKey is one Yolorouter calling credential. The plaintext key
 // is shown only at create time and never persisted; the row stores just
 // KeyHash (SHA-256) + KeyPrefix (first chars, list-distinguishing only — not
 // enough to reconstruct the full key). Limits are pointer-typed so NULL means
@@ -40,10 +39,10 @@ type APIKey struct {
 
 func (APIKey) TableName() string { return "api_keys" }
 
-// APIKeyModel is one row of a key's model allowlist (PRD §6.4.7). Stored by
+// APIKeyModel is one row of a key's model allowlist. Stored by
 // model_id rather than model name, so renaming a model doesn't break the
 // whitelists of keys that reference it; a stopped model stays in the list and
-// is rejected at route time (handled by the gateway module, not M4).
+// is rejected at route time (handled by the gateway module).
 type APIKeyModel struct {
 	ID        uint      `gorm:"column:id;primaryKey" json:"id"`
 	APIKeyID  uint      `gorm:"column:api_key_id" json:"api_key_id"`

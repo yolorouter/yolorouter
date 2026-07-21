@@ -1,6 +1,6 @@
 // frontend/src/api/analytics.ts
 //
-// API client for the M6.1 dashboard (PRD §6.6) and analytics (PRD §6.7)
+// API client for the dashboard and analytics
 // endpoints. All endpoints live under /api/admin/* and return the unified
 // `{code,message,data}` envelope — `apiFetch` unwraps `data` already, so the
 // return types below describe the `data` payload shape only.
@@ -11,7 +11,7 @@
 
 import { apiFetch } from './client'
 
-// === Dashboard (§6.6) =====================================================
+// === Dashboard =====================================================
 
 export interface TodayMetrics {
   calls: number
@@ -63,7 +63,7 @@ export function getDashboard(): Promise<DashboardData> {
   return apiFetch('/api/admin/dashboard')
 }
 
-// === Analytics (§6.7) =====================================================
+// === Analytics =====================================================
 
 // Dimension vocabulary — mirrors internal/service/analytics_service.go's
 // constants. Keep as a string union so a typo at a call site fails typecheck
@@ -84,9 +84,9 @@ export interface AnalyticsFilter {
   status?: string | null
 }
 
-// Overview cards (§6.7 overview row). Mirrors OverviewRow in the Go service
+// Overview cards. Mirrors OverviewRow in the Go service
 // layer; success_rate is precomputed by the backend (success/ended, where
-// "ended" excludes 499 caller-cancels per PRD §6.6.3).
+// "ended" excludes 499 caller-cancels).
 export interface OverviewRow {
   total_calls: number
   success_calls: number
