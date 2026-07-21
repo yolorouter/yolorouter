@@ -138,7 +138,7 @@ export default {
     managementStatusColumn: '管理状态',
     managementStatusColumn_tip: '管理员手动设置的启用/停用状态，停用后该模型拒绝全部新请求',
     runningStatusColumn: '运行状态',
-    runningStatusColumn_tip: '该模型的实际可路由状态，由其所有候选供应商的连通情况汇总得出',
+    runningStatusColumn_tip: '该模型的实际可路由状态，由其所有候选供应商的连通情况汇总得出。可用=首选候选正常；降级=首选候选不可用，已 failover 到靠后的备用候选；不可用=所有候选均无法路由',
     candidateCountColumn: '供应商候选数',
     candidateCountColumn_tip: '该模型配置的供应商候选数量，按顺序 failover',
     firstRouteColumn: '首选路由',

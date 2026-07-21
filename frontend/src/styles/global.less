@@ -123,6 +123,15 @@ a {
   overflow: hidden;
 }
 
+// naive-ui renders the table pager as .n-data-table__pagination with only a
+// top margin (12px 0 0 0), so its controls sit flush against the wrapper's
+// bottom and right borders. Give it symmetric padding so the pager floats
+// clear of the rounded frame on every list page.
+.data-table-wrapper .n-data-table__pagination {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
 .empty-state {
   display: flex;
   min-height: 220px;

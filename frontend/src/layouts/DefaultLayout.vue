@@ -24,6 +24,10 @@
 
         <div style="flex: 1" />
 
+        <div class="sidebar-nav-bottom">
+          <SidebarNav :items="bottomNavItems" :collapsed="collapsed" />
+        </div>
+
         <div class="sidebar-bottom">
           <div v-if="!collapsed" class="sidebar-locale">
             <LocaleSwitcher />
@@ -120,8 +124,7 @@ onMounted(() => {
 })
 
 // computed rather than a plain array so the labels stay in sync when the
-// user switches locale without needing to re-open the dropdown. The system
-// item's `badge` lights the red dot whenever an update is available.
+// user switches locale without needing to re-open the dropdown.
 const navItems = computed<NavItem[]>(() => [
   { key: 'dashboard', label: t('common.dashboard'), icon: LayoutGrid, to: '/' },
   { key: 'analytics', label: t('analytics.pageTitle'), icon: BarChart3, to: '/analytics' },
@@ -129,6 +132,13 @@ const navItems = computed<NavItem[]>(() => [
   { key: 'providers', label: t('providers.pageTitle'), icon: Server, to: '/providers' },
   { key: 'models', label: t('models.pageTitle'), icon: Box, to: '/models' },
   { key: 'apikeys', label: t('apiKeys.pageTitle'), icon: Key, to: '/api-keys' },
+])
+
+// System sits apart from the primary navigation — pinned to the bottom above
+// the locale/user controls — because it's a settings-style destination, not a
+// day-to-day workspace. Its `badge` lights the red dot when an update is
+// available.
+const bottomNavItems = computed<NavItem[]>(() => [
   { key: 'system', label: t('system.pageTitle'), icon: Info, to: '/system', badge: updateStore.hasUpdate },
 ])
 
@@ -267,11 +277,16 @@ async function onChangePasswordSubmit() {
   margin-top: var(--space-2);
 }
 
+.sidebar-nav-bottom {
+  margin-bottom: var(--space-2);
+}
+
 .sidebar-bottom {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: 0 16px var(--space-4);
+  padding: var(--space-3) 16px var(--space-4);
+  border-top: 1px solid var(--color-border);
 }
 
 .sidebar-locale {
@@ -335,7 +350,7 @@ async function onChangePasswordSubmit() {
 
 @media (max-width: 640px) {
   .sidebar-bottom {
-    padding: 0 6px var(--space-4);
+    padding: var(--space-3) 6px var(--space-4);
   }
 }
 </style>

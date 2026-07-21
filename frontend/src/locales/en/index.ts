@@ -135,7 +135,7 @@ export default {
     managementStatusColumn: 'Status',
     managementStatusColumn_tip: 'Manually set enabled/disabled status. When disabled, this model rejects all new requests',
     runningStatusColumn: 'Running Status',
-    runningStatusColumn_tip: 'Actual routable status of this model, aggregated from the connectivity of all its provider candidates',
+    runningStatusColumn_tip: 'Actual routable status of this model, aggregated from the connectivity of all its provider candidates. Available = the primary candidate is healthy; Degraded = the primary candidate is down and traffic has failed over to a lower-priority backup; Unavailable = no candidate can be routed to',
     candidateCountColumn: 'Candidates',
     candidateCountColumn_tip: 'Number of provider candidates configured for this model, used for ordered failover',
     firstRouteColumn: 'Primary Route',
