@@ -12,13 +12,13 @@ import (
 
 func newTestClient(handler http.HandlerFunc) (*HTTPProviderClient, *httptest.Server) {
 	srv := httptest.NewServer(handler)
-	c := NewHTTPProviderClient()
+	c := NewHTTPProviderClient(false)
 	// Swap in a transport that dials the real httptest server directly
 	// (bypassing safehttp's loopback denial, which would otherwise block
 	// every test here) — production code always uses safehttp.NewTransport();
 	// only these unit tests substitute a plain transport to exercise
 	// classification logic against a local server. CheckRedirect is kept
-	// as NewHTTPProviderClient() set it (not reset to the zero value) so
+	// as NewHTTPProviderClient(false) set it (not reset to the zero value) so
 	// every test in this file — not just the redirect-specific one below —
 	// exercises the same non-following behavior production code has.
 	c.httpClient = &http.Client{Transport: http.DefaultTransport, CheckRedirect: c.httpClient.CheckRedirect}
@@ -233,7 +233,7 @@ func TestTestChatCompletion500IsUpstreamError(t *testing.T) {
 }
 
 func TestTestChatCompletionConnectionRefusedIsUnreachable(t *testing.T) {
-	c := NewHTTPProviderClient()
+	c := NewHTTPProviderClient(false)
 	c.httpClient = &http.Client{Transport: http.DefaultTransport, Timeout: 2 * time.Second}
 	result, err := c.TestChatCompletion(context.Background(), "http://127.0.0.1:1", "sk-test", "gpt-4o-mini")
 	if err != nil {
@@ -267,7 +267,7 @@ func TestTestChatCompletionOversizedBodyIsUpstreamError(t *testing.T) {
 // logic.
 
 func TestTestChatCompletionErrorsOnMalformedURL(t *testing.T) {
-	c := NewHTTPProviderClient()
+	c := NewHTTPProviderClient(false)
 	// A raw control character in the URL makes net/url.Parse (called inside
 	// http.NewRequestWithContext) fail — the one realistic way to force
 	// TestChatCompletion's own request-building error branch, as opposed to

@@ -25,6 +25,14 @@ log:
   level: info
 security:
   provider_master_key: ""  # 留空；自动生成场景下由程序填充，不要手写
+  # Let connection tests AND gateway relay dial loopback / private / link-local
+  # / CGNAT addresses (e.g. a local Ollama / vLLM / LM Studio / one-api).
+  # Default false = block them (SSRF defense; multicast/reserved/unspecified
+  # stay blocked even when this is on). Only enable on a single-tenant,
+  # self-hosted deployment you control — never when internet-exposed or
+  # multi-tenant, or a provider base_url could reach internal services and
+  # cloud metadata endpoints (169.254.169.254).
+  allow_private_upstreams: false
 update:
   enabled: true        # set false to fully disable the update-check API and the `update` CLI
   # GitHub release source as "owner/repo"; empty falls back to the binary's

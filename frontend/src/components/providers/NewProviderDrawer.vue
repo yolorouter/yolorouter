@@ -48,8 +48,8 @@
           <n-input v-model:value="keyForm.testModel" :placeholder="t('providers.testModelHint')" />
         </n-form-item>
         <n-button :loading="testing" @click="onTestConnection">{{ t('providers.testConnection') }}</n-button>
-        <n-alert v-if="testResult" :type="testResult.ok ? 'success' : 'error'" class="test-result">
-          {{ testResult.ok ? t('providers.testSuccess') : t('providers.testFailed') }}
+        <n-alert v-if="testOutcome !== null" :type="testResultOk ? 'success' : 'error'" class="test-result">
+          {{ testResultText }}
         </n-alert>
       </n-form>
 
@@ -65,13 +65,14 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage, type FormInst, type FormRules } from 'naive-ui'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
 import HelpLabel from '../HelpLabel.vue'
 import { providerNameRule, baseUrlRule, noteRule, keyLabelRule, keyPlaintextRule, testModelRule } from '../../utils/providerValidators'
+import { testOutcomeI18nKey } from '../../utils/testOutcomeDisplay'
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ 'update:show': [boolean] }>()
@@ -87,7 +88,21 @@ const basicForm = reactive({ name: '', baseUrl: '', note: '' })
 const keyForm = reactive({ label: '', plaintext: '', testModel: '' })
 const testing = ref(false)
 const submitting = ref(false)
-const testResult = ref<{ ok: boolean } | null>(null)
+// Holds the last test's outcome int (backend service.TestOutcome enum); null
+// until a test runs. Success (outcome 0) vs the specific failure reason are
+// both derived from it — see testResultOk / testResultText.
+const testOutcome = ref<number | null>(null)
+
+const testResultOk = computed(() => testOutcome.value === 0)
+
+// Failure line shown in the result alert: the specific reason (e.g.
+// "Unreachable") instead of a blanket "Test failed", so an admin can tell a
+// bad key from a wrong model from a blocked/unreachable address at a glance.
+const testResultText = computed(() => {
+  if (testOutcome.value === null) return ''
+  if (testResultOk.value) return t('providers.testSuccess')
+  return `${t('providers.testFailed')}: ${t(`providers.${testOutcomeI18nKey(testOutcome.value)}`)}`
+})
 
 // Rule factories live in utils/providerValidators.ts (shared with
 // KeyEditDrawer.vue) and mirror the backend's own binding tags
@@ -114,7 +129,7 @@ watch(
       keyForm.label = ''
       keyForm.plaintext = ''
       keyForm.testModel = ''
-      testResult.value = null
+      testOutcome.value = null
     }
   },
 )
@@ -139,10 +154,10 @@ async function onTestConnection() {
     return
   }
   testing.value = true
-  testResult.value = null
+  testOutcome.value = null
   try {
     const result = await store.testKeyPreview(basicForm.baseUrl, keyForm.plaintext, keyForm.testModel)
-    testResult.value = { ok: result.outcome === 0 }
+    testOutcome.value = result.outcome
   } catch (err) {
     message.error(displayMessage(err, t))
   } finally {

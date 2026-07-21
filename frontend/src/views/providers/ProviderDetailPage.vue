@@ -86,23 +86,7 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import KeyEditDrawer from '../../components/providers/KeyEditDrawer.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
-
-// TestOutcome int -> i18n key suffix (mirrors service.TestOutcome, design
-// doc §5's 8 categories). Used to render each key's OWN batch-test result
-// after test-all completes — a codex adversarial review round found an
-// earlier version discarded the per-key `results` array after computing
-// aggregate pass/fail/skip counts, even though PRD §6.2.8 requires showing
-// each key's own outcome and duration once a batch test finishes.
-const OUTCOME_I18N_KEYS = [
-  'outcomeSuccess',
-  'outcomeAuthFailed',
-  'outcomePermissionDenied',
-  'outcomeModelNotFound',
-  'outcomeQuotaUnavailable',
-  'outcomeRateLimited',
-  'outcomeUnreachable',
-  'outcomeUpstreamError',
-] as const
+import { testOutcomeI18nKey } from '../../utils/testOutcomeDisplay'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -136,7 +120,7 @@ const pendingCount = computed(() => {
 function batchResultLabel(result: BatchTestResult): string {
   if (result.needs_reentry) return t('providers.needsReentry')
   if (result.skipped || result.outcome === null) return t('providers.testFailed')
-  return t(`providers.${OUTCOME_I18N_KEYS[result.outcome] ?? 'outcomeUpstreamError'}`) + ` (${result.duration_ms}ms)`
+  return t(`providers.${testOutcomeI18nKey(result.outcome)}`) + ` (${result.duration_ms}ms)`
 }
 
 function batchResultTagType(result: BatchTestResult): 'success' | 'warning' | 'error' {

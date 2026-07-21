@@ -110,7 +110,10 @@ func validateEmbeddedFrontend(distFS fs.FS) error {
 // every request's gin.Context (below) is how it crosses that boundary
 // without an import cycle. updateCfg carries the version-update settings the
 // system-info endpoint resolves its GitHub release source from.
-func New(db *gorm.DB, providerMasterKey []byte, bodiesDir string, updateCfg config.UpdateConfig) (*gin.Engine, error) {
+// allowPrivateUpstreams (config.SecurityConfig.AllowPrivateUpstreams) is
+// forwarded to the provider-test and gateway-relay clients' SSRF transport,
+// letting a self-hosted operator reach a LAN/localhost model server.
+func New(db *gorm.DB, providerMasterKey []byte, bodiesDir string, updateCfg config.UpdateConfig, allowPrivateUpstreams bool) (*gin.Engine, error) {
 	// fs.Sub never actually errors here, in either build variant: it only
 	// validates that "dist" is a syntactically-valid path string, not that
 	// it exists in web.DistFS (confirmed against io/fs's Sub implementation
@@ -120,10 +123,10 @@ func New(db *gorm.DB, providerMasterKey []byte, bodiesDir string, updateCfg conf
 	// fs.Stat call at each call site below, which correctly reports
 	// "not found" for every path against an empty embedded FS.
 	distFS, _ := fs.Sub(web.DistFS, "dist")
-	return newWithDistFS(distFS, db, providerMasterKey, bodiesDir, updateCfg)
+	return newWithDistFS(distFS, db, providerMasterKey, bodiesDir, updateCfg, allowPrivateUpstreams)
 }
 
-func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDir string, updateCfg config.UpdateConfig) (*gin.Engine, error) {
+func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDir string, updateCfg config.UpdateConfig, allowPrivateUpstreams bool) (*gin.Engine, error) {
 	if err := validateEmbeddedFrontend(distFS); err != nil {
 		return nil, err
 	}
@@ -234,7 +237,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	protected.GET("/auth/me", handler.GetMe(db))
 	protected.PUT("/auth/password", handler.PutPassword(db))
 
-	providerSvc := service.NewProviderService(db, providerMasterKey, service.NewHTTPProviderClient())
+	providerSvc := service.NewProviderService(db, providerMasterKey, service.NewHTTPProviderClient(allowPrivateUpstreams))
 	protected.GET("/providers", handler.GetProviders(providerSvc))
 	protected.POST("/providers", handler.PostProvider(providerSvc))
 	protected.POST("/providers/test-key", handler.PostProviderTestKey(providerSvc))
@@ -248,7 +251,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	protected.POST("/providers/:id/keys/:keyId/test", handler.PostProviderKeyTest(providerSvc))
 	protected.POST("/providers/:id/keys/test-all", handler.PostProviderKeysTestAll(providerSvc))
 
-	modelSvc := service.NewModelService(db, providerMasterKey, service.NewHTTPProviderClient())
+	modelSvc := service.NewModelService(db, providerMasterKey, service.NewHTTPProviderClient(allowPrivateUpstreams))
 	protected.GET("/models", handler.GetModels(modelSvc))
 	protected.POST("/models", handler.PostModel(modelSvc))
 	protected.GET("/models/:id", handler.GetModel(modelSvc))
@@ -309,7 +312,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	// cookie. The 20MiB body cap is M0's gateway limit (design doc §5/§8),
 	// larger than the admin JSON API's 1MiB to leave room for long histories
 	// and tool definitions.
-	relaySvc := gateway.NewRelayService(db, providerMasterKey)
+	relaySvc := gateway.NewRelayService(db, providerMasterKey, allowPrivateUpstreams)
 	v1 := r.Group("/v1", middleware.BodySizeLimit(20<<20), middleware.APIKeyAuth(db))
 	// M6.2: stash the absolute bodies dir on the request context so the
 	// gateway package (which cannot import app config without a cycle) can

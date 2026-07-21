@@ -27,7 +27,7 @@ import (
 func newRelaySvc(t *testing.T, db *gorm.DB) *RelayService {
 	t.Helper()
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewRelayService(db, masterKey)
+	svc := NewRelayService(db, masterKey, false)
 	svc.client.httpClient.Transport = &http.Transport{}
 	return svc
 }

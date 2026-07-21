@@ -53,7 +53,7 @@
         <n-button :loading="testing === 'streaming'" @click="onTest('streaming')">{{ t('models.testStreaming') }}</n-button>
         <n-button :loading="testing === 'function_calling'" @click="onTest('function_calling')">{{ t('models.testFunctionCalling') }}</n-button>
         <n-alert v-if="testResult" :type="testResult.ok ? 'success' : 'error'">
-          {{ testResult.ok ? t('models.testPassed') : t('models.testFailed') }}
+          {{ testResultLabel }}
         </n-alert>
       </n-space>
 
@@ -80,6 +80,7 @@ import { useModelsStore } from '../../store/models'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
 import { providerModelNameRule, nonNegativePriceRule } from '../../utils/modelValidators'
+import { testOutcomeI18nKey } from '../../utils/testOutcomeDisplay'
 import HelpLabel from '../HelpLabel.vue'
 import NewProviderDrawer from '../providers/NewProviderDrawer.vue'
 import type { ModelCandidate } from '../../api/models'
@@ -95,12 +96,29 @@ const providersStore = useProvidersStore()
 const formRef = ref<FormInst | null>(null)
 const submitting = ref(false)
 const testing = ref<'basic' | 'streaming' | 'function_calling' | null>(null)
-const testResult = ref<{ ok: boolean } | null>(null)
+// outcome is only carried by the new-mapping test (testMapping returns a
+// TestOutcome int); the editing-candidate branch tests booleans (streaming /
+// function_calling / verification_status) and leaves it undefined.
+const testResult = ref<{ ok: boolean; outcome?: number } | null>(null)
 // basicTestPassed only gates the "save and enable" button in the UI for the
 // new-candidate flow — the server independently re-runs the basic test on
 // its own before honoring an enabled create request (design doc §5), so this
 // is a UX nicety, not the actual enforcement point.
 const basicTestPassed = computed(() => !!props.editingCandidate || testResult.value?.ok === true)
+
+// Result alert text: on a failed new-mapping test, append the specific
+// outcome reason (via the shared testOutcomeI18nKey, same as the provider
+// surfaces) so a wrong model/bad key/unreachable address is distinguishable
+// rather than a blanket "test failed".
+const testResultLabel = computed(() => {
+  const r = testResult.value
+  if (!r) return ''
+  if (r.ok) return t('models.testPassed')
+  if (r.outcome !== undefined) {
+    return `${t('models.testFailed')}: ${t(`providers.${testOutcomeI18nKey(r.outcome)}`)}`
+  }
+  return t('models.testFailed')
+})
 
 const showNewProviderDrawer = ref(false)
 let providerIdBeforeCreate = 0
@@ -186,7 +204,7 @@ async function onTest(testType: 'basic' | 'streaming' | 'function_calling') {
       testResult.value = { ok: testType === 'basic' ? result.verification_status === 1 : (testType === 'streaming' ? result.supports_streaming : result.supports_function_calling) }
     } else {
       const result = await store.testMapping(props.modelId, form.providerId, form.providerModelName, testType)
-      testResult.value = { ok: result.outcome === 0 }
+      testResult.value = { ok: result.outcome === 0, outcome: result.outcome }
     }
   } catch (err) {
     message.error(displayMessage(err, t))

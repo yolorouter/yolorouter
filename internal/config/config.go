@@ -49,6 +49,16 @@ type LogConfig struct {
 
 type SecurityConfig struct {
 	ProviderMasterKey string `yaml:"provider_master_key"`
+	// AllowPrivateUpstreams, when true, lets the SSRF guard dial
+	// loopback/private/link-local/CGNAT/unique-local destinations for BOTH
+	// connection tests and gateway relay (multicast, benchmark, reserved, and
+	// unspecified addresses stay blocked regardless). Off by default: only a
+	// single-tenant, self-hosted operator who deliberately points Yolorouter
+	// at a LAN/localhost model server (Ollama, vLLM, LM Studio, one-api, …)
+	// should turn it on. Never enable it on a multi-tenant or internet-exposed
+	// deployment — it lets a provider base_url reach internal services and
+	// cloud metadata endpoints (169.254.169.254).
+	AllowPrivateUpstreams bool `yaml:"allow_private_upstreams"`
 }
 
 // UpdateConfig controls the version-update feature (the background update

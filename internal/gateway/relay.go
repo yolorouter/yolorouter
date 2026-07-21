@@ -108,11 +108,13 @@ type RelayService struct {
 
 // NewRelayService wires the gateway with the already-decoded AES master key
 // (the same one provider_service uses to decrypt the keys it now routes to).
-func NewRelayService(db *gorm.DB, masterKey []byte) *RelayService {
+// allowPrivate is forwarded to the upstream client's SSRF transport (config.
+// SecurityConfig.AllowPrivateUpstreams) so LAN/localhost providers relay.
+func NewRelayService(db *gorm.DB, masterKey []byte, allowPrivate bool) *RelayService {
 	return &RelayService{
 		db:        db,
 		masterKey: masterKey,
-		client:    NewUpstreamClient(),
+		client:    NewUpstreamClient(allowPrivate),
 		limiter:   NewLimiter(),
 	}
 }

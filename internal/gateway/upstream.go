@@ -20,11 +20,13 @@ type UpstreamClient struct {
 // NewUpstreamClient builds a gateway upstream client. The Transport is the
 // same SSRF-safe one provider_client.go uses for connection tests, so a
 // provider that tests green also serves real traffic through the identical
-// network path.
-func NewUpstreamClient() *UpstreamClient {
+// network path — including the allowPrivate relaxation, so a self-hosted
+// LAN/localhost provider that tests green also relays (config.SecurityConfig.
+// AllowPrivateUpstreams).
+func NewUpstreamClient(allowPrivate bool) *UpstreamClient {
 	return &UpstreamClient{
 		httpClient: &http.Client{
-			Transport: safehttp.NewTransport(),
+			Transport: safehttp.NewTransport(allowPrivate),
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

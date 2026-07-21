@@ -81,10 +81,14 @@ type HTTPProviderClient struct {
 	limiter    *middleware.Semaphore
 }
 
-func NewHTTPProviderClient() *HTTPProviderClient {
+// NewHTTPProviderClient builds the connection-test client. allowPrivate is
+// forwarded to safehttp.NewTransport so a self-hosted operator testing a
+// LAN/localhost model server can opt out of the SSRF IP-range denial (see
+// config.SecurityConfig.AllowPrivateUpstreams).
+func NewHTTPProviderClient(allowPrivate bool) *HTTPProviderClient {
 	return &HTTPProviderClient{
 		httpClient: &http.Client{
-			Transport: safehttp.NewTransport(),
+			Transport: safehttp.NewTransport(allowPrivate),
 			// Design doc §5 item 5: never follow redirects. Without this,
 			// Go's default http.Client follows up to 10 redirect hops and
 			// may carry the Authorization header (the decrypted upstream
