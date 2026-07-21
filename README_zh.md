@@ -58,7 +58,7 @@ _截图即将补充。_
 把 yolorouter 安装成开机自启的后台服务（Linux 用 systemd，macOS 用 launchd）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/scripts/install.sh | bash
 ```
 
 脚本第一步让你选界面语言（中文/英文），随后自动探测系统架构、下载并做 sha256
@@ -66,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/install.
 即可升级（配置和数据库原样保留，升级前会先自动备份数据库）。卸载：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/scripts/install.sh | bash -s -- --uninstall
 ```
 
 可选环境变量覆盖：`YOLO_LANG=zh|en`、`YOLO_SCOPE=system|user`、

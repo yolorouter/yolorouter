@@ -2,7 +2,7 @@
 #
 # yolorouter one-command installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/scripts/install.sh | bash
 #
 # Installs yolorouter as a boot-persistent background service on Linux
 # (systemd) and macOS (launchd). Downloads a prebuilt release binary, verifies
@@ -714,7 +714,7 @@ svc_cmds() {
 print_summary() {
   local port="$1" ip; ip="$(primary_ip)"
   svc_cmds
-  local install_url="https://raw.githubusercontent.com/${REPO}/main/install.sh"
+  local install_url="https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh"
 
   printf '\n'
   ok "$(m 'yolorouter 已安装并启动' 'yolorouter is installed and running')"

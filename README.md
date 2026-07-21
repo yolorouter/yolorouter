@@ -67,7 +67,7 @@ Install yolorouter as a boot-persistent background service (systemd on Linux,
 launchd on macOS):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/scripts/install.sh | bash
 ```
 
 The installer picks a UI language (Chinese/English) as its first step, detects
@@ -77,7 +77,7 @@ Re-run the same command to upgrade (your config and database are preserved, and
 the database is backed up first). Uninstall with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/yolorouter/yolorouter/main/scripts/install.sh | bash -s -- --uninstall
 ```
 
 Optional environment overrides: `YOLO_LANG=zh|en`, `YOLO_SCOPE=system|user`,
