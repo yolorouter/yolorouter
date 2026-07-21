@@ -46,18 +46,10 @@ SQLite works out of the box, PostgreSQL when you want it.
 
 ## Screenshots
 
-<!-- Drop real screenshots into docs/screenshots/ and uncomment:
 <p align="center">
   <img src="docs/screenshots/dashboard.png" width="49%" alt="Dashboard" />
-  <img src="docs/screenshots/request-log-detail.png" width="49%" alt="Request log detail" />
-</p>
-<p align="center">
-  <img src="docs/screenshots/model-routing.png" width="49%" alt="Model routing" />
   <img src="docs/screenshots/analytics.png" width="49%" alt="Usage & cost analytics" />
 </p>
--->
-
-_Screenshots coming soon._
 
 ## Quick start
 

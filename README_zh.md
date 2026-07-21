@@ -42,14 +42,10 @@
 
 ## 截图
 
-<!-- 把真实截图放进 docs/screenshots/ 后取消注释：
 <p align="center">
   <img src="docs/screenshots/dashboard.png" width="49%" alt="仪表盘" />
-  <img src="docs/screenshots/request-log-detail.png" width="49%" alt="请求日志详情" />
+  <img src="docs/screenshots/analytics.png" width="49%" alt="用量与成本分析" />
 </p>
--->
-
-_截图即将补充。_
 
 ## 快速开始
 
