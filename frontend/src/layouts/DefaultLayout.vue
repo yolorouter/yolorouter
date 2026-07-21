@@ -15,7 +15,7 @@
       <div class="sidebar-inner">
         <RouterLink to="/" class="sidebar-logo" :class="{ 'sidebar-logo--collapsed': collapsed }">
           <img :src="logo" alt="" width="26" />
-          <span v-if="!collapsed" class="sidebar-logo__title">Yolorouter CE</span>
+          <span v-if="!collapsed" class="sidebar-logo__title">Yolorouter</span>
         </RouterLink>
 
         <div class="sidebar-nav-main">
