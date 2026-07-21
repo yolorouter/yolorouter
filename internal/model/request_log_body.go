@@ -11,9 +11,14 @@ import "time"
 // (early failure before body read, or capture failure) — the detail page
 // degrades to "not recorded". For stream requests, response_body and
 // upstream_response_body are empty and the sent SSE lives at stream_body_path.
+//
+// RequestHeaders is the caller's request headers as a JSON object with
+// sensitive headers already masked (gateway.SanitizeHeaders) — PRD §6.8.6
+// excludes only the auth headers themselves from logging, not all headers.
 type RequestLogBody struct {
 	ID                   uint      `gorm:"column:id;primaryKey" json:"id"`
 	RequestID            string    `gorm:"column:request_id;uniqueIndex" json:"request_id"`
+	RequestHeaders       string    `gorm:"column:request_headers" json:"request_headers"`
 	RequestBody          string    `gorm:"column:request_body" json:"request_body"`
 	UpstreamRequestBody  string    `gorm:"column:upstream_request_body" json:"upstream_request_body"`
 	ResponseBody         string    `gorm:"column:response_body" json:"response_body"`

@@ -26,7 +26,6 @@ import (
 	"github.com/yolorouter/yolorouter-ce/internal/repository"
 	"github.com/yolorouter/yolorouter-ce/pkg/crypto"
 	"github.com/yolorouter/yolorouter-ce/pkg/logger"
-	"github.com/yolorouter/yolorouter-ce/pkg/redact"
 )
 
 // APIKeyAuth resolves an Authorization: Bearer <key> credential to its
@@ -55,14 +54,16 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 			gateway.WriteOpenAIError(c, http.StatusInternalServerError, "server_error", "internal error")
 			return
 		}
-		// Stash the raw (plaintext) key so gateway.RelayService.Handle can
-		// redact it exactly out of persisted bodies (PRD §6.8.6) — the
-		// gateway only ever sees the hash otherwise.
-		c.Set(gateway.CallerKeyContextKey, raw)
 		gateway.SetGatewayAuth(c, key)
 		c.Next()
 	}
 }
+
+// authRejectionBodyCap bounds how much of an UNauthenticated request body the
+// auth-rejection audit path stores. 16 KiB is ample to see what a rejected
+// request attempted (model, first messages) while denying a keyless attacker
+// a 20 MiB-per-request storage-amplification vector into request_log_bodies.
+const authRejectionBodyCap = 16 << 10 // 16 KiB
 
 // logAuthRejection writes one request_logs row for a gateway request rejected
 // at the auth gate (missing / unknown / lookup-failed API key). The gateway's
@@ -96,19 +97,25 @@ func logAuthRejection(c *gin.Context, db *gorm.DB, status int, reason, errType, 
 
 	// LOG-06 (Codex #2): auth-rejected requests never reach gateway.Handle,
 	// so its finalize() never runs and the request would otherwise have no
-	// request_log_bodies row at all. gateway.ReadAuditBody is the same
-	// bounded-read-then-redact helper gateway.captureRejectedBody uses for
-	// its own early-rejection paths — a body failure must never block the
-	// 401/500 response above, which ReadAuditBody's nil-on-failure contract
-	// already guarantees.
-	var reqBody []byte
+	// request_log_bodies row at all. A body failure must never block the
+	// 401/500 response above, which ReadAuditBodyCapped's nil-on-failure
+	// contract already guarantees. Capped at authRejectionBodyCap (far below
+	// the 20 MiB post-auth cap): this path serves UNauthenticated callers, so
+	// a small ceiling keeps the audit useful without letting a keyless
+	// attacker inflate request_log_bodies with 20 MiB bodies per rejection
+	// (code-review finding).
+	var reqBody, reqHeaders []byte
 	if c.Request != nil {
-		reqBody = gateway.ReadAuditBody(c.Request.Body, "")
+		reqBody = gateway.ReadAuditBodyCapped(c.Request.Body, authRejectionBodyCap)
+		// PRD §6.8.6: record the (masked) request headers even for an
+		// auth-rejected request, mirroring gateway.Handle's own capture.
+		reqHeaders = gateway.SanitizeHeaders(c.Request.Header)
 	}
 	bodyRow := &model.RequestLogBody{
-		RequestID:    requestID,
-		RequestBody:  string(reqBody),
-		ResponseBody: string(redact.RedactBytes(gateway.LocalErrorBody(errType, message), "")),
+		RequestID:      requestID,
+		RequestHeaders: string(reqHeaders),
+		RequestBody:    string(reqBody),
+		ResponseBody:   string(gateway.LocalErrorBody(errType, message)),
 	}
 	if err := repository.UpsertRequestLogBody(db, bodyRow); err != nil {
 		logger.Warn("middleware: write auth-rejection body row failed",

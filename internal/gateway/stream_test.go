@@ -231,7 +231,7 @@ func TestStreamUpstreamStripsInjectedUsage(t *testing.T) {
 	}
 }
 
-// runStreamPumpCapture is runStreamPump plus the "bodies_dir" context value
+// runStreamPumpCapture is runStreamPump plus the BodiesDirContextKey value
 // and a RequestID (Task 5's stream body capture: internal/router/router.go
 // stashes the absolute bodies dir on every request's gin.Context; here the
 // test wires it directly instead of going through the real middleware). It
@@ -243,7 +243,7 @@ func runStreamPumpCapture(t *testing.T, upstreamBody, requestID, bodiesDir strin
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set("bodies_dir", bodiesDir)
+	c.Set(BodiesDirContextKey, bodiesDir)
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
@@ -333,27 +333,27 @@ func TestStreamCaptureBackstopMarked(t *testing.T) {
 	}
 }
 
-// TestStreamCaptureRedacted (Task 5): a credential embedded in an SSE data
-// line must be redacted in the persisted stream file (pkg/redact), even
-// though it is forwarded to the caller unchanged (the gateway doesn't
-// mutate arbitrary content fields, only model/usage).
-func TestStreamCaptureRedacted(t *testing.T) {
+// TestStreamCaptureVerbatim (Task 5): v0.1 does NOT scrub body content, so an
+// SSE data line is persisted to the stream capture file exactly as it was
+// forwarded to the caller (the gateway only rewrites model/usage fields, never
+// arbitrary content).
+func TestStreamCaptureVerbatim(t *testing.T) {
 	dir := t.TempDir()
-	secret := "sk-abcdefghijklmnopqrstuvwxyz0123456789"
-	body := `data: {"choices":[{"delta":{"content":"Bearer ` + secret + `"}}]}` + "\n\n" + "data: [DONE]\n\n"
-	rc, _, _, err := runStreamPumpCapture(t, body, "req-redact", dir)
+	content := "sk-abcdefghijklmnopqrstuvwxyz0123456789"
+	body := `data: {"choices":[{"delta":{"content":"` + content + `"}}]}` + "\n\n" + "data: [DONE]\n\n"
+	rc, _, _, err := runStreamPumpCapture(t, body, "req-verbatim", dir)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	captured, err := os.ReadFile(filepath.Join(dir, "req-redact.stream"))
+	captured, err := os.ReadFile(filepath.Join(dir, "req-verbatim.stream"))
 	if err != nil {
 		t.Fatalf("read captured stream file: %v", err)
 	}
-	if bytes.Contains(captured, []byte(secret)) {
-		t.Errorf("secret leaked into the captured stream file: %s", captured)
+	if !bytes.Contains(captured, []byte(content)) {
+		t.Errorf("expected content preserved verbatim in the captured stream file: %s", captured)
 	}
-	if !bytes.Contains(captured, []byte("[REDACTED]")) {
-		t.Errorf("expected [REDACTED] marker in the captured stream file: %s", captured)
+	if bytes.Contains(captured, []byte("[REDACTED]")) {
+		t.Errorf("v0.1 must not redact stream body content: %s", captured)
 	}
 	if !rc.streamBodyCaptured {
 		t.Error("expected streamBodyCaptured to be true")

@@ -5,8 +5,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-
-	"github.com/yolorouter/yolorouter-ce/pkg/redact"
 )
 
 // relayContextKey is the gin.Context key Handle stores the in-flight
@@ -17,13 +15,6 @@ import (
 // never call Handle (e.g. unit tests, or middleware.APIKeyAuth's own 401s
 // before Handle ever runs) — stashLocalErrorBody is then a no-op.
 const relayContextKey = "relay_context"
-
-// CallerKeyContextKey is the gin.Context key APIKeyAuth stores the raw
-// (plaintext) caller API key under on successful resolution, so the gateway
-// can redact it exactly out of persisted bodies (PRD §6.8.6) in addition to
-// the generic sk-/Bearer/JSON-field patterns. Exported so middleware (a
-// different package) sets the same key the gateway reads.
-const CallerKeyContextKey = "caller_key_raw"
 
 // openaiErrorBody is the OpenAI-compatible error envelope. Gateway traffic
 // uses upstream's native wire format, NOT pkg/response (design doc §3) — so
@@ -52,9 +43,9 @@ func LocalErrorBody(errType, message string) []byte {
 
 // stashLocalErrorBody records the local error JSON WriteOpenAIError is about
 // to return, as response_body for this request's request_log_bodies row
-// (PRD §6.8.4, Codex #1). No-op when no RelayContext is on the context.
-// Redacted defensively even though gateway error bodies carry no
-// credentials.
+// (PRD §6.8.4, Codex #1). No-op when no RelayContext is on the context. The
+// body is a gateway-generated error envelope (no caller/upstream content), so
+// it is stored verbatim — v0.1 does not scrub body content.
 func stashLocalErrorBody(c *gin.Context, errType, message string) {
 	v, ok := c.Get(relayContextKey)
 	if !ok {
@@ -64,7 +55,7 @@ func stashLocalErrorBody(c *gin.Context, errType, message string) {
 	if !ok || rc == nil {
 		return
 	}
-	rc.ResponseBody = redact.RedactBytes(LocalErrorBody(errType, message), "")
+	rc.ResponseBody = LocalErrorBody(errType, message)
 }
 
 // OpenAI error "type" values (PRD §6.5.9 maps each failure class to one of

@@ -51,7 +51,7 @@ func UpsertRequestLogBody(db *gorm.DB, body *model.RequestLogBody) error {
 	return db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "request_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"request_body", "upstream_request_body",
+			"request_headers", "request_body", "upstream_request_body",
 			"response_body", "upstream_response_body",
 			"stream_body_path", "stream_body_truncated",
 		}),

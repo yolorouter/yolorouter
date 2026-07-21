@@ -294,10 +294,10 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	// M6.2: stash the absolute bodies dir on the request context so the
 	// gateway package (which cannot import app config without a cycle) can
 	// resolve where to append its stream capture file via
-	// c.GetString("bodies_dir") — see internal/gateway/stream.go's
+	// gateway.BodiesDirContextKey — see internal/gateway/stream.go's
 	// streamBodiesDir.
 	v1.Use(func(c *gin.Context) {
-		c.Set("bodies_dir", bodiesDir)
+		c.Set(gateway.BodiesDirContextKey, bodiesDir)
 		c.Next()
 	})
 	v1.POST("/chat/completions", gateway.PostChatCompletions(relaySvc))

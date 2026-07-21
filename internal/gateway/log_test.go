@@ -49,8 +49,9 @@ func TestComputeCostMissingCandidateIsUnknown(t *testing.T) {
 }
 
 // TestFinalizeWritesBodyRow (Codex #5, PRD §6.8.4/§6.8.6/LOG-06): finalize
-// persists the four body fields (already redacted at capture) into
-// request_log_bodies, keyed by request_id, alongside the request_logs row.
+// persists the four body fields (stored verbatim; v0.1 does not scrub body
+// content) into request_log_bodies, keyed by request_id, alongside the
+// request_logs row.
 func TestFinalizeWritesBodyRow(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newRelaySvc(t, db)
@@ -59,6 +60,7 @@ func TestFinalizeWritesBodyRow(t *testing.T) {
 	rc := &RelayContext{
 		RequestID:            "req-body-1",
 		APIKeyID:             apiKey.ID,
+		RequestHeaders:       []byte(`{"User-Agent":["curl/8.0"]}`),
 		RequestBody:          []byte(`{"model":"gpt-4o"}`),
 		UpstreamRequestBody:  []byte(`{"model":"gpt-4o-real"}`),
 		ResponseBody:         []byte(`{"model":"gpt-4o","choices":[]}`),
@@ -79,6 +81,9 @@ func TestFinalizeWritesBodyRow(t *testing.T) {
 	}
 	if body == nil {
 		t.Fatal("expected a request_log_bodies row, got none")
+	}
+	if body.RequestHeaders != `{"User-Agent":["curl/8.0"]}` {
+		t.Errorf("RequestHeaders = %q, want the captured (masked) headers", body.RequestHeaders)
 	}
 	if body.RequestBody != `{"model":"gpt-4o"}` {
 		t.Errorf("RequestBody = %q, want caller's original request", body.RequestBody)

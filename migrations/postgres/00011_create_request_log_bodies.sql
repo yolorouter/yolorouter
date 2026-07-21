@@ -5,6 +5,7 @@
 CREATE TABLE request_log_bodies (
     id                      BIGSERIAL PRIMARY KEY,
     request_id              VARCHAR(64) NOT NULL DEFAULT '',
+    request_headers         TEXT NOT NULL DEFAULT '',
     request_body            TEXT NOT NULL DEFAULT '',
     upstream_request_body   TEXT NOT NULL DEFAULT '',
     response_body           TEXT NOT NULL DEFAULT '',

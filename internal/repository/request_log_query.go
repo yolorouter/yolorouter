@@ -174,6 +174,26 @@ func GetRequestLogBodyByRequestID(db *gorm.DB, requestID string) (*model.Request
 	return &row, nil
 }
 
+// GetStreamBodyPathByRequestID reads ONLY the stream_body_path column for
+// requestID, instead of loading the whole body row (which carries the large
+// request/response TEXT columns) just to read one short filename — the
+// stream-file serving endpoint needs nothing else (code-review finding).
+// Returns ("", nil) when there is no body row for the request.
+func GetStreamBodyPathByRequestID(db *gorm.DB, requestID string) (string, error) {
+	var paths []string
+	err := db.Model(&model.RequestLogBody{}).
+		Where("request_id = ?", requestID).
+		Limit(1).
+		Pluck("stream_body_path", &paths).Error
+	if err != nil {
+		return "", err
+	}
+	if len(paths) == 0 {
+		return "", nil
+	}
+	return paths[0], nil
+}
+
 // TodayBounds returns the [start, end) UTC timestamps covering the current
 // calendar day in the given location (PRD §6.6.3: "today" is by the system's
 // current timezone). created_at is stored UTC, so callers compare

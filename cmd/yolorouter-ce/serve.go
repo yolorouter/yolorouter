@@ -57,12 +57,15 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("decode provider master key: %w", err)
 	}
 
-	// M6.2: stream sent-SSE bodies live under data/bodies/ (sibling of the
-	// sqlite file, same convention instanceLockPath already uses). Created
-	// on boot so the gateway's stream capture can append without a
-	// per-request MkdirAll; the absolute path is threaded through
-	// router.New so the gateway package (no direct config access) can
-	// resolve it via the request context (internal/gateway/stream.go).
+	// M6.2: stream sent-SSE bodies live under data/bodies/, next to the
+	// per-deployment data directory. Config always resolves SQLitePath to an
+	// absolute path alongside the config file (and defaults it) regardless of
+	// driver, so its parent doubles as the stable data dir even on Postgres —
+	// the same convention instanceLockPath relies on. Created on boot so the
+	// gateway's stream capture can append without a per-request MkdirAll; the
+	// absolute path is threaded through router.New so the gateway package (no
+	// direct config access) can resolve it via the request context
+	// (internal/gateway/stream.go).
 	bodiesDir := filepath.Join(filepath.Dir(app.Config.Database.SQLitePath), "bodies")
 	if err := os.MkdirAll(bodiesDir, 0o755); err != nil {
 		return fmt.Errorf("create bodies dir: %w", err)

@@ -59,20 +59,27 @@ type RelayContext struct {
 
 	mu sync.Mutex // protects FirstByteSent flips from racing the flusher
 
-	// Bodies captured for the request_log_bodies row (PRD §6.8.4, LOG-06). All
-	// are REDACTED (pkg/redact) before being stashed — persistence and the
-	// detail page only ever see redacted bytes. RequestBody is set as soon as
-	// the caller body is read. UpstreamRequestBody is overwritten on each
-	// attempt (success => successful attempt; total failure => last attempt).
-	// ResponseBody is the caller-FACING response (post-rewrite, post-usage-
-	// strip, including local error JSON); UpstreamResponseBody is the raw
-	// upstream response (non-stream full / non-2xx error body bounded-read).
-	// For stream, the sent SSE is appended to streamBodyFile instead (§4.3)
-	// and these two stay empty. Nil/empty on early failure or body-read failure.
+	// Bodies captured for the request_log_bodies row (PRD §6.8.4, LOG-06).
+	// v0.1 stores them VERBATIM — body content is not scrubbed (only request
+	// headers are masked; see RequestHeaders below). RequestBody is set as
+	// soon as the caller body is read. UpstreamRequestBody is overwritten on
+	// each attempt (success => successful attempt; total failure => last
+	// attempt). ResponseBody is the caller-FACING response (post-rewrite,
+	// post-usage-strip, including local error JSON); UpstreamResponseBody is
+	// the raw upstream response (non-stream full / non-2xx error body
+	// bounded-read). For stream, the sent SSE is appended to streamBodyFile
+	// instead (§4.3) and handleStream clears these two so they stay empty.
+	// Nil/empty on early failure or body-read failure.
 	RequestBody          []byte
 	UpstreamRequestBody  []byte
 	ResponseBody         []byte
 	UpstreamResponseBody []byte
+	// RequestHeaders is the caller's request headers as a JSON object, with
+	// sensitive headers already masked (SanitizeHeaders). This header-name
+	// masking is the ONLY redaction v0.1 does — body content above is stored
+	// verbatim. Captured once at Handle entry so it survives even an early
+	// rejection (PRD §6.8.6).
+	RequestHeaders []byte
 
 	// streamBodyFile/streamBodyCaptured/streamBodyTruncated are the
 	// stream-only counterpart of the four body fields above (Task 5, PRD

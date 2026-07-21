@@ -498,9 +498,10 @@ export default {
 
     attemptsEmpty: '该请求未记录任何上游尝试（可能在路由前就被拒绝）',
 
-    // M6.2 body sections (§6.8.4/§6.8.6): the four redacted non-stream
-    // bodies embedded in the detail response, plus the lazily-loaded
-    // stream body served from disk via body/stream.
+    // M6.2 body sections (§6.8.4/§6.8.6): the four non-stream bodies
+    // (stored verbatim, capped inline) embedded in the detail response, plus
+    // the lazily-loaded stream body served from disk via body/stream.
+    requestHeaders: '请求头',
     requestBody: '请求正文',
     upstreamRequestBody: '发上游请求体',
     responseBody: '调用方响应',

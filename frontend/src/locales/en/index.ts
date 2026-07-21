@@ -495,9 +495,10 @@ export default {
 
     attemptsEmpty: 'No upstream attempts recorded for this request (it may have been rejected before routing).',
 
-    // M6.2 body sections (§6.8.4/§6.8.6): the four redacted non-stream
-    // bodies embedded in the detail response, plus the lazily-loaded
-    // stream body served from disk via body/stream.
+    // M6.2 body sections (§6.8.4/§6.8.6): the four non-stream bodies
+    // (stored verbatim, capped inline) embedded in the detail response, plus
+    // the lazily-loaded stream body served from disk via body/stream.
+    requestHeaders: 'Request headers',
     requestBody: 'Request body',
     upstreamRequestBody: 'Upstream request body',
     responseBody: 'Caller response',

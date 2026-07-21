@@ -11,9 +11,11 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -111,6 +113,7 @@ type RequestLogDetail struct {
 	AttemptsDetail       []gateway.AttemptRecord `json:"attempts_detail"`
 	DurationMs           int64                   `json:"duration_ms"`
 	CreatedAt            time.Time               `json:"created_at"`
+	RequestHeaders       string                  `json:"request_headers"`
 	RequestBody          string                  `json:"request_body"`
 	UpstreamRequestBody  string                  `json:"upstream_request_body"`
 	ResponseBody         string                  `json:"response_body"`
@@ -118,6 +121,33 @@ type RequestLogDetail struct {
 	StreamBodyPath       string                  `json:"stream_body_path"`
 	StreamBodyTruncated  bool                    `json:"stream_body_truncated"`
 	HasStreamBody        bool                    `json:"has_stream_body"`
+}
+
+// maxInlineBodyBytes caps each request/response body embedded inline in the
+// detail DTO. 1 MiB is far more than any real request/response needs to be
+// auditable, while keeping a pathological body from being shipped whole and
+// rendered into the admin's DOM (unlike the stream body, these have no ranged
+// preview endpoint). Larger bodies are truncated with a visible marker — never
+// silently, matching the stream body's truncation-flag convention.
+const maxInlineBodyBytes = 1 << 20 // 1 MiB
+
+// truncateInlineBody returns s unchanged when it fits under maxInlineBodyBytes,
+// otherwise the first maxInlineBodyBytes (trimmed to a UTF-8 rune boundary)
+// plus a human-readable truncation marker stating the original size.
+func truncateInlineBody(s string) string {
+	if len(s) <= maxInlineBodyBytes {
+		return s
+	}
+	cut := s[:maxInlineBodyBytes]
+	// Trim any trailing bytes left by slicing a multi-byte rune in half at the
+	// cap boundary (an incomplete encoding decodes as RuneError with size 1).
+	for len(cut) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(cut); r != utf8.RuneError || size > 1 {
+			break
+		}
+		cut = cut[:len(cut)-1]
+	}
+	return cut + fmt.Sprintf("\n\n… [truncated: showing first %d of %d bytes]", len(cut), len(s))
 }
 
 // ListRequestLogs returns one page of rows (newest first) plus the total
@@ -232,10 +262,17 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 		CreatedAt:      row.CreatedAt,
 	}
 	if bodyRow != nil {
-		detail.RequestBody = bodyRow.RequestBody
-		detail.UpstreamRequestBody = bodyRow.UpstreamRequestBody
-		detail.ResponseBody = bodyRow.ResponseBody
-		detail.UpstreamResponseBody = bodyRow.UpstreamResponseBody
+		detail.RequestHeaders = bodyRow.RequestHeaders // small (masked headers), never capped
+		// The four bodies are returned INLINE in this JSON response and
+		// rendered whole by BodyViewer (no ranged endpoint like the stream
+		// body has), so a pathological multi-MiB body — e.g. a 20 MiB non-JSON
+		// request body captured before the parse — would otherwise be shipped
+		// in full and frozen into the admin's DOM. Cap each with a visible
+		// marker (code-review finding).
+		detail.RequestBody = truncateInlineBody(bodyRow.RequestBody)
+		detail.UpstreamRequestBody = truncateInlineBody(bodyRow.UpstreamRequestBody)
+		detail.ResponseBody = truncateInlineBody(bodyRow.ResponseBody)
+		detail.UpstreamResponseBody = truncateInlineBody(bodyRow.UpstreamResponseBody)
 		detail.StreamBodyPath = bodyRow.StreamBodyPath
 		detail.StreamBodyTruncated = bodyRow.StreamBodyTruncated
 		detail.HasStreamBody = bodyRow.StreamBodyPath != ""
@@ -252,14 +289,7 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 // since a missing stream body is an expected shape for most rows, not a
 // server fault.
 func (s *RequestLogService) GetStreamBodyPath(requestID string) (string, error) {
-	bodyRow, err := repository.GetRequestLogBodyByRequestID(s.db, requestID)
-	if err != nil {
-		return "", err
-	}
-	if bodyRow == nil {
-		return "", nil
-	}
-	return bodyRow.StreamBodyPath, nil
+	return repository.GetStreamBodyPathByRequestID(s.db, requestID)
 }
 
 // ExportRequestLogsCSV walks every page of the filter (PageSize=200, the

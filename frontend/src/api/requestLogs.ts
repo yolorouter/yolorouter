@@ -74,6 +74,9 @@ export interface AttemptRecord {
 // lives on disk instead — see has_stream_body / stream_body_path below).
 export interface RequestLogDetail extends RequestLogRow {
   attempts_detail: AttemptRecord[]
+  // request_headers is the caller's headers as a JSON object string, with
+  // sensitive headers masked server-side (PRD §6.8.6). Empty = not captured.
+  request_headers: string
   request_body: string
   upstream_request_body: string
   response_body: string
@@ -159,25 +162,46 @@ export interface StreamBodyPreview {
 // above. A missing/failed body degrades to an empty, non-truncated result
 // rather than throwing, since the detail page already knows from
 // has_stream_body whether a body should exist and just shows "not recorded".
-export async function streamRequestLogBody(requestId: string): Promise<StreamBodyPreview> {
+export async function streamRequestLogBody(
+  requestId: string,
+  timeoutMs = 30_000,
+): Promise<StreamBodyPreview> {
   const rawUrl = `/api/admin/request-logs/${encodeURIComponent(requestId)}/body/stream`
-  const res = await fetch(rawUrl, {
-    method: 'GET',
-    credentials: 'include',
-    headers: { Range: `bytes=0-${STREAM_BODY_PREVIEW_CAP - 1}` },
-  })
-  if (!res.ok) return { text: '', truncated: false, rawUrl }
-  const text = await res.text()
-  // http.ServeContent replies 206 with Content-Range "bytes 0-N/total" when
-  // it honored the Range header and more bytes remain; a 200 (Range ignored
-  // or the whole file already fit under the cap) means we got everything.
-  let truncated = res.status === 206
-  const contentRange = res.headers.get('Content-Range')
-  if (truncated && contentRange) {
-    const total = Number(contentRange.split('/')[1])
-    if (Number.isFinite(total) && total <= STREAM_BODY_PREVIEW_CAP) truncated = false
+  // This bypasses apiFetch (raw text, not the JSON envelope), so it must arm
+  // its own abort timeout — otherwise a stalled on-disk file serve (slow disk,
+  // near-1GiB file, wedged connection) leaves `await res.text()` hanging
+  // forever, spinning the detail page's "stream chunks" loader with no way to
+  // recover (code-review finding). The signal covers the body read too, not
+  // just the initial response.
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(rawUrl, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Range: `bytes=0-${STREAM_BODY_PREVIEW_CAP - 1}` },
+      signal: controller.signal,
+    })
+    if (!res.ok) return { text: '', truncated: false, rawUrl }
+    const text = await res.text()
+    // http.ServeContent replies 206 with Content-Range "bytes 0-N/total" when
+    // it honored the Range header and more bytes remain; a 200 (Range ignored
+    // or the whole file already fit under the cap) means we got everything.
+    let truncated = res.status === 206
+    const contentRange = res.headers.get('Content-Range')
+    if (truncated && contentRange) {
+      const total = Number(contentRange.split('/')[1])
+      if (Number.isFinite(total) && total <= STREAM_BODY_PREVIEW_CAP) truncated = false
+    }
+    return { text, truncated, rawUrl }
+  } catch {
+    // Timeout (abort), network failure, or a read stall — degrade to an empty,
+    // non-truncated result, same as a missing/failed body, so the caller's
+    // finally always runs and the loader never hangs.
+    return { text: '', truncated: false, rawUrl }
+  } finally {
+    clearTimeout(timeout)
   }
-  return { text, truncated, rawUrl }
 }
 
 // exportRequestLogsCSV streams the current filter as a CSV download. Uses a

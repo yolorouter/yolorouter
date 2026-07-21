@@ -16,7 +16,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/yolorouter/yolorouter-ce/pkg/logger"
-	"github.com/yolorouter/yolorouter-ce/pkg/redact"
 )
 
 // errClientDisconnected is returned by the stream pump when the caller's
@@ -414,10 +413,10 @@ func closeStreamBodyFile(rc *RelayContext) {
 	}
 }
 
-// appendStreamBodyLine redacts and appends one already-caller-facing SSE
-// line to the request's stream capture file. A no-op once the file was
-// never opened (bodies dir unresolved / open failed) or the 1GiB backstop
-// already fired for this request.
+// appendStreamBodyLine appends one already-caller-facing SSE line to the
+// request's stream capture file, verbatim (v0.1 does not scrub body content).
+// A no-op once the file was never opened (bodies dir unresolved / open failed)
+// or the 1GiB backstop already fired for this request.
 //
 // maxStreamBodyFileBytes is a HARD anti-OOM disk backstop, NOT a content
 // truncation (PRD §6.8.6/LOG-08: the capture must record every sent SSE
@@ -430,17 +429,16 @@ func appendStreamBodyLine(rc *RelayContext, line []byte) {
 	if rc.streamBodyFile == nil || rc.streamBodyTruncated || len(line) == 0 {
 		return
 	}
-	red := redact.RedactBytes(line, "")
 	// rc.streamBodyBytesWritten tracks the file's size purely in memory
 	// (initialized once from a real Stat() in openStreamBodyFile) — checking
 	// the backstop this way, instead of Stat()-ing the file on every single
 	// appended line, turns what could be hundreds of syscalls per stream
 	// into zero (code-review efficiency finding).
-	if rc.streamBodyBytesWritten+int64(len(red)) > maxStreamBodyFileBytes {
+	if rc.streamBodyBytesWritten+int64(len(line)) > maxStreamBodyFileBytes {
 		rc.streamBodyTruncated = true
 		return
 	}
-	n, err := rc.streamBodyFile.Write(red)
+	n, err := rc.streamBodyFile.Write(line)
 	rc.streamBodyBytesWritten += int64(n)
 	if err != nil {
 		logger.Warn("gateway: write stream body failed", zap.String("request_id", rc.RequestID), zap.Error(err))
@@ -471,19 +469,33 @@ func removeEmptyStreamBodyFile(c *gin.Context, rc *RelayContext) {
 	if err != nil || info.Size() != 0 {
 		return
 	}
+	// Close the fd BEFORE unlinking (code-review finding): leaving it open
+	// past os.Remove would let any later appendStreamBodyLine write to an
+	// unlinked inode (bytes silently lost), and on Windows os.Remove of an
+	// open file fails outright, leaving a stale empty stream_body_path. This
+	// also nils rc.streamBodyFile so the deferred closeStreamBodyFile in
+	// handleStream is a no-op.
+	closeStreamBodyFile(rc)
 	_ = os.Remove(path)
 	rc.streamBodyCaptured = false
 }
+
+// BodiesDirContextKey is the gin.Context key under which a router-level
+// middleware stashes the absolute data/bodies/ directory for every gateway
+// request. Exported and shared so the setter (internal/router/router.go) and
+// this reader can't silently drift apart into two mismatched string literals
+// that would disable stream capture with no error (code-review finding).
+const BodiesDirContextKey = "bodies_dir"
 
 // streamBodiesDir resolves the absolute data/bodies/ directory for this
 // request. The gateway package has no direct access to app config (importing
 // it would create a cycle back through cmd/config's dependents); instead
 // serve.go resolves the absolute path once at boot, and a router-level
-// middleware stashes it on every request's gin.Context under "bodies_dir"
-// (internal/router/router.go, "bodies_dir" key). Empty means unresolved
+// middleware stashes it on every request's gin.Context under
+// BodiesDirContextKey (internal/router/router.go). Empty means unresolved
 // (e.g. a test gin.Context built without that middleware) — stream capture
 // is silently skipped in that case; the caller's stream itself is never
 // affected.
 func streamBodiesDir(c *gin.Context) string {
-	return c.GetString("bodies_dir")
+	return c.GetString(BodiesDirContextKey)
 }

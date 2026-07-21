@@ -153,7 +153,8 @@ func (s *RelayService) finalize(rc *RelayContext, statusCode int, failReason str
 	}
 
 	// PRD §6.8.4/§6.8.6/LOG-06: record obtainable request/response bodies
-	// (already redacted at capture sites). Idempotent UPSERT (UNIQUE
+	// (stored verbatim; v0.1 does not scrub body content — only request
+	// headers are masked, via SanitizeHeaders). Idempotent UPSERT (UNIQUE
 	// request_id) so retry/double-call never duplicates. Best-effort: a body-
 	// write failure is logged only — the billing row (above) is authoritative
 	// and must not roll back on a body failure (Codex #5).
@@ -168,6 +169,7 @@ func (s *RelayService) finalize(rc *RelayContext, statusCode int, failReason str
 	}
 	bodyRow := &model.RequestLogBody{
 		RequestID:            rc.RequestID,
+		RequestHeaders:       string(rc.RequestHeaders),
 		RequestBody:          string(rc.RequestBody),
 		UpstreamRequestBody:  string(rc.UpstreamRequestBody),
 		ResponseBody:         string(rc.ResponseBody),

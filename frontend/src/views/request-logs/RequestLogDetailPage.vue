@@ -117,30 +117,39 @@
         </NDescriptions>
       </section>
 
-      <!-- Bodies (M6.2 §6.8.4/§6.8.6): server-redacted request/response
-           bodies (pkg/redact strips credentials before persistence, never
-           truncated). Empty string means "not captured" (e.g. an early
-           rejection before the body was read) and renders as NEmpty rather
-           than an empty code block. Stream requests carry the sent SSE on
-           disk instead of in response_body/upstream_response_body — that
-           card is lazy-loaded via body/stream (LOG-08: full content, no
-           mid-stream truncation, only a 1GiB anti-OOM backstop). -->
+      <!-- Bodies (M6.2 §6.8.4/§6.8.6): request/response bodies stored verbatim
+           server-side (v0.1 does not scrub body content — only request headers
+           are masked). Each inline body is capped server-side (maxInlineBodyBytes)
+           with a visible marker so a pathological large body can't freeze the
+           tab. Empty string means "not captured" (e.g. an early rejection
+           before the body was read) and renders as NEmpty rather than an empty
+           code block. Stream requests carry the sent SSE on disk instead of in
+           response_body/upstream_response_body — that card is lazy-loaded via
+           body/stream (LOG-08: full content, no mid-stream truncation, only a
+           1GiB anti-OOM backstop). -->
       <div class="body-cards">
+        <!-- Request headers (PRD §6.8.6): the caller's headers as a JSON
+             object with sensitive headers already masked server-side. Only
+             shown when captured. -->
+        <NCard v-if="detail.request_headers" size="small" :title="t('requestLogs.requestHeaders')">
+          <BodyViewer :raw="detail.request_headers" />
+        </NCard>
+
         <!-- The four non-stream bodies differ only by title + bound field
              (code-review simplification finding) — one v-for replaces four
              near-identical copy-pasted NCard blocks. The stream-body card
-             below stays separate: it has genuinely different behavior
-             (lazy-loaded, preview/backstop truncation hints) that doesn't
-             fit this shape. -->
+             below stays separate: its content is a raw SSE transcript (not a
+             single JSON value) and it is lazy-loaded with preview/backstop
+             truncation hints, so it doesn't fit either shape. -->
         <NCard v-for="section in bodySections" :key="section.key" size="small" :title="section.title">
-          <NCode v-if="section.body" :code="prettyBody(section.body)" language="json" word-wrap />
+          <BodyViewer v-if="section.body" :raw="section.body" />
           <NEmpty v-else :description="t('requestLogs.bodyNotRecorded')" size="small" />
         </NCard>
 
         <NCard v-if="detail.has_stream_body" size="small" :title="t('requestLogs.streamBody')">
           <NSpin :show="streamLoading">
             <div class="stream-body-content">
-              <NCode v-if="streamBody" :code="streamBody" language="json" word-wrap />
+              <BodyViewer v-if="streamBody" :raw="streamBody" />
               <NEmpty v-else-if="streamLoaded" :description="t('requestLogs.bodyNotRecorded')" size="small" />
             </div>
           </NSpin>
@@ -164,7 +173,6 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   NButton,
   NCard,
-  NCode,
   NDataTable,
   NDescriptions,
   NDescriptionsItem,
@@ -187,6 +195,7 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import StatusClassTag from '../../components/request-logs/StatusClassTag.vue'
 import AttemptOutcomeTag from '../../components/request-logs/AttemptOutcomeTag.vue'
+import BodyViewer from '../../components/request-logs/BodyViewer.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -282,18 +291,6 @@ const bodySections = computed(() => [
   { key: 'response', title: t('requestLogs.responseBody'), body: detail.value?.response_body ?? '' },
   { key: 'upstreamResponse', title: t('requestLogs.upstreamResponseBody'), body: detail.value?.upstream_response_body ?? '' },
 ])
-
-// Bodies are stored as the raw (already redacted) JSON text the gateway
-// captured — re-indent for readability when it parses as JSON, otherwise
-// fall back to the raw string (e.g. a plain-text error body).
-function prettyBody(raw: string): string {
-  if (!raw) return ''
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2)
-  } catch {
-    return raw
-  }
-}
 
 // The "final" attempt is the last one in the array — gateway/log.go
 // appends each try in order, so the last entry is whatever the relay loop
@@ -444,12 +441,6 @@ const attemptColumns = computed<DataTableColumns<AttemptRecord>>(() => [
 
 .stream-body-content {
   min-height: 48px;
-}
-
-:deep(.n-code) {
-  max-height: 480px;
-  overflow: auto;
-  font-size: var(--text-xs);
 }
 
 .stream-truncated-hint {

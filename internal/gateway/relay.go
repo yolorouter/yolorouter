@@ -16,7 +16,6 @@ import (
 	"github.com/yolorouter/yolorouter-ce/internal/repository"
 	"github.com/yolorouter/yolorouter-ce/pkg/crypto"
 	"github.com/yolorouter/yolorouter-ce/pkg/logger"
-	"github.com/yolorouter/yolorouter-ce/pkg/redact"
 )
 
 // upstreamRequestTimeout caps a single upstream attempt's full duration
@@ -45,38 +44,46 @@ const maxNonStreamResponseBytes = 32 * 1024 * 1024 // 32 MiB
 // already enforces it upstream of us, before this code ever runs).
 const BodyAuditCap = 20 << 20 // 20 MiB
 
-// ReadAuditBody drains r (bounded by BodyAuditCap) and redacts the result —
-// the shared "bounded read + redact" step every early-rejection audit path
-// needs (captureRejectedBody below, and middleware.logAuthRejection's own
-// auth-gate rejections). Exported so middleware doesn't re-implement this
-// same read-then-redact sequence itself (code-review finding: it previously
-// did, with only the byte-count constant actually shared). Best-effort: nil
-// on a read error or a nil/absent body, never an error the caller must
-// handle. callerKey, if non-empty, is redacted exactly in addition to the
-// generic sk-/Bearer/JSON-field patterns (PRD §6.8.6).
-func ReadAuditBody(r io.Reader, callerKey string) []byte {
+// ReadAuditBody drains r (bounded by BodyAuditCap) — the shared bounded-read
+// step the post-auth early-rejection audit paths need (captureRejectedBody
+// below: revoked/expired/budget/RPM/concurrency, all for an ALREADY-
+// authenticated caller who is rate-limited). Best-effort: nil on a read error
+// or a nil/absent body. v0.1 stores the caller body verbatim — no content
+// scrubbing (only request headers are masked, via SanitizeHeaders).
+func ReadAuditBody(r io.Reader) []byte {
+	return ReadAuditBodyCapped(r, BodyAuditCap+1)
+}
+
+// ReadAuditBodyCapped is ReadAuditBody with a caller-chosen byte ceiling, so
+// the UNauthenticated auth-rejection path (middleware.logAuthRejection) can
+// bound its capture far below BodyAuditCap: without a valid key, an attacker
+// could otherwise make the gateway read + persist a 20 MiB body per rejected
+// request and inflate request_log_bodies without ever authenticating
+// (code-review finding). Best-effort: nil on a read error or a nil/absent
+// body, never an error the caller must handle.
+func ReadAuditBodyCapped(r io.Reader, limit int64) []byte {
 	if r == nil {
 		return nil
 	}
-	b, err := io.ReadAll(io.LimitReader(r, BodyAuditCap+1))
+	b, err := io.ReadAll(io.LimitReader(r, limit))
 	if err != nil {
 		return nil
 	}
-	return redact.RedactBytes(b, callerKey)
+	return b
 }
 
 // captureRejectedBody drains the caller request body for the audit row, so
 // LOG-06 records the request body even when the request is rejected before
 // the normal body read (revoked/expired/budget/concurrency/RPM, all before
 // io.ReadAll in Handle).
-func captureRejectedBody(c *gin.Context, rc *RelayContext, callerKey string) {
+func captureRejectedBody(c *gin.Context, rc *RelayContext) {
 	if rc.RequestBody != nil {
 		return // already captured (e.g. body read succeeded then a later check failed)
 	}
 	if c.Request == nil {
 		return
 	}
-	if body := ReadAuditBody(c.Request.Body, callerKey); body != nil {
+	if body := ReadAuditBody(c.Request.Body); body != nil {
 		rc.RequestBody = body
 	}
 }
@@ -138,11 +145,13 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// the chain) can stash the local error JSON into rc.ResponseBody without
 	// every call site threading an *RelayContext parameter through.
 	c.Set(relayContextKey, rc)
-	// callerKey is the raw caller API key APIKeyAuth stashed on success
-	// (empty in tests that call Handle directly, bypassing the middleware) —
-	// used to redact the caller's own key exactly out of captured bodies,
-	// on top of the generic sk-/Bearer/JSON-field patterns.
-	callerKey := c.GetString(CallerKeyContextKey)
+	// PRD §6.8.6: capture the caller's request headers once at entry (masked
+	// via SanitizeHeaders) so even an early rejection below still records
+	// them. c.Request is always non-nil here (gin populates it), but guard
+	// anyway for direct-call tests.
+	if c.Request != nil {
+		rc.RequestHeaders = SanitizeHeaders(c.Request.Header)
+	}
 	// Panic-recovery safety net for GATE-13: if any sub-call panics (nil
 	// deref, index OOB, type assertion), gin's Recovery middleware catches
 	// it upstream, but finalize would otherwise never run and the request
@@ -163,14 +172,14 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 		}
 	}()
 
-	if !s.checkKeyStateAndLimits(c, rc, apiKey, start, callerKey) {
+	if !s.checkKeyStateAndLimits(c, rc, apiKey, start) {
 		return
 	}
 	// Concurrency is the only limit that needs a paired release — acquire it
 	// here and defer the release so every return path below frees the slot.
 	if apiKey.ConcurrencyLimit != nil && *apiKey.ConcurrencyLimit > 0 {
 		if !s.limiter.AcquireConcurrency(apiKey.ID, *apiKey.ConcurrencyLimit) {
-			captureRejectedBody(c, rc, callerKey)
+			captureRejectedBody(c, rc)
 			WriteOpenAIErrorWithRequestID(c, http.StatusTooManyRequests, errTypeRateLimit, "concurrency limit exceeded", rc.RequestID)
 			s.finalize(rc, http.StatusTooManyRequests, "concurrency_limit", start)
 			return
@@ -183,7 +192,7 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// exhaust the whole minute's RPM under concurrent load).
 	if apiKey.RPMLimit != nil && *apiKey.RPMLimit > 0 {
 		if !s.limiter.CheckRPM(apiKey.ID, *apiKey.RPMLimit, time.Now()) {
-			captureRejectedBody(c, rc, callerKey)
+			captureRejectedBody(c, rc)
 			WriteOpenAIErrorWithRequestID(c, http.StatusTooManyRequests, errTypeRateLimit, "rate limit exceeded (requests per minute)", rc.RequestID)
 			s.finalize(rc, http.StatusTooManyRequests, "rpm_exceeded", start)
 			return
@@ -215,10 +224,8 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 		return
 	}
 	// PRD §6.8.4/LOG-06: stash the caller-facing request body for the
-	// request_log_bodies row. Redacted immediately, including an exact-match
-	// pass on the caller's own key (empty when Handle was invoked outside
-	// the middleware, e.g. tests).
-	rc.RequestBody = redact.RedactBytes(body, callerKey)
+	// request_log_bodies row, verbatim (v0.1 does not scrub body content).
+	rc.RequestBody = body
 
 	// One JSON decode of the caller body — parsed.Model/Stream for routing,
 	// parsed.validate() for structural checks, parsed.hasTools() for the
@@ -308,25 +315,25 @@ func (s *RelayService) Handle(c *gin.Context, apiKey *model.APIKey) {
 // checkKeyStateAndLimits runs the pre-call checks that don't need a paired
 // release: status (revoked), expiry, budget (read-only here — the gateway
 // writes the spend in finalize), and RPM. Concurrency is handled separately
-// in Handle because it needs a deferred release. callerKey is threaded
-// through to captureRejectedBody (PRD §6.8.4/LOG-06: these three checks all
-// run before Handle's normal body read, so the audit row would otherwise
-// have an empty request_body).
-func (s *RelayService) checkKeyStateAndLimits(c *gin.Context, rc *RelayContext, apiKey *model.APIKey, start time.Time, callerKey string) bool {
+// in Handle because it needs a deferred release. captureRejectedBody is
+// called on each rejection (PRD §6.8.4/LOG-06: these three checks all run
+// before Handle's normal body read, so the audit row would otherwise have an
+// empty request_body).
+func (s *RelayService) checkKeyStateAndLimits(c *gin.Context, rc *RelayContext, apiKey *model.APIKey, start time.Time) bool {
 	if apiKey.Status == model.APIKeyStatusRevoked {
-		captureRejectedBody(c, rc, callerKey)
+		captureRejectedBody(c, rc)
 		WriteOpenAIErrorWithRequestID(c, http.StatusUnauthorized, errTypeAuthentication, "API key revoked", rc.RequestID)
 		s.finalize(rc, http.StatusUnauthorized, "revoked", start)
 		return false
 	}
 	if apiKey.ExpiresAt != nil && apiKey.ExpiresAt.Before(time.Now().UTC()) {
-		captureRejectedBody(c, rc, callerKey)
+		captureRejectedBody(c, rc)
 		WriteOpenAIErrorWithRequestID(c, http.StatusUnauthorized, errTypeAuthentication, "API key expired", rc.RequestID)
 		s.finalize(rc, http.StatusUnauthorized, "expired", start)
 		return false
 	}
 	if apiKey.BudgetLimitCents != nil && apiKey.BudgetSpentCents >= *apiKey.BudgetLimitCents {
-		captureRejectedBody(c, rc, callerKey)
+		captureRejectedBody(c, rc)
 		WriteOpenAIErrorWithRequestID(c, http.StatusTooManyRequests, errTypeInsufficientQuota, "budget limit exceeded", rc.RequestID)
 		s.finalize(rc, http.StatusTooManyRequests, "budget_exceeded", start)
 		return false
@@ -464,9 +471,10 @@ const (
 // success; other 4xx is terminal (caller's problem, GATE-11).
 func (s *RelayService) attemptOne(c *gin.Context, rc *RelayContext, cand model.ModelCandidate, provider *model.Provider, pk model.ProviderKey, plaintext string, upstreamBody []byte, start time.Time) attemptResult {
 	// PRD §6.8.4/LOG-06: record the rewritten (provider_model_name) request
-	// actually sent upstream. Overwritten on every attempt — the last write
-	// wins, matching the "successful attempt, else the last attempt" rule.
-	rc.UpstreamRequestBody = redact.RedactBytes(upstreamBody, "")
+	// actually sent upstream, verbatim. Overwritten on every attempt — the
+	// last write wins, matching the "successful attempt, else the last
+	// attempt" rule.
+	rc.UpstreamRequestBody = upstreamBody
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), upstreamRequestTimeout)
 	defer cancel()
@@ -497,15 +505,16 @@ func (s *RelayService) attemptOne(c *gin.Context, rc *RelayContext, cand model.M
 
 	statusCode := resp.StatusCode
 	// LOG-06: capture the obtainable upstream error body before close (Codex
-	// #2/#3). Error bodies are small; cap at 1MiB — beyond that is truncation
-	// of an error diagnostic, not a response body, and 1MiB is ample for
-	// debugging. Unconditionally overwritten (even when empty) so this
-	// matches rc.UpstreamRequestBody's "last attempt wins" rule above — an
-	// empty errBody from THIS attempt must clear out a stale non-empty body
+	// #2/#3), verbatim. Error bodies are small; cap at 1MiB — beyond that is
+	// truncation of an error diagnostic, not a response body, and 1MiB is
+	// ample for debugging. Unconditionally overwritten (even when empty) so
+	// this matches rc.UpstreamRequestBody's "last attempt wins" rule above —
+	// an empty errBody from THIS attempt must clear out a stale non-empty body
 	// left by an earlier failed candidate, not leave it looking current
-	// (code-review finding).
+	// (code-review finding). A subsequent SUCCESSFUL stream candidate clears
+	// it entirely — see handleStream.
 	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	rc.UpstreamResponseBody = redact.RedactBytes(errBody, "")
+	rc.UpstreamResponseBody = errBody
 	_ = resp.Body.Close()
 
 	class := classifyUpstreamStatus(statusCode)
@@ -543,6 +552,15 @@ func (s *RelayService) attemptOne(c *gin.Context, rc *RelayContext, cand model.M
 
 func (s *RelayService) handleNonStream(c *gin.Context, rc *RelayContext, cand model.ModelCandidate, provider *model.Provider, pk model.ProviderKey, resp *http.Response, start time.Time) attemptResult {
 	defer func() { _ = resp.Body.Close() }()
+	// Now committed to this 2xx candidate: drop any error body a prior failed
+	// candidate stashed in rc.UpstreamResponseBody (attemptOne's non-2xx path,
+	// "last attempt wins"). The three failover returns below (read error /
+	// oversize / rewrite error) don't refresh it, so without this clear a
+	// stale earlier-candidate error body would be persisted as THIS request's
+	// upstream response (code-review finding). Only the success path re-sets
+	// both fields.
+	rc.UpstreamResponseBody = nil
+	rc.ResponseBody = nil
 	// Bound the response read: a buggy or hostile upstream can otherwise
 	// return an unbounded body and exhaust gateway memory before the
 	// request timeout fires (the response body has no bodylimit guard the
@@ -573,9 +591,10 @@ func (s *RelayService) handleNonStream(c *gin.Context, rc *RelayContext, cand mo
 	}
 	// PRD §6.8.4/LOG-06: raw upstream (pre-rewrite, provider model name) vs.
 	// caller-facing (post-rewrite, external model name) — these two differ
-	// only in the model field, but both must be recorded (Codex #1).
-	rc.UpstreamResponseBody = redact.RedactBytes(body, "")
-	rc.ResponseBody = redact.RedactBytes(rewritten, "")
+	// only in the model field, but both must be recorded (Codex #1). Stored
+	// verbatim (v0.1 does not scrub body content).
+	rc.UpstreamResponseBody = body
+	rc.ResponseBody = rewritten
 	rc.Usage = usage
 	rc.Attempts = append(rc.Attempts, makeAttempt(cand, provider, &pk, resp.StatusCode, AttemptSuccess, ""))
 	c.Header("Content-Type", "application/json")
@@ -586,6 +605,15 @@ func (s *RelayService) handleNonStream(c *gin.Context, rc *RelayContext, cand mo
 }
 
 func (s *RelayService) handleStream(c *gin.Context, rc *RelayContext, cand model.ModelCandidate, provider *model.Provider, pk model.ProviderKey, resp *http.Response, start time.Time) attemptResult {
+	// A prior failed candidate may have stashed its non-2xx error body in
+	// rc.UpstreamResponseBody (attemptOne above). A stream request persists its
+	// response through the SSE capture file, not these fields — the types.go
+	// contract is that both stay empty for stream requests. Now that we've
+	// committed to streaming a 2xx candidate, drop any stale error body so the
+	// detail page doesn't show a previous candidate's error as this (successful)
+	// request's "upstream response" (code-review finding).
+	rc.UpstreamResponseBody = nil
+	rc.ResponseBody = nil
 	usage, err := StreamUpstreamToClient(c, resp, rc)
 	// StreamUpstreamToClient deliberately leaves the capture file open past
 	// its own return (code-review finding) so the writeStreamErrorEvent call
