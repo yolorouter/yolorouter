@@ -8,8 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
-	"github.com/yolorouter/yolorouter-ce/pkg/logger"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
+	"github.com/yolorouter/yolorouter/pkg/logger"
 )
 
 // Recovery recovers from any panic in a later handler, logs it (including

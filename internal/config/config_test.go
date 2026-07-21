@@ -324,11 +324,11 @@ func TestLoadAcceptsUpdateSection(t *testing.T) {
 // GitHub 404 at runtime.
 func TestLoadRejectsInvalidGitHubRepo(t *testing.T) {
 	for _, repo := range []string{
-		"ownerrepo",       // missing slash
+		"ownerrepo",        // missing slash
 		"owner/repo/extra", // too many segments
-		"/repo",           // empty owner
-		"owner/",          // empty repo
-		"own er/repo",     // whitespace
+		"/repo",            // empty owner
+		"owner/",           // empty repo
+		"own er/repo",      // whitespace
 	} {
 		t.Run(repo, func(t *testing.T) {
 			dir := t.TempDir()

@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
+	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // CreateProviderWithKey inserts a Provider and its first ProviderKey in one

@@ -12,11 +12,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	ycrypto "github.com/yolorouter/yolorouter-ce/pkg/crypto"
+	ycrypto "github.com/yolorouter/yolorouter/pkg/crypto"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
-	"github.com/yolorouter/yolorouter-ce/internal/repository"
-	"github.com/yolorouter/yolorouter-ce/internal/testutil"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/repository"
+	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
 // newRelaySvc builds a RelayService and swaps in a plain transport so the

@@ -8,7 +8,7 @@ import (
 
 func TestAcquireInstanceLockExclusivity(t *testing.T) {
 	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "yolorouter-ce.lock")
+	lockPath := filepath.Join(dir, "yolorouter.lock")
 
 	unlock1, err := AcquireInstanceLock(lockPath)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestAcquireInstanceLockExclusivity(t *testing.T) {
 
 func TestAcquireInstanceLockCreatesParentDir(t *testing.T) {
 	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "nested", "yolorouter-ce.lock")
+	lockPath := filepath.Join(dir, "nested", "yolorouter.lock")
 
 	unlock, err := AcquireInstanceLock(lockPath)
 	if err != nil {

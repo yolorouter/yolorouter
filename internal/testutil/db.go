@@ -10,13 +10,13 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/migrations"
-	"github.com/yolorouter/yolorouter-ce/pkg/database"
+	"github.com/yolorouter/yolorouter/migrations"
+	"github.com/yolorouter/yolorouter/pkg/database"
 )
 
 // NewSQLiteDB opens a fresh temp-file SQLite database, runs every embedded
 // migration against it via the same database.RunMigrations call production
-// startup uses (see cmd/yolorouter-ce/serve.go), and returns the resulting
+// startup uses (see cmd/yolorouter/serve.go), and returns the resulting
 // *gorm.DB. Each call gets its own temp file (t.TempDir()).
 //
 // database.Init sets the package-level database.DB variable rather than

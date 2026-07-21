@@ -23,7 +23,7 @@ var (
 	BuildTime = "unknown"
 
 	// DefaultGitHubRepo is the compiled-in "owner/repo" release source
-	// (e.g. "yolorouter/yolorouter-ce"), injected at release time via
+	// (e.g. "yolorouter/yolorouter"), injected at release time via
 	// ldflags. Empty in dev builds. config.update.github_repo overrides it
 	// per-deployment; both empty (or update.enabled=false) disable the
 	// update feature entirely.

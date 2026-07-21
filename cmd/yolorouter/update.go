@@ -20,8 +20,8 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"github.com/yolorouter/yolorouter-ce/internal/config"
-	"github.com/yolorouter/yolorouter-ce/internal/version"
+	"github.com/yolorouter/yolorouter/internal/config"
+	"github.com/yolorouter/yolorouter/internal/version"
 )
 
 // githubAPITimeout bounds both the release-metadata lookup and each asset
@@ -32,9 +32,9 @@ const githubAPITimeout = 30 * time.Second
 // binaryName is the executable filename inside a goreleaser-produced
 // archive (set by .goreleaser.yaml's builds.binary). extractBinary looks for
 // this basename regardless of any parent directory the archive wraps it in.
-const binaryName = "yolorouter-ce"
+const binaryName = "yolorouter"
 
-// runUpdate is the `yolorouter-ce update` command: a semi-automatic upgrade
+// runUpdate is the `yolorouter update` command: a semi-automatic upgrade
 // that resolves the latest release, verifies its checksum, backs up the
 // running binary, and atomically replaces it — then leaves the actual
 // restart to the operator (see design doc §4.5). It deliberately does NOT
@@ -168,7 +168,7 @@ func runUpdate(ctx context.Context, args []string) error {
 		return fmt.Errorf("extracted binary from %s is not a recognized executable format", asset.Name)
 	}
 
-	fmt.Printf("Upgrade yolorouter-ce %s -> %s?\n\n", current, rel.TagName)
+	fmt.Printf("Upgrade yolorouter %s -> %s?\n\n", current, rel.TagName)
 	fmt.Println("WARNING: restarting after upgrade will run database migrations.")
 	fmt.Println("For a full rollback, back up the database first:")
 	fmt.Println(backupCommand(configPath))
@@ -201,7 +201,7 @@ func runUpdate(ctx context.Context, args []string) error {
 		return fmt.Errorf("re-stat current executable: %w", err)
 	}
 	if !sameExeIdentity(initialInfo, info) {
-		return fmt.Errorf("executable changed during confirmation (another update may have run); aborting to avoid downgrade. Re-run `yolorouter-ce update`")
+		return fmt.Errorf("executable changed during confirmation (another update may have run); aborting to avoid downgrade. Re-run `yolorouter update`")
 	}
 
 	staging, err := writeStagedBinary(filepath.Dir(exe), binaryBytes, info.Mode())
@@ -260,7 +260,7 @@ func runUpdate(ctx context.Context, args []string) error {
 		fmt.Println("note: if this binary uses Linux file capabilities (e.g. cap_net_bind_service),")
 		fmt.Println("      reapply them on the new binary — atomic rename does not preserve xattrs.")
 	}
-	fmt.Println("restart yolorouter-ce to apply (will run database migrations)")
+	fmt.Println("restart yolorouter to apply (will run database migrations)")
 	return nil
 }
 
@@ -285,7 +285,7 @@ func fetchLatestReleaseWith(ctx context.Context, client *http.Client, repo strin
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "yolorouter-ce")
+	req.Header.Set("User-Agent", "yolorouter")
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := client.Do(req)
@@ -403,7 +403,7 @@ func ownershipOf(info os.FileInfo) (uid, gid int) {
 // return. A crash leaves the lock file behind — the error message tells the
 // operator to remove it (Codex review P1).
 func acquireUpdateLock(dir string) (string, *os.File, error) {
-	lockPath := filepath.Join(dir, ".yolorouter-ce-update.lock")
+	lockPath := filepath.Join(dir, ".yolorouter-update.lock")
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
@@ -438,17 +438,17 @@ func shellQuote(s string) string {
 // otherwise.
 func backupCommand(configPath string) string {
 	if configPath == "" {
-		return "  yolorouter-ce db:backup"
+		return "  yolorouter db:backup"
 	}
-	return "  yolorouter-ce db:backup --config " + shellQuote(configPath)
+	return "  yolorouter db:backup --config " + shellQuote(configPath)
 }
 
 // matchAsset finds the archive for the current platform in the release's
 // assets, named per .goreleaser.yaml's archive name_template:
-// yolorouter-ce_v{ver}_{goos}_{goarch}.tar.gz (the leading v matches the
+// yolorouter_v{ver}_{goos}_{goarch}.tar.gz (the leading v matches the
 // GitHub tag_name, since the update command resolves ver from tag_name).
 func matchAsset(assets []githubAsset, goos, goarch, ver string) (githubAsset, error) {
-	want := fmt.Sprintf("yolorouter-ce_%s_%s_%s.tar.gz", ver, goos, goarch)
+	want := fmt.Sprintf("yolorouter_%s_%s_%s.tar.gz", ver, goos, goarch)
 	return findAsset(assets, want)
 }
 
@@ -567,7 +567,7 @@ func isExecutable(data []byte) bool {
 // service account (Codex review P1/P2). On any error the file is removed so a
 // half-written staging file can never be mistaken for a valid upgrade.
 func writeStagedBinary(dir string, data []byte, mode os.FileMode) (string, error) {
-	f, err := os.CreateTemp(dir, "yolorouter-ce.new.*")
+	f, err := os.CreateTemp(dir, "yolorouter.new.*")
 	if err != nil {
 		return "", err
 	}
@@ -616,7 +616,7 @@ func replaceBinary(currentPath, stagingPath string, initialInfo os.FileInfo) (st
 		return "", fmt.Errorf("re-stat current executable before rename: %w", err)
 	}
 	if !sameExeIdentity(initialInfo, preRename) {
-		return "", fmt.Errorf("executable changed during backup (external tool may have updated it); aborting to avoid downgrade. Re-run `yolorouter-ce update`")
+		return "", fmt.Errorf("executable changed during backup (external tool may have updated it); aborting to avoid downgrade. Re-run `yolorouter update`")
 	}
 	if err := os.Rename(stagingPath, currentPath); err != nil {
 		return "", fmt.Errorf("replace binary: %w", err)

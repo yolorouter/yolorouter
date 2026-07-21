@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
+	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // gatewayAPIKeyKey is the gin.Context key under which APIKeyAuth stores the

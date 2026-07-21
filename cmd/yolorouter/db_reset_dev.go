@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/yolorouter/yolorouter-ce/pkg/database"
+	"github.com/yolorouter/yolorouter/pkg/database"
 )
 
 func runDBReset(ctx context.Context, args []string) error {

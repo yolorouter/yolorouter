@@ -6,9 +6,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
-	"github.com/yolorouter/yolorouter-ce/internal/repository"
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/repository"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
 const (

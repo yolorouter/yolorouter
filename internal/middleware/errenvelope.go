@@ -7,8 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
-	"github.com/yolorouter/yolorouter-ce/pkg/response"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
+	"github.com/yolorouter/yolorouter/pkg/response"
 )
 
 const RequestEntityTooLargeCode = errcode.RequestEntityTooLarge

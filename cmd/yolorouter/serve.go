@@ -13,12 +13,12 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/yolorouter/yolorouter-ce/internal/router"
-	"github.com/yolorouter/yolorouter-ce/internal/service"
-	"github.com/yolorouter/yolorouter-ce/pkg/crypto"
-	"github.com/yolorouter/yolorouter-ce/pkg/database"
-	"github.com/yolorouter/yolorouter-ce/pkg/logger"
-	"github.com/yolorouter/yolorouter-ce/web"
+	"github.com/yolorouter/yolorouter/internal/router"
+	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
+	"github.com/yolorouter/yolorouter/pkg/database"
+	"github.com/yolorouter/yolorouter/pkg/logger"
+	"github.com/yolorouter/yolorouter/web"
 )
 
 func runServe(ctx context.Context, args []string) error {

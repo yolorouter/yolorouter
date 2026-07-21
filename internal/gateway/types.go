@@ -16,7 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
+	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // RelayContext is one gateway request's lifecycle state. Sharply trimmed vs

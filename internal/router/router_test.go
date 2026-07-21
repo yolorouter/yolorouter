@@ -10,10 +10,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter-ce/internal/config"
-	"github.com/yolorouter/yolorouter-ce/internal/testutil"
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
-	"github.com/yolorouter/yolorouter-ce/pkg/response"
+	"github.com/yolorouter/yolorouter/internal/config"
+	"github.com/yolorouter/yolorouter/internal/testutil"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
+	"github.com/yolorouter/yolorouter/pkg/response"
 )
 
 func newTestRouter(t *testing.T) *gin.Engine {

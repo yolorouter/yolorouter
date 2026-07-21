@@ -1,8 +1,8 @@
-# goreleaser config for yolorouter-ce. Push a `v*` tag to trigger a release
+# goreleaser config for yolorouter. Push a `v*` tag to trigger a release
 # via .github/workflows/release.yml. See design doc §4.3.
 version: 2
 
-project_name: yolorouter-ce
+project_name: yolorouter
 
 before:
   hooks:
@@ -14,9 +14,9 @@ before:
     - make embed-frontend
 
 builds:
-  - id: yolorouter-ce
-    main: ./cmd/yolorouter-ce
-    binary: yolorouter-ce
+  - id: yolorouter
+    main: ./cmd/yolorouter
+    binary: yolorouter
     tags:
       - release
       - embed
@@ -37,17 +37,17 @@ builds:
       # {{ .Date }} are used verbatim. DEFAULT_GITHUB_REPO is injected from a
       # repository Variable by the release workflow (empty until the repo is
       # public — the update feature then relies on config.update.github_repo).
-      - -X github.com/yolorouter/yolorouter-ce/internal/version.Version=v{{ .Version }}
-      - -X github.com/yolorouter/yolorouter-ce/internal/version.Commit={{ .ShortCommit }}
-      - -X github.com/yolorouter/yolorouter-ce/internal/version.BuildTime={{ .Date }}
-      - -X github.com/yolorouter/yolorouter-ce/internal/version.DefaultGitHubRepo={{ .Env.DEFAULT_GITHUB_REPO }}
+      - -X github.com/yolorouter/yolorouter/internal/version.Version=v{{ .Version }}
+      - -X github.com/yolorouter/yolorouter/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/yolorouter/yolorouter/internal/version.BuildTime={{ .Date }}
+      - -X github.com/yolorouter/yolorouter/internal/version.DefaultGitHubRepo={{ .Env.DEFAULT_GITHUB_REPO }}
 
 archives:
   - formats: [tar.gz]
     # Archive name carries the leading v (v0.1.0) to match tag_name, so the
     # `update` command's matchAsset — which keys off tag_name — finds the
-    # right file: yolorouter-ce_v{tag}_{os}_{arch}.tar.gz
-    name_template: yolorouter-ce_v{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    # right file: yolorouter_v{tag}_{os}_{arch}.tar.gz
+    name_template: yolorouter_v{{ .Version }}_{{ .Os }}_{{ .Arch }}
 
 checksum:
   name_template: checksums.txt

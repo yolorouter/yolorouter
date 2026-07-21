@@ -11,9 +11,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/middleware"
-	"github.com/yolorouter/yolorouter-ce/internal/testutil"
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
+	"github.com/yolorouter/yolorouter/internal/middleware"
+	"github.com/yolorouter/yolorouter/internal/testutil"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
 func newAuthTestRouter(t *testing.T, db *gorm.DB) *gin.Engine {

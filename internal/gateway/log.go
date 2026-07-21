@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
-	"github.com/yolorouter/yolorouter-ce/internal/repository"
-	"github.com/yolorouter/yolorouter-ce/pkg/logger"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/repository"
+	"github.com/yolorouter/yolorouter/pkg/logger"
 	"go.uber.org/zap"
 )
 

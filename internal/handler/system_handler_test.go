@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter-ce/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service"
 )
 
 // fakeVersionChecker is a test double for the handler's VersionChecker

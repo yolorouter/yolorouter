@@ -8,9 +8,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
-	"github.com/yolorouter/yolorouter-ce/internal/testutil"
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/testutil"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
 func newAPIKeyServiceForTest(t *testing.T) (*APIKeyService, *gorm.DB) {

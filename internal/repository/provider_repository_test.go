@@ -8,8 +8,8 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
-	"github.com/yolorouter/yolorouter-ce/internal/testutil"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
 func seedProviderWithKey(t *testing.T, db *gorm.DB, name string) (*model.Provider, *model.ProviderKey) {

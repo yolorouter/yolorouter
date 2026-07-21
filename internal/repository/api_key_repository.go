@@ -8,7 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
+	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 func FindAPIKeyByID(db *gorm.DB, id uint) (*model.APIKey, error) {

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yolorouter/yolorouter-ce/internal/middleware"
-	"github.com/yolorouter/yolorouter-ce/internal/service/safehttp"
+	"github.com/yolorouter/yolorouter/internal/middleware"
+	"github.com/yolorouter/yolorouter/internal/service/safehttp"
 )
 
 // TestOutcome is one of the 8 PRD §6.2.8 test-result categories. Its

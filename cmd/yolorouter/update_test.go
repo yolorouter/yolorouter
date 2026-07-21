@@ -13,22 +13,22 @@ import (
 
 func TestMatchAssetFindsPlatformArchive(t *testing.T) {
 	assets := []githubAsset{
-		{Name: "yolorouter-ce_v0.2.0_linux_amd64.tar.gz"},
-		{Name: "yolorouter-ce_v0.2.0_linux_arm64.tar.gz"},
-		{Name: "yolorouter-ce_v0.2.0_darwin_amd64.tar.gz"},
+		{Name: "yolorouter_v0.2.0_linux_amd64.tar.gz"},
+		{Name: "yolorouter_v0.2.0_linux_arm64.tar.gz"},
+		{Name: "yolorouter_v0.2.0_darwin_amd64.tar.gz"},
 		{Name: "checksums.txt"},
 	}
 	got, err := matchAsset(assets, "linux", "amd64", "v0.2.0")
 	if err != nil {
 		t.Fatalf("matchAsset: %v", err)
 	}
-	if got.Name != "yolorouter-ce_v0.2.0_linux_amd64.tar.gz" {
+	if got.Name != "yolorouter_v0.2.0_linux_amd64.tar.gz" {
 		t.Fatalf("matched %q, want linux_amd64 archive", got.Name)
 	}
 }
 
 func TestMatchAssetErrorsOnMissingPlatform(t *testing.T) {
-	assets := []githubAsset{{Name: "yolorouter-ce_v0.2.0_linux_amd64.tar.gz"}}
+	assets := []githubAsset{{Name: "yolorouter_v0.2.0_linux_amd64.tar.gz"}}
 	if _, err := matchAsset(assets, "darwin", "arm64", "v0.2.0"); err == nil {
 		t.Fatalf("expected error when no asset matches the current platform")
 	}
@@ -47,10 +47,10 @@ func TestFindAssetErrorsListAvailable(t *testing.T) {
 
 func TestParseChecksums(t *testing.T) {
 	// goreleaser emits one "<sha256>  <name>" line per asset (two spaces).
-	txt := []byte("abc123  yolorouter-ce_v0.2.0_linux_amd64.tar.gz\ndef456  checksums.txt\n")
+	txt := []byte("abc123  yolorouter_v0.2.0_linux_amd64.tar.gz\ndef456  checksums.txt\n")
 	m := parseChecksums(txt)
-	if m["yolorouter-ce_v0.2.0_linux_amd64.tar.gz"] != "abc123" {
-		t.Fatalf("archive hash = %q, want abc123", m["yolorouter-ce_v0.2.0_linux_amd64.tar.gz"])
+	if m["yolorouter_v0.2.0_linux_amd64.tar.gz"] != "abc123" {
+		t.Fatalf("archive hash = %q, want abc123", m["yolorouter_v0.2.0_linux_amd64.tar.gz"])
 	}
 	if m["checksums.txt"] != "def456" {
 		t.Fatalf("checksums hash = %q, want def456", m["checksums.txt"])
@@ -60,7 +60,7 @@ func TestParseChecksums(t *testing.T) {
 func TestVerifyChecksumAcceptsMatchingHash(t *testing.T) {
 	data := []byte("the real archive bytes")
 	sum := sha256.Sum256(data)
-	name := "yolorouter-ce_v0.2.0_linux_amd64.tar.gz"
+	name := "yolorouter_v0.2.0_linux_amd64.tar.gz"
 	checksums := []byte(hex.EncodeToString(sum[:]) + "  " + name + "\n")
 	if err := verifyChecksum(data, name, checksums); err != nil {
 		t.Fatalf("matching hash should verify, got: %v", err)
@@ -111,7 +111,7 @@ func makeArchive(t *testing.T, entries map[string][]byte) []byte {
 
 func TestExtractBinaryFindsTopLevelBinary(t *testing.T) {
 	binary := []byte{0x7f, 'E', 'L', 'F', 0x00, 0x01, 0x02}
-	archive := makeArchive(t, map[string][]byte{"yolorouter-ce": binary})
+	archive := makeArchive(t, map[string][]byte{"yolorouter": binary})
 	got, err := extractBinary(archive)
 	if err != nil {
 		t.Fatalf("extractBinary: %v", err)
@@ -125,8 +125,8 @@ func TestExtractBinaryFindsNestedBinary(t *testing.T) {
 	// goreleaser may wrap the binary in a version-named directory.
 	binary := []byte{0x7f, 'E', 'L', 'F'}
 	archive := makeArchive(t, map[string][]byte{
-		"yolorouter-ce-v0.2.0/yolorouter-ce": binary,
-		"README.md":                          []byte("ignore me"),
+		"yolorouter-v0.2.0/yolorouter": binary,
+		"README.md":                    []byte("ignore me"),
 	})
 	got, err := extractBinary(archive)
 	if err != nil {
@@ -140,7 +140,7 @@ func TestExtractBinaryFindsNestedBinary(t *testing.T) {
 func TestExtractBinaryErrorsWhenAbsent(t *testing.T) {
 	archive := makeArchive(t, map[string][]byte{"README.md": []byte("no binary here")})
 	if _, err := extractBinary(archive); err == nil {
-		t.Fatalf("expected error when archive has no yolorouter-ce binary")
+		t.Fatalf("expected error when archive has no yolorouter binary")
 	}
 }
 
@@ -206,7 +206,7 @@ func TestWriteStagedBinaryUsesUniqueExclusivePath(t *testing.T) {
 
 func TestReplaceBinaryBacksUpAndReplaces(t *testing.T) {
 	dir := t.TempDir()
-	current := filepath.Join(dir, "yolorouter-ce")
+	current := filepath.Join(dir, "yolorouter")
 	if err := os.WriteFile(current, []byte("OLD"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestReplaceBinaryBacksUpAndReplaces(t *testing.T) {
 // pre-upgrade binary, not some earlier one).
 func TestReplaceBinaryOverwritesExistingBackup(t *testing.T) {
 	dir := t.TempDir()
-	current := filepath.Join(dir, "yolorouter-ce")
+	current := filepath.Join(dir, "yolorouter")
 	if err := os.WriteFile(current, []byte("V1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -339,15 +339,15 @@ func TestBackupCommand(t *testing.T) {
 		path string
 		want string
 	}{
-		{"empty path emits bare command", "", "  yolorouter-ce db:backup"},
-		{"nonempty path is single-quoted", "/etc/ce/prod.yaml", "  yolorouter-ce db:backup --config '/etc/ce/prod.yaml'"},
-		{"path with spaces is single-quoted", "/path with spaces/cfg.yaml", "  yolorouter-ce db:backup --config '/path with spaces/cfg.yaml'"},
+		{"empty path emits bare command", "", "  yolorouter db:backup"},
+		{"nonempty path is single-quoted", "/etc/ce/prod.yaml", "  yolorouter db:backup --config '/etc/ce/prod.yaml'"},
+		{"path with spaces is single-quoted", "/path with spaces/cfg.yaml", "  yolorouter db:backup --config '/path with spaces/cfg.yaml'"},
 		// %q (Go double-quote) would let $ expand / backticks execute when an
 		// operator pastes the command — single quotes make it literal.
-		{"path with $ stays literal", "/etc/$HOME/cfg.yaml", "  yolorouter-ce db:backup --config '/etc/$HOME/cfg.yaml'"},
-		{"path with backtick stays literal", "/a/`whoami`/cfg.yaml", "  yolorouter-ce db:backup --config '/a/`whoami`/cfg.yaml'"},
+		{"path with $ stays literal", "/etc/$HOME/cfg.yaml", "  yolorouter db:backup --config '/etc/$HOME/cfg.yaml'"},
+		{"path with backtick stays literal", "/a/`whoami`/cfg.yaml", "  yolorouter db:backup --config '/a/`whoami`/cfg.yaml'"},
 		// Embedded single quote is escaped with the standard '\'' idiom.
-		{"path with single quote is escaped", "/it's/cfg.yaml", "  yolorouter-ce db:backup --config '/it'\\''s/cfg.yaml'"},
+		{"path with single quote is escaped", "/it's/cfg.yaml", "  yolorouter db:backup --config '/it'\\''s/cfg.yaml'"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

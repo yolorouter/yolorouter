@@ -14,13 +14,13 @@ import (
 	// name — so we rely on the registration already pulled in transitively
 	// instead of duplicating it (see migration_test.go for the same note).
 
-	"github.com/yolorouter/yolorouter-ce/migrations"
+	"github.com/yolorouter/yolorouter/migrations"
 )
 
 func TestResetSQLiteRecreatesDatabase(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "app.db")
-	lockPath := filepath.Join(dir, "yolorouter-ce.lock")
+	lockPath := filepath.Join(dir, "yolorouter.lock")
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -74,7 +74,7 @@ func TestResetSQLiteRecreatesWithRestrictivePermissions(t *testing.T) {
 
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "app.db")
-	lockPath := filepath.Join(dir, "yolorouter-ce.lock")
+	lockPath := filepath.Join(dir, "yolorouter.lock")
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestResetSQLiteRecreatesWithRestrictivePermissions(t *testing.T) {
 func TestResetSQLiteFailsWhenLockHeld(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "app.db")
-	lockPath := filepath.Join(dir, "yolorouter-ce.lock")
+	lockPath := filepath.Join(dir, "yolorouter.lock")
 
 	unlock, err := AcquireInstanceLock(lockPath)
 	if err != nil {

@@ -13,7 +13,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
+	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // TodayMetricsDTO is the four today-card values the dashboard renders at the

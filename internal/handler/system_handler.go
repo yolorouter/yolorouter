@@ -10,9 +10,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter-ce/internal/service"
-	"github.com/yolorouter/yolorouter-ce/internal/version"
-	"github.com/yolorouter/yolorouter-ce/pkg/response"
+	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/version"
+	"github.com/yolorouter/yolorouter/pkg/response"
 )
 
 // VersionChecker is the subset of *service.VersionService this handler needs.

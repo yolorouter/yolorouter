@@ -10,6 +10,6 @@ package main
 // to exercise db_reset_release.go's release-only code path without
 // needing a real frontend build — folding this rule into router.New()
 // would fail those every time. Scoping the check to runServe instead (see
-// serve.go) is safe because nothing under cmd/yolorouter-ce's test suite
+// serve.go) is safe because nothing under cmd/yolorouter's test suite
 // ever calls runServe.
 const isReleaseBuild = false

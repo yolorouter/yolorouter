@@ -1,5 +1,5 @@
 // Package crypto provides AES-GCM encryption and decryption utilities.
-// 照抄 .claude/reference-projects/yolorouter-ce-deprecated/pkg/crypto/crypto.go
+// 照抄 .claude/reference-projects/yolorouter-deprecated/pkg/crypto/crypto.go
 // 逐字节一致——本项目用它加密 Provider 上游 API Key（设计文档 §5），参考项目
 // 本身并未把这个包接到它自己的 Provider Key 上（那边明文落库 + json:"-"
 // 隐藏，是参考项目的已知缺口，不跟着抄）。

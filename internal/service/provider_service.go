@@ -13,10 +13,10 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
-	"github.com/yolorouter/yolorouter-ce/internal/repository"
-	"github.com/yolorouter/yolorouter-ce/pkg/crypto"
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/repository"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
 const (
@@ -64,7 +64,14 @@ func computeRunningStatus(keys []model.ProviderKey, destinationVersion int) stri
 	}
 }
 
-const providerKeyFingerprintProbe = "yolorouter-ce-provider-key-fingerprint-probe-v1"
+// providerKeyFingerprintProbe is a domain-separation token used by
+// VerifyMasterKeyFingerprint: it is encrypted with the master key and the
+// ciphertext is persisted, so startup can confirm the configured master key
+// still matches the one that encrypted existing provider data (design doc §5).
+// The value itself is arbitrary and secret-free, but it must stay STABLE
+// across releases — changing it makes every existing database fail the startup
+// key-match check. Treat it as frozen once a release ships.
+const providerKeyFingerprintProbe = "yolorouter-provider-key-fingerprint-probe-v1"
 
 // minKeyPlaintextLength implements design doc §3's minimum-length rule: a
 // key shorter than this would let key_prefix's "keep the last 4 chars

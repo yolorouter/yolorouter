@@ -1,4 +1,4 @@
-module github.com/yolorouter/yolorouter-ce
+module github.com/yolorouter/yolorouter
 
 go 1.26.2
 

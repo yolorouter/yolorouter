@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/yolorouter/yolorouter-ce/internal/version"
+	"github.com/yolorouter/yolorouter/internal/version"
 )
 
 type Command struct {
@@ -67,7 +67,7 @@ func dispatch(ctx context.Context, args []string) (int, error) {
 }
 
 func printUsage() {
-	fmt.Println("Usage: yolorouter-ce <command> [flags]")
+	fmt.Println("Usage: yolorouter <command> [flags]")
 	fmt.Println("\nCommands:")
 	for _, cmd := range commands {
 		fmt.Printf("  %-15s %s\n", cmd.Name, cmd.Usage)

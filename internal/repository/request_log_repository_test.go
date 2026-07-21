@@ -3,8 +3,8 @@ package repository
 import (
 	"testing"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
-	"github.com/yolorouter/yolorouter-ce/internal/testutil"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
 func TestUpsertRequestLogBodyInsertThenUpdate(t *testing.T) {

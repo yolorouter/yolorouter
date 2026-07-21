@@ -12,7 +12,7 @@ import (
 	// both packages register the exact same driver name — so we rely on the
 	// registration already pulled in transitively instead of duplicating it.
 
-	"github.com/yolorouter/yolorouter-ce/migrations"
+	"github.com/yolorouter/yolorouter/migrations"
 )
 
 // newMemoryDB opens an in-memory SQLite database for a single test and

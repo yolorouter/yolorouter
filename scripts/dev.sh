@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/dev.sh — local one-shot rebuild + restart for yolorouter-ce.
+# scripts/dev.sh — local one-shot rebuild + restart for yolorouter.
 # Usage: ./scripts/dev.sh [--backend|--frontend|--migrate|--restart]
 set -euo pipefail
 
@@ -20,7 +20,7 @@ esac
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="${ROOT_DIR}/logs"
 PID_FILE="${LOG_DIR}/dev.pid"
-BIN_PATH="${ROOT_DIR}/bin/yolorouter-ce"
+BIN_PATH="${ROOT_DIR}/bin/yolorouter"
 mkdir -p "${LOG_DIR}"
 
 # Serialize the whole stop/build/start/publish sequence below across
@@ -50,10 +50,10 @@ if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
 fi
 trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
 
-echo "==> Stopping existing yolorouter-ce process (if any)"
+echo "==> Stopping existing yolorouter process (if any)"
 # Track our own PID (plus its process start time) via a PID file rather than
 # `pkill -f`/`pgrep -f` pattern matching — a path-based pattern like
-# "./bin/yolorouter-ce serve" can match an unrelated process (a different
+# "./bin/yolorouter serve" can match an unrelated process (a different
 # checkout, a different user's shell) that happens to share the same
 # relative invocation. We only ever signal a PID this exact script
 # previously recorded, and only after confirming that PID's exact full
@@ -61,7 +61,7 @@ echo "==> Stopping existing yolorouter-ce process (if any)"
 # time still matches what we recorded — a bare comm-name substring match
 # isn't enough, since PIDs get reused: a fast enough exit-and-reuse could
 # hand the same PID to an unrelated process that happens to also be named
-# "yolorouter-ce" (e.g. another checkout on the same machine).
+# "yolorouter" (e.g. another checkout on the same machine).
 STOPPED_OLD=false
 if [ -f "${PID_FILE}" ]; then
   OLD_PID="$(sed -n '1p' "${PID_FILE}" 2>/dev/null || true)"
@@ -80,7 +80,7 @@ if [ -f "${PID_FILE}" ]; then
     CUR_START="$(ps -p "${OLD_PID}" -o lstart= 2>/dev/null || true)"
     # Exact match (or BIN_PATH followed by a space, i.e. "BIN_PATH serve"),
     # not a bare prefix — a prefix match like "${BIN_PATH}"* would also
-    # accept an unrelated "yolorouter-ce-helper" binary whose path happens
+    # accept an unrelated "yolorouter-helper" binary whose path happens
     # to start with the same string.
     case "${OLD_ARGS}" in
       "${BIN_PATH}"|"${BIN_PATH} "*) : ;;
@@ -155,7 +155,7 @@ if [ "${BUILD_BACKEND}" = "true" ] || [ "${BUILD_FRONTEND}" = "true" ]; then
     BUILD_TAGS="-tags embed"
   fi
   # shellcheck disable=SC2086 # BUILD_TAGS is intentionally either empty or a single flag token
-  (cd "${ROOT_DIR}" && go build ${BUILD_TAGS} -o "${BIN_PATH}" ./cmd/yolorouter-ce)
+  (cd "${ROOT_DIR}" && go build ${BUILD_TAGS} -o "${BIN_PATH}" ./cmd/yolorouter)
 fi
 
 if [ "${EXPLICIT_MIGRATE}" = "true" ]; then
@@ -163,7 +163,7 @@ if [ "${EXPLICIT_MIGRATE}" = "true" ]; then
   (cd "${ROOT_DIR}" && "${BIN_PATH}" db:migrate)
 fi
 
-echo "==> Starting yolorouter-ce serve"
+echo "==> Starting yolorouter serve"
 (cd "${ROOT_DIR}" && exec "${BIN_PATH}" serve >> "${LOG_DIR}/server.log" 2>&1) &
 SERVER_PID=$!
 sleep 0.2 # give the OS a moment to make the process visible to `ps` below
@@ -177,7 +177,7 @@ mv "${PID_FILE_TMP}" "${PID_FILE}"
 sleep 1
 
 if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
-  echo "ERROR: yolorouter-ce exited immediately — check ${LOG_DIR}/server.log"
+  echo "ERROR: yolorouter exited immediately — check ${LOG_DIR}/server.log"
   rm -f "${PID_FILE}"
   exit 1
 fi
@@ -189,7 +189,7 @@ PORT="$(grep -A2 '^server:' "${ROOT_DIR}/configs/config.yaml" 2>/dev/null | grep
 PORT="${PORT:-8080}"
 
 echo ""
-echo "yolorouter-ce running (PID ${SERVER_PID})"
+echo "yolorouter running (PID ${SERVER_PID})"
 echo "  http://127.0.0.1:${PORT}/healthz"
 echo "  http://127.0.0.1:${PORT}/"
 echo "  log: ${LOG_DIR}/server.log"

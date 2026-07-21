@@ -6,7 +6,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/yolorouter/yolorouter-ce/internal/config"
+	"github.com/yolorouter/yolorouter/internal/config"
 )
 
 func TestInitLoadsConfigAndConnectsDatabase(t *testing.T) {

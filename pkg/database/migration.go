@@ -9,13 +9,13 @@ import (
 	"github.com/pressly/goose/v3"
 	"go.uber.org/zap"
 
-	"github.com/yolorouter/yolorouter-ce/pkg/logger"
+	"github.com/yolorouter/yolorouter/pkg/logger"
 )
 
 // pgAdvisoryLockKey is an arbitrary fixed key used to serialize migrations
 // across concurrently-starting PostgreSQL instances (design doc §6). SQLite
 // deployments are single-instance by design and don't need this.
-const pgAdvisoryLockKey = 8821_0714 // yolorouter-ce, no particular significance beyond being a fixed constant
+const pgAdvisoryLockKey = 8821_0714 // yolorouter, no particular significance beyond being a fixed constant
 
 // RunMigrations executes pending migrations for the given driver against db,
 // reading .sql files from the embedded migrationsFS (design doc §9 — the

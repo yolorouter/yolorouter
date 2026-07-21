@@ -11,11 +11,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/middleware"
-	"github.com/yolorouter/yolorouter-ce/internal/model"
-	"github.com/yolorouter/yolorouter-ce/internal/service"
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
-	"github.com/yolorouter/yolorouter-ce/pkg/response"
+	"github.com/yolorouter/yolorouter/internal/middleware"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
+	"github.com/yolorouter/yolorouter/pkg/response"
 )
 
 type setupRequest struct {
@@ -74,7 +74,7 @@ func writeSessionCookie(c *gin.Context, sessionID string, maxAge int) {
 // anything else unparseable), whose raw text ("EOF", "unexpected end of
 // JSON input", "invalid character '}' looking for beginning of object
 // key string") is just as much an internal parser detail as the other
-// shapes; and a stalled body read past cmd/yolorouter-ce/serve.go's
+// shapes; and a stalled body read past cmd/yolorouter/serve.go's
 // http.Server.ReadTimeout, which surfaces as a net.Error with
 // Timeout()==true (e.g. "read tcp 127.0.0.1:8080->...: i/o timeout") —
 // that text can include local/remote socket details and must be

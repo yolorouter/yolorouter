@@ -4,7 +4,7 @@ import en from './locales/en'
 
 export type Locale = 'zh-CN' | 'en'
 
-const STORAGE_KEY = 'yolorouter-ce-locale'
+const STORAGE_KEY = 'yolorouter-locale'
 
 // Guards against a corrupted/stale localStorage value (or one written by a
 // future version of this app with more locales) — an un-normalized value

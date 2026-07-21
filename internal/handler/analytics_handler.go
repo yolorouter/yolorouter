@@ -19,11 +19,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter-ce/internal/repository" // for StatusXxx constants only
-	"github.com/yolorouter/yolorouter-ce/internal/service"
-	"github.com/yolorouter/yolorouter-ce/pkg/csvutil"
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
-	"github.com/yolorouter/yolorouter-ce/pkg/response"
+	"github.com/yolorouter/yolorouter/internal/repository" // for StatusXxx constants only
+	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/pkg/csvutil"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
+	"github.com/yolorouter/yolorouter/pkg/response"
 )
 
 // validAnalyticsDimensions is the wire-level allowlist for ?dimension=.

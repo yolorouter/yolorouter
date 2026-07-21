@@ -62,7 +62,7 @@ export class RequestAbortedError extends Error {}
 // signal that fired was given, and a caller's own AbortController.abort()
 // call may pass any custom reason, not necessarily a DOMException named
 // "AbortError".
-const TIMEOUT_REASON = Symbol('yolorouter-ce request timeout')
+const TIMEOUT_REASON = Symbol('yolorouter request timeout')
 
 // Body types the browser sets its own Content-Type for (with a boundary, in
 // FormData's case, or none at all for raw bytes) — forcing "application/json"

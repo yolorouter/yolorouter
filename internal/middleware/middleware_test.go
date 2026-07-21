@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
 func TestRequestIDMiddlewareSetsHeaderAndContext(t *testing.T) {

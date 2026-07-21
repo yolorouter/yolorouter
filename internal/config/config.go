@@ -71,7 +71,7 @@ func defaults() *Config {
 		// configs/config.yaml — so "../data" lands the default data
 		// directory as a top-level sibling of configs/, not nested inside
 		// it.
-		Database: DatabaseConfig{Driver: "sqlite", SQLitePath: "../data/yolorouter-ce.db", SSLMode: "disable"},
+		Database: DatabaseConfig{Driver: "sqlite", SQLitePath: "../data/yolorouter.db", SSLMode: "disable"},
 		Log:      LogConfig{Level: "info"},
 		// Enabled defaults true so a config that omits the `update` section
 		// entirely (auto-generated, legacy) keeps updates ON — only an

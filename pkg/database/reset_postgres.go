@@ -10,7 +10,7 @@ import (
 // ResetPostgres drops every table in the public schema, then re-runs
 // migrations. Mirrors the commercial yolorouter-server's
 // internal/cli/cli_reset.go logic. Caller is responsible for the
-// release-build guard and interactive confirmation (see cmd/yolorouter-ce).
+// release-build guard and interactive confirmation (see cmd/yolorouter).
 //
 // Like ResetSQLite, it acquires the exclusive instance lock itself rather
 // than trusting the caller to do so — the mutual-exclusion precondition

@@ -12,9 +12,9 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/config"
-	"github.com/yolorouter/yolorouter-ce/pkg/database"
-	"github.com/yolorouter/yolorouter-ce/pkg/logger"
+	"github.com/yolorouter/yolorouter/internal/config"
+	"github.com/yolorouter/yolorouter/pkg/database"
+	"github.com/yolorouter/yolorouter/pkg/logger"
 )
 
 // App bundles the shared dependencies every resource-initializing subcommand

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yolorouter/yolorouter-ce/internal/service/safehttp"
+	"github.com/yolorouter/yolorouter/internal/service/safehttp"
 )
 
 // UpstreamClient sends the rewritten body to a provider. It reuses safehttp's

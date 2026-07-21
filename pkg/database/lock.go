@@ -23,7 +23,7 @@ func AcquireInstanceLock(lockPath string) (func() error, error) {
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("another yolorouter-ce instance appears to be running (lock held on %s)", lockPath)
+		return nil, fmt.Errorf("another yolorouter instance appears to be running (lock held on %s)", lockPath)
 	}
 
 	unlock := func() error {

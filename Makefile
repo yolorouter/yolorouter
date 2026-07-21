@@ -12,13 +12,13 @@ BUILDTIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # relies on config.update.github_repo, or is disabled). The public release
 # workflow injects the real value (see .github/workflows/release.yml).
 DEFAULT_GITHUB_REPO ?=
-VERSION_PKG := github.com/yolorouter/yolorouter-ce/internal/version
+VERSION_PKG := github.com/yolorouter/yolorouter/internal/version
 
 # Plain build: no -tags embed, so it never requires web/dist/ to contain
 # anything (see web/embed_stub.go) — web/dist/ is 100% gitignored with no
 # tracked exceptions. Serves web/placeholder.html for every request.
 build:
-	go build -o ./bin/yolorouter-ce ./cmd/yolorouter-ce
+	go build -o ./bin/yolorouter ./cmd/yolorouter
 
 # Removes frontend/dist first so a misconfigured build (e.g. an outDir
 # typo in vite.config that leaves npm run build writing somewhere else
@@ -45,7 +45,7 @@ embed-frontend: frontend
 # testing the full go:embed pipeline locally without also wanting
 # build-release's other effects (db:reset disabled, version injection).
 build-embed: embed-frontend
-	go build -tags embed -o ./bin/yolorouter-ce ./cmd/yolorouter-ce
+	go build -tags embed -o ./bin/yolorouter ./cmd/yolorouter
 
 # RELEASE_TAG is the exact git tag at HEAD (empty if HEAD isn't tagged).
 # Evaluated at make-parse time so every recipe line sees the same value — a
@@ -84,7 +84,7 @@ build-release: embed-frontend
 		echo "       vX.Y.Z. Commit or remove them first (Codex review P2)." >&2; \
 		exit 1; \
 	fi
-	go build -tags release,embed -ldflags "-X $(VERSION_PKG).Version=$(RELEASE_TAG) -X $(VERSION_PKG).Commit=$(COMMIT) -X $(VERSION_PKG).BuildTime=$(BUILDTIME) -X $(VERSION_PKG).DefaultGitHubRepo=$(DEFAULT_GITHUB_REPO)" -o ./bin/yolorouter-ce ./cmd/yolorouter-ce
+	go build -tags release,embed -ldflags "-X $(VERSION_PKG).Version=$(RELEASE_TAG) -X $(VERSION_PKG).Commit=$(COMMIT) -X $(VERSION_PKG).BuildTime=$(BUILDTIME) -X $(VERSION_PKG).DefaultGitHubRepo=$(DEFAULT_GITHUB_REPO)" -o ./bin/yolorouter ./cmd/yolorouter
 
 test:
 	go test ./... -v
@@ -113,7 +113,7 @@ vet-embed: embed-frontend
 	go vet -tags embed ./...
 
 migrate: build
-	./bin/yolorouter-ce db:migrate
+	./bin/yolorouter db:migrate
 
 dev:
 	./scripts/dev.sh

@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/yolorouter/yolorouter-ce/internal/bootstrap"
-	"github.com/yolorouter/yolorouter-ce/internal/config"
-	"github.com/yolorouter/yolorouter-ce/migrations"
-	"github.com/yolorouter/yolorouter-ce/pkg/database"
+	"github.com/yolorouter/yolorouter/internal/bootstrap"
+	"github.com/yolorouter/yolorouter/internal/config"
+	"github.com/yolorouter/yolorouter/migrations"
+	"github.com/yolorouter/yolorouter/pkg/database"
 )
 
 // parseCommandFlags builds a FlagSet named `name` with the shared --config

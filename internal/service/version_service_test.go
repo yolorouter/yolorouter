@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yolorouter/yolorouter-ce/internal/version"
+	"github.com/yolorouter/yolorouter/internal/version"
 )
 
 // newTestService wires a VersionService at repo "owner/repo" against a

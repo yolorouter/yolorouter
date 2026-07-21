@@ -13,14 +13,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/config"
-	"github.com/yolorouter/yolorouter-ce/internal/gateway"
-	"github.com/yolorouter/yolorouter-ce/internal/handler"
-	"github.com/yolorouter/yolorouter-ce/internal/middleware"
-	"github.com/yolorouter/yolorouter-ce/internal/service"
-	"github.com/yolorouter/yolorouter-ce/internal/version"
-	"github.com/yolorouter/yolorouter-ce/pkg/errcode"
-	"github.com/yolorouter/yolorouter-ce/web"
+	"github.com/yolorouter/yolorouter/internal/config"
+	"github.com/yolorouter/yolorouter/internal/gateway"
+	"github.com/yolorouter/yolorouter/internal/handler"
+	"github.com/yolorouter/yolorouter/internal/middleware"
+	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/version"
+	"github.com/yolorouter/yolorouter/pkg/errcode"
+	"github.com/yolorouter/yolorouter/web"
 )
 
 // isRegularFile reports whether name exists in fsys and is a regular file,
@@ -98,12 +98,12 @@ func validateEmbeddedFrontend(distFS fs.FS) error {
 // New builds the router against the real embedded frontend (web.DistFS,
 // selected at compile time by the embed build tag — see web/embed_real.go
 // / web/embed_stub.go). providerMasterKey is the already-decoded 32-byte
-// AES-256-GCM key (cmd/yolorouter-ce/serve.go decodes it via
+// AES-256-GCM key (cmd/yolorouter/serve.go decodes it via
 // crypto.KeyFromBase64 before calling this) — passed here rather than read
 // from a global so provider_service.go's dependencies stay explicit, same
 // as db.
 // bodiesDir is the absolute data/bodies/ directory (already created by
-// cmd/yolorouter-ce/serve.go at boot) that the gateway's stream body
+// cmd/yolorouter/serve.go at boot) that the gateway's stream body
 // capture (internal/gateway/stream.go) appends sent-SSE files under. The
 // gateway package has no direct access to app config — passing the
 // resolved absolute path down through New/newWithDistFS and stashing it on

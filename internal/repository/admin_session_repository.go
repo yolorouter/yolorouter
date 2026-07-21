@@ -5,8 +5,8 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter-ce/internal/model"
-	"github.com/yolorouter/yolorouter-ce/pkg/crypto"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
 )
 
 // hashSessionToken delegates to crypto.HashToken — the single SHA-256 hex
@@ -74,7 +74,7 @@ func DeleteAllSessionsForAdmin(db *gorm.DB, adminID uint) error {
 // admin who simply lets the 24h TTL lapse without logging out (the common
 // case) would otherwise leave that row behind forever, one dead row per
 // login with no ceiling. This mirrors the identical fix already applied
-// to .claude/reference-projects/yolorouter-ce-deprecated's `sessions`
+// to .claude/reference-projects/yolorouter-deprecated's `sessions`
 // table (DeleteExpiredOrRevokedSessionsInTx, closing its own codex
 // adversarial review round 7) — called from inside Login's existing
 // transaction (service.Login) so the cleanup cost is amortized across

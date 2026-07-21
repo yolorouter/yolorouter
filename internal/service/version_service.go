@@ -16,7 +16,7 @@ import (
 	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/yolorouter/yolorouter-ce/internal/version"
+	"github.com/yolorouter/yolorouter/internal/version"
 )
 
 // VersionStatus is the fully-resolved answer to "is there a newer release?".
@@ -189,7 +189,7 @@ func (s *VersionService) fetchLatest(ctx context.Context) *versionCacheEntry {
 	}
 	// User-Agent is required by the GitHub REST API; without it requests are
 	// rejected. Accept pins the documented JSON media type.
-	req.Header.Set("User-Agent", "yolorouter-ce")
+	req.Header.Set("User-Agent", "yolorouter")
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := s.client.Do(req)
