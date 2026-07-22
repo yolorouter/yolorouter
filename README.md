@@ -2,7 +2,7 @@
 
 # Yolorouter
 
-**A self-hosted, OpenAI-compatible LLM gateway with multi-provider failover, key rotation, and a built-in admin console.**
+**A free, self-hosted, OpenAI-compatible LLM gateway with multi-provider failover, key rotation, and a built-in admin console.**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/yolorouter/yolorouter/actions/workflows/ci.yml/badge.svg)](https://github.com/yolorouter/yolorouter/actions/workflows/ci.yml)
@@ -14,7 +14,7 @@ English · [简体中文](README_zh.md)
 
 [Quick start](#quick-start) · [Configuration](#configuration) · [Architecture](#architecture) · [Contributing](#contributing)
 
-⚡ **Low-overhead streaming proxy** · 📦 **Single binary, zero external deps** · 🔁 **Automatic failover + key rotation** · 📊 **Built-in cost & usage analytics**
+⚡ **Low-overhead streaming proxy** · 🆓 **Free & open-source** · 📦 **Single binary, zero external deps** · 🔁 **Automatic failover + key rotation** · 📊 **Built-in cost & usage analytics**
 
 </div>
 

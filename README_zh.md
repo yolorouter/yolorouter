@@ -2,7 +2,7 @@
 
 # Yolorouter
 
-**自托管、兼容 OpenAI 的 LLM 网关：多供应商 failover、上游 Key 自动切换，内置管理后台。**
+**免费、自托管、兼容 OpenAI 的 LLM 网关：多供应商 failover、上游 Key 自动切换，内置管理后台。**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/yolorouter/yolorouter/actions/workflows/ci.yml/badge.svg)](https://github.com/yolorouter/yolorouter/actions/workflows/ci.yml)
@@ -14,7 +14,7 @@
 
 [快速开始](#快速开始) · [配置](#配置) · [架构](#架构) · [贡献](#贡献)
 
-⚡ **低开销流式代理** · 📦 **单二进制 · 零外部依赖** · 🔁 **自动 failover + Key 轮换** · 📊 **内置用量与成本分析**
+⚡ **低开销流式代理** · 🆓 **免费开源** · 📦 **单二进制 · 零外部依赖** · 🔁 **自动 failover + Key 轮换** · 📊 **内置用量与成本分析**
 
 </div>
 
