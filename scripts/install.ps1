@@ -628,27 +628,41 @@ function Setup-WindowsService {
 function Setup-ScheduledTask {
     $binary = Join-Path $script:BIN_DIR "$BINARY_NAME.exe"
     $appHome = $script:APP_HOME
-    # 整个路径 + 参数放在一对引号里
-    $taskCmd = "$binary serve"
 
-    # Remove existing task if any.
-    schtasks.exe /Delete /TN $SERVICE_NAME /F 2>$null
+    # 先删除已存在的同名任务
+    schtasks.exe /Delete /TN $SERVICE_NAME /F 2>$null | Out-Null
 
-    info "$(m '创建计划任务（开机启动）...' 'Creating scheduled task (starts on boot)...')"
-    
-    # /TR 的值整个用引号括起来
-    $createCmd = "schtasks.exe /Create /SC ONSTART /TN `"$SERVICE_NAME`" /TR `"$taskCmd`" /RL HIGHEST /F"
-    info "调试: $createCmd"
-    
-    cmd /c $createCmd
-    
-    if ($LASTEXITCODE -ne 0) {
-        warn "$(m '创建计划任务失败' 'Failed to create scheduled task')"
+    # -WorkingDirectory 把进程工作目录固定到 app-home，让 serve 能找到
+    # configs\config.yaml（否则 ONSTART/ONLOGON 任务默认在 System32 启动）。
+    $action = New-ScheduledTaskAction -Execute $binary -Argument 'serve' -WorkingDirectory $appHome
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+    if ($script:SCOPE -eq 'system') {
+        Require-Admin
+        info "$(m '创建计划任务（开机自启，SYSTEM 账户）...' 'Creating scheduled task (starts on boot as SYSTEM)...')"
+        # SYSTEM + AtStartup：在任何用户登录前就运行。这正是旧版
+        # /TR 缺少 /RU 时开机自启失效的原因。
+        $trigger = New-ScheduledTaskTrigger -AtStartup
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    } else {
+        info "$(m '创建计划任务（登录时自启）...' 'Creating scheduled task (starts at logon)...')"
+        # 用户级：无管理员、不存密码。以当前交互账户在登录时启动，
+        # 是这个场景下最合理的开机等价方案。
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $script:RUN_USER
+        $principal = New-ScheduledTaskPrincipal -UserId $script:RUN_USER -LogonType Interactive -RunLevel Highest
+    }
+
+    try {
+        Register-ScheduledTask -TaskName $SERVICE_NAME -Action $action -Trigger $trigger `
+            -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+    } catch {
+        warn "$(m '创建计划任务失败' 'Failed to create scheduled task'): $_"
         $script:SERVICE_START_OK = $false
         return
     }
 
-    # 直接用 Start-Process 启动，指定工作目录
+    # 触发器只在开机/登录时触发；本次会话也立即拉起一次。
     Start-Process -FilePath $binary -ArgumentList "serve" -WorkingDirectory $appHome -WindowStyle Hidden
     $script:SERVICE_START_OK = $true
     info "$(m '服务已启动' 'Service started')"
