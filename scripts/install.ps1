@@ -628,13 +628,22 @@ function Setup-WindowsService {
 function Setup-ScheduledTask {
     $binary = Join-Path $script:BIN_DIR "$BINARY_NAME.exe"
     $appHome = $script:APP_HOME
+    $logFile = Join-Path $appHome 'logs\server.log'
+
+    # 通过 launcher .cmd 启动：先 cd 到 app-home，再把 stdout+stderr 追加写入
+    # server.log（对应 macOS launchd 的 StandardOut/ErrorPath），这样计划任务
+    # 和本次立即启动都会产生日志，正好对上 Get-LogsHint 提示的那个文件。
+    $launcher = Join-Path $script:BIN_DIR "$BINARY_NAME-serve.cmd"
+    $launcherContent = "@echo off`r`ncd /d `"$appHome`"`r`n`"$binary`" serve >> `"$logFile`" 2>&1`r`n"
+    Set-Content -Path $launcher -Value $launcherContent -Encoding Default -NoNewline
 
     # 先删除已存在的同名任务
     schtasks.exe /Delete /TN $SERVICE_NAME /F 2>$null | Out-Null
 
     # -WorkingDirectory 把进程工作目录固定到 app-home，让 serve 能找到
     # configs\config.yaml（否则 ONSTART/ONLOGON 任务默认在 System32 启动）。
-    $action = New-ScheduledTaskAction -Execute $binary -Argument 'serve' -WorkingDirectory $appHome
+    # 通过 cmd.exe 执行 launcher，让开机自启也带日志重定向。
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument "/c `"$launcher`"" -WorkingDirectory $appHome
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 
@@ -662,8 +671,8 @@ function Setup-ScheduledTask {
         return
     }
 
-    # 触发器只在开机/登录时触发；本次会话也立即拉起一次。
-    Start-Process -FilePath $binary -ArgumentList "serve" -WorkingDirectory $appHome -WindowStyle Hidden
+    # 触发器只在开机/登录时触发；本次会话也立即拉起一次（同样走 launcher 记日志）。
+    Start-Process -FilePath $launcher -WorkingDirectory $appHome -WindowStyle Hidden
     $script:SERVICE_START_OK = $true
     info "$(m '服务已启动' 'Service started')"
 }

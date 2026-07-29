@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# scripts/dev.ps1 鈥? local one-shot rebuild + restart for yolorouter (Windows / PowerShell).
+# scripts/dev.ps1 - local one-shot rebuild + restart for yolorouter (Windows / PowerShell).
 # Usage: .\scripts\dev.ps1 [-Backend] [-Frontend] [-Migrate] [-Restart] [-Help]
 #
 # Modes:
@@ -13,6 +13,10 @@
 # Environment:
 #   YOLO_LANG=zh|en   Force output language (default: auto-detect from locale)
 #   NO_COLOR          Disable coloured output when set
+#
+# NOTE: This file is saved as GBK (code page 936) so that Windows PowerShell 5.1
+# (which reads a no-BOM .ps1 using the system ANSI code page) renders the Chinese
+# strings correctly. If you edit it, keep it GBK-encoded.
 
 param(
   [switch]$Backend,
@@ -28,7 +32,7 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 # Language detection
 # ---------------------------------------------------------------------------
-$script:LangSel = if ($env:YOLO_LANG) { $env:YOLO_LANG } else {
+$script:LangSel = if ($env:YOLO_LANG -in @('zh', 'en')) { $env:YOLO_LANG } else {
   if ([System.Globalization.CultureInfo]::CurrentUICulture.Name -like 'zh*') { 'zh' } else { 'en' }
 }
 
@@ -41,8 +45,8 @@ function t($en, $zh) {
 # ---------------------------------------------------------------------------
 $script:HasColor = -not $env:NO_COLOR -and $Host.UI.RawUI.ForegroundColor -ne $null
 function step($msg) { if ($script:HasColor) { Write-Host "==> $msg" -ForegroundColor Cyan } else { Write-Host "==> $msg" } }
-function ok($msg)   { if ($script:HasColor) { Write-Host ">> $msg" -ForegroundColor Green } else { Write-Host ">> $msg" } }
-function warn($msg) { if ($script:HasColor) { Write-Host " ! $msg" -ForegroundColor Yellow } else { Write-Host " ! $msg" } }
+function ok($msg)   { if ($script:HasColor) { Write-Host "OK  $msg" -ForegroundColor Green } else { Write-Host "OK  $msg" } }
+function warn($msg) { if ($script:HasColor) { Write-Host " !  $msg" -ForegroundColor Yellow } else { Write-Host " !  $msg" } }
 function err($msg)  { if ($script:HasColor) { Write-Host " !! $msg" -ForegroundColor Red } else { Write-Host " !! $msg" } }
 
 # ---------------------------------------------------------------------------
@@ -51,9 +55,9 @@ function err($msg)  { if ($script:HasColor) { Write-Host " !! $msg" -ForegroundC
 if ($Help -or $HelpAlias) {
   if ($script:LangSel -eq 'zh') {
     Write-Host @"
-用法: $($MyInvocation.ScriptName) [参数]
+用法: $($MyInvocation.MyCommand.Name) [模式]
 
-参数:
+模式:
   (无)         全量：构建前端 + 后端 + 重启（默认）
   -Backend     仅重新构建 Go 二进制并重启（跳过前端）
   -Frontend    仅重新构建前端并重启（跳过后端专有步骤）
@@ -67,7 +71,7 @@ if ($Help -or $HelpAlias) {
 "@
   } else {
     Write-Host @"
-Usage: $($MyInvocation.ScriptName) [-Backend] [-Frontend] [-Migrate] [-Restart] [-Help]
+Usage: $($MyInvocation.MyCommand.Name) [-Backend] [-Frontend] [-Migrate] [-Restart] [-Help]
 
 Modes:
   (none)       Full rebuild: frontend + backend + restart (default)
@@ -105,7 +109,9 @@ $rootDir = Split-Path -Parent $scriptRoot
 $logDir = Join-Path $rootDir 'logs'
 $pidFile = Join-Path $logDir 'dev.pid'
 $binPath = Join-Path (Join-Path $rootDir 'bin') 'yolorouter.exe'
-$null = mkdir -Path $logDir -Force
+$logFile = Join-Path $logDir 'server.log'
+$errFile = Join-Path $logDir 'server.err.log'
+$null = New-Item -ItemType Directory -Path $logDir -Force
 
 # ---------------------------------------------------------------------------
 # Dependency check
@@ -126,23 +132,13 @@ if ($buildBackend)  { Require-Command 'go'  "$(t 'Install from https://go.dev/' 
 # ---------------------------------------------------------------------------
 $lockDir = Join-Path $logDir 'dev.ps1.lock'
 try {
-  $null = mkdir $lockDir -ErrorAction Stop
+  $null = New-Item -ItemType Directory -Path $lockDir -ErrorAction Stop
 } catch {
   err "$(t "Another dev.ps1 instance appears to be in progress (lock: ${lockDir})" "另一个 dev.ps1 实例似乎正在运行（锁: ${lockDir}）")"
-  err "$(t "If sure no other instance is running, delete that directory and retry:" "如果确定没有其他实例在运行，删除该目录后重试：")"
+  err "$(t "If sure no other instance is running, delete that directory and retry:" "如果确认没有其他实例在运行，删除该目录后重试：")"
   err "  Remove-Item -Recurse -Force '${lockDir}'"
   exit 1
 }
-
-# ---------------------------------------------------------------------------
-# Cleanup handler
-# ---------------------------------------------------------------------------
-$script:CleanupLock = $true
-Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
-  if ($script:CleanupLock -and (Test-Path $lockDir)) {
-    Remove-Item -Recurse -Force $lockDir -ErrorAction SilentlyContinue
-  }
-} | Out-Null
 
 try {
   # ---------------------------------------------------------------------------
@@ -154,26 +150,26 @@ try {
   if (Test-Path $pidFile) {
     $oldPid = $null
     try {
-      $oldPid = Get-Content $pidFile -Raw -ErrorAction Stop | ForEach-Object { $_.Trim() }
+      $oldPid = (Get-Content $pidFile -Raw -ErrorAction Stop).Trim()
     } catch { $oldPid = $null }
 
     if ($oldPid -match '^\d+$') {
       $oldPid = [int]$oldPid
       try {
         $proc = Get-Process -Id $oldPid -ErrorAction Stop
-        # Verify the process is actually our binary
+        # Verify the process is actually our binary before signalling it.
         if ($proc.Path -and $proc.Path -like "$binPath*") {
           step "$(t "  Stopping PID ${oldPid}..." "  正在停止进程 ${oldPid}...")"
           $proc.CloseMainWindow() | Out-Null
           Start-Sleep -Milliseconds 500
           if (-not $proc.HasExited) {
-            $proc.Kill() | Out-Null
+            $proc.Kill()
           }
           $proc.WaitForExit(15000) | Out-Null
           $stoppedOld = $true
           step "$(t "  Previous instance stopped" "  旧实例已停止")"
         } else {
-          warn "$(t "  PID ${oldPid} is no longer running our binary" "  PID ${oldPid} 不再运行我们的程序")"
+          warn "$(t "  PID ${oldPid} is no longer running our binary" "  PID ${oldPid} 已不再运行我们的程序")"
         }
       } catch {
         warn "$(t "  No process with PID ${oldPid}" "  没有 PID 为 ${oldPid} 的进程")"
@@ -200,15 +196,13 @@ try {
     } catch {}
   }
 
-  $connection = $null
+  $connection = $false
   try {
     $tcpConnection = New-Object System.Net.Sockets.TcpClient
     $tcpConnection.ConnectAsync('127.0.0.1', $port).Wait(1000) | Out-Null
     if ($tcpConnection.Connected) {
       $tcpConnection.Close()
       $connection = $true
-    } else {
-      $connection = $false
     }
   } catch {
     $connection = $false
@@ -232,48 +226,47 @@ try {
     Push-Location (Join-Path $rootDir 'frontend')
     try {
       npm ci
+      if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
       npm run build
+      if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
     } finally {
       Pop-Location
     }
 
     step "$(t "Copying frontend dist into Go embed target" "复制前端 dist 到 Go embed 目标目录")"
     $webDist = Join-Path (Join-Path $rootDir 'web') 'dist'
-
     if (Test-Path $webDist) {
       Remove-Item -Recurse -Force $webDist
     }
-    $null = mkdir -Path $webDist -Force
-    Copy-Item -Recurse -Path "$frontendDist\*" -Destination $webDist
+    $null = New-Item -ItemType Directory -Path $webDist -Force
+    Copy-Item -Recurse -Path (Join-Path $frontendDist '*') -Destination $webDist
   }
 
   # ---------------------------------------------------------------------------
   # Build Go binary
   # ---------------------------------------------------------------------------
-if ($buildBackend -or $buildFrontend) {
+  if ($buildBackend -or $buildFrontend) {
     step "$(t "Building Go binary" "构建 Go 二进制")"
-    
+
     $webDist = Join-Path (Join-Path $rootDir 'web') 'dist'
     $useEmbed = $false
     if (Test-Path $webDist) {
-        $files = Get-ChildItem $webDist -File -ErrorAction SilentlyContinue
-        $hasFiles = $files.Count -gt 0
-        if ($hasFiles) {
-            $useEmbed = $true
-        } 
+      $files = Get-ChildItem $webDist -File -Recurse -ErrorAction SilentlyContinue
+      if ($files.Count -gt 0) { $useEmbed = $true }
     }
+
     Push-Location $rootDir
     try {
-        if ($useEmbed) {
-            step "[DEBUG] 执行: go build -tags embed -o $binPath ./cmd/yolorouter"
-            go build -tags embed -o $binPath ./cmd/yolorouter
-        } else {
-            go build -o $binPath ./cmd/yolorouter
-        }
+      if ($useEmbed) {
+        go build -tags embed -o $binPath ./cmd/yolorouter
+      } else {
+        go build -o $binPath ./cmd/yolorouter
+      }
+      if ($LASTEXITCODE -ne 0) { throw "go build failed" }
     } finally {
-        Pop-Location
+      Pop-Location
     }
-}
+  }
 
   # ---------------------------------------------------------------------------
   # Run explicit db:migrate
@@ -283,6 +276,7 @@ if ($buildBackend -or $buildFrontend) {
     Push-Location $rootDir
     try {
       & $binPath db:migrate
+      if ($LASTEXITCODE -ne 0) { throw "db:migrate failed" }
     } finally {
       Pop-Location
     }
@@ -292,25 +286,18 @@ if ($buildBackend -or $buildFrontend) {
   # Start server
   # ---------------------------------------------------------------------------
   step "$(t "Starting yolorouter serve" "启动 yolorouter serve")"
-  $logFile = Join-Path $logDir 'server.log'
 
-  # Start process in background
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $binPath
-  $psi.Arguments = 'serve'
-  $psi.WorkingDirectory = $rootDir
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.UseShellExecute = $false
-  $psi.CreateNoWindow = $true
-
-  $serverProc = New-Object System.Diagnostics.Process
-  $serverProc.StartInfo = $psi
-  $serverProc.Start() | Out-Null
-
-  # Write output to log file
-  $serverProc.StandardOutput.ReadToEnd() | Out-File -FilePath $logFile -Encoding utf8
-  $serverProc.StandardError.ReadToEnd() | Out-File -FilePath $logFile -Encoding utf8 -Append
+  # Launch the server as an independent background process with its output
+  # redirected to log files at the OS level. Unlike a synchronous
+  # StandardOutput.ReadToEnd() (which blocks forever on a long-running server,
+  # producing no live logs and appearing to hang / ignore Ctrl+C), the child
+  # here owns the file handles, so logs stream live and keep growing after
+  # this script exits - mirroring dev.sh's `serve >> log 2>&1 &`.
+  $serverProc = Start-Process -FilePath $binPath -ArgumentList 'serve' `
+    -WorkingDirectory $rootDir `
+    -RedirectStandardOutput $logFile `
+    -RedirectStandardError $errFile `
+    -WindowStyle Hidden -PassThru
 
   $serverPid = $serverProc.Id
 
@@ -326,7 +313,6 @@ if ($buildBackend -or $buildFrontend) {
       }
     } catch {}
   }
-  step "$(t "111" "启动 111")"
 
   # ---------------------------------------------------------------------------
   # Health check
@@ -349,7 +335,7 @@ if ($buildBackend -or $buildFrontend) {
       $req = [System.Net.WebRequest]::Create("http://127.0.0.1:${port}/healthz")
       $req.Timeout = 2000
       $resp = $req.GetResponse()
-      if ($resp.StatusCode -eq 200) {
+      if ([int]$resp.StatusCode -eq 200) {
         $ready = $true
         $resp.Close()
         break
@@ -362,11 +348,16 @@ if ($buildBackend -or $buildFrontend) {
   }
 
   if (-not $ready) {
-    err "$(t "Health check failed — last lines of ${logFile}:" "健康检查失败 —— ${logFile} 尾部：")"
-    try {
-      $lines = Get-Content $logFile -Tail 20 -ErrorAction SilentlyContinue
-      foreach ($line in $lines) { err "  $line" }
-    } catch {}
+    err "$(t "Health check failed - last lines of the logs:" "健康检查失败 —— 日志尾部：")"
+    foreach ($f in @($logFile, $errFile)) {
+      if (Test-Path $f) {
+        $lines = Get-Content $f -Tail 20 -ErrorAction SilentlyContinue
+        if ($lines) {
+          err "  --- $f ---"
+          foreach ($line in $lines) { err "  $line" }
+        }
+      }
+    }
     Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
     exit 1
   }
@@ -376,12 +367,11 @@ if ($buildBackend -or $buildFrontend) {
   Write-Host "  $(t 'App:'     '访问:')  http://127.0.0.1:${port}/"
   Write-Host "  $(t 'Health:'  '健康:')  http://127.0.0.1:${port}/healthz"
   Write-Host "  $(t 'Logs:'    '日志:')  Get-Content '${logFile}' -Wait"
-  Write-Host "  $(t 'Restart:' '重启:')  $($MyInvocation.ScriptName) -Restart"
+  Write-Host "  $(t 'Restart:' '重启:')  $($MyInvocation.MyCommand.Name) -Restart"
   Write-Host "  $(t 'Stop:'    '停止:')  Stop-Process -Id ${serverPid}"
 
 } finally {
   # Clean up the lock directory
-  $script:CleanupLock = $false
   if (Test-Path $lockDir) {
     Remove-Item -Recurse -Force $lockDir -ErrorAction SilentlyContinue
   }
