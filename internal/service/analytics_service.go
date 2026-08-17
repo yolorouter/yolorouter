@@ -2,9 +2,13 @@
 // Strict 3-layer handler → service → repository, same shape as the
 // sibling DashboardService / RequestLogService. This service owns:
 //
-//   - the analytics filter shape (AnalyticsFilter) — service-level mirror of
-//     repository.RequestLogFilter, kept as a separate type so the handler
-//     layer never imports repository
+//   - the query conditions, passed straight through as
+//     repository.RequestLogFilter — the ONE shared query shape for the
+//     dashboard, analytics, and request-log list (no service-level mirror
+//     to keep in sync; a mirror's field copy once dropped 6 of 15 fields)
+//   - the analytics-specific call options (AnalyticsOptions: bucketing
+//     timezone + failover scan opt-in) — not query conditions, so they
+//     travel beside the filter instead of on it
 //   - the dimension / bucket vocabulary on the wire
 //   - the overview row DTO that wraps MetricTotals + success_rate
 //   - the CSV stream assembly (BOM + headers + records)
@@ -15,14 +19,14 @@ package service
 import (
 	"context"
 	"errors"
-	"io"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/repository"
-	"github.com/yolorouter/yolorouter/pkg/csvutil"
 )
 
 // === Wire-level vocab ====================================================
@@ -51,27 +55,51 @@ const (
 	BucketHour = repository.TimeBucketHour
 )
 
-// ErrInvalidDimension is returned by GetReport / ExportCSV when dimension
-// isn't one of model|provider|caller|time. The handler maps it to 400.
-var ErrInvalidDimension = errors.New("invalid dimension; must be one of: model, provider, caller, time")
+// validDimensions is the single ordered vocabulary of legal ?dimension=
+// values. The handler's allowlist and every error text derive from it, so
+// the values a caller may send and the values the errors quote cannot drift
+// apart — maintained by hand, they did (the service text once omitted user
+// while the handler's listed it).
+var validDimensions = []string{
+	DimensionModel,
+	DimensionProvider,
+	DimensionCaller,
+	DimensionUser,
+	DimensionTime,
+}
+
+// DimensionList renders validDimensions as the comma-separated list the
+// error texts quote — the order is part of the wire contract. Exported for
+// the handler's 400 text; the service's own ErrInvalidDimension derives
+// from the same list.
+func DimensionList() string {
+	return strings.Join(validDimensions, ", ")
+}
+
+// IsValidDimension reports whether dim is one of the legal ?dimension=
+// values. The handler validates against this instead of keeping its own
+// allowlist copy.
+func IsValidDimension(dim string) bool {
+	for _, d := range validDimensions {
+		if d == dim {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrInvalidDimension is returned by GetReport / BuildCSVRecords when
+// dimension isn't one of the valid values. The handler maps it to 400.
+var ErrInvalidDimension = fmt.Errorf("invalid dimension; must be one of: %s", DimensionList())
 
 // === Filter / DTO types ==================================================
 
-// AnalyticsFilter is the service-level filter shape. Identical to
-// repository.RequestLogFilter (the shared query shape) but defined here so
-// the handler doesn't take a repository import. The conversion is a flat
-// field copy in toRepoFilter.
-type AnalyticsFilter struct {
-	RequestID string
-	APIKeyID  *uint
-	// UserID narrows every aggregate to rows owned by one account.
-	UserID      *uint
-	ModelName   string
-	ProviderID  *uint
-	StatusClass string
-	IsStream    *bool
-	StartTime   *time.Time // inclusive
-	EndTime     *time.Time // exclusive
+// AnalyticsOptions carries the analytics-specific call options that are NOT
+// query conditions (the repository filter's applyFilter never reads them):
+// the timezone buckets are computed in, and the opt-in failover scan. They
+// travel beside the shared repository.RequestLogFilter instead of living on
+// it, because the request-log list and the dashboard never use them.
+type AnalyticsOptions struct {
 	// Location is the client-supplied IANA timezone used for day-bucket
 	// grouping so analytics "today" matches the admin's wall clock. nil
 	// falls back to the server's local zone (location()).
@@ -87,9 +115,9 @@ type AnalyticsFilter struct {
 // falling back to time.Local when the caller didn't supply one. Centralized
 // here so every repository call site picks up the same zone without each
 // having to repeat the nil-check.
-func (f AnalyticsFilter) location() *time.Location {
-	if f.Location != nil {
-		return f.Location
+func (o AnalyticsOptions) location() *time.Location {
+	if o.Location != nil {
+		return o.Location
 	}
 	return time.Local
 }
@@ -164,11 +192,11 @@ func NewAnalyticsService(db *gorm.DB) *AnalyticsService {
 // GetOverview returns the aggregate MetricTotals for the filter.
 // Reuses AggregateRequestLogMetrics so the overview's success-rate
 // definition stays identical to the dashboard's today-card.
-func (s *AnalyticsService) GetOverview(filter AnalyticsFilter, bucket string, now time.Time) (*OverviewRow, error) {
+func (s *AnalyticsService) GetOverview(filter *repository.RequestLogFilter, opts AnalyticsOptions, bucket string, now time.Time) (*OverviewRow, error) {
 	// Clamp the window on the same bucket cap the report uses, so the overview
 	// cards and the time-dimension report aggregate the exact same range.
-	filter = resolveEffectiveRange(filter, bucket, now)
-	m, err := repository.AggregateRequestLogMetrics(s.db, toRepoFilter(filter))
+	resolveEffectiveRange(filter, opts, bucket, now)
+	m, err := repository.AggregateRequestLogMetrics(s.db, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -187,114 +215,82 @@ func (s *AnalyticsService) GetOverview(filter AnalyticsFilter, bucket string, no
 }
 
 // GetReport returns the dimension-grouped aggregates. dimension selects one
-// of model|provider|caller|time; bucket is only consulted for dimension=time
-// (empty bucket defaults to "day"). Returns ErrInvalidDimension for an
-// unrecognized dimension and repository.ErrInvalidBucket for an unrecognized
-// bucket; the handler maps both to 400.
-func (s *AnalyticsService) GetReport(dimension, bucket string, filter AnalyticsFilter, now time.Time) (*ReportResult, error) {
-	rows, err := s.runReport(dimension, bucket, filter, now)
+// of the report dimensions (the legal set is validDimensions above); bucket
+// is only consulted for dimension=time (empty bucket defaults to "day").
+// Returns ErrInvalidDimension for an unrecognized dimension and
+// repository.ErrInvalidBucket for an unrecognized bucket; the handler maps
+// both to 400.
+func (s *AnalyticsService) GetReport(dimension, bucket string, filter *repository.RequestLogFilter, opts AnalyticsOptions, now time.Time) (*ReportResult, error) {
+	rows, err := s.runReport(dimension, bucket, filter, opts, now)
 	if err != nil {
 		return nil, err
 	}
 	return &ReportResult{Dimension: dimension, Rows: rows}, nil
 }
 
-// ExportCSV streams the report as CSV (UTF-8 BOM + headers + records). Same
-// query path as GetReport; the caller (handler) has already set
-// Content-Type / Content-Disposition headers and is responsible for the BOM
-// bytes (so a mid-stream error can still truncate cleanly without a stray
-// BOM appearing in an error envelope). The service writes headers + rows
-// only and flushes once at the end — analytics exports are bounded by the
-// lookback cap (90d day / 30d hour) so buffering the whole thing is fine.
-// BuildCSVRecords runs the report and renders headers + records. Split from
-// ExportCSV so the analytics handler can fail BEFORE committing the HTTP 200
-// (same pattern as request_log's BuildExportRows + WriteCSVRows): a build
-// failure here returns a JSON envelope, not a truncated CSV reported as
-// success.
-func (s *AnalyticsService) BuildCSVRecords(dimension, bucket string, filter AnalyticsFilter, now time.Time) ([]string, [][]string, error) {
+// BuildCSVRecords runs the report and renders the CSV headers + records.
+// The handler commits the HTTP 200 + Content-Type / Content-Disposition +
+// BOM bytes only after this succeeds (csvutil.WriteCSV then streams), so a
+// build failure returns a JSON envelope, not a truncated CSV reported as
+// success — same pattern as request_log's BuildExportRows + WriteCSVRows.
+// Buffering the whole thing is fine: analytics exports are bounded by the
+// lookback cap (90d day / 30d hour).
+func (s *AnalyticsService) BuildCSVRecords(dimension, bucket string, filter *repository.RequestLogFilter, opts AnalyticsOptions, now time.Time) ([]string, [][]string, error) {
 	// The CSV is the analytics report in file form; its provider sheet has a
 	// failovers column, so the data is always computed here regardless of
-	// what the querying page asked for on screen.
+	// what the querying page asked for on screen. opts is a value copy, so
+	// forcing this flag never leaks back to the caller.
 	if dimension == DimensionProvider {
-		filter.WithFailovers = true
+		opts.WithFailovers = true
 	}
-	rows, err := s.runReport(dimension, bucket, filter, now)
+	rows, err := s.runReport(dimension, bucket, filter, opts, now)
 	if err != nil {
 		return nil, nil, err
 	}
 	return buildCSV(dimension, rows)
 }
 
-// ExportCSV is a thin wrapper retained for tests / direct callers; production
-// handlers use BuildCSVRecords + csvutil.WriteCSV so a build failure never
-// reaches the wire.
-func (s *AnalyticsService) ExportCSV(dimension, bucket string, filter AnalyticsFilter, w io.Writer, now time.Time) error {
-	headers, records, err := s.BuildCSVRecords(dimension, bucket, filter, now)
-	if err != nil {
-		return err
-	}
-	return csvutil.WriteCSV(w, headers, records)
-}
-
 // runReport dispatches to the right repository function and returns the
 // typed row slice (caller-facing type chosen by dimension). The switch is
 // the single point that maps dimension → row type.
-func (s *AnalyticsService) runReport(dimension, bucket string, filter AnalyticsFilter, now time.Time) (interface{}, error) {
+func (s *AnalyticsService) runReport(dimension, bucket string, filter *repository.RequestLogFilter, opts AnalyticsOptions, now time.Time) (interface{}, error) {
 	// Resolve the window once for every dimension (day cap by default; the
 	// time dimension uses the caller's bucket cap) so overview, model/
 	// provider/caller, and time reports all see the same [start, end).
-	filter = resolveEffectiveRange(filter, bucketForDimension(dimension, bucket), now)
-	rf := toRepoFilter(filter)
+	resolveEffectiveRange(filter, opts, bucketForDimension(dimension, bucket), now)
 	switch dimension {
 	case DimensionModel:
-		return repository.AggregateByModel(s.db, rf)
+		return repository.AggregateByModel(s.db, filter)
 	case DimensionProvider:
-		rows, err := repository.AggregateByProvider(s.db, rf)
+		rows, err := repository.AggregateByProvider(s.db, filter)
 		if err != nil {
 			return nil, err
 		}
-		if filter.WithFailovers {
-			return repository.AttachProviderFailovers(s.db, rf, rows)
+		if opts.WithFailovers {
+			return repository.AttachProviderFailovers(s.db, filter, rows)
 		}
 		return rows, nil
 	case DimensionCaller:
-		return repository.AggregateByCaller(s.db, rf)
+		return repository.AggregateByCaller(s.db, filter)
 	case DimensionUser:
-		return repository.AggregateByUser(s.db, rf)
+		return repository.AggregateByUser(s.db, filter)
 	case DimensionTime:
-		return repository.AggregateByTime(s.db, rf, filter.location(), bucket, now)
+		return repository.AggregateByTime(s.db, filter, opts.location(), bucket, now)
 	}
 	return nil, ErrInvalidDimension
 }
 
-// toRepoFilter maps the service-level filter to repository's pointer-typed
-// filter. Same layering convention as request_log_service.go's toRepoFilter.
-func toRepoFilter(f AnalyticsFilter) *repository.RequestLogFilter {
-	return &repository.RequestLogFilter{
-		RequestID:   f.RequestID,
-		APIKeyID:    f.APIKeyID,
-		UserID:      f.UserID,
-		ModelName:   f.ModelName,
-		ProviderID:  f.ProviderID,
-		StatusClass: f.StatusClass,
-		IsStream:    f.IsStream,
-		StartTime:   f.StartTime,
-		EndTime:     f.EndTime,
-	}
-}
-
 // resolveEffectiveRange clamps the filter's window to the bucket lookback cap
-// and writes the resolved [start, end) back into the filter. Every dimension
-// and the overview go through this so they aggregate the SAME window —
-// otherwise the time report would silently truncate an oversized custom range
-// while the overview / model / provider / caller dimensions kept the full
-// range. bucket="" uses the day-bucket cap.
-func resolveEffectiveRange(filter AnalyticsFilter, bucket string, now time.Time) AnalyticsFilter {
-	rf := toRepoFilter(filter)
-	end, start := repository.ResolveTimeRange(rf, filter.location(), bucket, now)
+// and writes the resolved [start, end) back into filter IN PLACE — it mutates
+// the caller's struct; there is no copy. Every dimension and the overview go
+// through this so they aggregate the SAME window — otherwise the time report
+// would silently truncate an oversized custom range while the overview /
+// model / provider / caller dimensions kept the full range. bucket="" uses
+// the day-bucket cap.
+func resolveEffectiveRange(filter *repository.RequestLogFilter, opts AnalyticsOptions, bucket string, now time.Time) {
+	end, start := repository.ResolveTimeRange(filter, opts.location(), bucket, now)
 	filter.StartTime = &start
 	filter.EndTime = &end
-	return filter
 }
 
 // bucketForDimension returns the bucket to use for range resolution: the time
@@ -400,8 +396,8 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 		}
 		return headers, records, nil
 	}
-	// Unreachable: runReport already validated dimension before handing the
-	// result to ExportCSV. Returning an error (not panicking) so a future
+	// Unreachable: runReport already validated dimension before the rows
+	// reach buildCSV. Returning an error (not panicking) so a future
 	// dimension added to runReport without a buildCSV branch fails loudly
 	// instead of crashing the process.
 	return nil, nil, ErrInvalidDimension
@@ -454,7 +450,7 @@ const MaxCompressTopN = 20
 // cancels in-flight SQL. Every slice in the result is non-nil (empty [] on
 // the wire, never JSON null) so the frontend can call .map / .length without
 // null-checking.
-func (s *AnalyticsService) GetCompressStats(ctx context.Context, filter AnalyticsFilter, topN int, now time.Time) (*CompressStatsResult, error) {
+func (s *AnalyticsService) GetCompressStats(ctx context.Context, filter *repository.RequestLogFilter, opts AnalyticsOptions, topN int, now time.Time) (*CompressStatsResult, error) {
 	if topN <= 0 {
 		topN = DefaultCompressTopN
 	}
@@ -463,34 +459,33 @@ func (s *AnalyticsService) GetCompressStats(ctx context.Context, filter Analytic
 	}
 	// Clamp on the day-bucket cap so the daily series walk and the totals
 	// share the exact same [start, end) window.
-	filter = resolveEffectiveRange(filter, BucketDay, now)
-	rf := toRepoFilter(filter)
+	resolveEffectiveRange(filter, opts, BucketDay, now)
 
-	totals, err := repository.AggregateCompressTotals(ctx, s.db, rf)
+	totals, err := repository.AggregateCompressTotals(ctx, s.db, filter)
 	if err != nil {
 		return nil, err
 	}
-	skipReasons, err := repository.AggregateCompressSkipReasons(ctx, s.db, rf)
+	skipReasons, err := repository.AggregateCompressSkipReasons(ctx, s.db, filter)
 	if err != nil {
 		return nil, err
 	}
-	topKeys, err := repository.AggregateCompressTopAPIKeys(ctx, s.db, rf, topN)
+	topKeys, err := repository.AggregateCompressTopAPIKeys(ctx, s.db, filter, topN)
 	if err != nil {
 		return nil, err
 	}
-	topModels, err := repository.AggregateCompressTopModels(ctx, s.db, rf, topN)
+	topModels, err := repository.AggregateCompressTopModels(ctx, s.db, filter, topN)
 	if err != nil {
 		return nil, err
 	}
-	topProviders, err := repository.AggregateCompressTopProviders(ctx, s.db, rf, topN)
+	topProviders, err := repository.AggregateCompressTopProviders(ctx, s.db, filter, topN)
 	if err != nil {
 		return nil, err
 	}
-	compressorHits, err := repository.AggregateCompressorHits(ctx, s.db, rf)
+	compressorHits, err := repository.AggregateCompressorHits(ctx, s.db, filter)
 	if err != nil {
 		return nil, err
 	}
-	daily, err := repository.AggregateCompressDailySeries(ctx, s.db, rf, filter.location(), now)
+	daily, err := repository.AggregateCompressDailySeries(ctx, s.db, filter, opts.location(), now)
 	if err != nil {
 		return nil, err
 	}

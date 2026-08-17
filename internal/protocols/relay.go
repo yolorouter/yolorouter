@@ -307,6 +307,35 @@ func WatchClientClose(c *gin.Context, upstream io.Closer) (stop func()) {
 	return func() { once.Do(func() { close(done) }) }
 }
 
+// SSEFrameEnd returns the offset and length of the first blank-line frame
+// separator in buf, or (-1, 0) when no complete frame has arrived yet. SSE
+// permits "\n", "\r\n", or "\r" line endings, so the separator is "\n\n",
+// "\n\r\n", or — for a stream using CRLF throughout — "\r\n\r\n", which is
+// a shape with no two consecutive newlines in it: a framer scanning for
+// "\n\n" alone never finds a frame and drops the whole stream. The scan
+// keys on a newline followed by an optional carriage return and another
+// newline, which covers the LF and CRLF spellings (a bare-CR stream would
+// need "\r\r", and nothing in this stack splits lines on bare CR); a
+// partial separator at the end of buf deliberately does not match, so a
+// frame split across reads is held until its tail arrives. The bytes
+// before the returned offset are the frame's block, with each line's own
+// trailing "\r" left for the per-line TrimSpace that already exists at
+// every caller.
+func SSEFrameEnd(buf string) (index, sepLen int) {
+	for i := 0; i+1 < len(buf); i++ {
+		if buf[i] != '\n' {
+			continue
+		}
+		if buf[i+1] == '\n' {
+			return i, 2
+		}
+		if i+2 < len(buf) && buf[i+1] == '\r' && buf[i+2] == '\n' {
+			return i, 3
+		}
+	}
+	return -1, 0
+}
+
 // newSSEEmitter builds the emit function both streaming relays share: defer
 // the SSE headers and the 200 until there is a first real event to send, and
 // capture caller-facing bytes only after BOTH Write and Flush succeed.

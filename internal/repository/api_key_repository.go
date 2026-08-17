@@ -55,9 +55,9 @@ func FindAPIKeyByID(db *gorm.DB, id uint) (*model.APIKey, error) {
 type APIKeyFilter struct {
 	Query  string
 	Status string
-	// UserID narrows to keys owned by one account; 0 = no constraint (0 is
-	// never a valid owner, see migration 00024).
-	UserID uint
+	// UserID narrows to keys owned by one account; nil = no constraint —
+	// the same pointer convention RequestLogFilter uses.
+	UserID *uint
 	Now    time.Time
 }
 
@@ -88,8 +88,8 @@ func applyAPIKeyFilters(tx *gorm.DB, f APIKeyFilter) *gorm.DB {
 		like := likeContainsPattern(f.Query)
 		tx = tx.Where("LOWER(key_prefix) LIKE LOWER(?) ESCAPE '\\' OR LOWER(remark) LIKE LOWER(?) ESCAPE '\\'", like, like)
 	}
-	if f.UserID != 0 {
-		tx = tx.Where("user_id = ?", f.UserID)
+	if f.UserID != nil {
+		tx = tx.Where("user_id = ?", *f.UserID)
 	}
 	// Status filter mirrors computeAPIKeyDisplayStatus exactly, including its
 	// precedence: revoked > expired > budget-exhausted > active.

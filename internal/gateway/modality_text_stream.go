@@ -20,7 +20,7 @@ func (p *textPayload) deliverStream(tools DeliveryTools, resp *http.Response) fa
 	if !p.cand.Passthrough {
 		return p.deliverTranslatedStream(tools, resp)
 	}
-	var usage *Usage
+	var usage *protocols.IRUsage
 	var err error
 	if p.cand.EgressProtocol == protocols.ProtocolOpenAI {
 		usage, err = p.pumpSameProtocol(tools, resp)
@@ -160,7 +160,7 @@ func (p *textPayload) deliverTranslatedStream(tools DeliveryTools, resp *http.Re
 	// Kept even on the error paths: the upstream reported these however the
 	// delivery then went, and an attempt that dropped them would be billed as
 	// though it had consumed nothing.
-	report := usageReportOf(irUsageToUsage(usage))
+	report := usageReportOf(reportedUsage(usage))
 	// Settled by the same function the pumps use. A relay reports few distinct
 	// failures, but one of them is a failed write to the caller — and telling
 	// that apart from a provider that broke is the whole of what settling a
@@ -282,11 +282,11 @@ func newStreamScanner(resp *http.Response) *bufio.Scanner {
 //
 // Returns the usage the upstream reported, and an error only for transport-level
 // failures. The sentinels it returns are the ones settleStream reads.
-func (p *textPayload) pumpSameProtocol(tools DeliveryTools, resp *http.Response) (*Usage, error) {
+func (p *textPayload) pumpSameProtocol(tools DeliveryTools, resp *http.Response) (*protocols.IRUsage, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	pump := &streamPump{tools: tools}
-	var usage *Usage
+	var usage *protocols.IRUsage
 	doneSeen := false
 	scanner := newStreamScanner(resp)
 	for scanner.Scan() {
@@ -335,7 +335,7 @@ func (p *textPayload) pumpSameProtocol(tools DeliveryTools, resp *http.Response)
 // decoder is run alongside the forwarding purely to learn when the stream
 // finished and what it cost. The decoded events themselves are discarded: the
 // bytes already forwarded verbatim are what the caller received.
-func (p *textPayload) pumpSameProtocolDecoded(tools DeliveryTools, resp *http.Response) (*Usage, error) {
+func (p *textPayload) pumpSameProtocolDecoded(tools DeliveryTools, resp *http.Response) (*protocols.IRUsage, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	pump := &streamPump{tools: tools}
@@ -353,7 +353,7 @@ func (p *textPayload) pumpSameProtocolDecoded(tools DeliveryTools, resp *http.Re
 	// Evaluated fresh on each return so a mid-stream failure still reports what
 	// was collected before it. An all-zero usage comes back nil: unknown, not
 	// zero.
-	currentUsage := func() *Usage { return irUsageToUsage(&accUsage) }
+	currentUsage := func() *protocols.IRUsage { return reportedUsage(&accUsage) }
 
 	// claudeModelRewritten latches once the single message_start frame has been
 	// rewritten, so later lines skip a parse that cannot find anything.

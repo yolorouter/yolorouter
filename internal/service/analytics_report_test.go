@@ -1,6 +1,7 @@
 package service
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func TestReportRateAndUnknownCostArithmetic(t *testing.T) {
 	seedReportLog(t, svc, "cancel-1", 499, 0, 0, true) // excluded from ended
 	seedReportLog(t, svc, "priceless", 200, 5, 0, false)
 
-	res, err := svc.GetReport(DimensionModel, "", AnalyticsFilter{}, time.Now().UTC())
+	res, err := svc.GetReport(DimensionModel, "", &repository.RequestLogFilter{}, AnalyticsOptions{}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("GetReport: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestReportCSVColumnOrder(t *testing.T) {
 		DimensionTime:   "bucket," + tail,
 	}
 	for dim, header := range want {
-		headers, records, err := svc.BuildCSVRecords(dim, "", AnalyticsFilter{}, time.Now().UTC())
+		headers, records, err := svc.BuildCSVRecords(dim, "", &repository.RequestLogFilter{}, AnalyticsOptions{}, time.Now().UTC())
 		if err != nil {
 			t.Fatalf("BuildCSVRecords(%s): %v", dim, err)
 		}
@@ -93,7 +94,7 @@ func TestReportCSVColumnOrder(t *testing.T) {
 	// Cell-to-header correspondence, asserted on one dimension with known
 	// seeded values: one 200-status call, 10 input tokens, cost 5 micros.
 	// Swapping any two cells inside the shared tail turns this red.
-	headers, records, err := svc.BuildCSVRecords(DimensionModel, "", AnalyticsFilter{}, time.Now().UTC())
+	headers, records, err := svc.BuildCSVRecords(DimensionModel, "", &repository.RequestLogFilter{}, AnalyticsOptions{}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("BuildCSVRecords(model): %v", err)
 	}
@@ -104,6 +105,67 @@ func TestReportCSVColumnOrder(t *testing.T) {
 	for i, cell := range records[0] {
 		if cell != wantRow[i] {
 			t.Fatalf("model CSV cell %q (column %s): want %q, got row %v", cell, headers[i], wantRow[i], records[0])
+		}
+	}
+}
+
+// TestEveryValidDimensionReportsAndRendersCSV locks the pairing the two
+// dimension switches can silently lose: every entry in validDimensions must
+// both run a report and render a CSV. runReport and buildCSV are separate
+// switches, so a dimension added to the vocabulary without its buildCSV
+// branch compiles fine and only fails here (the CSV path's default branch
+// returns ErrInvalidDimension).
+func TestEveryValidDimensionReportsAndRendersCSV(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewAnalyticsService(db)
+	seedReportLog(t, svc, "ok-1", 200, 10, 5, true)
+
+	for _, dim := range validDimensions {
+		if _, err := svc.GetReport(dim, "", &repository.RequestLogFilter{}, AnalyticsOptions{}, time.Now().UTC()); err != nil {
+			t.Fatalf("GetReport(%s): %v", dim, err)
+		}
+		headers, _, err := svc.BuildCSVRecords(dim, "", &repository.RequestLogFilter{}, AnalyticsOptions{}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("BuildCSVRecords(%s): %v", dim, err)
+		}
+		if len(headers) == 0 {
+			t.Fatalf("BuildCSVRecords(%s): no headers", dim)
+		}
+	}
+}
+
+// TestValidDimensionsVocabulary pins the exact contents and order of
+// validDimensions. Everything (allowlist, both error texts, the CSV column
+// test below) derives from this slice, so a value silently dropping out of
+// it would leave every derived artifact consistent-yet-wrong — this is the
+// one assertion that compares the vocabulary against an independent
+// hand-written expectation instead of against itself. Changing the
+// vocabulary is a wire-contract change: update this list together with the
+// runReport/buildCSV switches and the frontend dimension list.
+func TestValidDimensionsVocabulary(t *testing.T) {
+	want := []string{
+		DimensionModel,
+		DimensionProvider,
+		DimensionCaller,
+		DimensionUser,
+		DimensionTime,
+	}
+	if !reflect.DeepEqual(validDimensions, want) {
+		t.Fatalf("validDimensions changed: got %v, want %v", validDimensions, want)
+	}
+}
+
+// TestErrInvalidDimensionListsEveryValidDimension: the error text derives
+// from validDimensions, so every legal value must appear in it. This is the
+// drift that motivated deriving the text — the hand-written version once
+// omitted user while the handler's listed it. (Note this test is only
+// meaningful against a text that stops deriving from the list; the
+// vocabulary itself is pinned by TestValidDimensionsVocabulary.)
+func TestErrInvalidDimensionListsEveryValidDimension(t *testing.T) {
+	msg := ErrInvalidDimension.Error()
+	for _, dim := range validDimensions {
+		if !strings.Contains(msg, dim) {
+			t.Fatalf("ErrInvalidDimension text missing %q: %s", dim, msg)
 		}
 	}
 }

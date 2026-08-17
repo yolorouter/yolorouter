@@ -360,7 +360,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 		// Caller disconnect during body upload is terminal 499 (mirrors the
 		// stream/non-stream response paths), not a malformed-request 400.
 		if errors.Is(c.Request.Context().Err(), context.Canceled) {
-			s.abandonRequest(rc, "client_disconnected", start)
+			s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
 			return // caller is gone; no response to write
 		}
 		// http.MaxBytesReader (BodySizeLimit middleware) rejects an oversized
@@ -382,43 +382,15 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// request_log_bodies row, verbatim (v0.1 does not scrub body content).
 	rc.bodies.SetRequest(body)
 
-	// Two-level resolve for input compression: a per-key override wins
-	// outright (short-circuit so a stalled settings read can't block an
-	// override key); otherwise fall through to the global cached value. On
-	// global read error leave compression disabled — fail-open, never block
-	// the request on a settings hiccup.
-	//
-	// Resolved here rather than further down because the answer is needed
-	// before the body is handed to a modality, and that is the last moment
-	// anything may change those bytes.
-	if apiKey.CompressEnabledOverride {
-		rc.compressEnabled = apiKey.CompressEnabled
-	} else if s.settingsProvider != nil {
-		enabled, _, err := s.settingsProvider.GetInputCompression(c.Request.Context())
-		if err != nil {
-			logger.Warn("gateway: input compression read failed",
-				zap.String("request_id", rc.requestID), zap.Error(err))
-		}
-		rc.compressEnabled = enabled
-	}
-
-	// Vision fallback configuration. (The loopback marker and the caller
-	// credential resolve earlier, before admissions — see the block above
-	// checkKeyStateAndLimits.)
-	if s.settingsProvider != nil {
-		vf, _, err := s.settingsProvider.GetVisionFallback(c.Request.Context())
-		if err != nil {
-			logger.Warn("gateway: vision fallback settings read failed",
-				zap.String("request_id", rc.requestID), zap.Error(err))
-		}
-		// Assigned even on a refresh error: the provider returns its
-		// last-known-good snapshot alongside the error, and a settings
-		// hiccup must not silently flip a configured feature off (which
-		// here would mean stripping images a configured model could have
-		// described) — same fail-open posture as compression above.
-		rc.visionFallbackModel = vf.Model
-		rc.visionFallbackPrompt = vf.Prompt
-	}
+	// Every settings-dependent value this request uses, resolved in one
+	// place: per-key overrides short-circuit the global read, and a failed
+	// global read keeps the provider's last-known-good. Resolved here —
+	// after the key is known and before the first consumer: the ingress
+	// rewriters below read compression and vision through the capability
+	// views, the allowlist reads the fallback model, and the egress prompt
+	// stage reads the prompt — and that is the last moment anything may
+	// change those bytes.
+	rc.settings = resolveRequestSettings(c.Request.Context(), s.settingsProvider, apiKey, rc.requestID)
 
 	// The rewriters run before the request is admitted, not after it is
 	// validated, because the modality admits ONE body and everything
@@ -487,29 +459,6 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// write lands, the sliding per-write deadline takes over. Non-streaming
 	// endpoints keep the server WriteTimeout as a slow-read DoS guard.
 
-	// Resolve the two-level custom system prompt: a per-key override wins
-	// outright (short-circuit so a stalled settings read can't block an
-	// override key); otherwise fall through to the global cached value.
-	// On global read error leave the prompt disabled — fail-open behavior
-	// guidance, never block the request on a settings hiccup.
-	if apiKey.CustomSystemPromptEnabledOverride {
-		rc.customSystemPromptEnabled = apiKey.CustomSystemPromptEnabled
-		rc.customSystemPrompt = apiKey.CustomSystemPrompt
-	} else if s.settingsProvider != nil {
-		g, _, err := s.settingsProvider.CustomSystemPrompt(c.Request.Context())
-		if err != nil {
-			// Fail-open: the service returns last-known-good (or zero/disabled
-			// on cold start) alongside the error; apply it so a transient
-			// settings hiccup never downgrades behavior, and log for
-			// observability. The negative-TTL in the service ensures this
-			// log fires at most once per failure window, not per request.
-			logger.Warn("gateway: custom system prompt read failed",
-				zap.String("request_id", rc.requestID), zap.Error(err))
-		}
-		rc.customSystemPromptEnabled = g.Enabled
-		rc.customSystemPrompt = g.Text
-	}
-
 	// Step 4: model exists and is enabled. A model disabled by an admin
 	// must not route even if its candidates are still enabled.
 	m, err := repository.FindModelByName(s.db.WithContext(requestCtx), rc.originalModel)
@@ -518,7 +467,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 			// The client hung up while this query was in flight — a
 			// context.Canceled from the DB driver here is a disconnect, not
 			// a server-side DB fault; nothing to write back to a gone caller.
-			s.abandonRequest(rc, "client_disconnected", start)
+			s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
 			return
 		}
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -540,11 +489,11 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// because that target is the admin's choice, not the caller's, so the
 	// code checks exactly that instead of trusting the marker alone; the
 	// marker is process-token-gated on top.
-	if !apiKey.AllowAllModels && (!rc.visionFallbackSubCall || m.Name != rc.visionFallbackModel) {
+	if !apiKey.AllowAllModels && (!rc.visionFallbackSubCall || m.Name != rc.settings.VisionFallbackModel) {
 		allowed, err := repository.HasAPIKeyModelAccess(s.db.WithContext(requestCtx), apiKey.ID, m.ID)
 		if err != nil {
 			if isClientDisconnected(c) {
-				s.abandonRequest(rc, "client_disconnected", start)
+				s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
 				return
 			}
 			logger.Error("gateway: allowlist", zap.String("request_id", rc.requestID), zap.Error(err))
@@ -561,7 +510,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	allCandidates, err := repository.ListModelCandidatesByModelID(s.db.WithContext(requestCtx), m.ID)
 	if err != nil {
 		if isClientDisconnected(c) {
-			s.abandonRequest(rc, "client_disconnected", start)
+			s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
 			return
 		}
 		logger.Error("gateway: list candidates", zap.String("request_id", rc.requestID), zap.Error(err))
@@ -794,7 +743,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 				// only to land on allCandidatesFailed's 502; record 499
 				// instead, mirroring attemptOne's disconnect handling.
 				rc.recordAttempt(cand, provider, nil, 0, AttemptConnError, "client disconnected")
-				s.abandonRequestAfterAttempt(rc, "client_disconnected", start)
+				s.abandonRequest(rc, "client_disconnected", start, settleOptions{againstRecordedAttempt: true})
 				return
 			}
 			logger.Error("gateway: list provider keys", zap.String("request_id", rc.requestID), zap.Error(err))
@@ -939,11 +888,11 @@ func attemptNoteFor(d fact.Delivery) string {
 // unit it counts, and this is where the kernel decides what to do with them.
 // Nil in, nil out — an attempt that reported nothing is not an attempt that
 // reported zeros, and billing the difference is real money.
-func usageFromReport(u *fact.UsageReported) *Usage {
+func usageFromReport(u *fact.UsageReported) *protocols.IRUsage {
 	if u == nil {
 		return nil
 	}
-	return &Usage{
+	return &protocols.IRUsage{
 		PromptTokens:          u.Prompt,
 		CompletionTokens:      u.Completion,
 		TotalTokens:           u.Total,
@@ -1090,7 +1039,7 @@ func (s *Service) recordAndSettle(c *gin.Context, rc *Exchange, adm admitted, d 
 	// because the reason only exists on the substitute. An operator opening
 	// that row to find out what happened is told nothing at all, which is
 	// worse than being told the wrong thing.
-	sink := newExchangeSink(rc)
+	sink := newKernelSink(rc)
 	s.checkAndNote(rc, &d, sink)
 	// A settled, complete delivery is the healthy interaction the table's
 	// upstream-succeeded row resets the breaker for. A settled but
@@ -1170,6 +1119,142 @@ const (
 	// the body to re-send; the attempt budget bounds how often it can recur.
 	attemptRetrySame
 )
+
+// upstreamDecision is one failed upstream response folded into an executable
+// answer: which way the chain routes, what the attempt record says, whether
+// the kernel's own reading of the status line joined the fold. Every field is
+// set by foldUpstreamDecision alone and read through the methods below, so no
+// caller can assemble a self-contradictory combination — a terminating
+// verdict paired with a next-candidate route, a relabelled outcome riding the
+// retry path.
+type upstreamDecision struct {
+	status     int
+	folded     decision.Resolved
+	route      attemptResult
+	cls        upstreamStatusClass
+	noteText   string
+	baseFolded bool
+	warn       bool
+}
+
+func (d upstreamDecision) final() decision.Resolved   { return d.folded }
+func (d upstreamDecision) routing() attemptResult     { return d.route }
+func (d upstreamDecision) class() upstreamStatusClass { return d.cls }
+func (d upstreamDecision) note() string               { return d.noteText }
+func (d upstreamDecision) baselineFolded() bool       { return d.baseFolded }
+func (d upstreamDecision) warnUnexecuted() bool       { return d.warn }
+
+// sticky returns the verdict worth quoting if the chain then runs out,
+// derived rather than stored — the routing decides where the chain goes next,
+// the table decides whether this verdict is worth quoting, and keeping one
+// answer means the two cannot disagree. A verdict with no status to offer
+// returns false: quoting a zero would tell the caller the request ended
+// without ever being answered.
+func (d upstreamDecision) sticky() (decision.StickyVerdict, bool) {
+	if d.folded.Sticky == decision.StickyNone {
+		return decision.StickyVerdict{}, false
+	}
+	status, errType := d.folded.CallerFacing(d.status, d.cls.ErrorType)
+	if status == 0 {
+		return decision.StickyVerdict{}, false
+	}
+	return decision.StickyVerdict{
+		Status:  status,
+		ErrType: errType,
+		Detail:  d.folded.RejectDetail(),
+		Reason:  d.folded.FailReason(),
+	}, true
+}
+
+// foldUpstreamDecision folds every opinion about one failed upstream
+// response — what the observers and the failure rewriters reported, whether a
+// repaired body exists to re-send, whether this candidate may still spend a
+// repair — into one executable answer. Pure: the inputs are the opinions and
+// the status they were formed from, nothing is read from or written to the
+// exchange, and the same inputs always fold to the same decision. The
+// side-effecting half (the loud warning, the baseline's timeline entry, the
+// circuit booking, the attempt record, the caller-facing surfacing) lives in
+// attemptOne, which executes what this decides.
+//
+// A repair addresses the payload, so it executes only when the status says
+// the payload is what failed AND the candidate's repair allowance remains. A
+// rejected credential or a throttled key is not a payload problem — no body
+// change can address it, and re-sending on the same key would burn the
+// budget against a cause the repair cannot touch (a 401 has also just marked
+// the key failed, so retrying it would dispatch on a credential already
+// known bad). A provider fault is not one either, and neither are the 4xx
+// that judge the caller, the account, or the route rather than the bytes.
+// And a repair already spent is an answer already given.
+//
+// A retry-same verdict that cannot be executed is treated as no routing
+// opinion, so the kernel's baseline decides: routing, sticky and status all
+// together, exactly as if the repair had never been offered. Substituting
+// the routing alone was tried and is not enough: it left the baseline's
+// sticky behind, and a chain exhausted on rate limits then answered with a
+// generic 502 instead of the 429 the caller should back off on.
+//
+// The kernel is a reporter too. When the observers expressed no executable
+// routing opinion, the status line is the only evidence there is, and the
+// kernel files its own reading of it through the same vocabulary, so the
+// routing comes out of one table however the judgement was reached. The
+// baseline is folded in ONLY on that condition, and the asymmetry is
+// deliberate: an observer that steered has read the body, the kernel has
+// read three digits, and a body-informed verdict must beat a status-informed
+// one outright. Folding the two unconditionally would let the baseline's
+// "terminate" (any unrecognised 4xx) out-rank a moderation refusal's "try
+// the next candidate" — the exact upgrade the observation point exists to
+// make possible.
+func foldUpstreamDecision(observed decision.Resolved, statusCode int, hasRepair, repairAllowed bool) upstreamDecision {
+	cls := classifyUpstreamStatus(statusCode)
+	note := fmt.Sprintf("upstream %d", statusCode)
+
+	retryExecutable := observed.Loop == decision.LoopRetrySameCandidate &&
+		hasRepair &&
+		repairAllowed &&
+		payloadRepairableUpstreamStatus(statusCode)
+	warn := observed.Loop == decision.LoopRetrySameCandidate && !retryExecutable
+
+	folded := observed
+	baseFolded := observed.Loop <= decision.LoopContinue ||
+		(observed.Loop == decision.LoopRetrySameCandidate && !retryExecutable)
+	if baseFolded {
+		baseline := decision.ResolveBatch([]fact.Fact{kernelUpstreamFact(statusCode)})
+		folded = decision.Combine(observed, baseline)
+	}
+
+	if retryExecutable {
+		return upstreamDecision{status: statusCode, folded: folded, route: attemptRetrySame,
+			cls: cls, noteText: note, baseFolded: baseFolded, warn: warn}
+	}
+
+	// A body-informed refusal relabels the attempt record: the payload was
+	// judged, not the provider, and the row should say which happened.
+	if folded.LoopFrom() == fact.KindPayloadRefused {
+		cls.Outcome = AttemptContentFiltered
+		note = fmt.Sprintf("upstream %d content inspection", statusCode)
+	}
+
+	// The resolved Loop routes the chain. Terminate is a floor, not an
+	// equality: LoopCommitted (bytes already reached the caller) sits above
+	// it and lands in the same bucket. The default is unreachable while the
+	// baseline fold above holds — every kernel row steers at least as
+	// strongly as a key rotation — and routes rather than panicking so a
+	// future weakening fails toward failover, the least damaging wrong
+	// answer.
+	var route attemptResult
+	switch {
+	case folded.Loop >= decision.LoopTerminate:
+		route = attemptTerminal
+	case folded.Loop == decision.LoopNextCandidate:
+		route = attemptNextCandidate
+	case folded.Loop == decision.LoopRotateKey:
+		route = attemptRotateKey
+	default:
+		route = attemptNextCandidate
+	}
+	return upstreamDecision{status: statusCode, folded: folded, route: route,
+		cls: cls, noteText: note, baseFolded: baseFolded, warn: warn}
+}
 
 // attemptOne sends one upstream request with one decrypted key and routes
 // the response. outBody/url are the pre-built upstream body/URL for this
@@ -1269,17 +1354,15 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 		// failure class. Any other transport failure is candidate-level.
 		if errors.Is(c.Request.Context().Err(), context.Canceled) {
 			rc.recordCurrentAttempt(0, AttemptConnError, "client disconnected")
-			s.abandonRequestAfterAttempt(rc, "client_disconnected", start) // nginx-style 499
+			s.abandonRequest(rc, "client_disconnected", start, settleOptions{againstRecordedAttempt: true}) // nginx-style 499
 			return attemptTerminal, nil
 		}
 		// Reported as the kernel's own fact so the timeline shows the
 		// judgement; the attempt was already charged at the dispatch above,
 		// and the routing (fail over) matches the row while staying explicit
 		// here because the disconnect branch above must keep precedence.
-		sink := newExchangeSink(rc)
-		sink.reporter = kernelReporter
-		sink.Report(fact.Fact{Kind: fact.KindUpstreamTransportFailure})
-		s.executeCircuit(rc, sink.resolve().Circuit)
+		s.executeCircuit(rc,
+			reportKernelFact(rc, fact.Fact{Kind: fact.KindUpstreamTransportFailure}).Circuit)
 		rc.recordCurrentAttempt(0, AttemptConnError,
 			redactedFailure(err, rc.attempt.UpstreamURL()))
 		return attemptNextCandidate, nil
@@ -1332,8 +1415,6 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	}
 
 	statusCode := resp.StatusCode
-	class := classifyUpstreamStatus(statusCode)
-	note := fmt.Sprintf("upstream %d", statusCode)
 
 	// For 401, persist the key verification failure BEFORE reading the
 	// error body: the status line alone is proof, and the body read can be
@@ -1390,125 +1471,69 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	// reported: one verdict, however many mouths spoke.
 	repaired, offered := s.rewriteAfterFailure(ctx, rc, egress.Protocol, outBody, up)
 	observed = decision.Combine(observed, offered)
-	// A repair addresses the payload, so it executes only when the status
-	// says the payload is what failed AND the candidate's repair allowance
-	// remains. A rejected credential or a throttled key is not a payload
-	// problem — no body change can address it, and re-sending on the same
-	// key would burn the budget against a cause the repair cannot touch (a
-	// 401 has also just marked the key failed, so retrying it would dispatch
-	// on a credential already known bad). A provider fault is not one
-	// either, and neither are the 4xx that judge the caller, the account, or
-	// the route rather than the bytes. And a repair already spent is an
-	// answer already given. In all those cases the verdict is logged as
-	// unexecuted and the baseline joins the fold, so the failure keeps its
-	// full normal handling — rotation, failover, or surfacing the upstream's
-	// own status — instead of being discarded after a half-executed retry.
-	retryExecutable := observed.Loop == decision.LoopRetrySameCandidate &&
-		repaired != nil &&
-		repairAllowed &&
-		payloadRepairableUpstreamStatus(statusCode)
+
+	d := foldUpstreamDecision(observed, statusCode, repaired != nil, repairAllowed)
+
 	// A retry-same verdict that cannot be executed — no repaired body behind
-	// it, or a failure no payload repair can address — is logged loudly, and
-	// the fold below then treats it as no routing opinion, so the kernel's
-	// baseline decides: routing, sticky and status all together, exactly as
-	// if the repair had never been offered. Substituting the routing alone
-	// was tried and is not enough: it left the baseline's sticky behind, and
-	// a chain exhausted on rate limits then answered with a generic 502
-	// instead of the 429 the caller should back off on.
-	if observed.Loop == decision.LoopRetrySameCandidate && !retryExecutable {
+	// it, or a failure no payload repair can address — is logged loudly; the
+	// fold above has already treated it as no routing opinion.
+	if d.warnUnexecuted() {
 		logger.Warn("gateway: reported verdict is not executed on this path",
 			zap.String("request_id", rc.requestID),
 			zap.String("verdict", observed.LoopFrom().String()),
 			zap.Int("upstream_status", statusCode))
 	}
-	// The kernel is a reporter too. When the observers expressed no
-	// executable routing opinion, the status line is the only evidence there
-	// is, and the kernel files its own reading of it through the same
-	// vocabulary, so the routing below comes out of one table however the
-	// judgement was reached.
-	//
-	// The baseline is folded in ONLY on that condition, and the asymmetry is
-	// deliberate: an observer that steered has read the body, the kernel has
-	// read three digits, and a body-informed verdict must beat a
-	// status-informed one outright. Folding the two unconditionally would let
-	// the baseline's "terminate" (any unrecognised 4xx) out-rank a moderation
-	// refusal's "try the next candidate" — the exact upgrade the observation
-	// point exists to make possible.
-	if observed.Loop <= decision.LoopContinue ||
-		(observed.Loop == decision.LoopRetrySameCandidate && !retryExecutable) {
-		sink := newExchangeSink(rc)
-		sink.reporter = kernelReporter
-		sink.Report(kernelUpstreamFact(statusCode))
-		observed = decision.Combine(observed, sink.resolve())
+	// The kernel's own reading joins the fold only on the decision's say-so,
+	// and joining is also an audit fact: the report appends one timeline
+	// entry, stamped with kernel provenance by construction. The verdict is
+	// discarded — d already folded this reading; only the entry matters here.
+	if d.baselineFolded() {
+		reportKernelFact(rc, kernelUpstreamFact(statusCode))
 	}
 	// The resolved circuit effect is booked whatever the routing below
 	// decides: the provider's health record describes the provider, not
 	// where this particular chain goes next.
-	s.executeCircuit(rc, observed.Circuit)
+	s.executeCircuit(rc, d.final().Circuit)
 	// The retry-same executor. The table judged a repaired body worth
 	// another attempt against this candidate, the failure was one a repair
 	// can address, and the body to re-send exists: the attempt is recorded
 	// and the pair goes back to the key loop, whose budget gate bounds how
-	// often a repair can recur.
-	if retryExecutable {
-		rc.recordCurrentAttempt(statusCode, class.Outcome, note)
+	// often a repair can recur. The record carries the unrelabelled class —
+	// the repair path describes the provider's own answer, not a payload
+	// judgement.
+	if d.routing() == attemptRetrySame {
+		rc.recordCurrentAttempt(statusCode, d.class().Outcome, d.note())
 		return attemptRetrySame, repaired
 	}
-	// A body-informed refusal relabels the attempt record: the payload was
-	// judged, not the provider, and the row should say which happened.
-	if observed.LoopFrom() == fact.KindPayloadRefused {
-		class.Outcome = AttemptContentFiltered
-		note = fmt.Sprintf("upstream %d content inspection", statusCode)
+	if sticky, ok := d.sticky(); ok {
+		rc.attempt.HoldVerdict(sticky)
 	}
+	rc.recordCurrentAttempt(statusCode, d.class().Outcome, d.note())
 
-	// Recorded from the table rather than from the routing below, which is what
-	// makes the slot general: the routing decides where the chain goes next, the
-	// table decides whether this verdict is worth quoting if the chain then
-	// runs out. A verdict with no status to offer records nothing — quoting a
-	// zero would tell the caller the request ended without ever being answered.
-	if observed.Sticky != decision.StickyNone {
-		if status, errType := observed.CallerFacing(statusCode, class.ErrorType); status != 0 {
-			rc.attempt.HoldVerdict(decision.StickyVerdict{
-				Status:  status,
-				ErrType: errType,
-				Detail:  observed.RejectDetail(),
-				Reason:  observed.FailReason(),
-			})
-		}
-	}
-
-	rc.recordCurrentAttempt(statusCode, class.Outcome, note)
-
-	// The resolved Loop routes the chain from here.
-	switch {
-	case observed.Loop >= decision.LoopTerminate:
+	switch d.routing() {
+	case attemptTerminal:
 		// The caller's request is the problem, or a reporter ended the chain:
 		// surfaced as-is, no rotation, no failover.
-		status, errType := observed.CallerFacing(statusCode, class.ErrorType)
+		res, cls := d.final(), d.class()
+		status, errType := res.CallerFacing(statusCode, cls.ErrorType)
 		if status == 0 {
-			status, errType = statusCode, class.ErrorType
+			status, errType = statusCode, cls.ErrorType
 		}
 		if !c.Writer.Written() {
-			detail := observed.RejectDetail()
+			detail := res.RejectDetail()
 			if detail == "" {
 				detail = safeUpstreamMessage(status)
 			}
 			WriteIngressError(c, rc.ingress, status, errType, detail, rc.requestID)
 		}
-		s.settleAfterAttempt(rc, fact.Rejected(status, fact.FaultUpstream,
-			observed.FailReason(), nil), start)
+		s.settle(rc, fact.Rejected(status, fact.FaultUpstream,
+			res.FailReason(), nil), start, settleOptions{againstRecordedAttempt: true})
 		return attemptTerminal, nil
-	case observed.Loop == decision.LoopNextCandidate:
-		return attemptNextCandidate, nil
-	case observed.Loop == decision.LoopRotateKey:
-		// 401 CAS was already performed above, before the error body read.
-		return attemptRotateKey, nil
 	default:
-		// Unreachable while the baseline fold above holds: every kernel row
-		// steers at least as strongly as a key rotation. Routed rather than
-		// panicking so a future weakening fails toward failover, the least
-		// damaging wrong answer.
-		return attemptNextCandidate, nil
+		// attemptNextCandidate and attemptRotateKey pass straight through;
+		// anything unrecognized was already collapsed to next-candidate by
+		// the fold, the least damaging wrong answer.
+		return d.routing(), nil
 	}
 }
 
@@ -1522,7 +1547,7 @@ func (s *Service) allCandidatesFailed(c *gin.Context, rc *Exchange, start time.T
 			status = http.StatusBadGateway
 		}
 		s.settle(rc, fact.Truncated(status, status, fact.FaultUpstream,
-			"partial_then_exhausted", nil), start)
+			"partial_then_exhausted", nil), start, settleOptions{})
 		return
 	}
 	// The chain ended on a verdict somebody thought worth quoting — a payload
@@ -1552,12 +1577,10 @@ func (s *Service) allCandidatesFailed(c *gin.Context, rc *Exchange, start time.T
 	// before the allowance ran dry, and that is the answer the caller can
 	// act on.
 	if s.exhaustedBudget(rc) {
-		sink := newExchangeSink(rc)
-		sink.reporter = kernelReporter
 		// Reason is an explicit stable code (persisted, mapped in the
 		// frontend), never derived from the Kind's internal name.
-		sink.Report(fact.Fact{Kind: fact.KindRequestBudgetExhausted, Reason: "request_budget_exhausted"})
-		v := sink.resolve()
+		v := reportKernelFact(rc,
+			fact.Fact{Kind: fact.KindRequestBudgetExhausted, Reason: "request_budget_exhausted"})
 		status, errType := v.CallerFacing(0, "")
 		s.rejectRequest(c, rc, status, errType,
 			"request budget exhausted", v.FailReason(), fact.FaultUpstream, start)

@@ -141,7 +141,11 @@ func (d *StreamDecoder) DecodeChunk(raw string) ([]protocols.IRStreamDelta, erro
 		return nil, nil
 	}
 
-	payload, ok := strings.CutPrefix(line, "data: ")
+	// SSE makes the space after the colon optional (Anthropic-compatible
+	// upstreams ship `data:{...}`), and isDataLine on the forwarding side
+	// already honours that — the decoder must agree or it reads a whole
+	// delivered stream as one that said nothing.
+	payload, ok := strings.CutPrefix(line, "data:")
 	if !ok {
 		return nil, nil
 	}

@@ -107,7 +107,7 @@ func TestConcludeOrdersSettleReleaseRecordHook(t *testing.T) {
 // see the handler's own ending, not a synthetic 500 layered over it.
 func TestConcludeDoesNotResettleANormalExit(t *testing.T) {
 	svc, rc, held, p := concludeFixture(t)
-	svc.settle(rc, fact.Rejected(400, fact.FaultClient, "bad_request", nil), time.Now())
+	svc.settle(rc, fact.Rejected(400, fact.FaultClient, "bad_request", nil), time.Now(), settleOptions{})
 
 	svc.concludeExchange(nil, rc, held, time.Now())
 

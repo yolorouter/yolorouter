@@ -237,10 +237,10 @@ func HasNegativeCount(u IRUsage) bool {
 // the wire encoders, the billing gate, persistence — reads Invalid and nothing
 // else, instead of re-judging on data the conversion has since distorted.
 // IRUsage.Merge copies only values greater than zero (erasing the very negative
-// that proved a record wrong), and irUsageToUsage passes the upstream total
-// through verbatim; running the verdict before either of those, and carrying it
-// on Invalid, is what stops encoder and billing from disagreeing about the same
-// record.
+// that proved a record wrong), and the gateway's reported-usage gate passes the
+// upstream total through verbatim; running the verdict before either of those,
+// and carrying it on Invalid, is what stops encoder and billing from
+// disagreeing about the same record.
 //
 // Deliberately NOT checking parts > total: a stated total that the parts
 // overflow is "attribution unknown", not "impossible" — the tokens were really

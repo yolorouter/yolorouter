@@ -195,7 +195,7 @@ func streamCaller(includeUsage bool) string {
 // pumpStream drives the same-protocol pump the way a delivery does: through the
 // toolbox the kernel hands it, which is what opens the capture file and closes
 // it again afterwards.
-func pumpStream(t *testing.T, c *gin.Context, rc *Exchange, upstreamBody string, wantsUsage bool) (*Usage, error) {
+func pumpStream(t *testing.T, c *gin.Context, rc *Exchange, upstreamBody string, wantsUsage bool) (*protocols.IRUsage, error) {
 	t.Helper()
 	adm := admitFor(t, protocols.ProtocolOpenAI, "/v1/chat/completions", streamCaller(wantsUsage), Candidate{
 		ProviderModelName: "real", EgressProtocol: protocols.ProtocolOpenAI, Passthrough: true,
@@ -211,7 +211,7 @@ func pumpStream(t *testing.T, c *gin.Context, rc *Exchange, upstreamBody string,
 
 // runStreamPump is pumpStream for the tests that care only about what it
 // reported, not about what the caller received.
-func runStreamPump(t *testing.T, upstreamBody string, wantsUsage bool) (*Usage, error) {
+func runStreamPump(t *testing.T, upstreamBody string, wantsUsage bool) (*protocols.IRUsage, error) {
 	t.Helper()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -363,7 +363,7 @@ func TestStreamUpstreamStripsInjectedUsage(t *testing.T) {
 // returns the Exchange so callers can inspect StreamCaptured()/
 // StreamTruncated() and the recorder so callers can check the bytes the
 // caller actually received.
-func runStreamPumpCapture(t *testing.T, upstreamBody, requestID, bodiesDir string) (*Exchange, *httptest.ResponseRecorder, *Usage, error) {
+func runStreamPumpCapture(t *testing.T, upstreamBody, requestID, bodiesDir string) (*Exchange, *httptest.ResponseRecorder, *protocols.IRUsage, error) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)

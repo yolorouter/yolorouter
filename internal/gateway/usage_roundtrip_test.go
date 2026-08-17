@@ -3,13 +3,15 @@ package gateway
 import (
 	"reflect"
 	"testing"
+
+	"github.com/yolorouter/yolorouter/internal/protocols"
 )
 
 // TestEveryCountSurvivesTheDeliveryHop is the machine check for a mistake this
 // package has made twice.
 //
 // The counts a request is billed on are copied by hand between two vocabularies
-// — the gateway's Usage and the delivery's UsageReported — and back again on
+// — protocols.IRUsage and the delivery's fact.UsageReported — and back again on
 // settlement. A field left out of one of those copy sites compiles, passes
 // every other test, and shows up only as a wrong number in a bill: reasoning
 // tokens went missing that way once, the stated total a second time. Neither
@@ -29,7 +31,7 @@ func TestEveryCountSurvivesTheDeliveryHop(t *testing.T) {
 	// Distinct primes so a crossed wire cannot cancel out, and coherent as a
 	// record (reasoning below completion, cache within prompt) so the trip is
 	// the only thing under test.
-	counts := Usage{
+	counts := protocols.IRUsage{
 		PromptTokens:     101,
 		CompletionTokens: 97,
 		TotalTokens:      211,

@@ -36,30 +36,13 @@ import (
 func GetRequestLogs(svc *service.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		page, pageSize := parseAPIKeyPagination(c)
-		statusClass := c.Query("status")
-		if _, ok := repository.ValidStatusClasses[statusClass]; !ok {
-			response.ParamError(c, "status must be one of: success, failed, partial, cancelled, rejected")
+		filter, ok := parseRequestLogFilter(c)
+		if !ok {
 			return
 		}
-		source := c.Query("source")
-		if source != "" && source != model.RequestLogSourceVisionFallback && source != model.RequestLogSourceCallerFilter {
-			response.ParamError(c, "source must be one of: caller, vision_fallback")
-			return
-		}
-		filter := service.RequestLogListFilter{
-			RequestID:   c.Query("request_id"),
-			ModelName:   c.Query("model_name"),
-			KeyPrefix:   c.Query("key_prefix"),
-			Source:      source,
-			RequestPath: c.Query("request_path"),
-			StatusClass: statusClass,
-			Page:        page,
-			PageSize:    pageSize,
-		}
-		if !applyRequestLogFilterParams(c, &filter) {
-			return
-		}
-		items, total, err := svc.ListRequestLogs(filter)
+		filter.Page = page
+		filter.PageSize = pageSize
+		items, total, err := svc.ListRequestLogs(&filter)
 		if err != nil {
 			response.Error(c, errcode.InternalError, errcode.GetMessage(errcode.InternalError))
 			return
@@ -136,25 +119,8 @@ func GetRequestLogBodyStream(svc *service.RequestLogService, bodiesDir string) g
 // malformed mixed-format response.
 func ExportRequestLogsCSV(svc *service.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		statusClass := c.Query("status")
-		if _, ok := repository.ValidStatusClasses[statusClass]; !ok {
-			response.ParamError(c, "status must be one of: success, failed, partial, cancelled, rejected")
-			return
-		}
-		source := c.Query("source")
-		if source != "" && source != model.RequestLogSourceVisionFallback && source != model.RequestLogSourceCallerFilter {
-			response.ParamError(c, "source must be one of: caller, vision_fallback")
-			return
-		}
-		filter := service.RequestLogListFilter{
-			RequestID:   c.Query("request_id"),
-			ModelName:   c.Query("model_name"),
-			KeyPrefix:   c.Query("key_prefix"),
-			Source:      source,
-			RequestPath: c.Query("request_path"),
-			StatusClass: statusClass,
-		}
-		if !applyRequestLogFilterParams(c, &filter) {
+		filter, ok := parseRequestLogFilter(c)
+		if !ok {
 			return
 		}
 
@@ -163,7 +129,7 @@ func ExportRequestLogsCSV(svc *service.RequestLogService) gin.HandlerFunc {
 		// truncated CSV that the frontend accepts as success. Only after the
 		// full row set is built do we
 		// commit the HTTP 200 + CSV headers + body.
-		items, err := svc.BuildExportRows(filter)
+		items, err := svc.BuildExportRows(&filter)
 		if err != nil {
 			response.Error(c, errcode.InternalError, errcode.GetMessage(errcode.InternalError))
 			return
@@ -182,13 +148,58 @@ func ExportRequestLogsCSV(svc *service.RequestLogService) gin.HandlerFunc {
 	}
 }
 
+// parseStatusClassParam validates the ?status= query param against the
+// shared allowlist (repository.ValidStatusClasses; "" = all buckets is
+// valid). Returns false (after writing a 400) on an unrecognized value.
+// Shared by the request-log list, request-log export, and analytics
+// endpoints so the check and its message cannot drift apart.
+func parseStatusClassParam(c *gin.Context) (string, bool) {
+	statusClass := c.Query("status")
+	if _, ok := repository.ValidStatusClasses[statusClass]; !ok {
+		response.ParamError(c, "status must be one of: success, failed, partial, cancelled, rejected")
+		return "", false
+	}
+	return statusClass, true
+}
+
+// parseRequestLogFilter translates the shared filter query params into a
+// repository.RequestLogFilter: status/source validation, the direct string
+// literal, and the optional typed params (applyRequestLogFilterParams).
+// Pagination is deliberately NOT parsed here — the list endpoint fills
+// Page/PageSize itself afterwards, the CSV export exports unpaginated — so
+// the two endpoints share every filter byte and differ only in pagination.
+// Returns false (after writing a 400 envelope) on any malformed value.
+func parseRequestLogFilter(c *gin.Context) (repository.RequestLogFilter, bool) {
+	statusClass, ok := parseStatusClassParam(c)
+	if !ok {
+		return repository.RequestLogFilter{}, false
+	}
+	source := c.Query("source")
+	if source != "" && source != model.RequestLogSourceVisionFallback && source != model.RequestLogSourceCallerFilter {
+		response.ParamError(c, "source must be one of: caller, vision_fallback")
+		return repository.RequestLogFilter{}, false
+	}
+	filter := repository.RequestLogFilter{
+		RequestID:   c.Query("request_id"),
+		ModelName:   c.Query("model_name"),
+		KeyPrefix:   c.Query("key_prefix"),
+		Source:      source,
+		RequestPath: c.Query("request_path"),
+		StatusClass: statusClass,
+	}
+	if !applyRequestLogFilterParams(c, &filter) {
+		return repository.RequestLogFilter{}, false
+	}
+	return filter, true
+}
+
 // applyRequestLogFilterParams parses the optional api_key_id / provider_id
 // / is_stream / start / end query params into filter. Returns false (after
 // writing a 400 envelope) when any value is malformed; the caller must
 // `return` immediately on false. The callback-based apply* helpers keep
 // "absent", "valid", and "wrote-400" distinguishable without the caller
 // inspecting c.Writer.Written().
-func applyRequestLogFilterParams(c *gin.Context, filter *service.RequestLogListFilter) bool {
+func applyRequestLogFilterParams(c *gin.Context, filter *repository.RequestLogFilter) bool {
 	return applyUintQueryParam(c, "api_key_id", func(v uint) { filter.APIKeyID = &v }) &&
 		applyUintQueryParam(c, "user_id", func(v uint) { filter.UserID = &v }) &&
 		applyUintQueryParam(c, "provider_id", func(v uint) { filter.ProviderID = &v }) &&

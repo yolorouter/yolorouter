@@ -51,6 +51,20 @@ func TestBehaviouralGateTestsStillExist(t *testing.T) {
 			tests: []string{"TestEveryCountSurvivesTheDeliveryHop"},
 		},
 		{
+			file: "internal/gateway/attempt_decision_test.go",
+			tests: []string{
+				"TestFoldUpstreamDecision",
+				"TestKernelBaselineTimelineEntries",
+			},
+		},
+		{
+			file: "internal/gateway/kernel_sink_test.go",
+			tests: []string{
+				"TestReportKernelFactStampsProvenanceAndFolds",
+				"TestSettlementNotesCarryKernelProvenance",
+			},
+		},
+		{
 			file:  "internal/fact/delivery_test.go",
 			tests: []string{"TestValidateRejectsImpossibleDeliveries"},
 		},

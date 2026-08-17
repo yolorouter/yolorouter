@@ -125,16 +125,14 @@ func GetAPIKeys(svc *service.APIKeyService) gin.HandlerFunc {
 			response.ParamError(c, "status must be one of: active, expired, revoked, budget_exhausted")
 			return
 		}
-		var filterUserID uint
-		if !applyUintQueryParam(c, "user_id", func(v uint) { filterUserID = v }) {
+		var filterUserID *uint
+		if !applyUintQueryParam(c, "user_id", func(v uint) { filterUserID = &v }) {
 			return
 		}
 		// A member's list is pinned to their own keys no matter what the
 		// query says; admins keep the optional filter.
-		if forced := middleware.ForcedUserID(c); forced != nil {
-			filterUserID = *forced
-		}
-		list, total, err := svc.ListAPIKeys(c.Query("q"), status, filterUserID, page, pageSize)
+		userID := middleware.ViewScopeOf(c).Resolve(filterUserID)
+		list, total, err := svc.ListAPIKeys(c.Query("q"), status, userID, page, pageSize)
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -155,7 +153,7 @@ func PostAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 		if !validateExpiryFuture(c, req.ExpiresAt) {
 			return
 		}
-		if middleware.ForcedUserID(c) != nil && !memberCreateAllowed(c, &req) {
+		if middleware.ViewScopeOf(c).Member && !memberCreateAllowed(c, &req) {
 			return
 		}
 		result, err := svc.CreateAPIKey(service.CreateAPIKeyInput{
@@ -207,7 +205,7 @@ func GetAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		view, err := svc.GetAPIKey(id, middleware.ForcedUserID(c))
+		view, err := svc.GetAPIKey(id, middleware.ViewScopeOf(c).Owner)
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -226,7 +224,7 @@ func GetAPIKeyPlaintext(svc *service.APIKeyService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		plaintext, err := svc.GetAPIKeyPlaintext(id, middleware.ForcedUserID(c))
+		plaintext, err := svc.GetAPIKeyPlaintext(id, middleware.ViewScopeOf(c).Owner)
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -249,8 +247,8 @@ func PatchAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 		if !validateExpiryFuture(c, req.ExpiresAt) {
 			return
 		}
-		forced := middleware.ForcedUserID(c)
-		if forced != nil && !memberPatchAllowed(c, &req) {
+		scope := middleware.ViewScopeOf(c)
+		if scope.Member && !memberPatchAllowed(c, &req) {
 			return
 		}
 		view, err := svc.UpdateAPIKey(id, service.UpdateAPIKeyInput{
@@ -264,7 +262,7 @@ func PatchAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 			CompressEnabledOverride:           req.CompressEnabledOverride,
 			CompressEnabled:                   req.CompressEnabled,
 			ExpectedUpdatedAt:                 req.ExpectedUpdatedAt,
-		}, forced, timeNow())
+		}, scope.Owner, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -273,13 +271,22 @@ func PatchAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 	}
 }
 
-// memberCreateAllowed enforces the member field boundary at key creation:
-// members set remark and expires_at; the model scope is
-// always "all models" for them (the admin-only allowlist knob must not
-// be reachable), and limits plus the per-key overrides are admin-only.
-// The caller forces AllowAllModels=true afterwards, so the check here is
-// that the member did not try to send a custom scope or any restricted
-// knob. Writes a 400 and returns false on violation.
+// The member field boundary, in one place: a member may set remark and
+// expires_at — nothing else. Model scope, limits, and the per-key
+// overrides are admin-only knobs; a member's key always carries the
+// all-models scope. memberCreateAllowed and memberPatchAllowed below are
+// the two shape-specific readings of THIS rule (the create request spells
+// the knobs as value fields, the patch request as pointers), and the 400
+// text comes from memberFieldRuleMsg. Adding a restricted knob means one
+// rule edit here plus one condition in each reading — the route-level
+// member tests hold the behavior to this rule.
+const memberFieldRuleMsg = "members may only set remark and expires_at"
+
+// memberCreateAllowed is the create-side reading of the member field
+// boundary above: the check is that the member did not try to send a
+// custom scope or any restricted knob — the caller forces
+// AllowAllModels=true afterwards, so the wire default's allowlist demand
+// never applies to them. Writes a 400 and returns false on violation.
 func memberCreateAllowed(c *gin.Context, req *createAPIKeyRequest) bool {
 	restricted := len(req.ModelIDs) > 0 ||
 		req.RPMLimit != nil || req.TPMLimit != nil || req.ConcurrencyLimit != nil ||
@@ -288,7 +295,7 @@ func memberCreateAllowed(c *gin.Context, req *createAPIKeyRequest) bool {
 		req.CustomSystemPrompt != "" ||
 		req.CompressEnabledOverride || req.CompressEnabled
 	if restricted {
-		response.ParamError(c, "members may only set remark and expires_at")
+		response.ParamError(c, memberFieldRuleMsg)
 		return false
 	}
 	// The wire default AllowAllModels=false would demand an allowlist —
@@ -297,11 +304,10 @@ func memberCreateAllowed(c *gin.Context, req *createAPIKeyRequest) bool {
 	return true
 }
 
-// memberPatchAllowed enforces the member field boundary on key edits:
-// members may rename (remark) and re-schedule expiry on their
-// own keys — model scope, limits, and the per-key overrides are
-// admin-only knobs. Writes a 400 and returns false when a restricted
-// field is present.
+// memberPatchAllowed is the edit-side reading of the member field
+// boundary above: a member may rename (remark) and re-schedule expiry on
+// their own keys. Writes a 400 and returns false when a restricted field
+// is present.
 func memberPatchAllowed(c *gin.Context, req *updateAPIKeyRequest) bool {
 	restricted := req.AllowAllModels != nil || len(req.ModelIDs) > 0 ||
 		req.RPMLimit != nil || req.TPMLimit != nil || req.ConcurrencyLimit != nil ||
@@ -310,7 +316,7 @@ func memberPatchAllowed(c *gin.Context, req *updateAPIKeyRequest) bool {
 		req.CustomSystemPrompt != nil ||
 		req.CompressEnabledOverride != nil || req.CompressEnabled != nil
 	if restricted {
-		response.ParamError(c, "members may only change remark and expires_at")
+		response.ParamError(c, memberFieldRuleMsg)
 		return false
 	}
 	return true
@@ -322,7 +328,7 @@ func PatchAPIKeyRevoke(svc *service.APIKeyService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		if err := svc.RevokeAPIKey(id, middleware.ForcedUserID(c), timeNow()); err != nil {
+		if err := svc.RevokeAPIKey(id, middleware.ViewScopeOf(c).Owner, timeNow()); err != nil {
 			writeServiceError(c, err)
 			return
 		}

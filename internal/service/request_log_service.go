@@ -42,34 +42,6 @@ func NewRequestLogService(db *gorm.DB) *RequestLogService {
 	return &RequestLogService{db: db}
 }
 
-// RequestLogListFilter is the service-layer filter shape. The handler fills
-// it from query params; the service maps it to repository.RequestLogFilter
-// internally. Kept as a separate type so the handler never imports
-// repository — same layering convention as APIKeyService's input structs.
-type RequestLogListFilter struct {
-	RequestID string
-	APIKeyID  *uint
-	// UserID narrows to rows owned by one account (the key owner).
-	UserID      *uint
-	ModelName   string
-	ProviderID  *uint
-	StatusClass string
-	IsStream    *bool
-	CostKnown   *bool
-	KeyPrefix   string
-	// Source narrows on who initiated the request; values are "" (all) and
-	// the two model.RequestLogSource* constants.
-	Source string
-	// RequestPath narrows on the caller-side request path. Exact match,
-	// except a trailing "/" selects the whole subtree — covering the
-	// model-bearing Gemini path family with one value.
-	RequestPath string
-	StartTime   *time.Time // inclusive
-	EndTime     *time.Time // exclusive
-	Page        int
-	PageSize    int
-}
-
 // RequestLogListItem is the list-row DTO. It carries no
 // plaintext key material (only id/prefix are stored anyway) and no
 // attempts_detail blob — only the attempt count, with full attempts reserved
@@ -197,12 +169,15 @@ func truncateInlineBody(s string) string {
 }
 
 // ListRequestLogs returns one page of rows (newest first) plus the total
-// count for pagination. Each row is enriched with its owning account username
-// and providers.name via a post-fetch batch lookup (one SELECT per related
+// count for pagination. It filters via repository.RequestLogFilter — the
+// ONE shared query shape for the dashboard, analytics, and request-log
+// list, filled from query params by the handler and passed straight
+// through. Each row is enriched with its owning account username and
+// providers.name via a post-fetch batch lookup (one SELECT per related
 // table) rather than a SQL JOIN, so the shared repository.ListRequestLogs
 // stays the single source of truth for filtering and pagination.
-func (s *RequestLogService) ListRequestLogs(filter RequestLogListFilter) ([]RequestLogListItem, int64, error) {
-	rows, total, err := repository.ListRequestLogs(s.db, toRepoFilterFromList(filter))
+func (s *RequestLogService) ListRequestLogs(filter *repository.RequestLogFilter) ([]RequestLogListItem, int64, error) {
+	rows, total, err := repository.ListRequestLogs(s.db, filter)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -436,13 +411,12 @@ func (s *RequestLogService) GetStreamBodyPath(requestID string) (string, error) 
 // DTO. Split from WriteCSVRows so the handler can fail BEFORE committing the
 // HTTP 200 / CSV headers — a mid-pull DB error returns a JSON envelope, not a
 // truncated CSV reported as success.
-func (s *RequestLogService) BuildExportRows(filter RequestLogListFilter) ([]RequestLogListItem, error) {
+func (s *RequestLogService) BuildExportRows(filter *repository.RequestLogFilter) ([]RequestLogListItem, error) {
 	const pageSize = 200
-	rf := toRepoFilterFromList(filter)
 	var cursor *repository.RequestLogCursor
 	items := make([]RequestLogListItem, 0)
 	for {
-		rows, err := repository.ListRequestLogsKeyset(s.db, rf, cursor, pageSize)
+		rows, err := repository.ListRequestLogsKeyset(s.db, filter, cursor, pageSize)
 		if err != nil {
 			return nil, err
 		}
@@ -495,32 +469,6 @@ func (s *RequestLogService) fetchRelatedNames(rows []model.RequestLog) (provider
 		return nil, nil, err
 	}
 	return providerNames, userNames, nil
-}
-
-// toRepoFilterFromList maps the service-layer list filter to repository's
-// pointer-typed filter. Named toRepoFilterFromList (rather than toRepoFilter)
-// because analytics_service.go already owns that name for AnalyticsFilter —
-// the repository filter is the shared query shape used by the dashboard,
-// analytics, and request-log list, and each service file keeps its own
-// mapper so the handler layer doesn't take a repository import.
-func toRepoFilterFromList(f RequestLogListFilter) *repository.RequestLogFilter {
-	return &repository.RequestLogFilter{
-		RequestID:   f.RequestID,
-		APIKeyID:    f.APIKeyID,
-		UserID:      f.UserID,
-		ModelName:   f.ModelName,
-		ProviderID:  f.ProviderID,
-		StatusClass: f.StatusClass,
-		IsStream:    f.IsStream,
-		CostKnown:   f.CostKnown,
-		KeyPrefix:   f.KeyPrefix,
-		Source:      f.Source,
-		RequestPath: f.RequestPath,
-		StartTime:   f.StartTime,
-		EndTime:     f.EndTime,
-		Page:        f.Page,
-		PageSize:    f.PageSize,
-	}
 }
 
 // ownerUsernameFor resolves a row's display username only when the row has

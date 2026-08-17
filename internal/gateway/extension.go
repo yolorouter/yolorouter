@@ -565,16 +565,41 @@ func newExchangeSink(rc *Exchange) *exchangeSink {
 	return s
 }
 
-// forRecordedAttempt renumbers the sink to describe the attempt ALREADY on the
-// list rather than the one about to be added.
-//
-// The default numbering suits a capability reporting from inside an attempt,
-// where the record for it does not exist yet. Settlement is the other way
-// round: the attempt has been appended by the time the delivery is judged, so
-// the default would file it under the attempt that comes next — and under one
-// that never runs when the delivery is the last of a chain.
-func (s *exchangeSink) forRecordedAttempt() *exchangeSink {
-	if s.attempt > 0 {
+// newKernelSink builds a sink already stamped with the kernel's own
+// provenance name. Kernel-side sites that file under the kernel's name
+// build here rather than stamping after construction, so the stamp is not
+// a separate step a site can forget — an omission that produces entries
+// which are wrong rather than obviously incomplete.
+func newKernelSink(rc *Exchange) *exchangeSink {
+	s := newExchangeSink(rc)
+	s.reporter = kernelReporter
+	return s
+}
+
+// reportKernelFact files one judgement of the kernel's own: it builds the
+// sink, stamps kernel provenance, reports the fact, and folds it into a
+// verdict, all in a single call so no step can be reordered or skipped.
+// Callers that only wanted the entry on the timeline discard the verdict.
+func reportKernelFact(rc *Exchange, f fact.Fact) decision.Resolved {
+	sink := newKernelSink(rc)
+	// Overwritten unconditionally: Report only fills an EMPTY Reporter, so a
+	// fact that arrived pre-attributed would file the kernel's own judgement
+	// under someone else's name.
+	f.Reporter = kernelReporter
+	sink.Report(f)
+	return sink.resolve()
+}
+
+// newSettlementSink builds the sink a settlement files through, with kernel
+// provenance: what a settlement notes (the delivery observation) is the
+// kernel's own record of how the request ended.
+// againstRecordedAttempt renumbers it to describe the attempt ALREADY on
+// the list rather than the one about to be added. The numbering rationale
+// lives on settleOptions.againstRecordedAttempt, the option every caller
+// arrives here with.
+func newSettlementSink(rc *Exchange, againstRecordedAttempt bool) *exchangeSink {
+	s := newKernelSink(rc)
+	if againstRecordedAttempt && s.attempt > 0 {
 		s.attempt--
 	}
 	return s

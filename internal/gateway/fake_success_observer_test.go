@@ -267,7 +267,7 @@ func TestAnObserverCannotSteerASettledRequest(t *testing.T) {
 // had already judged impossible, and nothing downstream can tell, because the
 // frame that proved it is gone.
 func TestCountsJudgedImpossibleAreNotPricedAfterTheDeliveryHop(t *testing.T) {
-	condemned := &Usage{PromptTokens: 1000, CompletionTokens: 2000, Invalid: true}
+	condemned := &protocols.IRUsage{PromptTokens: 1000, CompletionTokens: 2000, Invalid: true}
 
 	// Out to the delivery's vocabulary and back, which is the trip settlement
 	// makes before it prices anything.
@@ -526,12 +526,12 @@ func TestTheSearchCountSurvivesEveryHopToTheObserver(t *testing.T) {
 	}
 	decoded := &irResp.Usage
 
-	onExchange := irUsageToUsage(decoded)
+	onExchange := reportedUsage(decoded)
 	if onExchange == nil {
-		t.Fatal("the usage did not survive the bridge at all")
+		t.Fatal("the usage did not survive the reported-usage gate at all")
 	}
 	if onExchange.WebSearchCount != 3 {
-		t.Fatalf("searches = %d after the IR bridge, want 3", onExchange.WebSearchCount)
+		t.Fatalf("searches = %d after the reported-usage gate, want 3", onExchange.WebSearchCount)
 	}
 
 	reported := usageReportOf(onExchange)
@@ -549,10 +549,6 @@ func TestTheSearchCountSurvivesEveryHopToTheObserver(t *testing.T) {
 	if backOnExchange == nil || backOnExchange.WebSearchCount != 3 {
 		t.Errorf("searches = %+v on the way back to settlement, want 3", backOnExchange)
 	}
-	if got := onExchange.toIRUsage(); got.WebSearchCount != 3 {
-		t.Errorf("searches = %d back in the IR, want 3", got.WebSearchCount)
-	}
-
 	// The audit row is written from its own conversion, not from the one above.
 	// A capability that reports a surcharge sees the count; without this hop the
 	// row the count is reconciled against says none were run, so the two

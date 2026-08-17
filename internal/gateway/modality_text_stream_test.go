@@ -499,6 +499,49 @@ func TestAStreamThatEndsWithoutItsTerminatorIsNotCalledComplete(t *testing.T) {
 	}
 }
 
+// TestASpacelessSSEUpstreamIsStillReadAsComplete pins the framing an Aliyun
+// Anthropic-compatible upstream actually sends: `event:message_start` and
+// `data:{...}` with no space after either colon. SSE makes that space optional,
+// and isDataLine already honours that — so the frames commit the response and
+// are forwarded byte for byte. The decoder owes the same answer: a stream whose
+// every frame it quietly dropped would settle as stream_ended_unannounced with
+// no usage, which is a completed, billed delivery filed as a partial failure.
+func TestASpacelessSSEUpstreamIsStillReadAsComplete(t *testing.T) {
+	const upstream = "event:ping\n" +
+		`data:{"type":"ping"}` + "\n\n" +
+		"event:message_start\n" +
+		`data:{"type":"message_start","message":{"id":"msg_1","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":7,"output_tokens":0}}}` + "\n\n" +
+		"event:content_block_delta\n" +
+		`data:{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n" +
+		"event:message_delta\n" +
+		`data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n\n" +
+		"event:message_stop\n" +
+		`data:{"type":"message_stop"}` + "\n\n"
+
+	// The framing the caller received is the provider's own, spaceless; only
+	// message_start is rewritten (and re-serialised with sorted keys).
+	const forwarded = "event:ping\n" +
+		`data:{"type":"ping"}` + "\n\n" +
+		"event:message_start\n" +
+		`data:{"message":{"id":"msg_1","model":"claude-3-5-sonnet","usage":{"input_tokens":7,"output_tokens":0}},"type":"message_start"}` + "\n\n" +
+		"event:content_block_delta\n" +
+		`data:{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n" +
+		"event:message_delta\n" +
+		`data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n\n" +
+		"event:message_stop\n" +
+		`data:{"type":"message_stop"}` + "\n\n"
+
+	got := runStream(t, protocols.ProtocolClaude, protocols.ProtocolClaude, true, "/v1/messages",
+		`{"model":"claude-3-5-sonnet","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		upstreamStream(t, upstream))
+	requireDelivered(t, got)
+	checkStream(t, streamWant{
+		clientBody:    forwarded,
+		captureExists: true, firstByteSent: true, promptSeen: 7, completion: 3,
+		clientStatus: http.StatusOK, verdict: fact.VerdictSettled, committed: true, complete: true,
+	}, got)
+}
+
 // TestAStreamThatNeverSendsDataLeavesTheChainOpen pins the failover window.
 //
 // An upstream can answer 2xx and then die before its first data frame. Nothing

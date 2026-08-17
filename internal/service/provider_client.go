@@ -577,10 +577,13 @@ func scanSSEStream(r io.Reader) (sawValidDelta, cleanTerminate bool) {
 	scanner := bufio.NewScanner(io.LimitReader(r, providerClientMaxBodyBytes))
 	for scanner.Scan() {
 		line := scanner.Text()
-		data := strings.TrimPrefix(line, "data: ")
-		if data == line {
+		// SSE makes the space after the colon optional; the TrimSpace takes it
+		// off when the upstream did send one, so `data:{...}` frames count.
+		data, ok := strings.CutPrefix(line, "data:")
+		if !ok {
 			continue // not an SSE data line
 		}
+		data = strings.TrimSpace(data)
 		if data == "[DONE]" {
 			return sawValidDelta, true
 		}

@@ -3,6 +3,8 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/yolorouter/yolorouter/internal/protocols"
 )
 
 // parsedRequest is the gateway's one-pass view of an OpenAI chat-completions
@@ -237,11 +239,11 @@ type promptTokensDetails struct {
 	CacheWriteTokens *int `json:"cache_write_tokens"`
 }
 
-func (w *wireUsage) toUsage() *Usage {
+func (w *wireUsage) toIRUsage() *protocols.IRUsage {
 	if w == nil || w.PromptTokens == nil || w.CompletionTokens == nil {
 		return nil
 	}
-	u := &Usage{
+	u := &protocols.IRUsage{
 		PromptTokens:     *w.PromptTokens,
 		CompletionTokens: *w.CompletionTokens,
 		// This wire shape requires top-level prompt_tokens/completion_tokens —
@@ -284,21 +286,21 @@ func (w *wireUsage) toUsage() *Usage {
 // OR if the object lacks both required token counts — the caller treats nil
 // as "unknown", never as zero (a missing usage must not be recorded as 0
 // cost).
-func extractUsage(body []byte) *Usage {
+func extractUsage(body []byte) *protocols.IRUsage {
 	var resp struct {
 		Usage *wireUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil || resp.Usage == nil {
 		return nil
 	}
-	return resp.Usage.toUsage()
+	return resp.Usage.toIRUsage()
 }
 
 // RewriteNonStreamResponse swaps the upstream response's model field back to
 // the external name and extracts usage. The body is returned rewritten so
 // the handler can write it to the client in one shot; usage is separate so
 // the relay loop can compute cost without re-parsing.
-func RewriteNonStreamResponse(body []byte, externalModel string) ([]byte, *Usage, error) {
+func RewriteNonStreamResponse(body []byte, externalModel string) ([]byte, *protocols.IRUsage, error) {
 	rewritten, err := rewriteModelField(body, externalModel)
 	if err != nil {
 		return nil, nil, err

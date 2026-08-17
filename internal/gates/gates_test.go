@@ -126,6 +126,26 @@ func parseTree(t *testing.T, dir string) []goFile {
 	return out
 }
 
+// methodReceiverName returns the bare type name a method is declared on,
+// with any pointer star unwrapped — "Exchange" for both (rc Exchange) and
+// (rc *Exchange), "" for non-method declarations or exotic receiver shapes.
+// Shared by the checks that enumerate one type's methods: two scans
+// hand-rolling the same unwrap would eventually drift about which shapes
+// count.
+func methodReceiverName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 {
+		return ""
+	}
+	recv := fn.Recv.List[0].Type
+	if star, ok := recv.(*ast.StarExpr); ok {
+		recv = star.X
+	}
+	if id, ok := recv.(*ast.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
 // recordField is one declared field of a Record-implementing struct: its name
 // and a syntactic rendering of its type, good enough to compare against a
 // known-bad shape without needing a type checker.

@@ -180,7 +180,7 @@ func TestAPIKeyFilterByUserIsolatesOwners(t *testing.T) {
 		}
 	}
 
-	keys, err := SearchAPIKeys(db, APIKeyFilter{UserID: alice.ID, Now: now}, 0, 10)
+	keys, err := SearchAPIKeys(db, APIKeyFilter{UserID: &alice.ID, Now: now}, 0, 10)
 	if err != nil {
 		t.Fatalf("SearchAPIKeys: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestAPIKeyFilterByUserIsolatesOwners(t *testing.T) {
 			t.Fatalf("key %s leaked into alice's view (user_id=%d)", k.KeyPrefix, k.UserID)
 		}
 	}
-	total, err := CountAPIKeys(db, APIKeyFilter{UserID: bob.ID, Now: now})
+	total, err := CountAPIKeys(db, APIKeyFilter{UserID: &bob.ID, Now: now})
 	if err != nil {
 		t.Fatalf("CountAPIKeys: %v", err)
 	}

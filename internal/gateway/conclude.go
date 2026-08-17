@@ -71,5 +71,5 @@ func (s *Service) concludeExchange(c *gin.Context, rc *Exchange, held []heldTick
 		d = fact.Truncated(c.Writer.Status(), http.StatusInternalServerError,
 			fact.FaultGateway, "panic_recovered", nil)
 	}
-	s.settle(rc, d, start)
+	s.settle(rc, d, start, settleOptions{})
 }

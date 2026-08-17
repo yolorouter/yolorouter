@@ -16,10 +16,10 @@ import (
 // The fix routes both through a single IR-level verdict (IRUsage.IsIncoherent),
 // set once at the decoder exit and carried on Invalid. These tests exercise the
 // REAL path — a wire JSON body through the actual responses decoder, then the
-// actual bridge into gateway.Usage and the actual coherence gate — and assert
-// the two sides AGREE. They do NOT construct a Usage struct directly to assert
-// gate behaviour: that is the false-positive pattern documented as lesson 1 in
-// the open-issues doc, and it is exactly what let these bugs ship green.
+// actual reported-usage gate and the actual coherence gate — and assert
+// the two sides AGREE. They do NOT construct a usage struct directly to assert
+// gate behaviour: that is a false-positive pattern, and it is exactly what let
+// these bugs ship green.
 
 // encodeRefuses reports what the wire encoder would publish: null when the
 // verdict is impossible (every egress builder now guards on Invalid alone), a
@@ -29,9 +29,9 @@ func encodeRefuses(u protocols.IRUsage) bool {
 }
 
 // billRefuses reports what the billing gate decides, driven through the real
-// IR→gateway.Usage bridge and the real coherence predicate.
+// reported-usage gate and the real coherence predicate.
 func billRefuses(u protocols.IRUsage) bool {
-	gu := irUsageToUsage(&u)
+	gu := reportedUsage(&u)
 	return gu == nil || !usageIsCoherent(gu)
 }
 
@@ -82,9 +82,9 @@ func TestWireAndBillingAgreeOnAnAbsurdCacheCount(t *testing.T) {
 // TestWireAndBillingAgreeOnANegativeReasoningCount: a record with a positive
 // output count but a NEGATIVE reasoning count used to make the encoder emit null
 // (HasNegativeCount sees the negative reasoning count) while billing accepted it
-// (relay.Usage/gateway.Usage had no ReasoningTokens field, so the billing gate
-// could not see the negative and re-derive the verdict). After convergence the
-// reasoning count is carried across the bridge and both sides refuse.
+// (the reasoning count was dropped before billing, so its gate could not see
+// the negative and re-derive the verdict). The count must reach billing so
+// both sides refuse.
 func TestWireAndBillingAgreeOnANegativeReasoningCount(t *testing.T) {
 	body := `{
 		"status": "completed",
@@ -105,7 +105,7 @@ func TestWireAndBillingAgreeOnANegativeReasoningCount(t *testing.T) {
 			encodeRefuses(u), billRefuses(u), u)
 	}
 	if !billRefuses(u) {
-		t.Errorf("a negative reasoning count must reach billing and be refused; the bridge must carry ReasoningTokens. got %+v", u)
+		t.Errorf("a negative reasoning count must reach billing and be refused; ReasoningTokens must survive to the gate. got %+v", u)
 	}
 }
 
@@ -127,8 +127,9 @@ func TestCoherentRecordsStayBillable(t *testing.T) {
 	// A full cache hit where the whole prompt was served from cache, plus a real
 	// completion. cache_read equals the prompt here (500 == 500), which is the
 	// legitimate "fully cached" shape — both sides must accept it. (A record with
-	// zero prompt AND zero completion AND zero total maps to nil at the bridge by
-	// design — "nothing billable arrived" — so this case keeps a completion.)
+	// zero prompt AND zero completion AND zero total maps to nil at the
+	// reported-usage gate by design — "nothing billable arrived" — so this case
+	// keeps a completion.)
 	fullCache := `{
 		"status": "completed",
 		"usage": {"input_tokens": 500, "output_tokens": 20, "total_tokens": 520,

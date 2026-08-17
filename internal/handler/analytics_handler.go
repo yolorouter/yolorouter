@@ -22,23 +22,12 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
-	"github.com/yolorouter/yolorouter/internal/repository" // for StatusXxx constants only
+	"github.com/yolorouter/yolorouter/internal/repository" // for the RequestLogFilter type
 	"github.com/yolorouter/yolorouter/internal/service"
 	"github.com/yolorouter/yolorouter/pkg/csvutil"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
-
-// validAnalyticsDimensions is the wire-level allowlist for ?dimension=.
-// Empty defaults to "model" (the most common top-level aggregate); see
-// GetAnalyticsReport / ExportAnalyticsCSV.
-var validAnalyticsDimensions = map[string]struct{}{
-	service.DimensionModel:    {},
-	service.DimensionProvider: {},
-	service.DimensionCaller:   {},
-	service.DimensionUser:     {},
-	service.DimensionTime:     {},
-}
 
 // validAnalyticsBuckets is the wire-level allowlist for ?bucket= (only
 // meaningful when dimension=time). Empty defaults to "day".
@@ -47,15 +36,12 @@ var validAnalyticsBuckets = map[string]struct{}{
 	service.BucketHour: {},
 }
 
-// Status-class allowlist is repository.ValidStatusClasses, shared with
-// request_log_handler so the two endpoints can't drift.
-
 // GetAnalyticsOverview handles GET /api/admin/analytics/overview — the four
 // overview cards (calls / success_rate / cost / unknown-cost-calls) plus
 // token totals for the supplied filter window.
 func GetAnalyticsOverview(svc *service.AnalyticsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		filter, ok := parseAnalyticsFilter(c)
+		filter, opts, ok := parseAnalyticsFilter(c)
 		if !ok {
 			return
 		}
@@ -66,7 +52,7 @@ func GetAnalyticsOverview(svc *service.AnalyticsService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		data, err := svc.GetOverview(filter, bucket, timeNow())
+		data, err := svc.GetOverview(&filter, opts, bucket, timeNow())
 		if err != nil {
 			response.Error(c, errcode.InternalError, errcode.GetMessage(errcode.InternalError))
 			return
@@ -76,12 +62,12 @@ func GetAnalyticsOverview(svc *service.AnalyticsService) gin.HandlerFunc {
 }
 
 // GetAnalyticsReport handles GET /api/admin/analytics/report. ?dimension=
-// picks one of model|provider|caller|time (default model); ?bucket= picks
-// day|hour for dimension=time (default day). Other params are the shared
-// filter shape.
+// picks a report dimension (default model; the legal set lives in the
+// service's dimension vocabulary); ?bucket= picks day|hour for
+// dimension=time (default day). Other params are the shared filter shape.
 func GetAnalyticsReport(svc *service.AnalyticsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		filter, ok := parseAnalyticsFilter(c)
+		filter, opts, ok := parseAnalyticsFilter(c)
 		if !ok {
 			return
 		}
@@ -93,7 +79,7 @@ func GetAnalyticsReport(svc *service.AnalyticsService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		result, err := svc.GetReport(dimension, bucket, filter, timeNow())
+		result, err := svc.GetReport(dimension, bucket, &filter, opts, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -112,7 +98,7 @@ func GetAnalyticsReport(svc *service.AnalyticsService) gin.HandlerFunc {
 // established.
 func ExportAnalyticsCSV(svc *service.AnalyticsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		filter, ok := parseAnalyticsFilter(c)
+		filter, opts, ok := parseAnalyticsFilter(c)
 		if !ok {
 			return
 		}
@@ -128,7 +114,7 @@ func ExportAnalyticsCSV(svc *service.AnalyticsService) gin.HandlerFunc {
 		// Build BEFORE committing HTTP 200 / BOM so a build failure (bad
 		// dimension/bucket, DB error) returns a JSON envelope, not a truncated
 		// CSV reported as success (same pattern as request-log export).
-		headers, records, err := svc.BuildCSVRecords(dimension, bucket, filter, timeNow())
+		headers, records, err := svc.BuildCSVRecords(dimension, bucket, &filter, opts, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -151,7 +137,7 @@ func ExportAnalyticsCSV(svc *service.AnalyticsService) gin.HandlerFunc {
 // (default 5, capped at 20). Other params are the shared filter shape.
 func GetCompressStats(svc *service.AnalyticsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		filter, ok := parseAnalyticsFilter(c)
+		filter, opts, ok := parseAnalyticsFilter(c)
 		if !ok {
 			return
 		}
@@ -159,7 +145,7 @@ func GetCompressStats(svc *service.AnalyticsService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		result, err := svc.GetCompressStats(c.Request.Context(), filter, topN, timeNow())
+		result, err := svc.GetCompressStats(c.Request.Context(), &filter, opts, topN, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -169,55 +155,61 @@ func GetCompressStats(svc *service.AnalyticsService) gin.HandlerFunc {
 }
 
 // parseAnalyticsFilter translates the shared filter query params into a
-// service.AnalyticsFilter. Returns false (after writing a 400 envelope) on
-// any malformed value; the caller must return immediately on false.
-// Reuses applyUintQueryParam / applyTimeQueryParam from request_log_handler
-// — the wire contract (RFC3339-only timestamps, plain uint ids) is the same.
-func parseAnalyticsFilter(c *gin.Context) (service.AnalyticsFilter, bool) {
-	statusClass := c.Query("status")
-	if _, ok := repository.ValidStatusClasses[statusClass]; !ok {
-		response.ParamError(c, "status must be one of: success, failed, partial, cancelled, rejected")
-		return service.AnalyticsFilter{}, false
+// repository.RequestLogFilter plus the analytics-specific call options.
+// Returns false (after writing a 400 envelope) on any malformed value; the
+// caller must return immediately on false. Reuses parseStatusClassParam /
+// applyUintQueryParam / applyTimeQueryParam from request_log_handler —
+// status validation is shared with the request-log endpoints, backed by
+// repository.ValidStatusClasses, and the wire contract (RFC3339-only
+// timestamps, plain uint ids) is the same.
+func parseAnalyticsFilter(c *gin.Context) (repository.RequestLogFilter, service.AnalyticsOptions, bool) {
+	statusClass, ok := parseStatusClassParam(c)
+	if !ok {
+		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
 	}
-	filter := service.AnalyticsFilter{
+	filter := repository.RequestLogFilter{
 		RequestID:   c.Query("request_id"),
 		ModelName:   c.Query("model_name"),
 		StatusClass: statusClass,
-		// Opt-in: only the analytics report page asks for failover counts;
-		// the cost pages hit the same endpoint and skip the scan behind it.
-		WithFailovers: c.Query("with_failovers") == "1",
 	}
+	var opts service.AnalyticsOptions
+	// Opt-in: only the analytics report page asks for failover counts;
+	// the cost pages hit the same endpoint and skip the scan behind it.
+	opts.WithFailovers = c.Query("with_failovers") == "1"
 	if !applyUintQueryParam(c, "api_key_id", func(v uint) { filter.APIKeyID = &v }) {
-		return service.AnalyticsFilter{}, false
+		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
 	}
 	if !applyUintQueryParam(c, "user_id", func(v uint) { filter.UserID = &v }) {
-		return service.AnalyticsFilter{}, false
+		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
 	}
 	if !applyUintQueryParam(c, "provider_id", func(v uint) { filter.ProviderID = &v }) {
-		return service.AnalyticsFilter{}, false
+		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
 	}
 	if !applyTimeQueryParam(c, "start", func(v time.Time) { filter.StartTime = &v }) {
-		return service.AnalyticsFilter{}, false
+		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
 	}
 	if !applyTimeQueryParam(c, "end", func(v time.Time) { filter.EndTime = &v }) {
-		return service.AnalyticsFilter{}, false
+		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
 	}
 	if loc, ok := c.Get("timezone"); ok {
-		filter.Location = loc.(*time.Location)
+		opts.Location = loc.(*time.Location)
 	}
 	// A member's analytics are pinned to their own rows and never carry
 	// the provider dimension (upstream identities are operator
-	// information): the forced scope overrides any user_id the query
+	// information): the pinned view overrides any user_id the query
 	// smuggled in, and provider-scoped filtering plus the failover scan
 	// are stripped rather than trusted. This block must stay LAST, after
 	// every query-param assignment — stripping before a param is parsed
-	// would silently re-admit it.
-	if forced := middleware.ForcedUserID(c); forced != nil {
-		filter.UserID = forced
+	// would silently re-admit it. The pin spans BOTH returns: the
+	// UserID/ProviderID half lives on the filter, the WithFailovers half
+	// on the options — losing the options half would let a member
+	// trigger the full failover scan.
+	if scope := middleware.ViewScopeOf(c); scope.Member {
+		filter.UserID = scope.Resolve(filter.UserID)
 		filter.ProviderID = nil
-		filter.WithFailovers = false
+		opts.WithFailovers = false
 	}
-	return filter, true
+	return filter, opts, true
 }
 
 // parseTopNParam parses the optional ?limit= query param used by compress-stats
@@ -243,17 +235,20 @@ func parseTopNParam(c *gin.Context) (int, bool) {
 }
 
 // parseDimensionParam returns the dimension query param, defaulting to
-// "model" when absent. Returns false (after writing a 400) on an
-// unrecognized value, or (after writing a 403) when a member requests
-// the provider dimension — per-provider aggregates name the upstream
-// vendors, which is operator information members never see.
+// "model" when absent. The allowlist and the 400 text derive from the
+// service's single dimension vocabulary (service.IsValidDimension /
+// service.DimensionList) — there is no handler-side copy to drift.
+// Returns false (after writing a 400) on an unrecognized value, or (after
+// writing a 403) when a member requests the provider dimension —
+// per-provider aggregates name the upstream vendors, which is operator
+// information members never see.
 func parseDimensionParam(c *gin.Context) (string, bool) {
 	dimension := c.DefaultQuery("dimension", service.DimensionModel)
-	if _, ok := validAnalyticsDimensions[dimension]; !ok {
-		response.ParamError(c, "dimension must be one of: model, provider, caller, user, time")
+	if !service.IsValidDimension(dimension) {
+		response.ParamError(c, "dimension must be one of: "+service.DimensionList())
 		return "", false
 	}
-	if dimension == service.DimensionProvider && middleware.ForcedUserID(c) != nil {
+	if dimension == service.DimensionProvider && middleware.ViewScopeOf(c).Member {
 		middleware.WriteAdminError(c, http.StatusForbidden, errcode.AccountPageForbidden)
 		return "", false
 	}

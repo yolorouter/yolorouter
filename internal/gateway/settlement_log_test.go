@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/pkg/logger"
@@ -185,5 +186,37 @@ func TestADeliveryHandedOnRecordsWhyItWasHandedOn(t *testing.T) {
 	if noted.FailReason != "ir_decode: invalid character 'n'" {
 		t.Errorf("fail reason = %q, want the code assembled at the failure — "+
 			"this record is the only place it is ever written", noted.FailReason)
+	}
+}
+
+// TestSettleFilesAgainstTheAppendedAttempt pins the numbering choice the
+// againstRecordedAttempt option makes. The zero value files under the number
+// of the attempt that comes next — right when no attempt was appended in the
+// same breath as the settlement. againstRecordedAttempt renumbers onto the
+// record just appended; filed the other way at the end of a chain, the audit
+// row points at an attempt that never runs, and nothing downstream can tell.
+func TestSettleFilesAgainstTheAppendedAttempt(t *testing.T) {
+	settle := func(opts settleOptions) int {
+		rc := &Exchange{requestID: "req-numbering"}
+		rc.attempts = append(rc.attempts, AttemptRecord{})
+		captureWarnings(t, func() {
+			(&Service{}).settle(rc, callerGone("client_disconnected"), time.Now(), opts)
+		})
+		seen := -1
+		for _, e := range rc.timeline.All() {
+			if _, ok := e.Record.(fact.DeliveryObserved); ok {
+				seen = e.Attempt
+			}
+		}
+		if seen == -1 {
+			t.Fatal("the settlement produced no DeliveryObserved entry to number")
+		}
+		return seen
+	}
+	if got := settle(settleOptions{}); got != 1 {
+		t.Fatalf("zero-value settle filed under attempt %d, want 1 (the attempt that comes next)", got)
+	}
+	if got := settle(settleOptions{againstRecordedAttempt: true}); got != 0 {
+		t.Fatalf("againstRecordedAttempt settle filed under attempt %d, want 0 (the attempt just appended)", got)
 	}
 }

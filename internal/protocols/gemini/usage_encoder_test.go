@@ -380,7 +380,7 @@ func TestGeminiNegativeUsageRejected(t *testing.T) {
 				t.Fatalf("DecodeResponse: %v", err)
 			}
 			// All-zero usage is what the gateway reads as "unknown", never as
-			// a free request (irUsageToUsage returns nil for it).
+			// a free request (its reported-usage gate maps it to nil).
 			if irResp.Usage.PromptTokens != 0 || irResp.Usage.CompletionTokens != 0 || irResp.Usage.TotalTokens != 0 {
 				t.Errorf("expected usage left unset, got %+v", irResp.Usage)
 			}

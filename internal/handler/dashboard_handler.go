@@ -58,11 +58,8 @@ func GetDashboard(svc *service.DashboardService) gin.HandlerFunc {
 		if !applyUintQueryParam(c, "user_id", func(v uint) { userID = &v }) {
 			return
 		}
-		forced := middleware.ForcedUserID(c)
-		if forced != nil {
-			userID = forced
-		}
-		data, err := svc.GetDashboard(loc, rangeStart, rangeEnd, userID, forced != nil, timeNow())
+		scope := middleware.ViewScopeOf(c)
+		data, err := svc.GetDashboard(loc, rangeStart, rangeEnd, scope.Resolve(userID), scope.Member, timeNow())
 		if err != nil {
 			response.Error(c, errcode.InternalError, errcode.GetMessage(errcode.InternalError))
 			return

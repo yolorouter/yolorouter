@@ -151,15 +151,17 @@ func (d *StreamDecoder) DecodeChunk(raw string) ([]protocols.IRStreamDelta, erro
 	var deltas []protocols.IRStreamDelta
 
 	for {
-		pos := strings.Index(d.buffer, "\n\n")
+		pos, sepLen := protocols.SSEFrameEnd(d.buffer)
 		if pos < 0 {
 			break
 		}
 		block := d.buffer[:pos]
-		d.buffer = d.buffer[pos+2:]
+		d.buffer = d.buffer[pos+sepLen:]
 
 		for _, line := range strings.Split(block, "\n") {
-			data, ok := strings.CutPrefix(strings.TrimSpace(line), "data: ")
+			// SSE makes the space after the colon optional; the TrimSpace
+			// below takes it off when the upstream did send one.
+			data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:")
 			if !ok {
 				continue
 			}

@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/service"
@@ -1286,11 +1287,42 @@ func TestGetCompressStatsCompressorHitsCountsRowsNotInvocations(t *testing.T) {
 
 // === Filter pin (per-entity scope) =======================================
 
+// TestParseAnalyticsFilterMemberPinStripsFailovers locks the security-
+// sensitive half of the member pin: a member's request arrives with
+// with_failovers=1 and provider/user params of its own choosing, and the
+// pin must override the user, strip the provider, and — the half that now
+// lives on AnalyticsOptions rather than the filter — force WithFailovers
+// off so a member cannot trigger the full failover scan. Deleting the
+// options half of the pin turns this red.
+func TestParseAnalyticsFilterMemberPinStripsFailovers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet,
+		"/api/admin/analytics/report?with_failovers=1&provider_id=3&user_id=9", nil)
+	pinned := uint(7)
+	c.Set(middleware.ViewScopeKey, middleware.ViewScope{Member: true, Owner: &pinned})
+
+	filter, opts, ok := parseAnalyticsFilter(c)
+	if !ok {
+		t.Fatal("parseAnalyticsFilter failed on a member request")
+	}
+	if filter.UserID == nil || *filter.UserID != 7 {
+		t.Fatalf("member filter must pin user_id=7, got %+v", filter.UserID)
+	}
+	if filter.ProviderID != nil {
+		t.Fatalf("member filter must strip provider_id, got %v", *filter.ProviderID)
+	}
+	if opts.WithFailovers {
+		t.Fatal("member options must force WithFailovers=false (the failover scan is operator-only)")
+	}
+}
+
 // TestAnalyticsReportFilterPin asserts that pinning one dimension in the
 // shared analytics filter scopes EVERY aggregate (overview + time + model +
 // provider + caller) down to that entity. The per-entity cost detail pages
 // rely on this contract without any new backend code: parseAnalyticsFilter
-// builds one AnalyticsFilter, toRepoFilter hands the same filter to every
+// builds one repository.RequestLogFilter and hands the same filter to every
 // aggregation path, so a pin on api_key_id / model_name / provider_id must
 // shrink all five aggregates consistently. If any path stops respecting the
 // shared filter this test fails before the frontend can rely on the premise.

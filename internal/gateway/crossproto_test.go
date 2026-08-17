@@ -357,7 +357,7 @@ func TestCrossProtocolOpenAIToAnthropicStream_IncludeUsage(t *testing.T) {
 // regression test for the cross-protocol fix: on a successful
 // cross-protocol non-stream
 // request, IRNonStreamRelay wrote the encoded client response directly and
-// only rc.SetBody (the raw upstream body) ran, leaving rc.ResponseBody() (the
+// only the raw upstream body was recorded, leaving rc.ResponseBody() (the
 // caller-facing audit body persisted to request_log_bodies.response_body)
 // empty — inconsistent with the same-protocol passthrough path, which always
 // populates both. After the fix, rc.ResponseBody() must be non-empty and equal
@@ -535,9 +535,9 @@ func TestCrossProtocolStreamPreFirstEventFailover(t *testing.T) {
 // upstream — same fixture as TestCrossProtocolOpenAIToAnthropicStream), the
 // per-request <request_id>.stream capture file must be byte-for-byte equal
 // to what the client actually received, not merely "contain" the expected
-// content. Before the AppendResponse fix, IRStreamRelay recorded the RAW
+// content. Before the capture-routing fix, IRStreamRelay recorded the RAW
 // upstream lines (Claude SSE: message_start/content_block_delta/... shaped)
-// via rc.AppendUpstream instead of the caller-facing (post-re-encode) OpenAI
+// instead of the caller-facing (post-re-encode) OpenAI
 // chat.completion.chunk bytes actually written to c.Writer — the two shapes
 // differ completely, so this regression test fails without the fix.
 func TestCrossProtocolStreamCaptureMatchesClientBytes(t *testing.T) {

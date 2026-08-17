@@ -430,6 +430,69 @@ func TestClaudeStreamDecoder_IgnoresEmptyLines(t *testing.T) {
 	}
 }
 
+// TestClaudeStreamDecoder_SpacelessDataLines: SSE makes the space after the
+// colon optional, and Anthropic-compatible upstreams (an Aliyun one ships
+// exactly this) omit it. A decoder that dropped those frames would read a
+// completed stream as one that said nothing at all — no text, no usage, no
+// message_stop — and the delivery would settle as truncated.
+func TestClaudeStreamDecoder_SpacelessDataLines(t *testing.T) {
+	dec := NewStreamDecoder()
+
+	events := []string{
+		"event:message_start",
+		`data:{"type":"message_start","message":{"id":"msg_s","model":"claude-3-opus","usage":{"input_tokens":20992,"output_tokens":0}}}`,
+		"event:content_block_delta",
+		`data:{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		"event:message_delta",
+		`data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":35}}`,
+		"event:message_stop",
+		`data:{"type":"message_stop"}`,
+	}
+
+	var hasText, hasDone bool
+	var usage protocols.IRUsage
+	for _, ev := range events {
+		deltas, err := dec.DecodeChunk(ev)
+		if err != nil {
+			t.Fatalf("DecodeChunk(%q): %v", ev, err)
+		}
+		for _, d := range deltas {
+			switch v := d.(type) {
+			case protocols.DeltaText:
+				hasText = true
+				if v.Text != "hi" {
+					t.Errorf("Text = %q", v.Text)
+				}
+			case protocols.DeltaDone:
+				hasDone = true
+			case protocols.DeltaUsage:
+				usage = v.Usage
+			}
+		}
+	}
+	if !hasText {
+		t.Error("Missing protocols.DeltaText")
+	}
+	if !hasDone {
+		t.Error("Missing protocols.DeltaDone")
+	}
+	if usage.PromptTokens != 20992 || usage.CompletionTokens != 35 {
+		t.Errorf("usage = %d/%d, want 20992/35", usage.PromptTokens, usage.CompletionTokens)
+	}
+
+	finish, err := dec.Finish()
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	// Standard shape: message_delta already emitted DeltaDone and the usage, so
+	// Finish appends only its one closing DeltaUsage — never a second DeltaDone.
+	for _, d := range finish {
+		if _, ok := d.(protocols.DeltaDone); ok {
+			t.Error("Finish re-emitted DeltaDone after message_delta already carried it")
+		}
+	}
+}
+
 func TestClaudeStreamDecoder_MessageStartWithCacheUsage(t *testing.T) {
 	dec := NewStreamDecoder()
 

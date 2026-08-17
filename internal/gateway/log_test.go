@@ -9,6 +9,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -18,7 +19,7 @@ func TestComputeCost(t *testing.T) {
 	// stored as integer micros (CNY × 1e6, i.e. 6-decimal precision).
 	// 1M input @ 1.0 + 0.5M output @ 2.0 = 1.0 + 1.0 = 2.0 CNY = 2_000_000 micros.
 	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0}
-	usage := &Usage{PromptTokens: 1_000_000, CompletionTokens: 500_000}
+	usage := &protocols.IRUsage{PromptTokens: 1_000_000, CompletionTokens: 500_000}
 	cost := computeCost(cand, usage, 0)
 	if !cost.Known {
 		t.Fatal("expected cost to be known when usage + candidate present")
@@ -39,7 +40,7 @@ func TestComputeCostCacheEconomics(t *testing.T) {
 		CacheReadPrice:  &readPrice,
 		CacheWritePrice: &writePrice,
 	}
-	usage := &Usage{PromptTokens: 1_000_000, CacheReadTokens: 1_000_000, CacheWriteTokens: 1_000_000}
+	usage := &protocols.IRUsage{PromptTokens: 1_000_000, CacheReadTokens: 1_000_000, CacheWriteTokens: 1_000_000}
 	cost := computeCost(cand, usage, 0)
 	if cost.CacheReadSavedMicros != 2_700_000 {
 		t.Errorf("cache read saved = %d, want 2_700_000", cost.CacheReadSavedMicros)
@@ -53,7 +54,7 @@ func TestComputeCostNoCachePriceHasNoSavings(t *testing.T) {
 	// Without configured cache prices, cache tokens bill at the input price, so
 	// there is neither a read saving nor a write premium.
 	cand := &model.ModelCandidate{InputPrice: 2.0, OutputPrice: 4.0}
-	usage := &Usage{PromptTokens: 1_000_000, CacheReadTokens: 500_000, CacheWriteTokens: 500_000}
+	usage := &protocols.IRUsage{PromptTokens: 1_000_000, CacheReadTokens: 500_000, CacheWriteTokens: 500_000}
 	cost := computeCost(cand, usage, 0)
 	if cost.CacheReadSavedMicros != 0 || cost.CacheWriteExtraMicros != 0 {
 		t.Errorf("expected 0/0 savings without cache prices, got read=%d write=%d",
@@ -65,7 +66,7 @@ func TestComputeCostRoundsToMicro(t *testing.T) {
 	// Micros are the smallest stored unit (CNY × 1e6). 1 token @ 1.5/M =
 	// 0.0000015 CNY = 1.5 micros -> rounds to 2 micros.
 	cand := &model.ModelCandidate{InputPrice: 1.5, OutputPrice: 0}
-	usage := &Usage{PromptTokens: 1, CompletionTokens: 0}
+	usage := &protocols.IRUsage{PromptTokens: 1, CompletionTokens: 0}
 	cost := computeCost(cand, usage, 0)
 	if !cost.Known || cost.CostMicros != 2 {
 		t.Fatalf("expected known 2 micros, got %d (known=%v)", cost.CostMicros, cost.Known)
@@ -81,7 +82,7 @@ func TestComputeCostMissingUsageIsUnknown(t *testing.T) {
 }
 
 func TestComputeCostMissingCandidateIsUnknown(t *testing.T) {
-	usage := &Usage{PromptTokens: 100, CompletionTokens: 100}
+	usage := &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 100}
 	if cost := computeCost(nil, usage, 0); cost.Known || cost.CostMicros != 0 {
 		t.Fatalf("expected unknown/0 for nil candidate, got %d (known=%v)", cost.CostMicros, cost.Known)
 	}
@@ -196,7 +197,7 @@ func TestGenerateRequestIDUnique(t *testing.T) {
 // to micros). Reported only — CostMicros itself is unaffected.
 func TestComputeCostCompressSavings(t *testing.T) {
 	cand := &model.ModelCandidate{InputPrice: 2.5, OutputPrice: 5.0}
-	usage := &Usage{PromptTokens: 100, CompletionTokens: 50}
+	usage := &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 50}
 	cost := computeCost(cand, usage, 1500)
 	if !cost.Known {
 		t.Fatal("expected cost to be known when usage + candidate present")
@@ -217,7 +218,7 @@ func TestComputeCostCompressSavings(t *testing.T) {
 // 1 token @ 1.5/M = 1.5 micros -> rounds to 2.
 func TestComputeCostCompressSavingsRoundingFractional(t *testing.T) {
 	cand := &model.ModelCandidate{InputPrice: 1.5, OutputPrice: 0}
-	usage := &Usage{PromptTokens: 1, CompletionTokens: 0}
+	usage := &protocols.IRUsage{PromptTokens: 1, CompletionTokens: 0}
 	cost := computeCost(cand, usage, 1)
 	if cost.CompressCostSavedMicros != 2 {
 		t.Errorf("compress cost saved = %d, want 2 micros after rounding", cost.CompressCostSavedMicros)
@@ -233,7 +234,7 @@ func TestComputeCostCompressSavingsUnknownIsZero(t *testing.T) {
 		t.Fatalf("expected unknown/0 compress savings for nil usage, got %d (known=%v)",
 			cost.CompressCostSavedMicros, cost.Known)
 	}
-	if cost := computeCost(nil, &Usage{PromptTokens: 1}, 1000); cost.Known || cost.CompressCostSavedMicros != 0 {
+	if cost := computeCost(nil, &protocols.IRUsage{PromptTokens: 1}, 1000); cost.Known || cost.CompressCostSavedMicros != 0 {
 		t.Fatalf("expected unknown/0 compress savings for nil candidate, got %d (known=%v)",
 			cost.CompressCostSavedMicros, cost.Known)
 	}
@@ -269,7 +270,7 @@ func TestFinalizeWritesCompressColumns(t *testing.T) {
 	rc.attempt.BeginCandidate(cand)
 	seedCompressionSaved(rc, 1500, "whitespace", "whitespace", "contractions")
 	rc.bodies.SetCompressedRequest([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
-	svc.finalize(rc, &Usage{PromptTokens: 100, CompletionTokens: 50}, 200, "", time.Now())
+	svc.finalize(rc, &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 50}, 200, "", time.Now())
 	svc.recordTerminal(rc)
 
 	row, err := repository.GetRequestLogByRequestID(db, "req-compress-1")
@@ -481,20 +482,20 @@ func TestFinalizeCompressPhantomSavingsZeroedOnPreRelayRejection(t *testing.T) {
 func TestNetPromptTokens(t *testing.T) {
 	cases := []struct {
 		name  string
-		usage *Usage
+		usage *protocols.IRUsage
 		want  int
 	}{
 		{"nil usage", nil, 0},
 		{
 			// Anthropic: input_tokens is already net; flag false -> unchanged.
 			"claude net input passes through",
-			&Usage{PromptTokens: 237, CacheReadTokens: 17152, CacheIncludedInPrompt: false},
+			&protocols.IRUsage{PromptTokens: 237, CacheReadTokens: 17152, CacheIncludedInPrompt: false},
 			237,
 		},
 		{
 			// OpenAI: prompt_tokens includes cache; flag true -> subtract cache.
 			"openai gross input has cache subtracted",
-			&Usage{PromptTokens: 17389, CacheReadTokens: 17152, CacheIncludedInPrompt: true},
+			&protocols.IRUsage{PromptTokens: 17389, CacheReadTokens: 17152, CacheIncludedInPrompt: true},
 			237, // 17389 - 17152
 		},
 		{
@@ -510,27 +511,27 @@ func TestNetPromptTokens(t *testing.T) {
 			// convention new-api uses). Leaving the write in would count those
 			// tokens twice: once on the cache-write line, once as fresh input.
 			"inclusive prompt has both cache lines subtracted",
-			&Usage{PromptTokens: 1000, CacheReadTokens: 600, CacheWriteTokens: 300, CacheIncludedInPrompt: true},
+			&protocols.IRUsage{PromptTokens: 1000, CacheReadTokens: 600, CacheWriteTokens: 300, CacheIncludedInPrompt: true},
 			100, // 1000 - 600 - 300
 		},
 		{
 			// Anthropic reports a net input_tokens alongside a cache write, so
 			// neither count is subtracted.
 			"claude net input with cache write passes through",
-			&Usage{PromptTokens: 237, CacheWriteTokens: 4096, CacheIncludedInPrompt: false},
+			&protocols.IRUsage{PromptTokens: 237, CacheWriteTokens: 4096, CacheIncludedInPrompt: false},
 			237,
 		},
 		{
 			// DeepSeek splits prompt_tokens into hit + miss; the hit half decodes
 			// as cache read, leaving the miss half as net input.
 			"deepseek hit subtracted leaving miss",
-			&Usage{PromptTokens: 1000, CacheReadTokens: 600, CacheIncludedInPrompt: true},
+			&protocols.IRUsage{PromptTokens: 1000, CacheReadTokens: 600, CacheIncludedInPrompt: true},
 			400, // the prompt_cache_miss_tokens half
 		},
 		{
 			// Defensive: upstream reporting cache > prompt floors at 0.
 			"cache exceeding prompt floors at zero",
-			&Usage{PromptTokens: 100, CacheReadTokens: 500, CacheIncludedInPrompt: true},
+			&protocols.IRUsage{PromptTokens: 100, CacheReadTokens: 500, CacheIncludedInPrompt: true},
 			0,
 		},
 	}
@@ -562,7 +563,7 @@ func TestComputeCostRejectsIncoherentUsage(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		usage *Usage
+		usage *protocols.IRUsage
 	}{
 		{
 			// Would have billed 500 cache reads on a 100-token prompt. This is the
@@ -570,25 +571,25 @@ func TestComputeCostRejectsIncoherentUsage(t *testing.T) {
 			// normalizeCacheConvention has not reclassified — see the end of this
 			// test for the reclassified counterpart.
 			"cache read exceeds inclusive prompt",
-			&Usage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: 500, CacheIncludedInPrompt: true},
+			&protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: 500, CacheIncludedInPrompt: true},
 		},
 		{
 			// A negative cache count inflates net input AND produces a negative
 			// cache line item, so the total can come out below zero.
 			"negative cache read",
-			&Usage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: -1000, CacheIncludedInPrompt: true},
+			&protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: -1000, CacheIncludedInPrompt: true},
 		},
-		{"negative prompt", &Usage{PromptTokens: -5, CompletionTokens: 10}},
-		{"negative completion", &Usage{PromptTokens: 100, CompletionTokens: -10}},
-		{"negative cache write", &Usage{PromptTokens: 100, CompletionTokens: 10, CacheWriteTokens: -1}},
-		{"negative total", &Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: -1}},
+		{"negative prompt", &protocols.IRUsage{PromptTokens: -5, CompletionTokens: 10}},
+		{"negative completion", &protocols.IRUsage{PromptTokens: 100, CompletionTokens: -10}},
+		{"negative cache write", &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, CacheWriteTokens: -1}},
+		{"negative total", &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: -1}},
 		{
 			// Regression: a negative reasoning count must reach the verdict.
-			// It arrives on IRUsage.ReasoningTokens; the bridge carries it across
+			// It arrives on IRUsage.ReasoningTokens and must survive to here,
 			// so the wire encoder (which refuses via HasNegativeCount) and this
 			// billing gate agree on rejecting it.
 			"negative reasoning tokens",
-			&Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, ReasoningTokens: -10},
+			&protocols.IRUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, ReasoningTokens: -10},
 		},
 	}
 	for _, tc := range cases {
@@ -605,13 +606,13 @@ func TestComputeCostRejectsIncoherentUsage(t *testing.T) {
 
 	// A cache read equal to the whole prompt is legitimate (a fully cached
 	// prompt) and must still bill.
-	full := &Usage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: 100, CacheIncludedInPrompt: true}
+	full := &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: 100, CacheIncludedInPrompt: true}
 	if got := computeCost(cand, full, 0); !got.Known {
 		t.Error("a fully-cached prompt must remain billable")
 	}
 	// Anthropic reports an independent net input, so a cache read larger than
 	// it is normal rather than incoherent.
-	netInput := &Usage{PromptTokens: 237, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: false}
+	netInput := &protocols.IRUsage{PromptTokens: 237, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: false}
 	if got := computeCost(cand, netInput, 0); !got.Known {
 		t.Error("cache read may exceed a net (non-inclusive) input")
 	}
@@ -620,7 +621,7 @@ func TestComputeCostRejectsIncoherentUsage(t *testing.T) {
 	// total of 610 corroborates the net reading (100+10+500), after which the
 	// prompt is billed as net input rather than floored to zero by a subtraction
 	// that no longer applies.
-	exclusive := &Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 610, CacheReadTokens: 500, CacheIncludedInPrompt: true}
+	exclusive := &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 610, CacheReadTokens: 500, CacheIncludedInPrompt: true}
 	normalizeCacheConvention(exclusive)
 	if got := computeCost(cand, exclusive, 0); !got.Known {
 		t.Error("a net-prompt upstream must bill once its convention is normalized")
@@ -630,12 +631,12 @@ func TestComputeCostRejectsIncoherentUsage(t *testing.T) {
 	}
 	// An upstream that omits total_tokens leaves it at 0; the bound only
 	// applies when a total was actually stated.
-	noTotal := &Usage{PromptTokens: 100, CompletionTokens: 10}
+	noTotal := &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10}
 	if got := computeCost(cand, noTotal, 0); !got.Known {
 		t.Error("a missing total must not make usage incoherent")
 	}
 	// Exactly-equal parts and total is the normal OpenAI shape.
-	exact := &Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110}
+	exact := &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110}
 	if got := computeCost(cand, exact, 0); !got.Known {
 		t.Error("prompt+completion == total is the normal case")
 	}
@@ -643,7 +644,7 @@ func TestComputeCostRejectsIncoherentUsage(t *testing.T) {
 	// really consumed, just not split between prompt/completion, and every gateway
 	// surveyed recomputes the total as the parts-sum and bills on. This locks the
 	// industry-convention behavior decided after surveying new-api/litellm/llmgateway.
-	contradictory := &Usage{PromptTokens: 100, CompletionTokens: 1_000_000, TotalTokens: 110}
+	contradictory := &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 1_000_000, TotalTokens: 110}
 	if got := computeCost(cand, contradictory, 0); !got.Known {
 		t.Error("a contradictory total must still bill (industry convention: recompute, don't reject)")
 	}
@@ -654,7 +655,7 @@ func TestComputeCostRejectsIncoherentUsage(t *testing.T) {
 // must yield unknown rather than an arbitrary budget charge.
 func TestComputeCostGuardsMicrosOverflow(t *testing.T) {
 	cand := &model.ModelCandidate{InputPrice: 1e12, OutputPrice: 1e12}
-	usage := &Usage{PromptTokens: 1_000_000_000, CompletionTokens: 1_000_000_000, TotalTokens: 2_000_000_000}
+	usage := &protocols.IRUsage{PromptTokens: 1_000_000_000, CompletionTokens: 1_000_000_000, TotalTokens: 2_000_000_000}
 	got := computeCost(cand, usage, 0)
 	if got.Known {
 		t.Errorf("Known = true, want false when micros overflows int64 (got %d)", got.CostMicros)
@@ -669,8 +670,8 @@ func TestComputeCostUsesNetInputAcrossProtocols(t *testing.T) {
 	readPrice := 0.02
 	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0, CacheReadPrice: &readPrice}
 
-	anthropic := &Usage{PromptTokens: 237, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: false}
-	openai := &Usage{PromptTokens: 17389, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: true}
+	anthropic := &protocols.IRUsage{PromptTokens: 237, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: false}
+	openai := &protocols.IRUsage{PromptTokens: 17389, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: true}
 
 	// 237×1.0 + 17152×0.02 + 10×2.0 = 237 + 343.04 + 20 = 600.04 -> 600 micros.
 	const wantMicros = 600
@@ -696,7 +697,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 	readPrice := 0.02
 	cases := []struct {
 		name       string
-		usage      *Usage
+		usage      *protocols.IRUsage
 		wantInput  int
 		wantOutput int
 		wantRead   int
@@ -710,7 +711,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// identity, nothing like the inclusive one's (30).
 			// 6855×0.02 + 30×2.0 = 137.1 + 60 = 197.1 -> 197 micros.
 			name:      "net prompt with cache read is logged in full",
-			usage:     &Usage{PromptTokens: 0, CompletionTokens: 30, TotalTokens: 6885, CacheReadTokens: 6855, CacheIncludedInPrompt: true},
+			usage:     &protocols.IRUsage{PromptTokens: 0, CompletionTokens: 30, TotalTokens: 6885, CacheReadTokens: 6855, CacheIncludedInPrompt: true},
 			wantInput: 0, wantOutput: 30, wantRead: 6855, wantKnown: true, wantMicros: 197,
 		},
 		{
@@ -718,7 +719,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// and flooring at 0 would silently drop these 100 real input tokens.
 			// 100×1.0 + 6855×0.02 + 10×2.0 = 257.1 -> 257 micros.
 			name:      "net prompt is not swallowed by the cache read",
-			usage:     &Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 6965, CacheReadTokens: 6855, CacheIncludedInPrompt: true},
+			usage:     &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 6965, CacheReadTokens: 6855, CacheIncludedInPrompt: true},
 			wantInput: 100, wantOutput: 10, wantRead: 6855, wantKnown: true, wantMicros: 257,
 		},
 		{
@@ -729,7 +730,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// subset of a zero-token prompt.
 			// 6521×0.02 + 30×2.0 = 130.42 + 60 = 190.42 -> 190 micros.
 			name:      "the subset rule holds when the total carries slack",
-			usage:     &Usage{PromptTokens: 0, CompletionTokens: 30, TotalTokens: 6885, CacheReadTokens: 6521, CacheIncludedInPrompt: true},
+			usage:     &protocols.IRUsage{PromptTokens: 0, CompletionTokens: 30, TotalTokens: 6885, CacheReadTokens: 6521, CacheIncludedInPrompt: true},
 			wantInput: 0, wantOutput: 30, wantRead: 6521, wantKnown: true, wantMicros: 190,
 		},
 		{
@@ -738,27 +739,27 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// on the inequality alone would bill the gross prompt at the input price
 			// AND the cache at the cache price — the same tokens charged twice.
 			name:  "inclusive upstream over-reporting its cache is not reclassified",
-			usage: &Usage{PromptTokens: 100_000, CompletionTokens: 100, TotalTokens: 100_100, CacheReadTokens: 100_001, CacheIncludedInPrompt: true},
+			usage: &protocols.IRUsage{PromptTokens: 100_000, CompletionTokens: 100, TotalTokens: 100_100, CacheReadTokens: 100_001, CacheIncludedInPrompt: true},
 		},
 		{
 			// No stated total means no corroboration, and guessing here can only
 			// overcharge — so the record stays inclusive and is rejected.
 			name:  "cache exceeding prompt without a stated total is rejected",
-			usage: &Usage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: 6855, CacheIncludedInPrompt: true},
+			usage: &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: 6855, CacheIncludedInPrompt: true},
 		},
 		{
 			// An absurd cache count cannot buy itself a reclassification: the stated
 			// total refutes the net reading, so the cache bound still applies and
 			// nothing reaches the bill or the key's budget.
 			name:  "an absurd cache count is still rejected",
-			usage: &Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, CacheReadTokens: 2_000_000_000, CacheIncludedInPrompt: true},
+			usage: &protocols.IRUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, CacheReadTokens: 2_000_000_000, CacheIncludedInPrompt: true},
 		},
 		{
 			// The net parts (610) do not fit inside the stated total (400), so the
 			// net reading is self-contradictory. Billing 600 tokens against a total
 			// the upstream capped at 400 would be worse than recording nothing.
 			name:  "net parts that overflow the stated total are rejected",
-			usage: &Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 400, CacheReadTokens: 500, CacheIncludedInPrompt: true},
+			usage: &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 400, CacheReadTokens: 500, CacheIncludedInPrompt: true},
 		},
 		{
 			// A cache write belongs to both readings. Here the stated total is
@@ -766,13 +767,13 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// do not fit — counting the write on the net side only would have tipped
 			// this the other way and double-billed the gross prompt.
 			name:  "a cache write does not tip an inclusive upstream into net",
-			usage: &Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 1110, CacheReadTokens: 101, CacheWriteTokens: 1000, CacheIncludedInPrompt: true},
+			usage: &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 1110, CacheReadTokens: 101, CacheWriteTokens: 1000, CacheIncludedInPrompt: true},
 		},
 		{
 			// A count near MaxInt wraps the net sum negative, and a wrapped sum
 			// compares as though it fits inside any total.
 			name:  "a count large enough to overflow the sum is rejected",
-			usage: &Usage{PromptTokens: 1, CompletionTokens: 0, TotalTokens: 2, CacheReadTokens: math.MaxInt, CacheIncludedInPrompt: true},
+			usage: &protocols.IRUsage{PromptTokens: 1, CompletionTokens: 0, TotalTokens: 2, CacheReadTokens: math.MaxInt, CacheIncludedInPrompt: true},
 		},
 		{
 			// A net-convention upstream reports cache < prompt on any request that
@@ -781,7 +782,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// reading it as inclusive would subtract the cache from a prompt that
 			// never contained it. 1000×1.0 + 500×0.02 + 10×2.0 = 1030 micros.
 			name:      "net convention is detected when the cache is smaller than the prompt",
-			usage:     &Usage{PromptTokens: 1000, CompletionTokens: 10, TotalTokens: 1510, CacheReadTokens: 500, CacheIncludedInPrompt: true},
+			usage:     &protocols.IRUsage{PromptTokens: 1000, CompletionTokens: 10, TotalTokens: 1510, CacheReadTokens: 500, CacheIncludedInPrompt: true},
 			wantInput: 1000, wantOutput: 10, wantRead: 500, wantKnown: true, wantMicros: 1030,
 		},
 		{
@@ -789,7 +790,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// is what settles it. Here 210 leaves room for the cache on its own
 			// line: net. 100×1.0 + 100×0.02 + 10×2.0 = 122 micros.
 			name:      "cache equal to prompt reads as net when the total says so",
-			usage:     &Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 210, CacheReadTokens: 100, CacheIncludedInPrompt: true},
+			usage:     &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 210, CacheReadTokens: 100, CacheIncludedInPrompt: true},
 			wantInput: 100, wantOutput: 10, wantRead: 100, wantKnown: true, wantMicros: 122,
 		},
 		{
@@ -798,7 +799,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// cached prompt and the subtraction stands.
 			// 100×0.02 + 10×2.0 = 22 -> 22 micros.
 			name:      "fully cached inclusive prompt is unchanged",
-			usage:     &Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, CacheReadTokens: 100, CacheIncludedInPrompt: true},
+			usage:     &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, CacheReadTokens: 100, CacheIncludedInPrompt: true},
 			wantInput: 0, wantOutput: 10, wantRead: 100, wantKnown: true, wantMicros: 22,
 		},
 		{
@@ -807,7 +808,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// identity, not by luck.
 			// 237×1.0 + 17152×0.02 + 10×2.0 = 600.04 -> 600 micros.
 			name:      "inclusive upstream stating its total is not reclassified",
-			usage:     &Usage{PromptTokens: 17389, CompletionTokens: 10, TotalTokens: 17399, CacheReadTokens: 17152, CacheIncludedInPrompt: true},
+			usage:     &protocols.IRUsage{PromptTokens: 17389, CompletionTokens: 10, TotalTokens: 17399, CacheReadTokens: 17152, CacheIncludedInPrompt: true},
 			wantInput: 237, wantOutput: 10, wantRead: 17152, wantKnown: true, wantMicros: 600,
 		},
 		{
@@ -817,28 +818,28 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// prompt and the total does not single it out, so the subtraction
 			// stands. 50×1.0 + 50×0.02 + 10×2.0 = 71 micros.
 			name:      "unexplained slack in the total is not read as net accounting",
-			usage:     &Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 200, CacheReadTokens: 50, CacheIncludedInPrompt: true},
+			usage:     &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 200, CacheReadTokens: 50, CacheIncludedInPrompt: true},
 			wantInput: 50, wantOutput: 10, wantRead: 50, wantKnown: true, wantMicros: 71,
 		},
 		{
 			// A spec-compliant OpenAI upstream still has its cache subtracted.
 			// 237×1.0 + 17152×0.02 + 10×2.0 = 600.04 -> 600 micros.
 			name:      "inclusive prompt still has cache subtracted",
-			usage:     &Usage{PromptTokens: 17389, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: true},
+			usage:     &protocols.IRUsage{PromptTokens: 17389, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: true},
 			wantInput: 237, wantOutput: 10, wantRead: 17152, wantKnown: true, wantMicros: 600,
 		},
 		{
 			// Anthropic's own endpoint: input_tokens is already net. Same request,
 			// same bill as the row above.
 			name:      "anthropic net input is unchanged",
-			usage:     &Usage{PromptTokens: 237, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: false},
+			usage:     &protocols.IRUsage{PromptTokens: 237, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: false},
 			wantInput: 237, wantOutput: 10, wantRead: 17152, wantKnown: true, wantMicros: 600,
 		},
 		{
 			// Genuinely corrupt counts are still dropped whole: a negative cache
 			// read would produce a negative line item.
 			name:  "negative cache read is still rejected",
-			usage: &Usage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: -1000, CacheIncludedInPrompt: true},
+			usage: &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 10, CacheReadTokens: -1000, CacheIncludedInPrompt: true},
 		},
 		{
 			// A contradictory total (parts overflow it) is NOT rejected: every
@@ -846,7 +847,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			// and so does this one. The upstream's stated total of 110 is ignored;
 			// billing reads the parts directly. 100×1.0 + 1000000×2.0 = 2000100.
 			name:      "parts exceeding the stated total still bill (industry convention)",
-			usage:     &Usage{PromptTokens: 100, CompletionTokens: 1_000_000, TotalTokens: 110},
+			usage:     &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 1_000_000, TotalTokens: 110},
 			wantInput: 100, wantOutput: 1_000_000, wantRead: 0, wantKnown: true, wantMicros: 2_000_100,
 		},
 		{
@@ -903,14 +904,14 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 }
 
 // TestReportUsageCarriesEveryCount pins the settle-side bridge: reportUsage
-// rebuilds the persisted usage record from the Usage struct, and a field left
-// out here is a field that survived the whole relay only to be dropped in the
-// final hop before the timeline. Distinct primes per field so a crossed wire
-// cannot cancel out.
+// rebuilds the persisted usage record from the in-memory counts, and a field
+// left out here is a field that survived the whole relay only to be dropped in
+// the final hop before the timeline. Distinct primes per field so a crossed
+// wire cannot cancel out.
 func TestReportUsageCarriesEveryCount(t *testing.T) {
 	svc := &Service{}
 	rc := &Exchange{requestID: "test"}
-	usage := &Usage{
+	usage := &protocols.IRUsage{
 		PromptTokens:     101,
 		CompletionTokens: 37,
 		TotalTokens:      211,

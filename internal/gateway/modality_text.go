@@ -248,7 +248,7 @@ func (p *textPayload) SanitizeForLog(_ BodyKind, _ string, body []byte) string {
 // policy and stay in the kernel, where they apply to every modality at once.
 // What a modality knows is the raw counts and what they count — tokens here —
 // and stating that is the whole of its job.
-func usageReportOf(u *Usage) *fact.UsageReported {
+func usageReportOf(u *protocols.IRUsage) *fact.UsageReported {
 	if u == nil {
 		return nil
 	}
@@ -382,7 +382,7 @@ func (p *textPayload) deliverTranslatedNonStream(tools DeliveryTools, resp *http
 
 	usage, err := protocols.IRNonStreamRelay(
 		tools.Client, resp, decoder, encoder, captureBuffer{capture: tools.Capture}, nil)
-	report := usageReportOf(irUsageToUsage(usage))
+	report := usageReportOf(reportedUsage(usage))
 
 	if err == nil {
 		return fact.Succeeded(resp.StatusCode).WithUsage(report)

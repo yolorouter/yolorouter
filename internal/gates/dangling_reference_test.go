@@ -86,14 +86,7 @@ func TestCommentsNameOnlyIdentifiersThatExist(t *testing.T) {
 					}
 				}
 			case *ast.FuncDecl:
-				if v.Recv == nil || len(v.Recv.List) != 1 {
-					return true
-				}
-				recv := v.Recv.List[0].Type
-				if star, ok := recv.(*ast.StarExpr); ok {
-					recv = star.X
-				}
-				if id, ok := recv.(*ast.Ident); ok && id.Name == "Exchange" {
+				if methodReceiverName(v) == "Exchange" {
 					exchangeMembers[v.Name.Name] = true
 				}
 			}

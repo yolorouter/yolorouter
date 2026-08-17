@@ -6,59 +6,11 @@ import (
 	"github.com/yolorouter/yolorouter/internal/protocols"
 )
 
-// TestUpstreamBufferAppendUpstreamNoCaptureFile verifies AppendUpstream is a
-// safe no-op when no stream capture file is open —
-// the common case for an Exchange built outside a streaming delivery, which is
-// what opens the file (e.g. an early failover before any file was opened).
-func TestUpstreamBufferAppendUpstreamNoCaptureFile(t *testing.T) {
-	rc := &Exchange{requestID: "req-1"}
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("AppendUpstream panicked with no capture file open: %v", r)
-		}
-	}()
-	rc.AppendUpstream([]byte("data: {}\n"))
-	if rc.bodies.StreamCaptured() {
-		t.Fatal("expected no stream capture to have been opened")
-	}
-}
-
-// TestUpstreamBufferSetBody verifies SetBody stores the raw non-stream
-// upstream body on Exchange.UpstreamResponseBody.
-func TestUpstreamBufferSetBody(t *testing.T) {
-	rc := &Exchange{}
-	body := []byte(`{"id":"resp_1"}`)
-	rc.SetBody(body)
-	if string(rc.UpstreamResponseBody()) != string(body) {
-		t.Fatalf("UpstreamResponseBody = %q, want %q", rc.UpstreamResponseBody(), body)
-	}
-}
-
-// TestUpstreamBufferSetResponseBody verifies SetResponseBody stores the
-// caller-facing (post-IR-encode) response bytes on Exchange.ResponseBody
-// — the cross-protocol counterpart of TestUpstreamBufferSetBody, which
-// covers the raw pre-decode upstream body instead.
-func TestUpstreamBufferSetResponseBody(t *testing.T) {
-	rc := &Exchange{}
-	body := []byte(`{"id":"chatcmpl-1"}`)
-	rc.SetResponseBody(body)
-	if string(rc.ResponseBody()) != string(body) {
-		t.Fatalf("ResponseBody = %q, want %q", rc.ResponseBody(), body)
-	}
-}
-
-// TestExchangeImplementsUpstreamBuffer is a runtime companion to the
-// compile-time assertion in ir_bridge.go — kept here too so a future
-// accidental removal of the assertion still fails a test, not just a build.
-func TestExchangeImplementsUpstreamBuffer(t *testing.T) {
-	var _ protocols.UpstreamBuffer = (*Exchange)(nil)
-}
-
-func TestIRUsageToUsage(t *testing.T) {
+func TestReportedUsageGate(t *testing.T) {
 	tests := []struct {
 		name string
 		in   *protocols.IRUsage
-		want *Usage
+		want *protocols.IRUsage
 	}{
 		{
 			name: "nil input",
@@ -83,7 +35,7 @@ func TestIRUsageToUsage(t *testing.T) {
 				CacheReadTokens:       20,
 				CacheIncludedInPrompt: true,
 			},
-			want: &Usage{
+			want: &protocols.IRUsage{
 				PromptTokens:          100,
 				CompletionTokens:      50,
 				TotalTokens:           150,
@@ -95,7 +47,7 @@ func TestIRUsageToUsage(t *testing.T) {
 		{
 			name: "only completion tokens known is not treated as empty",
 			in:   &protocols.IRUsage{CompletionTokens: 50},
-			want: &Usage{CompletionTokens: 50},
+			want: &protocols.IRUsage{CompletionTokens: 50},
 		},
 		{
 			// An exchange can spend money without spending tokens. The provider
@@ -106,14 +58,14 @@ func TestIRUsageToUsage(t *testing.T) {
 			// because the body it was read from is gone by then.
 			name: "searches with no tokens is usage, not an empty record",
 			in:   &protocols.IRUsage{WebSearchCount: 3},
-			want: &Usage{WebSearchCount: 3},
+			want: &protocols.IRUsage{WebSearchCount: 3},
 		},
 		{
 			// Same shape, different line: reasoning tokens are their own
 			// dimension and were dropped by the same test.
 			name: "reasoning with no other counts is usage too",
 			in:   &protocols.IRUsage{ReasoningTokens: 12},
-			want: &Usage{ReasoningTokens: 12},
+			want: &protocols.IRUsage{ReasoningTokens: 12},
 		},
 		{
 			// An impossible record that states no quantity at all is still
@@ -127,6 +79,16 @@ func TestIRUsageToUsage(t *testing.T) {
 			// in the observer file.
 			name: "an impossible record stating no quantity is still nothing reported",
 			in:   &protocols.IRUsage{Invalid: true},
+			want: nil,
+		},
+		{
+			// Cache counts alone answer "worth putting back on the wire",
+			// not "the upstream stated a billable quantity". Admitting a
+			// cache-only record would start pricing a shape this gate has
+			// always dropped — the trap swapping the emptiness check for
+			// protocols.HasAnyUsage would fall into.
+			name: "cache-only record is still nothing reported",
+			in:   &protocols.IRUsage{CacheReadTokens: 40, CacheWriteTokens: 7},
 			want: nil,
 		},
 		// Regression for the cache-inclusion billing bug: computeCost
@@ -145,7 +107,7 @@ func TestIRUsageToUsage(t *testing.T) {
 				CacheReadTokens:       30,
 				CacheIncludedInPrompt: false,
 			},
-			want: &Usage{
+			want: &protocols.IRUsage{
 				PromptTokens:          100,
 				CacheReadTokens:       30,
 				CacheIncludedInPrompt: false,
@@ -158,7 +120,7 @@ func TestIRUsageToUsage(t *testing.T) {
 				CacheReadTokens:       30,
 				CacheIncludedInPrompt: true,
 			},
-			want: &Usage{
+			want: &protocols.IRUsage{
 				PromptTokens:          100,
 				CacheReadTokens:       30,
 				CacheIncludedInPrompt: true,
@@ -168,19 +130,36 @@ func TestIRUsageToUsage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := irUsageToUsage(tt.in)
+			got := reportedUsage(tt.in)
 			if tt.want == nil {
 				if got != nil {
-					t.Fatalf("irUsageToUsage() = %+v, want nil", got)
+					t.Fatalf("reportedUsage() = %+v, want nil", got)
 				}
 				return
 			}
 			if got == nil {
-				t.Fatalf("irUsageToUsage() = nil, want %+v", tt.want)
+				t.Fatalf("reportedUsage() = nil, want %+v", tt.want)
 			}
 			if *got != *tt.want {
-				t.Fatalf("irUsageToUsage() = %+v, want %+v", *got, *tt.want)
+				t.Fatalf("reportedUsage() = %+v, want %+v", *got, *tt.want)
 			}
 		})
+	}
+}
+
+// TestReportedUsageReturnsAnIndependentSnapshot pins the clone semantics the
+// streaming path depends on: the pump takes a snapshot of a live accumulator
+// that keeps merging frames afterwards, and a gate that returned the shared
+// pointer would let later frames rewrite a record that was already handed
+// over — the usage a disconnect settles on would silently keep growing.
+func TestReportedUsageReturnsAnIndependentSnapshot(t *testing.T) {
+	acc := protocols.IRUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	snap := reportedUsage(&acc)
+	if snap == nil {
+		t.Fatal("reportedUsage() = nil for a record with counts")
+	}
+	acc.Merge(protocols.IRUsage{CompletionTokens: 50, TotalTokens: 60})
+	if snap.CompletionTokens != 5 || snap.TotalTokens != 15 {
+		t.Fatalf("snapshot mutated by a later merge: %+v — the gate must clone, not share", *snap)
 	}
 }

@@ -139,7 +139,7 @@ func TestRequestLogRowsCarryOwnerUsername(t *testing.T) {
 		t.Fatalf("seed backfilled row: %v", err)
 	}
 
-	items, _, err := svc.ListRequestLogs(RequestLogListFilter{Page: 1, PageSize: 10})
+	items, _, err := svc.ListRequestLogs(&repository.RequestLogFilter{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ListRequestLogs: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestRequestLogRowsCarryOwnerUsername(t *testing.T) {
 	}
 
 	// CSV: the username column must exist and line up with its values.
-	rows, err := svc.BuildExportRows(RequestLogListFilter{Page: 1, PageSize: 10})
+	rows, err := svc.BuildExportRows(&repository.RequestLogFilter{})
 	if err != nil {
 		t.Fatalf("BuildExportRows: %v", err)
 	}

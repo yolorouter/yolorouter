@@ -150,7 +150,9 @@ type UpdateAPIKeyInput struct {
 	ExpectedUpdatedAt *time.Time
 }
 
-func (s *APIKeyService) ListAPIKeys(q, status string, userID uint, page, pageSize int) ([]APIKeyView, int64, error) {
+// ListAPIKeys narrows to one account when userID is non-nil (a member's
+// pinned view or an admin's filter); nil lists every account's keys.
+func (s *APIKeyService) ListAPIKeys(q, status string, userID *uint, page, pageSize int) ([]APIKeyView, int64, error) {
 	// Anchor the status filter's expiry check AND the rendered display status
 	// to one clock, so a key expiring mid-request can't be filtered as active
 	// while being rendered as expired.

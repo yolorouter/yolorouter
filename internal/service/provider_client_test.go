@@ -639,6 +639,31 @@ func TestTestStreamingCompletionAcceptsValidSSEStream(t *testing.T) {
 	}
 }
 
+// TestTestStreamingCompletionAcceptsSpacelessSSEStream: SSE makes the space
+// after the colon optional, and an upstream that omits it still streams. A
+// probe that dropped those frames would certify a working streaming endpoint
+// as broken and clear its streaming capability.
+func TestTestStreamingCompletionAcceptsSpacelessSSEStream(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data:{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data:[DONE]\n\n")
+		flusher.Flush()
+	})
+	defer srv.Close()
+
+	result, err := c.TestStreamingCompletion(context.Background(), protocols.ProtocolOpenAI, srv.URL, "sk-test", "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("TestStreamingCompletion failed: %v", err)
+	}
+	if result.Outcome != TestSuccess {
+		t.Fatalf("expected TestSuccess for a spaceless SSE stream, got %v (detail %q)", result.Outcome, result.Detail)
+	}
+}
+
 func TestTestStreamingCompletionAcceptsStreamWithoutDoneMarker(t *testing.T) {
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

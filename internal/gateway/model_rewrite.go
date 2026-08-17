@@ -73,7 +73,7 @@ func passthroughRequestBody(egressProtocol protocols.ProtocolID, body []byte, pr
 // regardless, so usage is simply left nil (unknown, not zero) rather than
 // failing this candidate over -- the response itself is not malformed, only
 // unparseable for the gateway's own cost accounting.
-func passthroughRewriteNonStreamResponse(egressProtocol protocols.ProtocolID, body []byte, externalModel string) ([]byte, *Usage, error) {
+func passthroughRewriteNonStreamResponse(egressProtocol protocols.ProtocolID, body []byte, externalModel string) ([]byte, *protocols.IRUsage, error) {
 	if egressProtocol == protocols.ProtocolOpenAI {
 		return RewriteNonStreamResponse(body, externalModel)
 	}
@@ -87,9 +87,9 @@ func passthroughRewriteNonStreamResponse(egressProtocol protocols.ProtocolID, bo
 	if err != nil {
 		return nil, nil, err
 	}
-	var usage *Usage
+	var usage *protocols.IRUsage
 	if irResp, decErr := codecsFor(egressProtocol).ResponseDecoder.DecodeResponse(json.RawMessage(body)); decErr == nil && irResp != nil {
-		usage = irUsageToUsage(&irResp.Usage)
+		usage = reportedUsage(&irResp.Usage)
 	}
 	return rewritten, usage, nil
 }

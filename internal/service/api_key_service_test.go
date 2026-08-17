@@ -516,7 +516,7 @@ func TestListAPIKeysFiltersByDisplayStatus(t *testing.T) {
 		APIKeyDisplayBudgetHit: 1,
 	}
 	for status, want := range wantCount {
-		list, total, err := svc.ListAPIKeys("", status, 0, 1, 20)
+		list, total, err := svc.ListAPIKeys("", status, nil, 1, 20)
 		if err != nil {
 			t.Fatalf("ListAPIKeys %s: %v", status, err)
 		}
@@ -731,7 +731,7 @@ func TestListAndGetAPIKeySurfacesCompressFields(t *testing.T) {
 	}
 
 	// List view.
-	list, _, err := svc.ListAPIKeys("", "", 0, 1, 20)
+	list, _, err := svc.ListAPIKeys("", "", nil, 1, 20)
 	if err != nil {
 		t.Fatalf("ListAPIKeys: %v", err)
 	}

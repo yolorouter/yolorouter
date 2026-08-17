@@ -89,11 +89,11 @@ type costBreakdown struct {
 // through that method. Two implementations of one definition is how the
 // input_tokens a client is shown and the input_tokens persisted to request_logs
 // come to disagree about the same request.
-func netPromptTokens(usage *Usage) int {
+func netPromptTokens(usage *protocols.IRUsage) int {
 	if usage == nil {
 		return 0
 	}
-	return usage.toIRUsage().NetPromptTokens()
+	return usage.NetPromptTokens()
 }
 
 // normalizeCacheConvention settles which cache-accounting convention a usage
@@ -111,11 +111,11 @@ func netPromptTokens(usage *Usage) int {
 // read, because the counts are consumed several times below (pricing, the
 // persisted row, the compression denominator) and a partially-normalized record
 // is exactly the inconsistency this exists to prevent.
-func normalizeCacheConvention(u *Usage) {
+func normalizeCacheConvention(u *protocols.IRUsage) {
 	if u == nil {
 		return
 	}
-	if protocols.CacheSitsOutsidePrompt(u.toIRUsage()) {
+	if protocols.CacheSitsOutsidePrompt(*u) {
 		u.CacheIncludedInPrompt = false
 	}
 }
@@ -132,16 +132,15 @@ func normalizeCacheConvention(u *Usage) {
 // Delegates to the single IR-level verdict (protocols.IRUsage.IsIncoherent) so
 // the wire encoders and this billing gate read the SAME answer instead of each
 // re-judging with its own predicate. The verdict was already computed at the
-// decoder exit and carried on Invalid; round-tripping through toIRUsage lets
-// this function evaluate the same predicate the encoder effectively used,
-// catching the records where Merge erased the evidence before the mark was set.
+// decoder exit and carried on Invalid; re-evaluating the same predicate here
+// catches the records where Merge erased the evidence before the mark was set.
 // Both callers run normalizeCacheConvention first, so PromptIncludesCache (which
 // IsIncoherent relies on) has the settled convention to read.
-func usageIsCoherent(u *Usage) bool {
+func usageIsCoherent(u *protocols.IRUsage) bool {
 	if u == nil {
 		return false
 	}
-	return !u.toIRUsage().IsIncoherent()
+	return !u.IsIncoherent()
 }
 
 // compressTokensSaved reads the input-compression estimate back off the
@@ -173,7 +172,7 @@ func compressTokensSaved(t fact.Timeline) int {
 // rate so the saving is reported on the same basis as the billed cost. It is
 // forced to 0 whenever usage/pricing is unknown, matching CostKnown=false.
 // Candidate prices are CNY per million tokens.
-func computeCost(cand *model.ModelCandidate, usage *Usage, compressTokensSaved int) costBreakdown {
+func computeCost(cand *model.ModelCandidate, usage *protocols.IRUsage, compressTokensSaved int) costBreakdown {
 	if cand == nil || !usageIsCoherent(usage) {
 		return costBreakdown{} // Known=false: no cost recorded, no budget consumed
 	}
@@ -257,7 +256,7 @@ func safeUpstreamMessage(status int) string {
 // atomically (repository.IncrementAPIKeyBudgetSpent is a single
 // budget_spent_micros = budget_spent_micros + ? UPDATE) cannot lose updates to
 // each other.
-func (s *Service) finalize(rc *Exchange, usage *Usage, statusCode int, failReason string, start time.Time) {
+func (s *Service) finalize(rc *Exchange, usage *protocols.IRUsage, statusCode int, failReason string, start time.Time) {
 	if rc.logWritten.Swap(true) {
 		return // already finalized (e.g. Handle's panic-recovery defer after a normal finalize)
 	}
@@ -268,8 +267,7 @@ func (s *Service) finalize(rc *Exchange, usage *Usage, statusCode int, failReaso
 	// someone consults to find out whether the gateway is slow.
 	duration := time.Since(start)
 
-	sink := newExchangeSink(rc)
-	sink.reporter = "kernel"
+	sink := newKernelSink(rc)
 
 	// Settle the cache convention once, here, before either consumer of the
 	// usage reads it: pricing below and the persisted counts must not be able to
@@ -357,7 +355,7 @@ func (s *Service) recordTerminal(rc *Exchange) {
 // negative or impossible count poisons every SUM() the dashboard runs, and the
 // same rejection is applied to pricing, so the stored counts can never disagree
 // with the billing decision.
-func (s *Service) reportUsage(rc *Exchange, usage *Usage, sink fact.Sink) *fact.UsageReported {
+func (s *Service) reportUsage(rc *Exchange, usage *protocols.IRUsage, sink fact.Sink) *fact.UsageReported {
 	if usage == nil {
 		return nil
 	}
@@ -444,27 +442,26 @@ func (s *Service) settleCheckedDelivery(c *gin.Context, rc *Exchange, d fact.Del
 //
 // Use this only when nothing was appended to the attempt list in the same
 // breath — a rejection before any candidate ran, or a chain that ended after
-// the loop had already recorded everything it tried. A settlement that follows
-// its own append belongs in settleAfterAttempt.
-func (s *Service) settle(rc *Exchange, d fact.Delivery, start time.Time) {
-	sink := newExchangeSink(rc)
+// the loop had already recorded everything it tried. A settlement that
+// follows its own append passes settleOptions{againstRecordedAttempt: true}.
+func (s *Service) settle(rc *Exchange, d fact.Delivery, start time.Time, opts settleOptions) {
+	sink := newSettlementSink(rc, opts.againstRecordedAttempt)
 	s.checkAndNote(rc, &d, sink)
 	s.settleChecked(rc, d, sink, start)
 }
 
-// settleAfterAttempt settles a request whose attempt record was appended
-// immediately before the call, so the settlement is filed against that attempt
-// rather than the one that would have come next.
-//
-// The default numbering assumes the record for the attempt in progress does not
-// exist yet, which is what a capability reporting from inside an attempt sees.
-// A settlement that follows its own append sees the opposite, and the request
-// ends there — so the number the default produces belongs to an attempt that
-// never runs.
-func (s *Service) settleAfterAttempt(rc *Exchange, d fact.Delivery, start time.Time) {
-	sink := newExchangeSink(rc).forRecordedAttempt()
-	s.checkAndNote(rc, &d, sink)
-	s.settleChecked(rc, d, sink, start)
+// settleOptions states what a settlement is filed against. The zero value is
+// right whenever no attempt record was appended in the same breath as the
+// settlement; the one option covers the opposite case.
+type settleOptions struct {
+	// againstRecordedAttempt files the settlement against the attempt record
+	// appended immediately before the call, rather than the one that would
+	// come next. The sink's default numbering assumes the record for the
+	// attempt in progress does not exist yet, which is what a capability
+	// reporting from inside an attempt sees. A settlement that follows its
+	// own append sees the opposite, and the request ends there — so the
+	// number the default produces belongs to an attempt that never runs.
+	againstRecordedAttempt bool
 }
 
 // settleChecked settles a delivery that has already been through checkAndNote.
@@ -575,19 +572,15 @@ func (s *Service) checkAndNote(rc *Exchange, d *fact.Delivery, sink *exchangeSin
 // keeping the two the same.
 func (s *Service) rejectRequest(c *gin.Context, rc *Exchange, status int, errType, message, failReason string, at fact.Fault, start time.Time) {
 	WriteIngressError(c, rc.ingress, status, errType, message, rc.requestID)
-	s.settle(rc, fact.Rejected(status, at, failReason, nil), start)
+	s.settle(rc, fact.Rejected(status, at, failReason, nil), start, settleOptions{})
 }
 
 // abandonRequest settles a request whose caller is already gone. Nothing is
-// written, because there is nobody left to write to.
-func (s *Service) abandonRequest(rc *Exchange, failReason string, start time.Time) {
-	s.settle(rc, callerGone(failReason), start)
-}
-
-// abandonRequestAfterAttempt is abandonRequest for the disconnects noticed
-// inside a candidate, which record the attempt they died on before settling.
-func (s *Service) abandonRequestAfterAttempt(rc *Exchange, failReason string, start time.Time) {
-	s.settleAfterAttempt(rc, callerGone(failReason), start)
+// written, because there is nobody left to write to. The disconnects noticed
+// inside a candidate — which record the attempt they died on before
+// settling — pass settleOptions{againstRecordedAttempt: true}.
+func (s *Service) abandonRequest(rc *Exchange, failReason string, start time.Time, opts settleOptions) {
+	s.settle(rc, callerGone(failReason), start, opts)
 }
 
 // callerGone describes a request nobody is waiting for any more: nothing was

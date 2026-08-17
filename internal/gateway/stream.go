@@ -33,7 +33,7 @@ var errClientDisconnected = errors.New("client disconnected")
 // 499 there would mislabel a fully-delivered stream as client_disconnected (the
 // common case: most streams end this way). Only a disconnect BEFORE [DONE] is a
 // genuine caller cancel (-> 499).
-func clientDisconnectOutcome(usage *Usage, doneSeen bool) (*Usage, error) {
+func clientDisconnectOutcome(usage *protocols.IRUsage, doneSeen bool) (*protocols.IRUsage, error) {
 	if doneSeen {
 		return usage, nil
 	}
@@ -121,7 +121,7 @@ func isDataLine(line []byte) bool {
 // unconditionally (matching the pre-error-propagation behavior of this
 // function): whether a data line's write actually landed on the wire is
 // captured in writeErr, not in wroteData.
-func writeStreamLine(w io.Writer, line []byte, externalModel string, keepUsage bool) (wroteData bool, usage *Usage, done bool, sent []byte, writeErr error) {
+func writeStreamLine(w io.Writer, line []byte, externalModel string, keepUsage bool) (wroteData bool, usage *protocols.IRUsage, done bool, sent []byte, writeErr error) {
 	trimmed := bytes.TrimRight(line, "\r\n")
 	if !bytes.HasPrefix(trimmed, []byte("data:")) {
 		// Non-data line (blank separator, event:/id:/retry: headers) —
@@ -161,7 +161,7 @@ func writeStreamLine(w io.Writer, line []byte, externalModel string, keepUsage b
 // but the gateway injected it upstream), the usage field is stripped from the
 // forwarded payload — the gateway still returns the extracted usage for its
 // own cost accounting, but does not forward it to the caller.
-func rewriteStreamChunk(payload []byte, externalModel string, keepUsage bool) ([]byte, *Usage) {
+func rewriteStreamChunk(payload []byte, externalModel string, keepUsage bool) ([]byte, *protocols.IRUsage) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &m); err != nil {
 		return payload, nil
@@ -198,7 +198,7 @@ func rewriteStreamChunk(payload []byte, externalModel string, keepUsage bool) ([
 // usageFromRawMap decodes just the "usage" sub-value out of an already-parsed
 // SSE/JSON object map. Returns nil when there's no usage field — the relay
 // loop treats nil as "unknown", never zero.
-func usageFromRawMap(m map[string]json.RawMessage) *Usage {
+func usageFromRawMap(m map[string]json.RawMessage) *protocols.IRUsage {
 	raw, ok := m["usage"]
 	if !ok || len(raw) == 0 || string(raw) == "null" {
 		return nil
@@ -207,9 +207,9 @@ func usageFromRawMap(m map[string]json.RawMessage) *Usage {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil
 	}
-	// toUsage returns nil when prompt/completion counts are missing — a
+	// toIRUsage returns nil when prompt/completion counts are missing — a
 	// partial usage frame must NOT be treated as known-zero.
-	return w.toUsage()
+	return w.toIRUsage()
 }
 
 // writeStreamErrorEvent writes one inline SSE error frame carrying an error,

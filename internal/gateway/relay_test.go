@@ -1395,8 +1395,8 @@ func TestCompressTriggersAcrossProtocols(t *testing.T) {
 			if captured == nil {
 				t.Fatal("testHookHandleDone was never invoked")
 			}
-			if !captured.compressEnabled {
-				t.Error("rc.compressEnabled = false, want true")
+			if !captured.CompressEnabled() {
+				t.Error("CompressEnabled() = false, want true")
 			}
 			if captured.CompressedRequestBody() == nil {
 				t.Fatal("CompressedRequestBody() is nil, compression did not produce a body")
@@ -1497,8 +1497,8 @@ func TestCompressDisabledBySwitch(t *testing.T) {
 	if captured == nil {
 		t.Fatal("testHookHandleDone was never invoked")
 	}
-	if captured.compressEnabled {
-		t.Error("rc.compressEnabled should be false")
+	if captured.CompressEnabled() {
+		t.Error("CompressEnabled() should be false")
 	}
 	if captured.CompressedRequestBody() != nil {
 		t.Error("RequestBodyCompressed should be nil when compression is off")
@@ -1544,8 +1544,8 @@ func TestCompressNonChatEndpointNotCompressed(t *testing.T) {
 	if captured == nil {
 		t.Fatal("testHookHandleDone was never invoked")
 	}
-	if !captured.compressEnabled {
-		t.Error("rc.compressEnabled should be true (global switch on)")
+	if !captured.CompressEnabled() {
+		t.Error("CompressEnabled() should be true (global switch on)")
 	}
 	if captured.CompressedRequestBody() != nil {
 		t.Error("RequestBodyCompressed should be nil — non-chat endpoints are not compressed")
@@ -1606,7 +1606,7 @@ func TestCompressFailOpenProceeds(t *testing.T) {
 }
 
 // TestCompressOverrideShortCircuitsGlobal: a per-key override (enabled=false)
-// wins over a globally-enabled switch. rc.compressEnabled must be false and
+// wins over a globally-enabled switch. CompressEnabled() must be false and
 // no compression attempt is made.
 func TestCompressOverrideShortCircuitsGlobal(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -1640,8 +1640,8 @@ func TestCompressOverrideShortCircuitsGlobal(t *testing.T) {
 	if captured == nil {
 		t.Fatal("testHookHandleDone was never invoked")
 	}
-	if captured.compressEnabled {
-		t.Error("rc.compressEnabled should be false (per-key override wins)")
+	if captured.CompressEnabled() {
+		t.Error("CompressEnabled() should be false (per-key override wins)")
 	}
 	if captured.CompressedRequestBody() != nil {
 		t.Error("RequestBodyCompressed should be nil when override disables compression")
@@ -1682,8 +1682,8 @@ func TestCompressOverrideEnablesWhenGlobalOff(t *testing.T) {
 	if captured == nil {
 		t.Fatal("testHookHandleDone was never invoked")
 	}
-	if !captured.compressEnabled {
-		t.Error("rc.compressEnabled should be true (per-key override enables)")
+	if !captured.CompressEnabled() {
+		t.Error("CompressEnabled() should be true (per-key override enables)")
 	}
 	if captured.CompressedRequestBody() == nil {
 		t.Error("RequestBodyCompressed should be non-nil (override enabled compression)")
@@ -1701,7 +1701,12 @@ func TestCompressGlobalFailOpenOnError(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	sp := stubSettingsProvider{compressErr: errors.New("settings db unavailable")}
+	// The provider delivers its last-known-good (true) ALONGSIDE the error —
+	// the shape the real service produces. The request must keep that value
+	// rather than fail closed: with compressEnabled left at its zero value,
+	// "kept the snapshot" and "flipped the feature off" would be
+	// indistinguishable and this test would pin nothing.
+	sp := stubSettingsProvider{compressEnabled: true, compressErr: errors.New("settings db unavailable")}
 	svc := newSvcWithSettings(t, db, sp)
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
@@ -1722,11 +1727,11 @@ func TestCompressGlobalFailOpenOnError(t *testing.T) {
 	if captured == nil {
 		t.Fatal("testHookHandleDone was never invoked")
 	}
-	if captured.compressEnabled {
-		t.Error("rc.compressEnabled should be false (fail-open on settings error)")
+	if !captured.CompressEnabled() {
+		t.Error("CompressEnabled() should keep the provider's last-known-good (true) alongside the error")
 	}
-	if captured.CompressedRequestBody() != nil {
-		t.Error("RequestBodyCompressed should be nil when settings read fails")
+	if captured.CompressedRequestBody() == nil {
+		t.Error("keeping the last-known-good switch means compression ran; the compressed request body should be recorded")
 	}
 }
 
@@ -1781,7 +1786,7 @@ func TestCompressAndCSPCoexist(t *testing.T) {
 			len(captured.CompressedRequestBody()), len(origBody))
 	}
 	// CSP resolved.
-	if !captured.customSystemPromptEnabled {
+	if !captured.CustomSystemPromptEnabled() {
 		t.Error("CustomSystemPromptEnabled should be true")
 	}
 	// The upstream body must carry BOTH the injected system prompt AND the

@@ -263,7 +263,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 
 	// Ownership-scoped routes: reachable by members, but every query a
 	// non-admin makes through them is pinned to their own rows by
-	// MemberScope + the ForcedUserID checks in the handlers/services —
+	// MemberScope + the ViewScope checks in the handlers/services —
 	// list filters overridden, by-id operations owner-checked, provider
 	// dimensions and deployment sections refused. Admins pass through
 	// with full reach. Registration happens below once the services exist.
