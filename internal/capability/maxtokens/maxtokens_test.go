@@ -455,3 +455,87 @@ func TestSomethingThatIsNotANumberIsStillNotACeiling(t *testing.T) {
 		})
 	}
 }
+
+// countingView records how often the candidate's limit was asked for. What that
+// answer costs is the view's business, not this capability's — a deployment may
+// have to reach a database for it — so a request that states no ceiling, and
+// therefore cannot be clamped whatever the limit is, must not ask at all.
+type countingView struct {
+	limit int
+	asked int
+}
+
+func (v *countingView) CandidateMaxOutput() int {
+	v.asked++
+	return v.limit
+}
+
+func TestABodyWithNoCeilingNeverAsksForTheLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"no ceiling stated", `{"model":"m","messages":[]}`},
+		{"unparseable", `{"model":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := &countingView{limit: 4096}
+
+			out, err := New().RewriteEgress(context.Background(), view, protocols.ProtocolOpenAI, []byte(tc.body), &recordingSink{})
+			if err != nil {
+				t.Fatalf("RewriteEgress: %v", err)
+			}
+			if string(out) != tc.body {
+				t.Fatalf("body = %s, want it untouched", out)
+			}
+			if view.asked != 0 {
+				t.Fatalf("the limit was asked for %d times: a request that cannot be clamped is paying for an answer that changes nothing", view.asked)
+			}
+		})
+	}
+}
+
+// The mirror: a request that does state a ceiling must ask, exactly once.
+func TestABodyWithACeilingAsksOnce(t *testing.T) {
+	view := &countingView{limit: 4096}
+
+	if _, err := New().RewriteEgress(context.Background(), view, protocols.ProtocolOpenAI,
+		[]byte(`{"model":"m","max_tokens":9000,"messages":[]}`), &recordingSink{}); err != nil {
+		t.Fatalf("RewriteEgress: %v", err)
+	}
+	if view.asked != 1 {
+		t.Fatalf("the limit was asked for %d times, want exactly 1", view.asked)
+	}
+}
+
+// A fraction just above the limit is above the limit. Truncating it first reads
+// 4096.5 as 4096, counts it as within a 4096 ceiling, and forwards the original
+// 4096.5 — which the upstream, expecting an integer, rejects. That matters most
+// on the same-protocol path, where nothing re-encodes the body on the way out.
+func TestAFractionJustAboveTheLimitIsClamped(t *testing.T) {
+	view := &countingView{limit: 4096}
+	body := []byte(`{"model":"m","max_tokens":4096.5,"messages":[]}`)
+
+	out, err := New().RewriteEgress(context.Background(), view, protocols.ProtocolOpenAI, body, &recordingSink{})
+	if err != nil {
+		t.Fatalf("RewriteEgress: %v", err)
+	}
+	if !bytes.Contains(out, []byte(`"max_tokens":4096`)) || bytes.Contains(out, []byte("4096.5")) {
+		t.Fatalf("body = %s, want the ceiling brought down to 4096", out)
+	}
+}
+
+// The boundary on the other side: a fraction below the limit states less than
+// the limit and must be left exactly as written.
+func TestAFractionBelowTheLimitIsLeftAlone(t *testing.T) {
+	view := &countingView{limit: 4096}
+	body := []byte(`{"model":"m","max_tokens":4095.5,"messages":[]}`)
+
+	out, err := New().RewriteEgress(context.Background(), view, protocols.ProtocolOpenAI, body, &recordingSink{})
+	if err != nil {
+		t.Fatalf("RewriteEgress: %v", err)
+	}
+	if !bytes.Equal(out, body) {
+		t.Fatalf("body = %s, want it untouched", out)
+	}
+}

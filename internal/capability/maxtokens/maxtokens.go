@@ -66,14 +66,6 @@ func (*Clamp) Name() string { return "max_tokens_clamp" }
 // request that goes upstream as the caller wrote it, which is the same thing
 // that happened before it existed.
 func (c *Clamp) RewriteEgress(_ context.Context, view View, egress protocols.ProtocolID, body []byte, sink fact.Sink) ([]byte, error) {
-	limit := view.CandidateMaxOutput()
-	if limit <= 0 {
-		// No stated limit is not a limit of zero — it means this candidate
-		// never told us one, and inventing it would clamp every request to
-		// nothing.
-		return body, nil
-	}
-
 	paths := ceilingFields(egress)
 	if len(paths) == 0 {
 		return body, nil
@@ -84,18 +76,34 @@ func (c *Clamp) RewriteEgress(_ context.Context, view View, egress protocols.Pro
 		return body, nil
 	}
 
-	// Read before writing: whether this request is over the ceiling at all, and
-	// by how much, has to be known before deciding what to do about it. Measuring
-	// first also keeps the reported figure honest — it is the ceiling the caller
-	// stated, not whatever else the body happened to carry.
+	// What the caller asked for is read before the candidate's limit is
+	// requested, and the order is deliberate: a request that states no ceiling
+	// cannot be clamped whatever the limit turns out to be, so asking would be
+	// paying for an answer that changes nothing. What that costs depends on who
+	// answers — a view may reach a database to find out — and embeddings and
+	// completions, which never carry a ceiling, are exactly the traffic that
+	// would pay it on every attempt.
+	//
+	// Reading first also keeps the reported figure honest: it is the ceiling the
+	// caller stated, not whatever else the body happened to carry.
 	highestAsked := 0
 	for _, p := range paths {
-		asked, ok := readAt(doc, p)
-		if ok && asked > limit && asked > highestAsked {
+		if asked, ok := readAt(doc, p); ok && asked > highestAsked {
 			highestAsked = asked
 		}
 	}
 	if highestAsked == 0 {
+		return body, nil
+	}
+
+	limit := view.CandidateMaxOutput()
+	if limit <= 0 {
+		// No stated limit is not a limit of zero — it means this candidate
+		// never told us one, and inventing it would clamp every request to
+		// nothing.
+		return body, nil
+	}
+	if highestAsked <= limit {
 		return body, nil
 	}
 
@@ -300,7 +308,12 @@ func readInt(obj map[string]json.RawMessage, field string) (int, bool) {
 	}
 	f, err := n.Float64()
 	if err == nil {
-		return saturate(f), true
+		// Rounded up, not truncated. A fraction is read here to answer one
+		// question — is this above the limit — and truncating answers it wrong
+		// at exactly the boundary: 4096.5 against a limit of 4096 would read as
+		// 4096, count as within the limit, and travel on as 4096.5 for the
+		// upstream to reject. Rounding up cannot understate what was asked for.
+		return saturate(math.Ceil(f)), true
 	}
 	// Out of range is still a stated ceiling — an enormous one, over every
 	// limit there is, so it saturates. Any other failure means this was not a
