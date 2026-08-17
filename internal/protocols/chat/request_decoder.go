@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/yolorouter/yolorouter/internal/protocols"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -18,18 +20,23 @@ func (d RequestDecoder) DecodeRequest(body json.RawMessage, model string, isStre
 		Messages    json.RawMessage `json:"messages"`
 		Stream      bool            `json:"stream"`
 		Temperature *float64        `json:"temperature,omitempty"`
-		MaxTokens   *int            `json:"max_tokens,omitempty"`
-		// MaxCompletionTokens is the same ceiling under the name the reasoning
-		// models require and current SDKs send. Reading only max_tokens drops
-		// the ceiling of exactly the newest and most expensive requests, and it
-		// disappears silently: the field is simply absent from whatever this
-		// request is re-encoded into.
-		MaxCompletionTokens *int     `json:"max_completion_tokens,omitempty"`
-		TopP                *float64 `json:"top_p,omitempty"`
-		TopK                *int     `json:"top_k,omitempty"`
-		TopA                *float64 `json:"top_a,omitempty"`
-		MinP                *float64 `json:"min_p,omitempty"`
-		Seed                *int64   `json:"seed,omitempty"`
+		// MaxTokens and MaxCompletionTokens are the two live spellings of the
+		// output ceiling; the reasoning models require the second one and
+		// reject the first, and current SDKs send it. Both are read as
+		// raw rather than as an int because a ceiling is a number, not an
+		// integer literal: a client whose arithmetic is floating point sends
+		// 9000.0 or 9e3, and an int field does not merely drop those — it fails
+		// to unmarshal, which fails the whole request. Reading only max_tokens
+		// would drop the ceiling of exactly the newest and most expensive
+		// requests, and it would disappear silently: the field is simply absent
+		// from whatever this request is re-encoded into.
+		MaxTokens           json.RawMessage `json:"max_tokens,omitempty"`
+		MaxCompletionTokens json.RawMessage `json:"max_completion_tokens,omitempty"`
+		TopP                *float64        `json:"top_p,omitempty"`
+		TopK                *int            `json:"top_k,omitempty"`
+		TopA                *float64        `json:"top_a,omitempty"`
+		MinP                *float64        `json:"min_p,omitempty"`
+		Seed                *int64          `json:"seed,omitempty"`
 		// Stop is OpenAI's "stop" field, which the API accepts as EITHER a
 		// single string OR an array of strings — decoded via decodeStopSequences
 		// below rather than a fixed shape, since a plain json.RawMessage array
@@ -76,9 +83,18 @@ func (d RequestDecoder) DecodeRequest(body json.RawMessage, model string, isStre
 	// AllowExtendedParams=true: ingress is OpenAI Chat, so non-standard extended params
 	// (top_k/top_a/min_p/repetition_penalty) were explicitly sent by the caller and should
 	// be forwarded to the egress provider as-is.
+	maxTokens, err := ceilingFrom(req.MaxTokens, "max_tokens")
+	if err != nil {
+		return nil, err
+	}
+	maxCompletionTokens, err := ceilingFrom(req.MaxCompletionTokens, "max_completion_tokens")
+	if err != nil {
+		return nil, err
+	}
+
 	irReq.Generation = protocols.IRGenerationConfig{
 		Temperature:         req.Temperature,
-		MaxTokens:           pickCeiling(req.MaxTokens, req.MaxCompletionTokens),
+		MaxTokens:           pickCeiling(maxTokens, maxCompletionTokens),
 		TopP:                req.TopP,
 		TopK:                req.TopK,
 		TopA:                req.TopA,
@@ -500,6 +516,266 @@ func budgetToEffort(budget int) string {
 	default:
 		return "high"
 	}
+}
+
+// ceilingFrom turns one stated ceiling into the integer the rest of the
+// pipeline works in, or reports that the caller stated something that is not a
+// ceiling at all.
+//
+// A wrong JSON type is an error rather than a silently ignored field. A quoted
+// "4096" is the case that matters: json.Number would accept it, and then the
+// request's validity would depend on where it was routed — a passthrough
+// candidate forwards the string as written while a converted one normalises it
+// to a number. A caller who sent the wrong type learns that from one rejection
+// instead of from an upstream that only sometimes complains.
+func ceilingFrom(raw json.RawMessage, field string) (*int, error) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		// Absent, or explicitly no preference. Neither states a ceiling, and
+		// inventing one here would cap a request the caller left uncapped.
+		return nil, nil
+	}
+
+	if strings.HasPrefix(s, `"`) {
+		return nil, fmt.Errorf("parse openai request: %s must be a number, not a string", field)
+	}
+
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return nil, fmt.Errorf("parse openai request: %s: %w", field, err)
+	}
+
+	// The common spelling, and the only one that needs no arithmetic.
+	if i, err := n.Int64(); err == nil {
+		if i <= 0 {
+			return nil, errNonPositiveCeiling(field, s)
+		}
+		v := saturateInt64(i)
+		return &v, nil
+	}
+
+	// Non-positive, however it is spelled. A ceiling of zero or less states an
+	// impossible request, and leaving it to travel is what makes validity
+	// depend on the route: every encoder writes the ceiling only when it is
+	// positive, so a converted candidate silently drops it (Claude then
+	// substitutes its own default) while a same-protocol candidate forwards it
+	// verbatim for the upstream to reject. Claude ingress already refuses these
+	// on arrival; this is the same rule, applied where it was missing.
+	//
+	// A zero mantissa is answered without reading the exponent, which makes the
+	// exponent irrelevant however enormous it is written.
+	if strings.HasPrefix(s, "-") || !hasNonZeroMantissa(s) {
+		return nil, errNonPositiveCeiling(field, s)
+	}
+
+	// Integrality is decided from the token's own digits, before any value is
+	// built. Deciding it later would mean deciding it after the magnitude gate
+	// below, which answers enormous values without looking at their digits at
+	// all — and a fractional ceiling with 309 digits would then be accepted
+	// while a fractional one with four digits is refused.
+	if !isIntegralToken(s) {
+		// A ceiling counts tokens, so a fractional one states nothing that can
+		// be honoured. Refusing beats rounding: rounded down, 0.5 becomes the
+		// zero every encoder omits; rounded up, the caller is given a cap they
+		// did not ask for. It also keeps validity from depending on the route,
+		// since a same-protocol candidate forwards the body as written while a
+		// converted one would send whatever this rounded it to.
+		return nil, fmt.Errorf("parse openai request: %s must be a whole number of tokens, got %s", field, abbreviateToken(s))
+	}
+
+	// How big is this, roughly? A dozen bytes of exponent can denote a number
+	// with a million digits, and building that exactly would let a tiny field
+	// cost megabytes — worse, math/big refuses outright past its own exponent
+	// limit, which would turn "enormous" into a parse error at a threshold
+	// nobody chose. float64 answers magnitude cheaply, and magnitude is all
+	// that is left to ask.
+	if _, ferr := strconv.ParseFloat(s, 64); ferr != nil {
+		// The token is already a valid JSON number and already known positive,
+		// so the only way to fail is being past float64's range — an enormous
+		// stated ceiling, over every limit there is, which is what pinning it
+		// to the top says.
+		v := math.MaxInt
+		return &v, nil
+	}
+
+	// Within float64's range and integral, so the exact value is read from the
+	// digits rather than from f: float64 rounds 4095.9999999999999 up to 4096,
+	// and a ceiling must never come back larger than it was stated.
+
+	v := integralValue(s)
+	return &v, nil
+}
+
+// abbreviateToken bounds what a rejection quotes back.
+//
+// The quoted value travels further than the error: it is written into the
+// caller's response and stored as the request's failure reason. A number may be
+// as long as the body allows, so echoing it whole turns one oversized field
+// into an oversized response and an oversized audit row — paid per rejected
+// request. The opening digits are what makes the message useful; the rest only
+// makes it expensive.
+//
+// Byte slicing is safe here because a JSON number is ASCII by grammar.
+func abbreviateToken(s string) string {
+	if len(s) <= maxEchoedToken {
+		return s
+	}
+	return s[:maxEchoedToken] + "...(truncated)"
+}
+
+// maxEchoedToken is long enough to show a ceiling anyone actually meant to
+// send, and short enough that a rejection costs nothing to carry.
+const maxEchoedToken = 40
+
+// errNonPositiveCeiling is one sentence in one place, so that every spelling of
+// a non-positive ceiling is refused for the same stated reason.
+func errNonPositiveCeiling(field, token string) error {
+	return fmt.Errorf("parse openai request: %s must be at least one token, got %s", field, abbreviateToken(token))
+}
+
+// integralValue reads the exact value of a positive, integral token whose
+// magnitude is already known to fit in float64.
+//
+// It works from the SIGNIFICANT digits, never from the token's length. That is
+// the whole point: "1." followed by a million zeros denotes 1, and a parser
+// that builds what it reads would spend seconds and gigabytes arriving at that
+// answer — from a body well inside the request size limit, and again for every
+// candidate that decodes. Trimming is a scan; what gets built is at most the
+// twenty digits an int can hold.
+func integralValue(s string) int {
+	mantissa, exponent := s, ""
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		mantissa, exponent = s[:i], s[i+1:]
+	}
+	integer, fraction := mantissa, ""
+	if i := strings.IndexByte(mantissa, '.'); i >= 0 {
+		integer, fraction = mantissa[:i], mantissa[i+1:]
+	}
+	integer = strings.TrimLeft(strings.TrimPrefix(integer, "+"), "0")
+	fraction = strings.TrimRight(fraction, "0")
+
+	exp, ok := exponentOf(exponent)
+	if !ok {
+		// Only a hugely positive exponent can reach here: the token is
+		// positive, integral, and within float64's range, so a hugely negative
+		// one would have been refused as fractional.
+		return math.MaxInt
+	}
+
+	// Leading zeros are not digits of the value: 0.00000000000000000001e20 is
+	// 1, and counting its twenty written zeros against the range would answer
+	// an enormous ceiling for a request that asked for one token.
+	digits := strings.TrimLeft(integer+fraction, "0")
+
+	// How far the exponent still has to move the point. Positive, it owes
+	// zeros; negative, it consumes them — and they are there to consume,
+	// because a negative shift only survives isIntegralToken when the digits
+	// end in at least that many zeros (which is also why this cannot cut into
+	// a significant digit).
+	shift := exp - len(fraction)
+
+	if shift < 0 {
+		digits = digits[:len(digits)+shift]
+		shift = 0
+	}
+
+	if len(digits)+shift > maxIntDigits {
+		// More digits than any int holds, so it is over every limit there is.
+		return math.MaxInt
+	}
+	// The error is deliberately not consulted, and the value alone is enough.
+	// Only one failure can reach here: nineteen digits is within the budget yet
+	// can still exceed int64, and ParseInt answers that by returning the
+	// maximum magnitude of the requested size — already the saturation this
+	// wants. The other failure, a malformed number, cannot occur: what is
+	// parsed is a digit string assembled from a token the JSON decoder already
+	// accepted, and it is never empty (leading zeros are trimmed, so the first
+	// digit is significant, and a negative shift only consumes trailing zeros).
+	v, _ := strconv.ParseInt(digits+strings.Repeat("0", shift), 10, 64)
+	return saturateInt64(v)
+}
+
+// maxIntDigits is the most decimal digits an int64 can hold. A token with more
+// than this is past the range whatever its digits say, so it never needs to be
+// assembled to be answered.
+const maxIntDigits = 19
+
+// isIntegralToken reports whether a JSON number denotes a whole number, judged
+// from the token itself so that nothing has to be built to find out.
+//
+// The rule is one comparison: a value is whole when its exponent shifts the
+// decimal point at least as far as it has fractional digits to consume — and,
+// where it has none, when a negative exponent does not eat into the trailing
+// zeros it would have to borrow from.
+func isIntegralToken(s string) bool {
+	mantissa, exponent := s, ""
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		mantissa, exponent = s[:i], s[i+1:]
+	}
+
+	integer, fraction := mantissa, ""
+	if i := strings.IndexByte(mantissa, '.'); i >= 0 {
+		integer, fraction = mantissa[:i], mantissa[i+1:]
+	}
+	// Trailing zeros in the fraction are not fractional digits: 4096.0 is a
+	// whole number written with a decimal point.
+	fraction = strings.TrimRight(fraction, "0")
+
+	exp, ok := exponentOf(exponent)
+	if !ok {
+		// An exponent too large to hold is enormous in one direction or the
+		// other. Positive, it shifts past any fraction; negative, it pushes
+		// every digit below the point. (A zero mantissa never reaches here.)
+		return !strings.HasPrefix(exponent, "-")
+	}
+
+	if fraction != "" {
+		return exp >= len(fraction)
+	}
+	if exp >= 0 {
+		return true
+	}
+	// No fractional digits, but a negative exponent has to borrow from the
+	// integer side: 1000e-3 is whole, 100e-3 is not.
+	integer = strings.TrimLeft(strings.TrimLeft(integer, "+-"), "0")
+	return len(integer)-len(strings.TrimRight(integer, "0")) >= -exp
+}
+
+// exponentOf reads the exponent part, reporting !ok when it is too large to
+// hold — a magnitude the caller of this helper answers on its own terms.
+func exponentOf(exponent string) (int, bool) {
+	if exponent == "" {
+		return 0, true
+	}
+	v, err := strconv.ParseInt(strings.TrimPrefix(exponent, "+"), 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return int(v), true
+}
+
+// hasNonZeroMantissa reports whether the token states a nonzero value, looking
+// only at the mantissa. The exponent must be excluded: "0e5" is zero however
+// large the 5 is, and reading it as nonzero would refuse a ceiling of zero that
+// the caller is entitled to state.
+func hasNonZeroMantissa(s string) bool {
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.ContainsAny(s, "123456789")
+}
+
+// saturateInt64 narrows an int64 to int, pinning rather than wrapping. On a
+// 64-bit build the two are the same width and nothing is pinned; the guard is
+// what keeps a 32-bit build from wrapping an enormous ceiling into a small one.
+func saturateInt64(i int64) int {
+	if i > int64(math.MaxInt) {
+		return math.MaxInt
+	}
+	if i < int64(math.MinInt) {
+		return math.MinInt
+	}
+	return int(i)
 }
 
 // pickCeiling settles which of OpenAI's two spellings of the output ceiling

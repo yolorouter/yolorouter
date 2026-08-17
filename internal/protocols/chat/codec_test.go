@@ -2,10 +2,13 @@ package chat
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/protocols/claude"
+	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 // In-package test helpers: this subpackage keeps its own pointer helpers,
@@ -1117,5 +1120,386 @@ func TestDecodeRequestLeavesAnAbsentCeilingAbsent(t *testing.T) {
 	}
 	if ir.Generation.MaxTokens != nil {
 		t.Fatalf("ceiling = %d, want none stated", *ir.Generation.MaxTokens)
+	}
+}
+
+// A ceiling is a number, not an integer literal. Clients whose arithmetic is
+// floating point send 4096.0 or 4.096e3, and an int field does not merely drop
+// those — it fails to unmarshal, which fails the whole request. On the
+// cross-protocol path this decoder is the only thing standing between such a
+// caller and a working request.
+func TestEveryJSONSpellingOfACeilingIsRead(t *testing.T) {
+	for _, spelling := range []string{"4096", "4096.0", "4.096e3", "40.96e2"} {
+		for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+			t.Run(field+"="+spelling, func(t *testing.T) {
+				body := `{"model":"m","` + field + `":` + spelling + `,"messages":[]}`
+
+				ir, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+				if err != nil {
+					t.Fatalf("DecodeRequest rejected a stated ceiling: %v", err)
+				}
+				if ir.Generation.MaxTokens == nil {
+					t.Fatal("the ceiling was dropped: nothing downstream can re-state a limit it never received")
+				}
+				if *ir.Generation.MaxTokens != 4096 {
+					t.Fatalf("ceiling = %d, want 4096", *ir.Generation.MaxTokens)
+				}
+			})
+		}
+	}
+}
+
+// A ceiling too large to hold is still a stated ceiling — an enormous one, over
+// every limit there is, which is what pinning it to the maximum says. Dropping
+// it would turn "at most an enormous number" into "no ceiling stated", and no
+// ceiling is what lets a request through uncapped.
+func TestAnOutOfRangeCeilingSaturatesRatherThanVanishing(t *testing.T) {
+	body := `{"model":"m","max_tokens":1e30,"messages":[]}`
+
+	ir, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	if ir.Generation.MaxTokens == nil {
+		t.Fatal("an enormous ceiling vanished, which reads downstream as no ceiling at all")
+	}
+	if *ir.Generation.MaxTokens != math.MaxInt {
+		t.Fatalf("ceiling = %d, want it pinned at the maximum", *ir.Generation.MaxTokens)
+	}
+}
+
+// A value that is not a number cannot become an invented ceiling. null is the
+// case that matters: SDKs send it for "no preference", and reading it as a
+// ceiling would clamp a request that never stated one.
+func TestANullCeilingStatesNothing(t *testing.T) {
+	body := `{"model":"m","max_tokens":null,"max_completion_tokens":null,"messages":[]}`
+
+	ir, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	if ir.Generation.MaxTokens != nil {
+		t.Fatalf("ceiling = %d, want none: null means no preference", *ir.Generation.MaxTokens)
+	}
+}
+
+// A quoted number is the wrong JSON type, and it must be refused here rather
+// than carried. Left to flow, its validity would depend on where the request
+// was routed: a passthrough candidate forwards the string as written while a
+// converted one normalises it to a number.
+func TestAQuotedCeilingIsRefused(t *testing.T) {
+	for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+		t.Run(field, func(t *testing.T) {
+			body := `{"model":"m","` + field + `":"4096","messages":[]}`
+
+			if _, err := (RequestDecoder{}).DecodeRequest(json.RawMessage(body), "m", false); err == nil {
+				t.Fatal("a quoted ceiling was accepted: whether this request is valid would then depend on which candidate served it")
+			}
+		})
+	}
+}
+
+// A ceiling counts tokens, so a fractional one states nothing that can be
+// honoured. Refusing beats rounding in both directions: rounded down, 0.5
+// becomes the zero every encoder omits, so the cap silently disappears;
+// rounded up, the caller is handed a cap they never asked for. It also keeps
+// validity from depending on the route — a same-protocol candidate forwards
+// the body as written, while a converted one would send whatever this rounded
+// it to.
+func TestAFractionalCeilingIsRefused(t *testing.T) {
+	for _, spelling := range []string{"0.5", "4096.4", "4095.9999999999999", "1e-400"} {
+		t.Run(spelling, func(t *testing.T) {
+			body := `{"model":"m","max_tokens":` + spelling + `,"messages":[]}`
+
+			if _, err := (RequestDecoder{}).DecodeRequest(json.RawMessage(body), "m", false); err == nil {
+				t.Fatal("a fractional ceiling was accepted: it either loses the cap or invents one, and which happens depends on the route")
+			}
+		})
+	}
+}
+
+// An integer the caller stated exactly must survive exactly. Routing it through
+// float64 rounds anything above 2^53, and it rounds upward at the top of the
+// range — raising a ceiling is the one direction that costs the caller money.
+func TestALargeExactCeilingIsNotRoundedUp(t *testing.T) {
+	const stated int64 = math.MaxInt64 - 1
+	// On a build whose int is narrower than int64 the same value saturates
+	// instead, which is the helper's stated 32-bit behaviour rather than a
+	// different answer.
+	want := stated
+	if math.MaxInt < math.MaxInt64 {
+		want = math.MaxInt
+	}
+	body := fmt.Sprintf(`{"model":"m","max_tokens":%d,"messages":[]}`, stated)
+
+	ir, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	if ir.Generation.MaxTokens == nil {
+		t.Fatal("the ceiling vanished")
+	}
+	if got := int64(*ir.Generation.MaxTokens); got != want {
+		t.Fatalf("ceiling = %d, want %d: the stated ceiling was moved", got, want)
+	}
+}
+
+// A ceiling of zero or less states an impossible request, and letting it travel
+// is what makes validity depend on the route: every encoder writes the ceiling
+// only when it is positive, so a converted candidate drops it (Claude then
+// substitutes its own default) while a same-protocol candidate forwards it
+// verbatim for the upstream to reject. Claude ingress already refuses these on
+// arrival; this is the same rule where it was missing.
+func TestANonPositiveCeilingIsRefused(t *testing.T) {
+	for _, spelling := range []string{"0", "0.0", "0e5", "-1", "-4096", "-1e30", "-1e309", "-1e1000001"} {
+		t.Run(spelling, func(t *testing.T) {
+			body := `{"model":"m","max_tokens":` + spelling + `,"messages":[]}`
+
+			_, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+			if err == nil {
+				t.Fatal("a non-positive ceiling was accepted; whether it survives would then depend on the route")
+			}
+			if !strings.Contains(err.Error(), "at least one token") {
+				t.Fatalf("refused for the wrong reason: %v", err)
+			}
+		})
+	}
+}
+
+// Beyond float64's range entirely, which is the case the earlier 1e30 tests
+// never reached — those are representable and only exercised the narrowing.
+func TestACeilingBeyondFloat64RangePinsAtTheEnds(t *testing.T) {
+	for _, tc := range []struct {
+		spelling string
+		want     int
+	}{
+		{"1e309", math.MaxInt},
+		{"1e400", math.MaxInt},
+	} {
+		t.Run(tc.spelling, func(t *testing.T) {
+			body := `{"model":"m","max_tokens":` + tc.spelling + `,"messages":[]}`
+
+			ir, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+			if err != nil {
+				t.Fatalf("DecodeRequest: %v", err)
+			}
+			if ir.Generation.MaxTokens == nil {
+				t.Fatal("an enormous ceiling vanished, which reads downstream as no ceiling at all")
+			}
+			if *ir.Generation.MaxTokens != tc.want {
+				t.Fatalf("ceiling = %d, want %d", *ir.Generation.MaxTokens, tc.want)
+			}
+		})
+	}
+}
+
+// A dozen bytes of exponent can denote a number with a million digits. Building
+// that exactly would let a tiny field cost megabytes, and past math/big's own
+// exponent limit it is refused outright — which would turn "enormous" into a
+// parse error at a threshold nobody chose. Both ends must answer the same way
+// the merely-large ones do.
+func TestAnAstronomicalCeilingSaturatesWithoutBuildingIt(t *testing.T) {
+	for _, tc := range []struct {
+		spelling string
+		want     int
+	}{
+		{"1e1000000", math.MaxInt},
+		{"1e1000001", math.MaxInt}, // past math/big's old exponent limit: used to come back as a parse error
+	} {
+		t.Run(tc.spelling, func(t *testing.T) {
+			body := `{"model":"m","max_tokens":` + tc.spelling + `,"messages":[]}`
+
+			ir, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+			if err != nil {
+				t.Fatalf("an enormous ceiling was refused instead of pinned: %v", err)
+			}
+			if ir.Generation.MaxTokens == nil {
+				t.Fatal("the ceiling vanished")
+			}
+			if *ir.Generation.MaxTokens != tc.want {
+				t.Fatalf("ceiling = %d, want %d", *ir.Generation.MaxTokens, tc.want)
+			}
+		})
+	}
+}
+
+// The mirror of the above on the small side: a value too small for float64 is
+// far below one whole token, so it is fractional and refused — and refused
+// before it can become a million-digit denominator.
+func TestAnInfinitesimalCeilingIsRefusedWithoutBuildingIt(t *testing.T) {
+	for _, spelling := range []string{"1e-1000000", "1e-1000001"} {
+		t.Run(spelling, func(t *testing.T) {
+			body := `{"model":"m","max_tokens":` + spelling + `,"messages":[]}`
+
+			_, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+			if err == nil {
+				t.Fatal("a value far below one token was accepted as a ceiling")
+			}
+			// The reason matters as much as the refusal: this must be answered
+			// by the magnitude gate, not by math/big giving up after building
+			// (or refusing to build) a million-digit denominator.
+			if !strings.Contains(err.Error(), "whole number") {
+				t.Fatalf("refused for the wrong reason: %v", err)
+			}
+		})
+	}
+}
+
+// Integrality is decided from the digits, so it must hold at every magnitude.
+// A fraction whose whole part runs past float64 used to be answered by the
+// magnitude gate alone, which never looks at the digits — so a four-digit
+// fraction was refused while a 309-digit one was accepted.
+func TestAFractionalCeilingIsRefusedAtEveryMagnitude(t *testing.T) {
+	huge := strings.Repeat("9", 309) + ".5"
+	for _, spelling := range []string{"4096.4", huge, "1e-1000000"} {
+		name := spelling
+		if len(name) > 20 {
+			name = "309-digit fraction"
+		}
+		t.Run(name, func(t *testing.T) {
+			body := `{"model":"m","max_tokens":` + spelling + `,"messages":[]}`
+
+			_, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+			if err == nil {
+				t.Fatal("a fractional ceiling was accepted; refusal must not depend on how large it is")
+			}
+			if !strings.Contains(err.Error(), "whole number") {
+				t.Fatalf("refused for the wrong reason: %v", err)
+			}
+		})
+	}
+}
+
+// A zero mantissa is answered without reading the exponent, so a compact zero
+// is refused for being zero — not for an exponent a library could not parse.
+func TestZeroIsRefusedForBeingZeroNotForItsExponent(t *testing.T) {
+	body := `{"model":"m","max_tokens":0e9223372036854775808,"messages":[]}`
+
+	_, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+	if err == nil {
+		t.Fatal("a zero ceiling was accepted")
+	}
+	if !strings.Contains(err.Error(), "at least one token") {
+		t.Fatalf("refused for the wrong reason: %v", err)
+	}
+}
+
+// A token's length must not decide its cost. "1." followed by a million zeros
+// denotes 1, and a parser that builds what it reads spends seconds and
+// gigabytes arriving at that answer — from a body well inside the size limit,
+// and again for every candidate that decodes.
+func TestALongTokenCostsNoMoreThanItsValue(t *testing.T) {
+	body := `{"model":"m","max_tokens":1.` + strings.Repeat("0", 1_000_000) + `,"messages":[]}`
+
+	done := make(chan struct{})
+	var ir *protocols.IRRequest
+	var err error
+	go func() {
+		ir, err = RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("decoding a million-digit token took over two seconds: a request-sized field is buying unbounded work")
+	}
+
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	if ir.Generation.MaxTokens == nil || *ir.Generation.MaxTokens != 1 {
+		t.Fatalf("ceiling = %v, want 1", ir.Generation.MaxTokens)
+	}
+}
+
+// Scientific notation whose exponent moves the point LEFT is still a whole
+// number when the digits it passes are zeros. 4096000e-3 is 4096, and the
+// decoder used to panic on it — the exponent owed a negative number of zeros,
+// and nothing had checked that the debt could only run one way.
+func TestAWholeNumberWrittenWithANegativeExponent(t *testing.T) {
+	for _, tc := range []struct {
+		spelling string
+		want     int
+	}{
+		{"4096000e-3", 4096},
+		{"1000e-3", 1},
+		{"10e-1", 1},
+		{"100000e-2", 1000},
+	} {
+		t.Run(tc.spelling, func(t *testing.T) {
+			body := `{"model":"m","max_tokens":` + tc.spelling + `,"messages":[]}`
+
+			ir, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+			if err != nil {
+				t.Fatalf("a whole number written with a negative exponent was refused: %v", err)
+			}
+			if ir.Generation.MaxTokens == nil || *ir.Generation.MaxTokens != tc.want {
+				t.Fatalf("ceiling = %v, want %d", ir.Generation.MaxTokens, tc.want)
+			}
+		})
+	}
+}
+
+// Leading zeros are written digits, not digits of the value. Counting them
+// against the range answers "enormous" for a request that asked for one token,
+// which is the one direction a ceiling must never move.
+func TestLeadingZerosDoNotInflateTheCeiling(t *testing.T) {
+	for _, tc := range []struct {
+		spelling string
+		want     int
+	}{
+		{"0.00000000000000000001e20", 1},
+		{"0.0000000000000000000000001e25", 1},
+		{"0.4096e4", 4096},
+	} {
+		t.Run(tc.spelling, func(t *testing.T) {
+			body := `{"model":"m","max_tokens":` + tc.spelling + `,"messages":[]}`
+
+			ir, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+			if err != nil {
+				t.Fatalf("DecodeRequest: %v", err)
+			}
+			if ir.Generation.MaxTokens == nil || *ir.Generation.MaxTokens != tc.want {
+				t.Fatalf("ceiling = %v, want %d: written zeros were counted as magnitude", ir.Generation.MaxTokens, tc.want)
+			}
+		})
+	}
+}
+
+// What a rejection quotes back travels further than the error: into the
+// caller's response and into the stored failure reason. A number may be as long
+// as the body allows, so quoting it whole would turn one oversized field into
+// an oversized response and an oversized audit row, once per rejected request.
+func TestARejectionDoesNotQuoteBackTheWholeNumber(t *testing.T) {
+	huge := "1." + strings.Repeat("9", 1_000_000)
+	body := `{"model":"m","max_tokens":` + huge + `,"messages":[]}`
+
+	_, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+	if err == nil {
+		t.Fatal("a fractional ceiling was accepted")
+	}
+	if len(err.Error()) > 200 {
+		t.Fatalf("the rejection carries %d bytes: it is echoing the caller's field back at them", len(err.Error()))
+	}
+	if !strings.Contains(err.Error(), "max_tokens") {
+		t.Fatalf("the rejection no longer says which field was wrong: %v", err)
+	}
+}
+
+// Nineteen digits is within the budget yet past what an int64 holds, which is
+// the one path where the range check falls to the parse itself. Saturating is
+// the honest answer: the ceiling is over every limit there is.
+func TestACeilingWithinTheDigitBudgetButPastTheRangeSaturates(t *testing.T) {
+	body := `{"model":"m","max_tokens":9999999999999999999,"messages":[]}`
+
+	ir, err := RequestDecoder{}.DecodeRequest(json.RawMessage(body), "m", false)
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	if ir.Generation.MaxTokens == nil {
+		t.Fatal("the ceiling vanished")
+	}
+	if *ir.Generation.MaxTokens != math.MaxInt {
+		t.Fatalf("ceiling = %d, want it pinned at the maximum", *ir.Generation.MaxTokens)
 	}
 }
