@@ -14,8 +14,9 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/model"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/apikey"
 	"github.com/yolorouter/yolorouter/internal/testutil"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
@@ -36,7 +37,7 @@ func newAPIKeyTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 		t.Fatalf("RegisterValidators failed: %v", err)
 	}
 	db := testutil.NewSQLiteDB(t)
-	svc := service.NewAPIKeyService(db, apiKeyTestMasterKey())
+	svc := apikey.NewAPIKeyService(db, crypto.NewSecretBox(apiKeyTestMasterKey()))
 	r := gin.New()
 	// PostAPIKey reads the session identity from the context (the created
 	// key's owner); stubIdentity stands in for RequireSession here, exactly
@@ -107,7 +108,7 @@ func newAPIKeyPatchTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 		t.Fatalf("RegisterValidators failed: %v", err)
 	}
 	db := testutil.NewSQLiteDB(t)
-	svc := service.NewAPIKeyService(db, apiKeyTestMasterKey())
+	svc := apikey.NewAPIKeyService(db, crypto.NewSecretBox(apiKeyTestMasterKey()))
 	r := gin.New()
 	r.POST("/api/admin/api-keys", stubIdentity(1, "admin"), PostAPIKey(svc))
 	r.GET("/api/admin/api-keys/:id", GetAPIKey(svc))

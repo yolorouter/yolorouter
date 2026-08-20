@@ -69,7 +69,7 @@ func TestMessagesIngressNonStreamSuccess(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -158,7 +158,7 @@ func TestMessagesIngressStreamSuccess(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -320,7 +320,7 @@ func TestMessagesIngressMalformedBodyRejected(t *testing.T) {
 
 			svc := newSvc(t, db)
 			p := createProvider(t, db, "openai-provider", upstream.URL)
-			createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+			createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 			m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
 			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -375,7 +375,7 @@ func TestMessagesIngressMidStreamFailure(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -428,7 +428,7 @@ func TestMessagesIngressStreamAuditMatchesClientBytes(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

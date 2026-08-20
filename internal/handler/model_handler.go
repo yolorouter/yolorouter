@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
 
@@ -73,7 +73,7 @@ func parseModelAndCandidateIDs(c *gin.Context) (modelID, candidateID uint, ok bo
 	return modelID, candidateID, true
 }
 
-func GetModels(svc *service.ModelService) gin.HandlerFunc {
+func GetModels(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		list, err := svc.ListModels()
 		if err != nil {
@@ -84,13 +84,13 @@ func GetModels(svc *service.ModelService) gin.HandlerFunc {
 	}
 }
 
-func PostModel(svc *service.ModelService) gin.HandlerFunc {
+func PostModel(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createModelRequest
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.CreateModel(service.CreateModelInput{Name: req.Name}, timeNow())
+		view, err := svc.CreateModel(modeladmin.CreateModelInput{Name: req.Name}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -102,7 +102,7 @@ func PostModel(svc *service.ModelService) gin.HandlerFunc {
 // PostModelsBatch creates several models at once from a list of names,
 // skipping (rather than failing on) names that are invalid or already exist —
 // the response carries the created models plus a per-name skip summary.
-func PostModelsBatch(svc *service.ModelService) gin.HandlerFunc {
+func PostModelsBatch(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req batchCreateModelsRequest
 		if !bindJSON(c, &req) {
@@ -117,7 +117,7 @@ func PostModelsBatch(svc *service.ModelService) gin.HandlerFunc {
 	}
 }
 
-func GetModel(svc *service.ModelService) gin.HandlerFunc {
+func GetModel(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -132,7 +132,7 @@ func GetModel(svc *service.ModelService) gin.HandlerFunc {
 	}
 }
 
-func PatchModel(svc *service.ModelService) gin.HandlerFunc {
+func PatchModel(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -165,7 +165,7 @@ func PatchModel(svc *service.ModelService) gin.HandlerFunc {
 	}
 }
 
-func PatchModelStatus(svc *service.ModelService) gin.HandlerFunc {
+func PatchModelStatus(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -189,7 +189,7 @@ func PatchModelStatus(svc *service.ModelService) gin.HandlerFunc {
 // params because this is a look-up the candidate form fires on model-name
 // select, not a candidate-scoped path. An empty Source means nothing matched
 // and the form stays at its default.
-func GetCandidateSuggestPrice(svc *service.ModelService) gin.HandlerFunc {
+func GetCandidateSuggestPrice(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, ok := requireUintQuery(c, "provider_id")
 		if !ok {
@@ -209,7 +209,7 @@ func GetCandidateSuggestPrice(svc *service.ModelService) gin.HandlerFunc {
 	}
 }
 
-func PostModelCandidate(svc *service.ModelService) gin.HandlerFunc {
+func PostModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		modelID, ok := parseUintParam(c, "id")
 		if !ok {
@@ -219,7 +219,7 @@ func PostModelCandidate(svc *service.ModelService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.CreateModelCandidate(c.Request.Context(), modelID, service.CreateCandidateInput{
+		view, err := svc.CreateModelCandidate(c.Request.Context(), modelID, modeladmin.CreateCandidateInput{
 			ProviderID: req.ProviderID, ProviderModelName: req.ProviderModelName,
 			InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice,
@@ -233,7 +233,7 @@ func PostModelCandidate(svc *service.ModelService) gin.HandlerFunc {
 	}
 }
 
-func PatchModelCandidate(svc *service.ModelService) gin.HandlerFunc {
+func PatchModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_, candidateID, ok := parseModelAndCandidateIDs(c)
 		if !ok {
@@ -243,7 +243,7 @@ func PatchModelCandidate(svc *service.ModelService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		result, err := svc.UpdateModelCandidate(c.Request.Context(), candidateID, service.UpdateCandidateInput{
+		result, err := svc.UpdateModelCandidate(c.Request.Context(), candidateID, modeladmin.UpdateCandidateInput{
 			ProviderModelName: req.ProviderModelName, InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice, MaxOutput: req.MaxOutput,
 			ManagementStatus: req.ManagementStatus,
@@ -256,7 +256,7 @@ func PatchModelCandidate(svc *service.ModelService) gin.HandlerFunc {
 	}
 }
 
-func PatchModelCandidateOrder(svc *service.ModelService) gin.HandlerFunc {
+func PatchModelCandidateOrder(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		modelID, candidateID, ok := parseModelAndCandidateIDs(c)
 		if !ok {
@@ -274,7 +274,7 @@ func PatchModelCandidateOrder(svc *service.ModelService) gin.HandlerFunc {
 	}
 }
 
-func PatchModelCandidateStatus(svc *service.ModelService) gin.HandlerFunc {
+func PatchModelCandidateStatus(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_, candidateID, ok := parseModelAndCandidateIDs(c)
 		if !ok {
@@ -295,7 +295,7 @@ func PatchModelCandidateStatus(svc *service.ModelService) gin.HandlerFunc {
 // PostModelCandidateTest re-probes a stored candidate. It takes no test_type:
 // one retest covers the basic mapping and both capabilities, so an operator
 // never has to pick which probe to run.
-func PostModelCandidateTest(svc *service.ModelService) gin.HandlerFunc {
+func PostModelCandidateTest(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_, candidateID, ok := parseModelAndCandidateIDs(c)
 		if !ok {
@@ -314,7 +314,7 @@ func PostModelCandidateTest(svc *service.ModelService) gin.HandlerFunc {
 // result allows what the caller asked for, so the admin UI can report the
 // verdicts without a manual test step and without leaving a broken mapping
 // behind when enablement was requested but the mapping does not work.
-func PostModelCandidateTestAndCreate(svc *service.ModelService) gin.HandlerFunc {
+func PostModelCandidateTestAndCreate(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		modelID, ok := parseUintParam(c, "id")
 		if !ok {
@@ -324,7 +324,7 @@ func PostModelCandidateTestAndCreate(svc *service.ModelService) gin.HandlerFunc 
 		if !bindJSON(c, &req) {
 			return
 		}
-		result, err := svc.TestAndCreateCandidate(c.Request.Context(), modelID, service.CreateCandidateInput{
+		result, err := svc.TestAndCreateCandidate(c.Request.Context(), modelID, modeladmin.CreateCandidateInput{
 			ProviderID: req.ProviderID, ProviderModelName: req.ProviderModelName,
 			InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice,
@@ -338,7 +338,7 @@ func PostModelCandidateTestAndCreate(svc *service.ModelService) gin.HandlerFunc 
 	}
 }
 
-func DeleteModelCandidate(svc *service.ModelService) gin.HandlerFunc {
+func DeleteModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_, candidateID, ok := parseModelAndCandidateIDs(c)
 		if !ok {
@@ -354,7 +354,7 @@ func DeleteModelCandidate(svc *service.ModelService) gin.HandlerFunc {
 
 // GetModelImpact returns what disabling or renaming the model touches, for
 // the confirm dialogs and the impact tab.
-func GetModelImpact(svc *service.ModelService) gin.HandlerFunc {
+func GetModelImpact(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {

@@ -9,7 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/dashboard"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -23,7 +23,7 @@ import (
 // other windowing / limit constant is pinned and lives in the service, so
 // this handler only translates the service error into the project's response
 // envelope.
-func GetDashboard(svc *service.DashboardService) gin.HandlerFunc {
+func GetDashboard(svc *dashboard.DashboardService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var loc *time.Location
 		if v, ok := c.Get("timezone"); ok {

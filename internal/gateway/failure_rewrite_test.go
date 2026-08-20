@@ -103,7 +103,7 @@ func TestRepairedBodyRetriesTheSameCandidate(t *testing.T) {
 	svc := newSvc(t, db)
 	registerRepairer(svc, []byte(`{"model":"gpt-4o-real","messages":[{"role":"user","content":"repaired"}]}`))
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -168,7 +168,7 @@ func TestFailedRepairSurfacesTheUpstreamStatus(t *testing.T) {
 	RegisterFailureRewriter(svc, countingRewriter{n: &repairs},
 		func(*Exchange) struct{} { return struct{}{} })
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -202,7 +202,7 @@ func TestFailureRewriterErrorAbstains(t *testing.T) {
 	RegisterFailureRewriter(svc, repairingRewriter{fail: true},
 		func(*Exchange) struct{} { return struct{}{} })
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -245,7 +245,7 @@ func TestUnchangedOutputAbstains(t *testing.T) {
 	svc := newSvc(t, db)
 	RegisterFailureRewriter(svc, echoRewriter{}, func(*Exchange) struct{} { return struct{}{} })
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -333,7 +333,7 @@ func TestAbstainingRewriterCannotCorruptTheAuditCapture(t *testing.T) {
 	svc := newSvc(t, db)
 	RegisterFailureRewriter(svc, mutateThenFailRewriter{}, func(*Exchange) struct{} { return struct{}{} })
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -386,8 +386,8 @@ func TestRepairDoesNotBypassKeyRotationOn401(t *testing.T) {
 	svc := newSvc(t, db)
 	registerRepairer(svc, []byte(`{"model":"gpt-4o-real","messages":[{"role":"user","content":"repaired"}]}`))
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-bad", "bad", 1, true)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-good", "good", 2, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-bad", "bad", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-good", "good", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -476,7 +476,7 @@ func TestFactlessRepairedBodyIsNotDispatched(t *testing.T) {
 	RegisterFailureRewriter(svc, silentRewriter{out: []byte(`{"model":"gpt-4o-real","messages":[{"role":"user","content":"unvouched"}]}`)},
 		func(*Exchange) struct{} { return struct{}{} })
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -589,7 +589,7 @@ func TestRepairDoesNotRetryNonPayloadClientErrors(t *testing.T) {
 			RegisterFailureRewriter(svc, countingRewriter{n: &repairs},
 				func(*Exchange) struct{} { return struct{}{} })
 			p := createProvider(t, db, "p1", upstream.URL)
-			createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+			createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 			m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -639,7 +639,7 @@ func TestLaterFactlessEditCannotRideAnEarlierVerdict(t *testing.T) {
 	RegisterFailureRewriter(svc, silentRewriter{out: []byte(`{"model":"gpt-4o-real","messages":[{"role":"user","content":"unvouched"}]}`)},
 		func(*Exchange) struct{} { return struct{}{} })
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -679,7 +679,7 @@ func TestChainRevertedToTheOriginalIsNoRepair(t *testing.T) {
 	RegisterFailureRewriter(svc, revertingRewriter{original: &original},
 		func(*Exchange) struct{} { return struct{}{} })
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

@@ -54,7 +54,7 @@ func TestUsageDoesNotSurviveTheLastCandidate(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "only-candidate", usageThenError.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
@@ -124,9 +124,9 @@ func TestUsageDoesNotSurviveAFailedCandidate(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p1 := createAnthropicProvider(t, db, "claude-usage-then-error", usageThenError.URL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1", "k1", 1, true)
 	p2 := createAnthropicProvider(t, db, "claude-success", deadUpstream.URL)
-	createProviderKey(t, db, svc.masterKey, p2.ID, "sk-2", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, true)
 
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
@@ -205,9 +205,9 @@ func TestUpstreamBodyDoesNotSurviveAFailedCandidate(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p1 := createProvider(t, db, "answers-with-body", answersWithBody.URL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1", "k1", 1, true)
 	p2 := createProvider(t, db, "unreachable", unreachableURL)
-	createProviderKey(t, db, svc.masterKey, p2.ID, "sk-2", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, true)
 
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
@@ -298,8 +298,8 @@ func TestUpstreamBodyDoesNotSurviveAKeyRotation(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "two-keys", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-a", "key-a", 1, true)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-b", "key-b", 2, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "key-a", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "key-b", 2, true)
 
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}

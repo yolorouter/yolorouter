@@ -52,6 +52,7 @@ func TestFilterCandidatesIgnoresCapabilityFlags(t *testing.T) {
 			ID:                      1,
 			ManagementStatus:        model.ModelCandidateStatusEnabled,
 			VerificationStatus:      model.ModelVerificationStatusPassed,
+			Provider:                &model.Provider{ManagementStatus: model.ProviderStatusEnabled},
 			SupportsStreaming:       streaming,
 			SupportsFunctionCalling: functionCalling,
 		}
@@ -76,25 +77,37 @@ func TestFilterCandidatesIgnoresCapabilityFlags(t *testing.T) {
 	}
 }
 
-// The two gates that DO apply, so removing the capability check does not quietly
-// widen routing beyond what was intended.
+// The gates that DO apply, so removing the capability check does not quietly
+// widen routing beyond what was intended. A nil provider mirrors the
+// repository contract: production always preloads, so nil marks a broken
+// association, and it must fail closed like a switched-off provider.
 func TestFilterCandidatesRequiresEnabledAndVerified(t *testing.T) {
+	enabledProvider := &model.Provider{ManagementStatus: model.ProviderStatusEnabled}
 	for _, tc := range []struct {
 		name           string
+		provider       *model.Provider
 		management     int
 		verification   int
 		wantRoutable   bool
 		wantAnyEnabled bool
 	}{
-		{name: "enabled and verified", management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusPassed, wantRoutable: true, wantAnyEnabled: true},
-		{name: "enabled but unverified", management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusUntested, wantRoutable: false, wantAnyEnabled: true},
-		{name: "enabled but failed", management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusFailed, wantRoutable: false, wantAnyEnabled: true},
-		{name: "disabled though verified", management: model.ModelCandidateStatusDisabled, verification: model.ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
+		{name: "enabled and verified", provider: enabledProvider, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusPassed, wantRoutable: true, wantAnyEnabled: true},
+		{name: "enabled but unverified", provider: enabledProvider, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusUntested, wantRoutable: false, wantAnyEnabled: true},
+		{name: "enabled but failed", provider: enabledProvider, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusFailed, wantRoutable: false, wantAnyEnabled: true},
+		{name: "disabled though verified", provider: enabledProvider, management: model.ModelCandidateStatusDisabled, verification: model.ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
+		// A switched-off provider keeps its candidates out of the chain and
+		// out of anyEnabled alike: the state is configuration an operator
+		// turned down — the "no enabled route" answer — not a route waiting
+		// on verification.
+		{name: "provider disabled though candidate on", provider: &model.Provider{ManagementStatus: model.ProviderStatusDisabled}, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
+		{name: "provider not preloaded", provider: nil, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			routable, anyEnabled := filterCandidates([]model.ModelCandidate{{
-				ID: 1, ManagementStatus: tc.management, VerificationStatus: tc.verification,
-			}})
+			cand := model.ModelCandidate{
+				ID: 1, Provider: tc.provider,
+				ManagementStatus: tc.management, VerificationStatus: tc.verification,
+			}
+			routable, anyEnabled := filterCandidates([]model.ModelCandidate{cand})
 			if got := len(routable) == 1; got != tc.wantRoutable {
 				t.Fatalf("expected routable=%v, got %v", tc.wantRoutable, got)
 			}
@@ -149,7 +162,7 @@ func newSvc(t *testing.T, db *gorm.DB) *Service {
 func newSvcWithSettingsAndGateway(t *testing.T, db *gorm.DB, sp stubSettingsProvider, gateway config.GatewayConfig) *Service {
 	t.Helper()
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(db, masterKey, false, sp, gateway)
+	svc := NewService(db, ycrypto.NewSecretBox(masterKey), false, sp, gateway)
 	svc.client.httpClient.Transport = &http.Transport{}
 	// Mirror the assembly the router performs. A bare Service runs no
 	// capabilities at all, which is the point of the split — so a test that
@@ -270,10 +283,21 @@ func createProvider(t *testing.T, db *gorm.DB, name, baseURL string) *model.Prov
 	return p
 }
 
-func createProviderKey(t *testing.T, db *gorm.DB, masterKey []byte, providerID uint, plaintext, label string, order int, enabled bool) {
+// disableProvider flips a seeded provider's management status to disabled —
+// the state the provider page's switch writes, which must take the
+// provider's candidates out of routing (see filterCandidates).
+func disableProvider(t *testing.T, db *gorm.DB, id uint) {
+	t.Helper()
+	if err := db.Model(&model.Provider{}).Where("id = ?", id).
+		Update("management_status", model.ProviderStatusDisabled).Error; err != nil {
+		t.Fatalf("disable provider: %v", err)
+	}
+}
+
+func createProviderKey(t *testing.T, db *gorm.DB, secrets ycrypto.SecretBox, providerID uint, plaintext, label string, order int, enabled bool) {
 	t.Helper()
 	now := time.Now().UTC()
-	enc, err := ycrypto.Encrypt(masterKey, plaintext)
+	enc, err := secrets.Encrypt(plaintext)
 	if err != nil {
 		t.Fatalf("encrypt upstream key: %v", err)
 	}
@@ -348,7 +372,7 @@ func TestRelayNonStreamSuccess(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-upstream-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -391,7 +415,7 @@ func TestRelayNonStreamScalarStopNotRejected(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-upstream-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -424,7 +448,7 @@ func TestFinalizeNonStreamCapturesBodies(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-upstream-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -510,7 +534,7 @@ func TestHandleSetsRequestDeadline(t *testing.T) {
 		RequestTimeout:   15 * time.Minute,
 	})
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-upstream-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -563,8 +587,8 @@ func TestRelayKeyRotation(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-bad", "bad", 1, true)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-good", "good", 2, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-bad", "bad", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-good", "good", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -604,9 +628,9 @@ func TestRelayCandidateFailover(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p1 := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1", "k1", 1, true)
 	p2 := createProvider(t, db, "p2", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p2.ID, "sk-2", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, true)
 	// Both candidates back the same external model, different provider names.
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
@@ -663,8 +687,8 @@ func TestRelayClientErrorNoSwitch(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-2", "k2", 2, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-2", "k2", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -691,7 +715,7 @@ func TestRelayModelNotAllowed(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	// Key has an EMPTY allowlist — no model is permitted.
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
@@ -721,7 +745,7 @@ func TestRelayAllowAllModelsBypassesAllowlist(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	// Empty allowlist, but the key is flagged to permit any model.
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
@@ -750,7 +774,7 @@ func TestRelayRevokedKey(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusRevoked, []uint{m.ID})
 
@@ -900,7 +924,7 @@ func TestRelayAllCandidatesFailed(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -939,7 +963,7 @@ func TestRelayBudgetExceededReturnsInsufficientQuota(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 
 	// Key whose budget is already fully spent (>= limit).
@@ -996,7 +1020,7 @@ func TestRelayStreamSuccess(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1049,7 +1073,7 @@ func TestRelayClaudeMalformedBodyRejectedBeforeCandidateLoop(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1140,7 +1164,7 @@ func TestGeminiIngressResolvesModelFromPath(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1182,7 +1206,7 @@ func TestGeminiIngressStreamActionSetsStreamFromPath(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1220,7 +1244,7 @@ func TestGeminiIngressMalformedPathRejected(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1254,7 +1278,7 @@ func TestResponsesIngressResolvesModelAndStreamFromBody(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "responses-model", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1284,7 +1308,7 @@ func TestResponsesIngressMissingInputRejected(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "responses-model", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1377,7 +1401,7 @@ func TestCompressTriggersAcrossProtocols(t *testing.T) {
 			sp := stubSettingsProvider{compressEnabled: true}
 			svc := newSvcWithSettings(t, db, sp)
 			p := createProvider(t, db, "p1", upstream.URL)
-			createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+			createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 			m := createModelAndCandidate(t, db, p, tc.externalNm, tc.providerMn, true, true, 1)
 			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1437,7 +1461,7 @@ func TestCompressSkipsNoLiveZone(t *testing.T) {
 	sp := stubSettingsProvider{compressEnabled: true}
 	svc := newSvcWithSettings(t, db, sp)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1479,7 +1503,7 @@ func TestCompressDisabledBySwitch(t *testing.T) {
 	sp := stubSettingsProvider{compressEnabled: false}
 	svc := newSvcWithSettings(t, db, sp)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1523,7 +1547,7 @@ func TestCompressNonChatEndpointNotCompressed(t *testing.T) {
 	sp := stubSettingsProvider{compressEnabled: true}
 	svc := newSvcWithSettings(t, db, sp)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1572,7 +1596,7 @@ func TestCompressFailOpenProceeds(t *testing.T) {
 	sp := stubSettingsProvider{compressEnabled: true}
 	svc := newSvcWithSettings(t, db, sp)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1620,7 +1644,7 @@ func TestCompressOverrideShortCircuitsGlobal(t *testing.T) {
 	sp := stubSettingsProvider{compressEnabled: true}
 	svc := newSvcWithSettings(t, db, sp)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 	apiKey.CompressEnabledOverride = true
@@ -1662,7 +1686,7 @@ func TestCompressOverrideEnablesWhenGlobalOff(t *testing.T) {
 	sp := stubSettingsProvider{compressEnabled: false}
 	svc := newSvcWithSettings(t, db, sp)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 	apiKey.CompressEnabledOverride = true
@@ -1709,7 +1733,7 @@ func TestCompressGlobalFailOpenOnError(t *testing.T) {
 	sp := stubSettingsProvider{compressEnabled: true, compressErr: errors.New("settings db unavailable")}
 	svc := newSvcWithSettings(t, db, sp)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1759,7 +1783,7 @@ func TestCompressAndCSPCoexist(t *testing.T) {
 	}
 	svc := newSvcWithSettings(t, db, sp)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1838,7 +1862,7 @@ func TestAttemptOne_StreamBodyIdleIsTerminal(t *testing.T) {
 	gw.RequestTimeout = 5 * time.Second
 	svc := newSvcWithGateway(t, db, gw)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -1931,9 +1955,9 @@ func TestAttemptOne_NonStreamBodyIdleFailovers(t *testing.T) {
 	gw.RequestTimeout = 5 * time.Second
 	svc := newSvcWithGateway(t, db, gw)
 	p1 := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1", "k1", 1, true)
 	p2 := createProvider(t, db, "p2", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p2.ID, "sk-2", "k2", 1, true)
+	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k2", 1, true)
 
 	// Two candidates backing the same external model, distinguished by their
 	// provider_model_name so the test upstream can route each one.
@@ -2050,9 +2074,9 @@ func TestRelayCandidateLoopRespectsRequestBudget(t *testing.T) {
 		RequestTimeout:   150 * time.Millisecond,
 	})
 	p1 := createProvider(t, db, "slow", slow.URL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1", "k1", 1, true)
 	p2 := createProvider(t, db, "fast", fast.URL)
-	createProviderKey(t, db, svc.masterKey, p2.ID, "sk-2", "k2", 1, true)
+	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k2", 1, true)
 
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
@@ -2166,8 +2190,8 @@ func TestRelayQuotaExhausted429MarksKeyPlainRateLimitDoesNot(t *testing.T) {
 
 			svc := newSvc(t, db)
 			p := createProvider(t, db, "p1", upstream.URL)
-			createProviderKey(t, db, svc.masterKey, p.ID, "sk-broke", "broke", 1, true)
-			createProviderKey(t, db, svc.masterKey, p.ID, "sk-good", "good", 2, true)
+			createProviderKey(t, db, svc.secrets, p.ID, "sk-broke", "broke", 1, true)
+			createProviderKey(t, db, svc.secrets, p.ID, "sk-good", "good", 2, true)
 			m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -2195,23 +2219,31 @@ func TestRelayQuotaExhausted429MarksKeyPlainRateLimitDoesNot(t *testing.T) {
 // available" that hides the difference from whoever reports the problem.
 func TestRelayModelUnavailableSaysWhy(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		enabled     bool
-		verified    int
-		wantMessage string
+		name             string
+		enabled          bool
+		verified         int
+		providerDisabled bool
+		wantMessage      string
 	}{
-		{"all routes disabled", false, model.ModelVerificationStatusPassed, "model is not available: no enabled route"},
-		{"enabled but unverified", true, model.ModelVerificationStatusUntested, "model is not available: routes not verified yet"},
+		{"all routes disabled", false, model.ModelVerificationStatusPassed, false, "model is not available: no enabled route"},
+		{"enabled but unverified", true, model.ModelVerificationStatusUntested, false, "model is not available: routes not verified yet"},
+		// A provider switched off reads the same way as a candidate switched
+		// off: configuration an operator turned down, addressed by re-enabling
+		// — not by waiting out verification, and not an upstream outage.
+		{"all providers disabled", true, model.ModelVerificationStatusPassed, true, "model is not available: no enabled route"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := testutil.NewSQLiteDB(t)
 			svc := newSvc(t, db)
 			p := createProvider(t, db, "p1", "http://127.0.0.1:0")
-			createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+			createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 			m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 			status := model.ModelCandidateStatusEnabled
 			if !tc.enabled {
 				status = model.ModelCandidateStatusDisabled
+			}
+			if tc.providerDisabled {
+				disableProvider(t, db, p.ID)
 			}
 			if err := db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).
 				Updates(map[string]any{"management_status": status, "verification_status": tc.verified}).Error; err != nil {
@@ -2245,7 +2277,7 @@ func TestLoopbackSubCallBypassesAdmissionAndAllowlist(t *testing.T) {
 
 	svc := newSvcWithSettings(t, db, stubSettingsProvider{visionFallback: settings.VisionFallbackSetting{Model: "eyes"}})
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createModelAndCandidate(t, db, p, "eyes", "eyes-real", true, true, 1)
 	// Empty allowlist AND a fully-exhausted concurrency slot: either alone
 	// would reject a normal caller request. The allowlist exemption is
@@ -2284,7 +2316,7 @@ func TestForgedLoopbackTokenGetsNoBypass(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createModelAndCandidate(t, db, p, "eyes", "eyes-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil) // empty allowlist
 
@@ -2334,7 +2366,7 @@ func TestVisionFallbackSurvivesSettingsRefreshError(t *testing.T) {
 		func(e *Exchange) visionfallback.View { return e })
 
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "blind", "blind-real", true, true, 1)
 	if err := db.Model(m).Update("supports_image_input", false).Error; err != nil {
 		t.Fatalf("declare blind: %v", err)
@@ -2365,7 +2397,7 @@ func TestLoopbackSubCallToUnconfiguredModelStillAllowlisted(t *testing.T) {
 
 	svc := newSvcWithSettings(t, db, stubSettingsProvider{visionFallback: settings.VisionFallbackSetting{Model: "eyes"}})
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createModelAndCandidate(t, db, p, "other-model", "other-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil) // empty allowlist
 
@@ -2470,7 +2502,7 @@ func TestVisionFallbackDescribesAcrossAllIngressProtocols(t *testing.T) {
 				func(e *Exchange) visionfallback.View { return e })
 
 			p := createProvider(t, db, "p1", upstream.URL)
-			createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+			createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 			m := createModelAndCandidate(t, db, p, "blind", "blind-real", true, true, 1)
 			if err := db.Model(m).Update("supports_image_input", false).Error; err != nil {
 				t.Fatalf("declare blind: %v", err)

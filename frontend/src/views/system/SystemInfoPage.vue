@@ -106,6 +106,9 @@
       @confirm="startUpdate"
     >
       <p class="update-warn">{{ t('system.updateWarnRestart') }}</p>
+      <!-- SQLite gets an automatic pre-migration backup at restart; PostgreSQL
+           does not, so this is the operator's only advance prompt to back up. -->
+      <p v-if="updateStore.dbDriver === 'postgres'" class="update-warn">{{ t('system.updateWarnBackupPostgres') }}</p>
       <p class="update-warn">{{ t('system.updateWarnForeground') }}</p>
       <p v-if="phase === 'updating'" class="update-status">{{ t('system.updating') }}</p>
       <p v-else-if="phase === 'restarting'" class="update-status">{{ t('system.restarting') }}</p>

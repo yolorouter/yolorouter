@@ -1,8 +1,11 @@
 package repository
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
@@ -20,6 +23,49 @@ func TestCollectPtrIDs(t *testing.T) {
 	}
 	if empty := CollectPtrIDs([]struct{ ID *uint }{}, func(r *struct{ ID *uint }) *uint { return r.ID }); len(empty) != 0 {
 		t.Fatalf("empty input must collect nothing, got %v", empty)
+	}
+}
+
+// TestBackfillByPtrID pins the write-back half of the lookup shape: the
+// lookup sees the deduped non-nil id set, nil-id rows are left untouched
+// (never dereferenced, value preserved), and rows whose id the lookup didn't
+// return receive the zero value — a hard-deleted referent renders empty
+// instead of failing the view.
+func TestBackfillByPtrID(t *testing.T) {
+	one, two, missing := uint(1), uint(2), uint(3)
+	type row struct {
+		ID   *uint
+		Name string
+	}
+	rows := []row{{ID: &one}, {ID: nil, Name: "keep"}, {ID: &two}, {ID: &one}, {ID: &missing, Name: "wipe"}}
+	var sawIDs []uint
+	err := backfillByPtrID(nil, rows,
+		func(r *row) *uint { return r.ID },
+		func(_ *gorm.DB, ids []uint) (map[uint]string, error) {
+			sawIDs = ids
+			return map[uint]string{1: "alpha", 2: "beta"}, nil
+		},
+		func(r *row, name string) { r.Name = name })
+	if err != nil {
+		t.Fatalf("backfillByPtrID: %v", err)
+	}
+	if len(sawIDs) != 3 || sawIDs[0] != 1 || sawIDs[1] != 2 || sawIDs[2] != 3 {
+		t.Fatalf("lookup ids = %v, want deduped [1 2 3]", sawIDs)
+	}
+	wantNames := []string{"alpha", "keep", "beta", "alpha", ""}
+	for i, want := range wantNames {
+		if rows[i].Name != want {
+			t.Fatalf("rows[%d].Name = %q, want %q", i, rows[i].Name, want)
+		}
+	}
+
+	wantErr := errors.New("lookup failed")
+	err = backfillByPtrID(nil, rows,
+		func(r *row) *uint { return r.ID },
+		func(_ *gorm.DB, _ []uint) (map[uint]string, error) { return nil, wantErr },
+		func(r *row, name string) { r.Name = name })
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("lookup error must surface, got %v", err)
 	}
 }
 

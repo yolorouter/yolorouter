@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-19
+
+### Added
+
+- Update traffic — the release lookup, both asset downloads, and the About
+  page's version check — now tries GitHub directly and automatically retries
+  through the built-in mirror, so deployments behind a slow or blocked GitHub
+  upgrade without hand-editing `update.github_proxy`. An explicitly
+  configured proxy stays the sole route, and its credentials are redacted
+  wherever an error could echo them. A stall watchdog turns hopeless
+  transfers into prompt fallbacks instead of burned-out timeouts: header or
+  body silence kills a dead route, and a rate projection abandons a transfer
+  that provably cannot deliver the announced size in the time the walk has
+  left — routes it kills get one projection-free retry after every
+  alternative fails.
+
+### Changed
+
+- A provider's key pool is now a capacity pool: requests rotate their
+  starting key round-robin, so load spreads across the pool instead of
+  piling onto the first key until it fails. A plain 429 benches the key it
+  hit for the upstream's `Retry-After` window (honoured, clamped to 1s–10m;
+  fallback `gateway.key_rate_limit_cooldown`, default 60s): later requests
+  walk healthier keys first, and the bench is a demotion, never an
+  exclusion — an all-cooling pool still dispatches, soonest-to-recover
+  first, and a benched key that serves 2xx comes off the bench. Unauthorized
+  and quota-exhausted keys keep the existing persistent retest path; the
+  rotation and bench state is in-process and resets on restart.
+- The time-dimension analytics report runs as one grouped query per report
+  instead of one query per bucket — a 90-day day window went from up to 90
+  database round-trips (720 for a 30-day hour window) to one.
+
+### Fixed
+
+- SSE streams framed with CRLF line endings (`\r\n\r\n`) were silently
+  dropped whole by the chat and Gemini stream decoders, which waited for
+  `\n\n` — a shape with no two consecutive newlines in it, so no frame ever
+  completed. Framing now accepts `\n\n`, `\n\r\n`, and `\r\n\r\n` alike.
+- SSE `data:` frames that omit the optional space after the colon (as
+  Aliyun's Anthropic-compatible endpoint sends them) are accepted by the
+  Claude, chat, and Gemini decoders. Previously every frame of such a
+  stream was dropped and a fully delivered, fully billed completion
+  settled as `stream_ended_unannounced` with zero usage recorded.
+- A candidate on a switched-off provider no longer enters the routing
+  chain. It used to be walked and skipped at walk time, spending a probe
+  of the request budget and writing a "provider disabled" attempt row for
+  every disabled provider sorted ahead of a live one — enough of them
+  could spend the whole budget before the request reached the provider
+  that would have served it. When no routable candidate remains the caller
+  now gets the switched-off-configuration answer (503 "no enabled route")
+  instead of the 502 that reports an upstream outage nobody had.
+
 ## [0.1.6] - 2026-08-16
 
 ### Added
@@ -305,7 +357,8 @@ failover, and observe usage and cost.
 - Single binary with the web console embedded via `go:embed`; SQLite or PostgreSQL storage; upstream keys encrypted at rest (AES-256).
 - Self-update via the `update` command and update-check API.
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/yolorouter/yolorouter/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/yolorouter/yolorouter/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/yolorouter/yolorouter/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/yolorouter/yolorouter/compare/v0.1.3...v0.1.4

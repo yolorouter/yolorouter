@@ -8,7 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/provider"
+	"github.com/yolorouter/yolorouter/internal/service/providerclient"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -130,7 +131,7 @@ func parseProviderAndKeyIDs(c *gin.Context) (providerID, keyID uint, ok bool) {
 	return providerID, keyID, true
 }
 
-func GetProviders(svc *service.ProviderService) gin.HandlerFunc {
+func GetProviders(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		list, err := svc.ListProviders()
 		if err != nil {
@@ -141,7 +142,7 @@ func GetProviders(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func GetProvider(svc *service.ProviderService) gin.HandlerFunc {
+func GetProvider(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -156,13 +157,13 @@ func GetProvider(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PostProvider(svc *service.ProviderService) gin.HandlerFunc {
+func PostProvider(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createProviderRequest
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.CreateProvider(c.Request.Context(), service.CreateProviderInput{
+		view, err := svc.CreateProvider(c.Request.Context(), provider.CreateProviderInput{
 			Name: req.Name, BaseURL: req.BaseURL, Note: req.Note,
 			KeyLabel: req.KeyLabel, KeyPlaintext: req.KeyPlaintext, TestModel: req.TestModel,
 			ManagementStatus:  req.ManagementStatus,
@@ -177,7 +178,7 @@ func PostProvider(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PatchProvider(svc *service.ProviderService) gin.HandlerFunc {
+func PatchProvider(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -187,7 +188,7 @@ func PatchProvider(svc *service.ProviderService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.UpdateProvider(id, service.UpdateProviderInput{
+		view, err := svc.UpdateProvider(id, provider.UpdateProviderInput{
 			Name: req.Name, BaseURL: req.BaseURL, Note: req.Note,
 			ProviderType:      req.ProviderType,
 			ProtocolEndpoints: req.ProtocolEndpoints,
@@ -200,7 +201,7 @@ func PatchProvider(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PatchProviderStatus(svc *service.ProviderService) gin.HandlerFunc {
+func PatchProviderStatus(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -218,7 +219,7 @@ func PatchProviderStatus(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PostProviderTestKey(svc *service.ProviderService) gin.HandlerFunc {
+func PostProviderTestKey(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req testKeyRequest
 		if !bindJSON(c, &req) {
@@ -237,7 +238,7 @@ func PostProviderTestKey(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PostProviderListModels(svc *service.ProviderService) gin.HandlerFunc {
+func PostProviderListModels(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req listModelsRequest
 		if !bindJSON(c, &req) {
@@ -260,7 +261,7 @@ func PostProviderListModels(svc *service.ProviderService) gin.HandlerFunc {
 // (the frontend iterates it unconditionally), and only models + outcome are
 // surfaced — the picker shows the categorized outcome, not the per-fetch
 // detail/duration a credential test carries.
-func respondModelCatalogue(c *gin.Context, result service.ListModelsResult) {
+func respondModelCatalogue(c *gin.Context, result providerclient.ListModelsResult) {
 	models := result.Models
 	if models == nil {
 		models = []string{}
@@ -276,7 +277,7 @@ func respondModelCatalogue(c *gin.Context, result service.ListModelsResult) {
 // the by-id counterpart to the stateless preview above. A non-success outcome
 // (including "no usable key") comes back as 200 with an empty list, letting
 // the picker fall back to manual entry.
-func GetProviderListModels(svc *service.ProviderService) gin.HandlerFunc {
+func GetProviderListModels(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, ok := parseUintParam(c, "id")
 		if !ok {
@@ -295,7 +296,7 @@ func GetProviderListModels(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PostProviderKey(svc *service.ProviderService) gin.HandlerFunc {
+func PostProviderKey(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, ok := parseUintParam(c, "id")
 		if !ok {
@@ -305,7 +306,7 @@ func PostProviderKey(svc *service.ProviderService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.CreateProviderKey(c.Request.Context(), providerID, service.CreateKeyInput{
+		view, err := svc.CreateProviderKey(c.Request.Context(), providerID, provider.CreateKeyInput{
 			Label: req.Label, Plaintext: req.Plaintext, TestModel: req.TestModel, ManagementStatus: req.ManagementStatus,
 		}, timeNow())
 		if err != nil {
@@ -316,7 +317,7 @@ func PostProviderKey(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PatchProviderKey(svc *service.ProviderService) gin.HandlerFunc {
+func PatchProviderKey(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, keyID, ok := parseProviderAndKeyIDs(c)
 		if !ok {
@@ -326,7 +327,7 @@ func PatchProviderKey(svc *service.ProviderService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.UpdateProviderKey(c.Request.Context(), providerID, keyID, service.UpdateKeyInput{
+		view, err := svc.UpdateProviderKey(c.Request.Context(), providerID, keyID, provider.UpdateKeyInput{
 			Label: req.Label, Plaintext: req.Plaintext, TestModel: req.TestModel, ManagementStatus: req.ManagementStatus,
 		}, timeNow())
 		if err != nil {
@@ -337,7 +338,7 @@ func PatchProviderKey(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PatchProviderKeyOrder(svc *service.ProviderService) gin.HandlerFunc {
+func PatchProviderKeyOrder(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, keyID, ok := parseProviderAndKeyIDs(c)
 		if !ok {
@@ -355,7 +356,7 @@ func PatchProviderKeyOrder(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PatchProviderKeyStatus(svc *service.ProviderService) gin.HandlerFunc {
+func PatchProviderKeyStatus(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, keyID, ok := parseProviderAndKeyIDs(c)
 		if !ok {
@@ -373,7 +374,7 @@ func PatchProviderKeyStatus(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PostProviderKeyTest(svc *service.ProviderService) gin.HandlerFunc {
+func PostProviderKeyTest(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, keyID, ok := parseProviderAndKeyIDs(c)
 		if !ok {
@@ -388,7 +389,7 @@ func PostProviderKeyTest(svc *service.ProviderService) gin.HandlerFunc {
 	}
 }
 
-func PostProviderKeysTestAll(svc *service.ProviderService) gin.HandlerFunc {
+func PostProviderKeysTestAll(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, ok := parseUintParam(c, "id")
 		if !ok {
@@ -411,7 +412,7 @@ var timeNow = func() time.Time { return time.Now().UTC() }
 
 // GetProviderImpact returns the models that depend on the provider, for the
 // disable confirm dialog.
-func GetProviderImpact(svc *service.ProviderService) gin.HandlerFunc {
+func GetProviderImpact(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {

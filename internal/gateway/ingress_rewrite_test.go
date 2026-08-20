@@ -59,7 +59,7 @@ func upstreamEchoingBody(t *testing.T, sent *[]byte) *httptest.Server {
 func wireOneCandidate(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string) *model.APIKey {
 	t.Helper()
 	p := createProvider(t, db, "p1", upstreamURL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	return createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 }

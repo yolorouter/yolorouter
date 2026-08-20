@@ -173,7 +173,7 @@ func TestNon2xxErrorBodySlowTrickle503_BoundedByShortBudget(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -245,7 +245,7 @@ func TestUnauthorized401_CASPersistsKeyFailureBeforeBodyRead(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-dead", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-dead", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -356,7 +356,7 @@ func TestASlowCallerOnACrossProtocolStreamIsBlamedForTheirOwnTimeout(t *testing.
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-p", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -457,7 +457,7 @@ func TestABrokenProviderOnACrossProtocolStreamIsStillFiledAsPartial(t *testing.T
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-p2", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude2", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude2", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-2", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

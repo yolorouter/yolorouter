@@ -23,9 +23,9 @@ const (
 	VerificationStatusFailed   = 2
 )
 
-// LastTestResult* mirror service.TestOutcome's int values 1:1 for storage in
+// LastTestResult* mirror providerclient.TestOutcome's int values 1:1 for storage in
 // provider_keys.last_test_result (SMALLINT NULL — nil means "never tested").
-// Kept in this package (not internal/service) so the model layer doesn't
+// Kept in this package (not the service layer) so the model layer does not
 // import service; internal/service/provider_client.go's TestOutcome
 // constants are numerically identical by construction (both start at 0 and
 // list the same 9 outcomes in the same order).
@@ -39,11 +39,11 @@ const (
 	LastTestResultUnreachable      = 6
 	LastTestResultUpstreamError    = 7
 	// LastTestResultVerificationUnsupported mirrors
-	// service.TestVerificationUnsupported: the destination's protocol
+	// providerclient.TestVerificationUnsupported: the destination's protocol
 	// (gemini/responses) has no real success-body validator yet, so a 2xx
 	// response from it cannot be certified as a genuine pass.
 	LastTestResultVerificationUnsupported = 8
-	// LastTestResultTimeout mirrors service.TestTimeout: the destination
+	// LastTestResultTimeout mirrors providerclient.TestTimeout: the destination
 	// accepted the connection but did not answer within the test budget.
 	// Stored apart from LastTestResultUnreachable because the two send an
 	// operator to opposite places — a timed-out address is reachable and its

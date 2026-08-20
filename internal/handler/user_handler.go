@@ -11,7 +11,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/model"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/user"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -21,7 +21,7 @@ import (
 // statistics pages. Small deployments (company-internal), so no pagination.
 func GetUsers(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		users, err := service.ListUsers(db)
+		users, err := user.ListUsers(db)
 		if err != nil {
 			middleware.WriteAdminError(c, http.StatusInternalServerError, errcode.DatabaseError)
 			return
@@ -78,7 +78,7 @@ func PatchUserStatus(db *gorm.DB) gin.HandlerFunc {
 			status = model.UserStatusDisabled
 		}
 		actorID := c.MustGet(middleware.UserIDKey).(uint)
-		if err := service.SetUserStatus(db, actorID, id, status, time.Now().UTC()); err != nil {
+		if err := user.SetUserStatus(db, actorID, id, status, time.Now().UTC()); err != nil {
 			writeUserServiceError(c, err)
 			return
 		}
@@ -100,7 +100,7 @@ func PatchUserRole(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		actorID := c.MustGet(middleware.UserIDKey).(uint)
-		if err := service.SetUserRole(db, actorID, id, req.Role, time.Now().UTC()); err != nil {
+		if err := user.SetUserRole(db, actorID, id, req.Role, time.Now().UTC()); err != nil {
 			writeUserServiceError(c, err)
 			return
 		}

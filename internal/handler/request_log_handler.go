@@ -20,7 +20,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/requestlog"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -33,7 +33,7 @@ import (
 // every row. Reuses parseAPIKeyPagination (1-indexed, default 20, max 200)
 // since the pagination contract is identical across all paginated admin
 // endpoints.
-func GetRequestLogs(svc *service.RequestLogService) gin.HandlerFunc {
+func GetRequestLogs(svc *requestlog.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		page, pageSize := parseAPIKeyPagination(c)
 		filter, ok := parseRequestLogFilter(c)
@@ -54,7 +54,7 @@ func GetRequestLogs(svc *service.RequestLogService) gin.HandlerFunc {
 // GetRequestLogDetail handles GET /api/admin/request-logs/:requestId — a
 // single row with attempts_detail parsed into []AttemptRecord. This
 // returns metadata only; request/response bodies are served separately.
-func GetRequestLogDetail(svc *service.RequestLogService) gin.HandlerFunc {
+func GetRequestLogDetail(svc *requestlog.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := c.Param("requestId")
 		if requestID == "" {
@@ -87,7 +87,7 @@ func GetRequestLogDetail(svc *service.RequestLogService) gin.HandlerFunc {
 // meant to hold a bare filename (e.g. "req_x.stream"), but treating it
 // defensively as untrusted input keeps a corrupted/malicious row from
 // escaping bodiesDir via "../" traversal.
-func GetRequestLogBodyStream(svc *service.RequestLogService, bodiesDir string) gin.HandlerFunc {
+func GetRequestLogBodyStream(svc *requestlog.RequestLogService, bodiesDir string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := c.Param("requestId")
 		path, err := svc.GetStreamBodyPath(requestID)
@@ -117,7 +117,7 @@ func GetRequestLogBodyStream(svc *service.RequestLogService, bodiesDir string) g
 // envelope on a mid-stream error; we surface the failure via c.Error and
 // abort the connection — the client sees a truncated CSV rather than a
 // malformed mixed-format response.
-func ExportRequestLogsCSV(svc *service.RequestLogService) gin.HandlerFunc {
+func ExportRequestLogsCSV(svc *requestlog.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		filter, ok := parseRequestLogFilter(c)
 		if !ok {

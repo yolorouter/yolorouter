@@ -42,7 +42,7 @@ func TestPassthroughAnthropicNonStream_UsageAndModelRewrite(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -138,7 +138,7 @@ func TestPassthroughAnthropicStream_UsageAndCleanCompletion(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -227,7 +227,7 @@ func TestPassthroughAnthropicStream_MessageStartModelRewrite(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

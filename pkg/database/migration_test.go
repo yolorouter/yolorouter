@@ -3,8 +3,6 @@ package database
 import (
 	"database/sql"
 	"io/fs"
-	"strconv"
-	"strings"
 	"testing"
 
 	// database.go (same package) imports github.com/glebarez/sqlite, which
@@ -18,54 +16,36 @@ import (
 	"github.com/yolorouter/yolorouter/migrations"
 )
 
-// newMemoryDB opens an in-memory SQLite database for a single test and
-// registers its Close via t.Cleanup, so callers don't each repeat the
-// open-or-fail-and-defer-close boilerplate.
-func newMemoryDB(t *testing.T) *sql.DB {
+// newTestDB opens a SQLite database (":memory:" or a file path) for a
+// single test and registers its Close via t.Cleanup, so callers don't each
+// repeat the open-or-fail-and-defer-close boilerplate.
+func newTestDB(t *testing.T, dsn string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+		t.Fatalf("open sqlite %q: %v", dsn, err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
-// maxEmbeddedMigrationVersion derives the highest migration version from
-// the embedded filenames themselves. The "did RunMigrations apply
-// everything?" assertions used to hardcode this number and it was left
-// stale twice across releases (once at 19, once at 21) — a literal that
-// must be bumped by hand in two test files whenever a migration is added
-// is exactly the kind of guard that silently stops guarding. Deriving it
-// from the FS keeps the assertion honest by construction.
+// newMemoryDB is newTestDB with the in-memory DSN most tests here want.
+func newMemoryDB(t *testing.T) *sql.DB {
+	t.Helper()
+	return newTestDB(t, ":memory:")
+}
+
+// maxEmbeddedMigrationVersion adapts the production maxMigrationVersion to
+// the fatal-on-error shape its four test call sites (here and in the
+// postgres migration tests) all want. The derive-from-FS rationale lives on
+// the production function.
 func maxEmbeddedMigrationVersion(t *testing.T, migrationsFS fs.FS, dir string) int64 {
 	t.Helper()
-	entries, err := fs.ReadDir(migrationsFS, dir)
+	v, err := maxMigrationVersion(migrationsFS, dir)
 	if err != nil {
-		t.Fatalf("read embedded migrations dir %q: %v", dir, err)
+		t.Fatalf("derive max migration version from %q: %v", dir, err)
 	}
-	var maxVersion int64
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".sql") {
-			continue
-		}
-		prefix, _, ok := strings.Cut(name, "_")
-		if !ok {
-			continue
-		}
-		v, err := strconv.ParseInt(prefix, 10, 64)
-		if err != nil {
-			continue
-		}
-		if v > maxVersion {
-			maxVersion = v
-		}
-	}
-	if maxVersion == 0 {
-		t.Fatalf("no numbered .sql migrations found in %q", dir)
-	}
-	return maxVersion
+	return v
 }
 
 func TestRunMigrationsAppliesBaselineOnSQLite(t *testing.T) {

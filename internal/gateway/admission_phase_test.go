@@ -325,11 +325,11 @@ func TestThePricingBasisIsNotNecessarilyTheCandidateThatServes(t *testing.T) {
 
 	svc := newSvc(t, db)
 	first := createProvider(t, db, "cheap", dead.URL)
-	createProviderKey(t, db, svc.masterKey, first.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, first.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, first, "gpt-4o", "gpt-4o-real", true, true, 1)
 
 	second := createProvider(t, db, "dear", alive.URL)
-	createProviderKey(t, db, svc.masterKey, second.ID, "sk-2", "k2", 1, true)
+	createProviderKey(t, db, svc.secrets, second.ID, "sk-2", "k2", 1, true)
 	addCandidateAtPrice(t, db, m, second, "gpt-4o-real", 2, 50.0, 100.0)
 
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})

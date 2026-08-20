@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter/internal/repository"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/analytics"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -80,7 +80,7 @@ var serviceErrorTable = []serviceErrorEntry{
 	// second line — easier to keep the mapping than to prove the handler is
 	// the only entry point.
 	{sentinel: repository.ErrInvalidBucket, code: errcode.InvalidParam, verbatim: true},
-	{sentinel: service.ErrInvalidDimension, code: errcode.InvalidParam, verbatim: true},
+	{sentinel: analytics.ErrInvalidDimension, code: errcode.InvalidParam, verbatim: true},
 }
 
 // writeServiceError maps a service-layer error to the unified error envelope

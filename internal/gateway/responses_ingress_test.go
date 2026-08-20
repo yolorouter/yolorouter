@@ -39,7 +39,7 @@ func TestResponsesIngressToAnthropicUpstream_NonStream(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -147,7 +147,7 @@ func TestResponsesIngressToAnthropicUpstream_Stream(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -242,7 +242,7 @@ func TestResponsesIngressToResponsesProvider_Passthrough(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createResponsesProvider(t, db, "responses-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-responses-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-responses-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -328,7 +328,7 @@ func TestResponsesIngressToResponsesProvider_PassthroughStream(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createResponsesProvider(t, db, "responses-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-responses-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-responses-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

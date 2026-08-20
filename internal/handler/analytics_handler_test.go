@@ -1,8 +1,10 @@
-// Package handler tests for the analytics endpoints. Exercises the
-// full HTTP → service → repository stack against a migrated SQLite DB;
-// repository-only tests for the time-bucket walk live alongside (they'd
-// require an awkward HTTP shim to drive a fixed *time.Location otherwise).
-package handler
+// Tests for the analytics endpoints, driven through the real router — the
+// production route table with its middleware chain (session auth, member
+// scoping, timezone). An external test package so importing the router does
+// not cycle through this package's production side. Exercises the full
+// HTTP → middleware → service → repository stack against a migrated SQLite
+// DB.
+package handler_test
 
 import (
 	"bytes"
@@ -20,33 +22,67 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter/internal/middleware"
+	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/router"
+	"github.com/yolorouter/yolorouter/internal/service/analytics"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
-// newAnalyticsTestRouter wires up a Gin engine with the three analytics
-// routes mounted under /api/admin/analytics — the same paths
-// internal/router/router.go would use, duplicated here so this test file
-// doesn't have to touch router.go (out of scope per the task boundary).
-func newAnalyticsTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
+// Local names for the shared testutil helpers, so the test bodies below
+// read the same as the rest of the handler tests.
+func doJSON(t *testing.T, r *gin.Engine, method, path string, body interface{}, cookie *http.Cookie) (*httptest.ResponseRecorder, testutil.Envelope) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
-	if err := RegisterValidators(); err != nil {
-		t.Fatalf("RegisterValidators: %v", err)
-	}
-	db := testutil.NewSQLiteDB(t)
-	svc := service.NewAnalyticsService(db)
+	return testutil.DoJSON(t, r, method, path, body, cookie)
+}
 
-	r := gin.New()
-	admin := r.Group("/api/admin")
-	admin.GET("/analytics/overview", GetAnalyticsOverview(svc))
-	admin.GET("/analytics/report", GetAnalyticsReport(svc))
-	admin.GET("/analytics/export", ExportAnalyticsCSV(svc))
-	admin.GET("/analytics/compress-stats", GetCompressStats(svc))
-	return r, db
+func seedRequestLog(t *testing.T, db *gorm.DB, requestID string, ts time.Time, mut func(*model.RequestLog)) {
+	t.Helper()
+	testutil.SeedRequestLog(t, db, requestID, ts, mut)
+}
+
+func seedAPIKey(t *testing.T, db *gorm.DB, owner string) (uint, uint) {
+	t.Helper()
+	return testutil.SeedAPIKey(t, db, owner)
+}
+
+func seedProvider(t *testing.T, db *gorm.DB, name string) uint {
+	t.Helper()
+	return testutil.SeedProvider(t, db, name)
+}
+
+// newAnalyticsFixture builds the real router and an admin session to drive
+// it with. Every request in this file goes through the production route
+// table and middleware chain — auth, member scoping, timezone — so these
+// tests pin that the analytics routes exist on the real table and admit an
+// admin session. Which permission GROUP each route sits on is pinned
+// separately, by the router package's group-split test, since everything
+// here authenticates as an admin.
+func newAnalyticsFixture(t *testing.T) (*gin.Engine, *gorm.DB, *http.Cookie) {
+	t.Helper()
+	db := testutil.NewSQLiteDB(t)
+	r, err := router.New(router.Deps{
+		DB:                db,
+		ProviderMasterKey: testutil.ProviderMasterKey(),
+		BodiesDir:         t.TempDir(),
+		Update:            config.UpdateConfig{Enabled: true},
+		Gateway:           config.DefaultGatewayConfig(),
+	})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	now := time.Now().UTC()
+	admin := &model.User{Username: "analytics-admin", Role: model.RoleAdmin,
+		Status: model.UserStatusEnabled, IsLocal: true, PasswordHash: "hash",
+		CreatedAt: now, UpdatedAt: now}
+	if err := repository.CreateUser(db, admin); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	if err := repository.CreateSession(db, "tok-analytics-admin", admin.ID, now.Add(time.Hour), now); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	return r, db, &http.Cookie{Name: "session_id", Value: "tok-analytics-admin"}
 }
 
 // analyticsStrPtr is a tiny *string helper local to this file (the existing
@@ -57,7 +93,7 @@ func analyticsStrPtr(s string) *string { return &s }
 // === Overview handler ====================================================
 
 func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	// 2 successes (cost-known), 1 server failure (cost-unknown),
 	// 1 caller-cancel (cost-unknown). Verify each metric below.
@@ -102,13 +138,13 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 		r.DurationMs = 50
 	})
 
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/overview", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/overview", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
 	var env struct {
-		Code int                 `json:"code"`
-		Data service.OverviewRow `json:"data"`
+		Code int                   `json:"code"`
+		Data analytics.OverviewRow `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -140,7 +176,7 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 }
 
 func TestGetAnalyticsOverviewRespectsTimeRange(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	longAgo := now.Add(-30 * 24 * time.Hour)
 	seedRequestLog(t, db, "old", longAgo, func(r *model.RequestLog) {
@@ -163,12 +199,12 @@ func TestGetAnalyticsOverviewRespectsTimeRange(t *testing.T) {
 	// Window covering only `now`.
 	start := now.Add(-time.Hour).Format(time.RFC3339)
 	end := now.Add(time.Hour).Format(time.RFC3339)
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/overview?start="+start+"&end="+end, nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/overview?start="+start+"&end="+end, nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
 	var env struct {
-		Data service.OverviewRow `json:"data"`
+		Data analytics.OverviewRow `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -179,16 +215,16 @@ func TestGetAnalyticsOverviewRespectsTimeRange(t *testing.T) {
 }
 
 func TestGetAnalyticsOverviewRejectsBadStartTime(t *testing.T) {
-	r, _ := newAnalyticsTestRouter(t)
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/overview?start=not-a-time", nil, nil)
+	r, _, ck := newAnalyticsFixture(t)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/overview?start=not-a-time", nil, ck)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
 
 func TestGetAnalyticsOverviewRejectsBadStatus(t *testing.T) {
-	r, _ := newAnalyticsTestRouter(t)
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/overview?status=bogus", nil, nil)
+	r, _, ck := newAnalyticsFixture(t)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/overview?status=bogus", nil, ck)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
@@ -197,7 +233,7 @@ func TestGetAnalyticsOverviewRejectsBadStatus(t *testing.T) {
 // === Report handlers =====================================================
 
 func TestGetAnalyticsReportByModelGroupsAndOrdersByCalls(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	mk := func(name string) func(*model.RequestLog) {
 		return func(r *model.RequestLog) {
@@ -216,7 +252,7 @@ func TestGetAnalyticsReportByModelGroupsAndOrdersByCalls(t *testing.T) {
 	seedRequestLog(t, db, "a5", now, mk("claude"))
 	seedRequestLog(t, db, "a6", now, mk("claude"))
 
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=model", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=model", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -257,7 +293,7 @@ func TestGetAnalyticsReportByModelGroupsAndOrdersByCalls(t *testing.T) {
 }
 
 func TestGetAnalyticsReportByModelComputesSuccessRateExcluding499(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	// 1 success + 1 server-error (5xx, ended) + 1 caller-cancel (499, NOT ended).
 	seedRequestLog(t, db, "s", now, func(r *model.RequestLog) {
@@ -273,7 +309,7 @@ func TestGetAnalyticsReportByModelComputesSuccessRateExcluding499(t *testing.T) 
 	})
 	seedRequestLog(t, db, "c", now, func(r *model.RequestLog) { r.ModelName = "gpt-4"; r.StatusCode = 499 })
 
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=model", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=model", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -304,7 +340,7 @@ func TestGetAnalyticsReportByModelComputesSuccessRateExcluding499(t *testing.T) 
 }
 
 func TestGetAnalyticsReportByProviderResolvesNamesViaPostFetch(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	// Seed a real Provider so resolveProviderNames can find it.
 	prov := &model.Provider{Name: "openai-main", ProviderType: "openai", BaseURL: "https://api.example.com/v1", ManagementStatus: model.ProviderStatusEnabled}
 	if err := db.Create(prov).Error; err != nil {
@@ -326,7 +362,7 @@ func TestGetAnalyticsReportByProviderResolvesNamesViaPostFetch(t *testing.T) {
 		r.StatusCode = 200 // NULL-provider bucket
 	})
 
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=provider", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=provider", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -373,7 +409,7 @@ func TestGetAnalyticsReportByProviderResolvesNamesViaPostFetch(t *testing.T) {
 }
 
 func TestGetAnalyticsReportByCallerResolvesOwnerUsernames(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	key, _ := seedAPIKey(t, db, "alice")
 	now := time.Now().UTC()
 	seedRequestLog(t, db, "k1", now, func(r *model.RequestLog) {
@@ -390,7 +426,7 @@ func TestGetAnalyticsReportByCallerResolvesOwnerUsernames(t *testing.T) {
 		r.StatusCode = 200 // NULL-api_key bucket
 	})
 
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=caller", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=caller", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -428,7 +464,7 @@ func TestGetAnalyticsReportByCallerResolvesOwnerUsernames(t *testing.T) {
 }
 
 func TestGetAnalyticsReportDefaultsDimensionToModel(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	seedRequestLog(t, db, "d1", now, func(r *model.RequestLog) {
 		r.ModelName = "gpt-4"
@@ -438,7 +474,7 @@ func TestGetAnalyticsReportDefaultsDimensionToModel(t *testing.T) {
 	})
 
 	// No ?dimension= on the URL at all.
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -450,22 +486,22 @@ func TestGetAnalyticsReportDefaultsDimensionToModel(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if env.Data.Dimension != service.DimensionModel {
-		t.Fatalf("default dimension = %q, want %q", env.Data.Dimension, service.DimensionModel)
+	if env.Data.Dimension != analytics.DimensionModel {
+		t.Fatalf("default dimension = %q, want %q", env.Data.Dimension, analytics.DimensionModel)
 	}
 }
 
 func TestGetAnalyticsReportRejectsUnknownDimension(t *testing.T) {
-	r, _ := newAnalyticsTestRouter(t)
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=banana", nil, nil)
+	r, _, ck := newAnalyticsFixture(t)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=banana", nil, ck)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
 
 func TestGetAnalyticsReportRejectsUnknownBucket(t *testing.T) {
-	r, _ := newAnalyticsTestRouter(t)
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=time&bucket=century", nil, nil)
+	r, _, ck := newAnalyticsFixture(t)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=time&bucket=century", nil, ck)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
@@ -474,7 +510,7 @@ func TestGetAnalyticsReportRejectsUnknownBucket(t *testing.T) {
 // === Time dimension ======================================================
 
 func TestGetAnalyticsReportByTimeDayBucketFillsGaps(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	// Seed a row 3 days ago and another 1 day ago; the day in between has
 	// zero data and must still appear with zeros so the trend line is
 	// continuous. Use UTC instants that map unambiguously to local days in
@@ -496,7 +532,7 @@ func TestGetAnalyticsReportByTimeDayBucketFillsGaps(t *testing.T) {
 		r.CostMicros = 10
 	})
 
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=time&bucket=day", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=time&bucket=day", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -580,7 +616,7 @@ func TestAggregateByTimeWalksDayBucketsInUTC(t *testing.T) {
 
 	// now is deliberately far from the explicit filter window — if it ever
 	// leaked into the windowing, the bucket assertions below would fail.
-	rows, err := repository.AggregateByTime(db, f, loc, repository.TimeBucketDay, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	rows, err := repository.AggregateByTime(t.Context(), db, f, loc, repository.TimeBucketDay, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("AggregateByTime: %v", err)
 	}
@@ -606,16 +642,223 @@ func TestAggregateByTimeWalksDayBucketsInUTC(t *testing.T) {
 
 func TestAggregateByTimeRejectsInvalidBucket(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	_, err := repository.AggregateByTime(db, &repository.RequestLogFilter{}, time.UTC, "century", time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	_, err := repository.AggregateByTime(t.Context(), db, &repository.RequestLogFilter{}, time.UTC, "century", time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	if !errors.Is(err, repository.ErrInvalidBucket) {
 		t.Fatalf("expected ErrInvalidBucket, got %v", err)
+	}
+}
+
+// TestAggregateByTimeHourBucketsCrossUTCDay pins the hour-bucket walk in a
+// non-UTC zone whose local buckets straddle a UTC midnight: labels carry the
+// local wall clock plus the UTC offset suffix, empty buckets gap-fill with
+// zeros, the order is newest-first, and no call is lost or double-counted
+// across the UTC day boundary.
+func TestAggregateByTimeHourBucketsCrossUTCDay(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	loc := time.FixedZone("UTC+8", 8*3600)
+
+	// Local window 2026-07-14 23:00 → 2026-07-15 02:00 (+08): three hour
+	// buckets, the last two on the next local day, all inside UTC July 14.
+	start := time.Date(2026, 7, 14, 23, 0, 0, 0, loc)
+	end := start.Add(3 * time.Hour)
+
+	seedRequestLog(t, db, "h0", start.Add(10*time.Minute).UTC(), func(r *model.RequestLog) {
+		r.StatusCode = 200
+		r.InputTokens = 7
+		r.CostKnown = true
+	})
+	seedRequestLog(t, db, "h2-a", start.Add(2*time.Hour+40*time.Minute).UTC(), func(r *model.RequestLog) {
+		r.StatusCode = 200
+		r.CostKnown = true
+	})
+	seedRequestLog(t, db, "h2-b", start.Add(2*time.Hour+50*time.Minute).UTC(), func(r *model.RequestLog) {
+		r.StatusCode = 500
+		r.FailReason = analyticsStrPtr("err")
+		r.CostKnown = true
+	})
+
+	startUTC := start.UTC()
+	endUTC := end.UTC()
+	f := &repository.RequestLogFilter{StartTime: &startUTC, EndTime: &endUTC}
+	rows, err := repository.AggregateByTime(t.Context(), db, f, loc, repository.TimeBucketHour, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("AggregateByTime: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("len(rows) = %d, want 3", len(rows))
+	}
+	wantBuckets := []string{"2026-07-15 01:00 +08:00", "2026-07-15 00:00 +08:00", "2026-07-14 23:00 +08:00"}
+	for i, want := range wantBuckets {
+		if rows[i].Bucket != want {
+			t.Fatalf("rows[%d].Bucket = %q, want %q", i, rows[i].Bucket, want)
+		}
+	}
+	if rows[0].Calls != 2 || rows[0].SuccessCalls != 1 {
+		t.Fatalf("newest bucket = %+v, want Calls=2 SuccessCalls=1", rows[0])
+	}
+	if rows[1].Calls != 0 {
+		t.Fatalf("middle bucket gap-fill Calls = %d, want 0", rows[1].Calls)
+	}
+	if rows[2].Calls != 1 || rows[2].InputTokens != 7 {
+		t.Fatalf("oldest bucket = %+v, want Calls=1 InputTokens=7", rows[2])
+	}
+	if total := rows[0].Calls + rows[1].Calls + rows[2].Calls; total != 3 {
+		t.Fatalf("total calls = %d, want 3 (no loss across the UTC day boundary)", total)
+	}
+}
+
+// TestAggregateByTimeKeepsBucketsAnchoredAtStart pins that buckets stay
+// anchored at the range start rather than snapping to clock boundaries: a
+// window starting at 14:23 produces [14:23, 15:23) and [15:23, 16:23), and
+// two rows that share the 15:00 clock hour land in DIFFERENT buckets because
+// the anchor splits that hour. An implementation that grouped by wall-clock
+// hour would fold them together.
+func TestAggregateByTimeKeepsBucketsAnchoredAtStart(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	start := time.Date(2026, 7, 14, 14, 23, 0, 0, time.UTC)
+	end := start.Add(2 * time.Hour)
+
+	seedRequestLog(t, db, "first-bucket", time.Date(2026, 7, 14, 15, 0, 0, 0, time.UTC), func(r *model.RequestLog) {
+		r.StatusCode = 200
+		r.CostKnown = true
+	})
+	seedRequestLog(t, db, "second-bucket", time.Date(2026, 7, 14, 15, 30, 0, 0, time.UTC), func(r *model.RequestLog) {
+		r.StatusCode = 200
+		r.CostKnown = true
+	})
+
+	f := &repository.RequestLogFilter{StartTime: &start, EndTime: &end}
+	rows, err := repository.AggregateByTime(t.Context(), db, f, time.UTC, repository.TimeBucketHour, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("AggregateByTime: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	if rows[0].Bucket != "2026-07-14 15:23 +00:00" || rows[1].Bucket != "2026-07-14 14:23 +00:00" {
+		t.Fatalf("buckets = %q / %q, want start-anchored 15:23 / 14:23", rows[0].Bucket, rows[1].Bucket)
+	}
+	if rows[1].Calls != 1 || rows[0].Calls != 1 {
+		t.Fatalf("calls = %d / %d, want 1 in each bucket (15:00 belongs to the 14:23 bucket, 15:30 to the 15:23 one)", rows[1].Calls, rows[0].Calls)
+	}
+}
+
+// TestAggregateByTimeSubMinuteStartClampsToFirstBucket pins the sub-minute
+// anchor edge: a range starting mid-minute (14:23:30) floors its first
+// rows' minute group to 14:23:00, which sorts BEFORE the first bucket
+// boundary — those rows are still inside [start, end) and must clamp into
+// the first bucket instead of being dropped or panicking.
+func TestAggregateByTimeSubMinuteStartClampsToFirstBucket(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	start := time.Date(2026, 7, 14, 14, 23, 30, 0, time.UTC)
+	end := start.Add(time.Hour)
+
+	seedRequestLog(t, db, "sub-minute", time.Date(2026, 7, 14, 14, 23, 45, 0, time.UTC), func(r *model.RequestLog) {
+		r.StatusCode = 200
+		r.CostKnown = true
+	})
+	seedRequestLog(t, db, "mid-bucket", time.Date(2026, 7, 14, 14, 50, 0, 0, time.UTC), func(r *model.RequestLog) {
+		r.StatusCode = 200
+		r.CostKnown = true
+	})
+
+	f := &repository.RequestLogFilter{StartTime: &start, EndTime: &end}
+	rows, err := repository.AggregateByTime(t.Context(), db, f, time.UTC, repository.TimeBucketHour, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("AggregateByTime: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
+	}
+	if rows[0].Calls != 2 {
+		t.Fatalf("Calls = %d, want 2 (the 14:23:45 row must clamp into the first bucket, not vanish)", rows[0].Calls)
+	}
+}
+
+// TestAggregateByTimeDayBucketAcrossDSTTransition pins the day-bucket walk
+// across a spring-forward transition: the transition day is 23 hours long,
+// so the next day's boundary sits at local midnight, NOT 24 clock hours
+// later. A row in the first half hour after that midnight belongs to the
+// post-transition day — a walk advancing by a fixed 24h would misfile it
+// into the transition day.
+func TestAggregateByTimeDayBucketAcrossDSTTransition(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	// America/New_York springs forward on 2026-03-08 (02:00 EST -> 03:00
+	// EDT), making that local day 23 hours long.
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	start := time.Date(2026, 3, 8, 0, 0, 0, 0, loc)
+	end := start.AddDate(0, 0, 2)
+
+	// 03:30 UTC on March 9 = 23:30 EDT on March 8 — late in the transition
+	// day. 04:30 UTC = 00:30 EDT on March 9 — just past the 23-hour
+	// boundary, inside the drift window where a fixed-24h walk misfiles.
+	seedRequestLog(t, db, "transition-day", time.Date(2026, 3, 9, 3, 30, 0, 0, time.UTC), func(r *model.RequestLog) {
+		r.StatusCode = 200
+		r.CostKnown = true
+	})
+	seedRequestLog(t, db, "day-after", time.Date(2026, 3, 9, 4, 30, 0, 0, time.UTC), func(r *model.RequestLog) {
+		r.StatusCode = 200
+		r.CostKnown = true
+	})
+
+	startUTC := start.UTC()
+	endUTC := end.UTC()
+	f := &repository.RequestLogFilter{StartTime: &startUTC, EndTime: &endUTC}
+	rows, err := repository.AggregateByTime(t.Context(), db, f, loc, repository.TimeBucketDay, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("AggregateByTime: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2 (the 23-hour day and the day after)", len(rows))
+	}
+	if rows[0].Bucket != "2026-03-09" || rows[1].Bucket != "2026-03-08" {
+		t.Fatalf("buckets = %q / %q, want 2026-03-09 / 2026-03-08", rows[0].Bucket, rows[1].Bucket)
+	}
+	if rows[1].Calls != 1 || rows[0].Calls != 1 {
+		t.Fatalf("calls = %d / %d, want 1 in each day (00:30 EDT belongs to March 9, not the 23-hour March 8)", rows[1].Calls, rows[0].Calls)
+	}
+}
+
+// TestAggregateByTimeDayBucketNonUTCOffset pins day-bucket assignment in a
+// non-UTC zone: a row late in the UTC evening belongs to the NEXT local
+// calendar day.
+func TestAggregateByTimeDayBucketNonUTCOffset(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	loc := time.FixedZone("UTC+8", 8*3600)
+	start := time.Date(2026, 7, 14, 0, 0, 0, 0, loc)
+	end := start.AddDate(0, 0, 2)
+
+	// 20:00 UTC on July 14 is 04:00 on July 15 in +08:00.
+	seedRequestLog(t, db, "utc-evening", time.Date(2026, 7, 14, 20, 0, 0, 0, time.UTC), func(r *model.RequestLog) {
+		r.StatusCode = 200
+		r.CostKnown = true
+	})
+
+	startUTC := start.UTC()
+	endUTC := end.UTC()
+	f := &repository.RequestLogFilter{StartTime: &startUTC, EndTime: &endUTC}
+	rows, err := repository.AggregateByTime(t.Context(), db, f, loc, repository.TimeBucketDay, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("AggregateByTime: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	if rows[0].Bucket != "2026-07-15" || rows[0].Calls != 1 {
+		t.Fatalf("rows[0] = %+v, want the 2026-07-15 local day carrying the call", rows[0])
+	}
+	if rows[1].Bucket != "2026-07-14" || rows[1].Calls != 0 {
+		t.Fatalf("rows[1] = %+v, want an empty 2026-07-14 local day", rows[1])
 	}
 }
 
 // === CSV export ==========================================================
 
 func TestExportAnalyticsCSVWritesBOMAndHeadersAndRows(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	prov := &model.Provider{Name: "openai-main", ProviderType: "openai", BaseURL: "https://api.example.com/v1", ManagementStatus: model.ProviderStatusEnabled}
 	if err := db.Create(prov).Error; err != nil {
 		t.Fatalf("seed provider: %v", err)
@@ -632,6 +875,7 @@ func TestExportAnalyticsCSVWritesBOMAndHeadersAndRows(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/analytics/export?dimension=model", nil)
+	req.AddCookie(ck)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -682,8 +926,9 @@ func TestExportAnalyticsCSVWritesBOMAndHeadersAndRows(t *testing.T) {
 }
 
 func TestExportAnalyticsCSVRejectsUnknownDimension(t *testing.T) {
-	r, _ := newAnalyticsTestRouter(t)
+	r, _, ck := newAnalyticsFixture(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/analytics/export?dimension=banana", nil)
+	req.AddCookie(ck)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -743,13 +988,13 @@ type compressStatsEnvelop struct {
 
 // doCompressStats is a tiny helper: hits the endpoint, unmarshals the
 // envelope, fails the test on any non-200 or unmarshal error.
-func doCompressStats(t *testing.T, r *gin.Engine, query string) compressStatsEnvelop {
+func doCompressStats(t *testing.T, r *gin.Engine, ck *http.Cookie, query string) compressStatsEnvelop {
 	t.Helper()
 	path := "/api/admin/analytics/compress-stats"
 	if query != "" {
 		path += "?" + query
 	}
-	w, _ := doJSON(t, r, http.MethodGet, path, nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, path, nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -769,7 +1014,7 @@ func doCompressStats(t *testing.T, r *gin.Engine, query string) compressStatsEnv
 // new semantics count ROWS-that-used-the-compressor, not total invocations),
 // and the daily series (now a single GROUP BY query with gap-fill).
 func TestGetCompressStatsAggregatesSeededRows(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 
 	// Seed two api_keys with distinct owners so the Top-N bucket resolves
 	// each key's username.
@@ -836,7 +1081,7 @@ func TestGetCompressStatsAggregatesSeededRows(t *testing.T) {
 		r.InputTokens = 50
 	})
 
-	data := doCompressStats(t, r, "")
+	data := doCompressStats(t, r, ck, "")
 
 	// Totals: 5 total calls, 3 compressed (rows 1, 2, 4 — NOT row 5 which
 	// never attempted), tokens 100+50+30=180, cost 10+5+3=18, total
@@ -979,9 +1224,9 @@ func TestGetCompressStatsAggregatesSeededRows(t *testing.T) {
 // matches zero rows produces empty arrays (not JSON null) for every slice
 // field — the contract the frontend relies on for .map / .length.
 func TestGetCompressStatsEmptyReturnsEmptyArrays(t *testing.T) {
-	r, _ := newAnalyticsTestRouter(t)
+	r, _, ck := newAnalyticsFixture(t)
 	// No rows seeded; the default 7-day window still matches nothing.
-	data := doCompressStats(t, r, "")
+	data := doCompressStats(t, r, ck, "")
 
 	if data.SkipReasonBreakdown == nil {
 		t.Fatalf("SkipReasonBreakdown = nil, want empty slice")
@@ -1040,7 +1285,7 @@ func TestGetCompressStatsEmptyReturnsEmptyArrays(t *testing.T) {
 // daily). An api_key_id filter that matches one key should yield that key's
 // rows only.
 func TestGetCompressStatsRespectsAPIKeyFilter(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	key1, _ := seedAPIKey(t, db, "alice")
 	key2, _ := seedAPIKey(t, db, "bob")
 	now := time.Now().UTC()
@@ -1056,7 +1301,7 @@ func TestGetCompressStatsRespectsAPIKeyFilter(t *testing.T) {
 	})
 
 	// Filter to alice's key only.
-	data := doCompressStats(t, r, "api_key_id="+strconv.FormatUint(uint64(key1), 10))
+	data := doCompressStats(t, r, ck, "api_key_id="+strconv.FormatUint(uint64(key1), 10))
 	if data.Totals.TotalCalls != 1 {
 		t.Fatalf("TotalCalls = %d, want 1 (filtered)", data.Totals.TotalCalls)
 	}
@@ -1082,12 +1327,12 @@ func TestGetCompressStatsRespectsAPIKeyFilter(t *testing.T) {
 // seeded key count either way, so we verify the request is accepted and
 // returns at most MaxCompressTopN rows.
 func TestGetCompressStatsLimitParamClampsToMax(t *testing.T) {
-	r, _ := newAnalyticsTestRouter(t)
+	r, _, ck := newAnalyticsFixture(t)
 	// No rows seeded — clamp doesn't change row count, but a 1000 must not
 	// 400 (the parser accepts and clamps).
-	data := doCompressStats(t, r, "limit=1000")
-	if len(data.TopAPIKeys) > service.MaxCompressTopN {
-		t.Fatalf("TopAPIKeys len = %d, want <= %d (clamped)", len(data.TopAPIKeys), service.MaxCompressTopN)
+	data := doCompressStats(t, r, ck, "limit=1000")
+	if len(data.TopAPIKeys) > analytics.MaxCompressTopN {
+		t.Fatalf("TopAPIKeys len = %d, want <= %d (clamped)", len(data.TopAPIKeys), analytics.MaxCompressTopN)
 	}
 }
 
@@ -1095,12 +1340,12 @@ func TestGetCompressStatsLimitParamClampsToMax(t *testing.T) {
 // produces a 400, not a silent default — same posture as the existing
 // filter-param validators.
 func TestGetCompressStatsRejectsBadLimit(t *testing.T) {
-	r, _ := newAnalyticsTestRouter(t)
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/compress-stats?limit=banana", nil, nil)
+	r, _, ck := newAnalyticsFixture(t)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/compress-stats?limit=banana", nil, ck)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for limit=banana, got %d", w.Code)
 	}
-	w, _ = doJSON(t, r, http.MethodGet, "/api/admin/analytics/compress-stats?limit=0", nil, nil)
+	w, _ = doJSON(t, r, http.MethodGet, "/api/admin/analytics/compress-stats?limit=0", nil, ck)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for limit=0, got %d", w.Code)
 	}
@@ -1110,8 +1355,8 @@ func TestGetCompressStatsRejectsBadLimit(t *testing.T) {
 // still runs before compress-stats does its work — a bad start timestamp
 // fails the same way it does for /analytics/overview.
 func TestGetCompressStatsRejectsBadStartTime(t *testing.T) {
-	r, _ := newAnalyticsTestRouter(t)
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/compress-stats?start=not-a-time", nil, nil)
+	r, _, ck := newAnalyticsFixture(t)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/compress-stats?start=not-a-time", nil, ck)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
@@ -1127,7 +1372,7 @@ func TestGetCompressStatsRejectsBadStartTime(t *testing.T) {
 // the requested limit. With 5 real keys + 1 NULL bucket and limit=5, the
 // response must contain all 5 real keys (not 4).
 func TestGetCompressStatsTopAPIKeysDropsNullBucketWithinLimit(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 
 	// Five real keys, each with a distinct tokens_saved so the order is
 	// deterministic. Their values are all BELOW the NULL bucket's 1000 so
@@ -1146,7 +1391,7 @@ func TestGetCompressStatsTopAPIKeysDropsNullBucketWithinLimit(t *testing.T) {
 		r.CompressEstimatedTokensSaved = 1000
 	})
 
-	data := doCompressStats(t, r, "limit=5")
+	data := doCompressStats(t, r, ck, "limit=5")
 	if len(data.TopAPIKeys) != 5 {
 		t.Fatalf("TopAPIKeys len = %d, want 5 (NULL bucket must not consume a LIMIT slot)", len(data.TopAPIKeys))
 	}
@@ -1165,7 +1410,7 @@ func TestGetCompressStatsTopAPIKeysDropsNullBucketWithinLimit(t *testing.T) {
 // tokens_saved would sort it first, then asserts the HAVING clause drops it
 // at the SQL layer so all 3 real providers fit within LIMIT=3.
 func TestGetCompressStatsTopProvidersDropsNullBucketWithinLimit(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 
 	// Three real providers with descending tokens_saved so the order is
 	// deterministic. All values are BELOW the NULL bucket's 1000 so the NULL
@@ -1187,7 +1432,7 @@ func TestGetCompressStatsTopProvidersDropsNullBucketWithinLimit(t *testing.T) {
 		r.CompressorsApplied = "diff"
 	})
 
-	data := doCompressStats(t, r, "limit=3")
+	data := doCompressStats(t, r, ck, "limit=3")
 	if len(data.TopProviders) != 3 {
 		t.Fatalf("TopProviders len = %d, want 3 (NULL bucket must not consume a LIMIT slot)", len(data.TopProviders))
 	}
@@ -1208,7 +1453,7 @@ func TestGetCompressStatsTopProvidersDropsNullBucketWithinLimit(t *testing.T) {
 //   - is sorted ascending (oldest-first) for a left-to-right trend chart,
 //   - only counts rows where compressors_applied != ”.
 func TestGetCompressStatsDailySeriesAscendingWithGapFill(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 
 	now := time.Now().UTC()
 	// Two rows: today and 2 days ago. The day in between has zero compressed
@@ -1225,7 +1470,7 @@ func TestGetCompressStatsDailySeriesAscendingWithGapFill(t *testing.T) {
 	// Use a 4-day window so we know there are exactly 4 buckets.
 	start := now.Add(-3 * 24 * time.Hour).Format(time.RFC3339)
 	end := now.Add(1 * 24 * time.Hour).Format(time.RFC3339)
-	data := doCompressStats(t, r, "start="+start+"&end="+end)
+	data := doCompressStats(t, r, ck, "start="+start+"&end="+end)
 
 	if len(data.DailySeries) < 4 {
 		t.Fatalf("DailySeries len = %d, want >= 4 (gap-fill)", len(data.DailySeries))
@@ -1254,7 +1499,7 @@ func TestGetCompressStatsDailySeriesAscendingWithGapFill(t *testing.T) {
 // total invocations. A row listing "log,log,diff" counts once for log and
 // once for diff (not twice for log).
 func TestGetCompressStatsCompressorHitsCountsRowsNotInvocations(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 
 	now := time.Now().UTC()
 	// One row that lists log twice + diff once. Under the old app-side
@@ -1264,7 +1509,7 @@ func TestGetCompressStatsCompressorHitsCountsRowsNotInvocations(t *testing.T) {
 		r.CompressorsApplied = "log,log,diff"
 	})
 
-	data := doCompressStats(t, r, "")
+	data := doCompressStats(t, r, ck, "")
 
 	// All four known compressors appear; log=1 (not 2), diff=1, gotest=0, grep=0.
 	hitsByName := make(map[string]int64, len(data.CompressorHits))
@@ -1287,37 +1532,6 @@ func TestGetCompressStatsCompressorHitsCountsRowsNotInvocations(t *testing.T) {
 
 // === Filter pin (per-entity scope) =======================================
 
-// TestParseAnalyticsFilterMemberPinStripsFailovers locks the security-
-// sensitive half of the member pin: a member's request arrives with
-// with_failovers=1 and provider/user params of its own choosing, and the
-// pin must override the user, strip the provider, and — the half that now
-// lives on AnalyticsOptions rather than the filter — force WithFailovers
-// off so a member cannot trigger the full failover scan. Deleting the
-// options half of the pin turns this red.
-func TestParseAnalyticsFilterMemberPinStripsFailovers(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet,
-		"/api/admin/analytics/report?with_failovers=1&provider_id=3&user_id=9", nil)
-	pinned := uint(7)
-	c.Set(middleware.ViewScopeKey, middleware.ViewScope{Member: true, Owner: &pinned})
-
-	filter, opts, ok := parseAnalyticsFilter(c)
-	if !ok {
-		t.Fatal("parseAnalyticsFilter failed on a member request")
-	}
-	if filter.UserID == nil || *filter.UserID != 7 {
-		t.Fatalf("member filter must pin user_id=7, got %+v", filter.UserID)
-	}
-	if filter.ProviderID != nil {
-		t.Fatalf("member filter must strip provider_id, got %v", *filter.ProviderID)
-	}
-	if opts.WithFailovers {
-		t.Fatal("member options must force WithFailovers=false (the failover scan is operator-only)")
-	}
-}
-
 // TestAnalyticsReportFilterPin asserts that pinning one dimension in the
 // shared analytics filter scopes EVERY aggregate (overview + time + model +
 // provider + caller) down to that entity. The per-entity cost detail pages
@@ -1327,7 +1541,7 @@ func TestParseAnalyticsFilterMemberPinStripsFailovers(t *testing.T) {
 // shrink all five aggregates consistently. If any path stops respecting the
 // shared filter this test fails before the frontend can rely on the premise.
 func TestAnalyticsReportFilterPin(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 
 	// Seed two keys + two providers and capture the assigned IDs so the
 	// filter query strings use the real values (SQLite picks IDs; we don't
@@ -1356,7 +1570,7 @@ func TestAnalyticsReportFilterPin(t *testing.T) {
 
 	// --- pin api_key_id=key1 → model report must contain modelA only ---
 	w, _ := doJSON(t, r, http.MethodGet,
-		"/api/admin/analytics/report?dimension=model&api_key_id="+strconv.FormatUint(uint64(key1), 10), nil, nil)
+		"/api/admin/analytics/report?dimension=model&api_key_id="+strconv.FormatUint(uint64(key1), 10), nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1376,7 +1590,7 @@ func TestAnalyticsReportFilterPin(t *testing.T) {
 
 	// --- pin model_name=modelB → caller report must contain key2 only ---
 	w, _ = doJSON(t, r, http.MethodGet,
-		"/api/admin/analytics/report?dimension=caller&model_name=modelB", nil, nil)
+		"/api/admin/analytics/report?dimension=caller&model_name=modelB", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1398,7 +1612,7 @@ func TestAnalyticsReportFilterPin(t *testing.T) {
 
 	// --- pin provider_id=prov2 → model report must contain modelB only ---
 	w, _ = doJSON(t, r, http.MethodGet,
-		"/api/admin/analytics/report?dimension=model&provider_id="+strconv.FormatUint(uint64(prov2), 10), nil, nil)
+		"/api/admin/analytics/report?dimension=model&provider_id="+strconv.FormatUint(uint64(prov2), 10), nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1418,7 +1632,7 @@ func TestAnalyticsReportFilterPin(t *testing.T) {
 
 	// --- pin provider_id=prov2 → provider report must contain prov2 only ---
 	w, _ = doJSON(t, r, http.MethodGet,
-		"/api/admin/analytics/report?dimension=provider&provider_id="+strconv.FormatUint(uint64(prov2), 10), nil, nil)
+		"/api/admin/analytics/report?dimension=provider&provider_id="+strconv.FormatUint(uint64(prov2), 10), nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1443,7 +1657,7 @@ func TestAnalyticsReportFilterPin(t *testing.T) {
 	// buckets must equal the count of matching rows (1) — that's the
 	// per-entity scope contract for the time dimension.
 	w, _ = doJSON(t, r, http.MethodGet,
-		"/api/admin/analytics/report?dimension=time&bucket=day&api_key_id="+strconv.FormatUint(uint64(key1), 10), nil, nil)
+		"/api/admin/analytics/report?dimension=time&bucket=day&api_key_id="+strconv.FormatUint(uint64(key1), 10), nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1468,7 +1682,7 @@ func TestAnalyticsReportFilterPin(t *testing.T) {
 
 	// --- pin model_name=modelA → overview cost must equal modelA's cost only ---
 	w, _ = doJSON(t, r, http.MethodGet,
-		"/api/admin/analytics/overview?model_name=modelA", nil, nil)
+		"/api/admin/analytics/overview?model_name=modelA", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1487,7 +1701,7 @@ func TestAnalyticsReportFilterPin(t *testing.T) {
 
 	// --- pin provider_id=prov2 → overview cost must equal modelB's cost only ---
 	w, _ = doJSON(t, r, http.MethodGet,
-		"/api/admin/analytics/overview?provider_id="+strconv.FormatUint(uint64(prov2), 10), nil, nil)
+		"/api/admin/analytics/overview?provider_id="+strconv.FormatUint(uint64(prov2), 10), nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1528,7 +1742,7 @@ func minInt(a, b int) int {
 // more sorts above a chatty cheap one. Call-count ordering is a client-side
 // toggle on the table, not a server contract.
 func TestCallerReportRanksBySpendNotVolume(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	cheap, _ := seedAPIKey(t, db, "chatty-cheap")
 	pricey, _ := seedAPIKey(t, db, "pricey-quiet")
@@ -1547,7 +1761,7 @@ func TestCallerReportRanksBySpendNotVolume(t *testing.T) {
 		rl.CostKnown = true
 	})
 
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=caller", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=caller", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1576,7 +1790,7 @@ func TestCallerReportRanksBySpendNotVolume(t *testing.T) {
 // a failover; and a provider every request failed away from still gets a
 // report row — it served nothing, which is exactly why it must be visible.
 func TestProviderReportChargesFailoversToTheProviderThatFailed(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	flaky := &model.Provider{Name: "flaky", BaseURL: "http://f", DestinationVersion: 1}
 	rescuer := &model.Provider{Name: "rescuer", BaseURL: "http://r", DestinationVersion: 1}
@@ -1601,7 +1815,7 @@ func TestProviderReportChargesFailoversToTheProviderThatFailed(t *testing.T) {
 		rl.AttemptsDetail = &rotation
 	})
 
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=provider&with_failovers=1", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=provider&with_failovers=1", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1645,7 +1859,7 @@ func TestProviderReportChargesFailoversToTheProviderThatFailed(t *testing.T) {
 // that provider's own failovers (they live in rows that ended elsewhere)
 // nor synthesize rows for providers the filter excluded.
 func TestProviderReportFailoversSurviveTheProviderFilter(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	flaky := &model.Provider{Name: "flaky", BaseURL: "http://f", DestinationVersion: 1}
 	rescuer := &model.Provider{Name: "rescuer", BaseURL: "http://r", DestinationVersion: 1}
@@ -1685,7 +1899,7 @@ func TestProviderReportFailoversSurviveTheProviderFilter(t *testing.T) {
 
 	// Filtered to flaky: its own failover must show, on a synthesized row.
 	w, _ := doJSON(t, r, http.MethodGet,
-		fmt.Sprintf("/api/admin/analytics/report?dimension=provider&with_failovers=1&provider_id=%d", flaky.ID), nil, nil)
+		fmt.Sprintf("/api/admin/analytics/report?dimension=provider&with_failovers=1&provider_id=%d", flaky.ID), nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1699,7 +1913,7 @@ func TestProviderReportFailoversSurviveTheProviderFilter(t *testing.T) {
 
 	// Filtered to rescuer: no phantom flaky row, and rescuing is not charged.
 	w, _ = doJSON(t, r, http.MethodGet,
-		fmt.Sprintf("/api/admin/analytics/report?dimension=provider&with_failovers=1&provider_id=%d", rescuer.ID), nil, nil)
+		fmt.Sprintf("/api/admin/analytics/report?dimension=provider&with_failovers=1&provider_id=%d", rescuer.ID), nil, ck)
 	rows = parse(w)
 	if got := rows["rescuer"]; got != [2]int64{1, 0} {
 		t.Fatalf("rescuer under its own filter = %v, want calls 1 / failovers 0", got)
@@ -1713,7 +1927,7 @@ func TestProviderReportFailoversSurviveTheProviderFilter(t *testing.T) {
 // that ultimately failed still charged the provider that failed first, even
 // when the report itself is filtered to a class that excludes that request.
 func TestProviderReportFailoversIgnoreTheStatusFilter(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	flaky := &model.Provider{Name: "flaky", BaseURL: "http://f", DestinationVersion: 1}
 	alsoBad := &model.Provider{Name: "also-bad", BaseURL: "http://b", DestinationVersion: 1}
@@ -1733,7 +1947,7 @@ func TestProviderReportFailoversIgnoreTheStatusFilter(t *testing.T) {
 	})
 
 	w, _ := doJSON(t, r, http.MethodGet,
-		"/api/admin/analytics/report?dimension=provider&with_failovers=1&status=success", nil, nil)
+		"/api/admin/analytics/report?dimension=provider&with_failovers=1&status=success", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1762,7 +1976,7 @@ func TestProviderReportFailoversIgnoreTheStatusFilter(t *testing.T) {
 // One malformed attempts_detail row must cost only its own contribution,
 // never the report: the endpoint stays 200 and the valid rows still count.
 func TestProviderReportSurvivesMalformedAttemptDetail(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	flaky := &model.Provider{Name: "flaky", BaseURL: "http://f", DestinationVersion: 1}
 	rescuer := &model.Provider{Name: "rescuer", BaseURL: "http://r", DestinationVersion: 1}
@@ -1787,7 +2001,7 @@ func TestProviderReportSurvivesMalformedAttemptDetail(t *testing.T) {
 	})
 
 	w, _ := doJSON(t, r, http.MethodGet,
-		"/api/admin/analytics/report?dimension=provider&with_failovers=1", nil, nil)
+		"/api/admin/analytics/report?dimension=provider&with_failovers=1", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 despite the malformed row, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -1818,7 +2032,7 @@ func TestProviderReportSurvivesMalformedAttemptDetail(t *testing.T) {
 // credential), resolve the account's username, and keep keyless
 // auth-rejected traffic in its own NULL bucket.
 func TestGetAnalyticsReportByUserGroupsAcrossKeys(t *testing.T) {
-	r, db := newAnalyticsTestRouter(t)
+	r, db, ck := newAnalyticsFixture(t)
 	key1, userID := seedAPIKey(t, db, "carol")
 	// A second key owned by the SAME account — its traffic must fold into
 	// carol's single row.
@@ -1848,7 +2062,7 @@ func TestGetAnalyticsReportByUserGroupsAcrossKeys(t *testing.T) {
 		l.StatusCode = 401 // keyless, accountless reject
 	})
 
-	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=user", nil, nil)
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/report?dimension=user", nil, ck)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -35,40 +34,13 @@ func newAuthTestRouter(t *testing.T, db *gorm.DB) *gin.Engine {
 	return r
 }
 
-type envelope struct {
-	Code      int             `json:"code"`
-	Message   string          `json:"message"`
-	Data      json.RawMessage `json:"data"`
-	Timestamp int64           `json:"timestamp"`
-}
+// envelope and doJSON delegate to the shared testutil helpers; kept as
+// local names so this package's many call sites read unchanged.
+type envelope = testutil.Envelope
 
 func doJSON(t *testing.T, r *gin.Engine, method, path string, body interface{}, cookie *http.Cookie) (*httptest.ResponseRecorder, envelope) {
 	t.Helper()
-	var reader *bytes.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal request body: %v", err)
-		}
-		reader = bytes.NewReader(b)
-	} else {
-		reader = bytes.NewReader(nil)
-	}
-	req := httptest.NewRequest(method, path, reader)
-	req.Header.Set("Content-Type", "application/json")
-	if cookie != nil {
-		req.AddCookie(cookie)
-	}
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	var env envelope
-	if w.Body.Len() > 0 {
-		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
-			t.Fatalf("unmarshal response body %q: %v", w.Body.String(), err)
-		}
-	}
-	return w, env
+	return testutil.DoJSON(t, r, method, path, body, cookie)
 }
 
 func TestGetAuthStateReflectsWhetherSetupIsDone(t *testing.T) {

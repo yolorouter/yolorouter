@@ -9,25 +9,25 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/service"
+	versionsvc "github.com/yolorouter/yolorouter/internal/service/version"
 )
 
 // fakeVersionChecker is a test double for the handler's VersionChecker
 // dependency: returns a fixed status and records which entry point ran.
 type fakeVersionChecker struct {
-	status      service.VersionStatus
+	status      versionsvc.VersionStatus
 	called      bool
 	freshCalls  int
 	cachedCalls int
 }
 
-func (f *fakeVersionChecker) Check(_ context.Context) service.VersionStatus {
+func (f *fakeVersionChecker) Check(_ context.Context) versionsvc.VersionStatus {
 	f.called = true
 	f.cachedCalls++
 	return f.status
 }
 
-func (f *fakeVersionChecker) CheckFresh(_ context.Context) service.VersionStatus {
+func (f *fakeVersionChecker) CheckFresh(_ context.Context) versionsvc.VersionStatus {
 	f.called = true
 	f.freshCalls++
 	return f.status
@@ -76,7 +76,7 @@ func TestGetSystemVersionReportsBuildInfo(t *testing.T) {
 
 func TestGetSystemVersionMergesUpdateStatus(t *testing.T) {
 	info := SystemInfo{Version: "v0.1.0"}
-	fake := &fakeVersionChecker{status: service.VersionStatus{
+	fake := &fakeVersionChecker{status: versionsvc.VersionStatus{
 		Current: "v0.1.0", Latest: "v0.2.0", HasUpdate: true, ReleaseURL: "https://example/release",
 	}}
 
@@ -97,7 +97,7 @@ func TestGetSystemVersionSurfacesCheckFailed(t *testing.T) {
 	// A failed check (disabled, GitHub down, rate limit) must still return
 	// 200 with check_failed=true rather than a 500 — the admin UI degrades
 	// to "check failed", not an error toast.
-	fake := &fakeVersionChecker{status: service.VersionStatus{Current: "v0.1.0", CheckFailed: true}}
+	fake := &fakeVersionChecker{status: versionsvc.VersionStatus{Current: "v0.1.0", CheckFailed: true}}
 
 	r := newSystemTestRouter(info, fake)
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/system/version", nil)

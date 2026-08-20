@@ -24,32 +24,50 @@ type protocolCodecs struct {
 	ResponseEncoder  protocols.ResponseEncoder
 	NewStreamDecoder func() protocols.StreamDecoder
 	NewStreamEncoder func() protocols.StreamEncoder
+	// ErrorBody builds the protocol's non-stream error envelope — the bytes
+	// the caller is sent AND the bytes the audit row stores, from one
+	// builder so the two cannot differ. Each dialect handles the request id
+	// its own way (inside the message, a structural field, or header-only);
+	// the builder owns that rule, so no call site re-implements it.
+	ErrorBody func(status int, errType, message, requestID string) []byte
+	// StreamErrorFrames builds the mid-stream error frames, terminator
+	// convention included: a dialect that ends its stream with a sentinel
+	// emits it here, and one that has no such convention emits nothing —
+	// sending another dialect's terminator would be a protocol violation
+	// its SDKs don't expect.
+	StreamErrorFrames func(message string) [][]byte
 }
 
 var codecRegistry = map[protocols.ProtocolID]protocolCodecs{
 	protocols.ProtocolOpenAI: {
-		RequestDecoder:   chat.RequestDecoder{},
-		RequestEncoder:   chat.RequestEncoder{},
-		ResponseDecoder:  chat.ResponseDecoder{},
-		ResponseEncoder:  chat.ResponseEncoder{},
-		NewStreamDecoder: func() protocols.StreamDecoder { return chat.NewStreamDecoder() },
-		NewStreamEncoder: func() protocols.StreamEncoder { return chat.NewStreamEncoder() },
+		RequestDecoder:    chat.RequestDecoder{},
+		RequestEncoder:    chat.RequestEncoder{},
+		ResponseDecoder:   chat.ResponseDecoder{},
+		ResponseEncoder:   chat.ResponseEncoder{},
+		NewStreamDecoder:  func() protocols.StreamDecoder { return chat.NewStreamDecoder() },
+		NewStreamEncoder:  func() protocols.StreamEncoder { return chat.NewStreamEncoder() },
+		ErrorBody:         chat.ErrorBody,
+		StreamErrorFrames: chat.StreamErrorFrames,
 	},
 	protocols.ProtocolClaude: {
-		RequestDecoder:   claude.RequestDecoder{},
-		RequestEncoder:   claude.RequestEncoder{},
-		ResponseDecoder:  claude.ResponseDecoder{},
-		ResponseEncoder:  claude.ResponseEncoder{},
-		NewStreamDecoder: func() protocols.StreamDecoder { return claude.NewStreamDecoder() },
-		NewStreamEncoder: func() protocols.StreamEncoder { return claude.NewStreamEncoder() },
+		RequestDecoder:    claude.RequestDecoder{},
+		RequestEncoder:    claude.RequestEncoder{},
+		ResponseDecoder:   claude.ResponseDecoder{},
+		ResponseEncoder:   claude.ResponseEncoder{},
+		NewStreamDecoder:  func() protocols.StreamDecoder { return claude.NewStreamDecoder() },
+		NewStreamEncoder:  func() protocols.StreamEncoder { return claude.NewStreamEncoder() },
+		ErrorBody:         claude.ErrorBody,
+		StreamErrorFrames: claude.StreamErrorFrames,
 	},
 	protocols.ProtocolGemini: {
-		RequestDecoder:   gemini.RequestDecoder{},
-		RequestEncoder:   gemini.RequestEncoder{},
-		ResponseDecoder:  gemini.ResponseDecoder{},
-		ResponseEncoder:  gemini.ResponseEncoder{},
-		NewStreamDecoder: func() protocols.StreamDecoder { return gemini.NewStreamDecoder() },
-		NewStreamEncoder: func() protocols.StreamEncoder { return gemini.NewStreamEncoder() },
+		RequestDecoder:    gemini.RequestDecoder{},
+		RequestEncoder:    gemini.RequestEncoder{},
+		ResponseDecoder:   gemini.ResponseDecoder{},
+		ResponseEncoder:   gemini.ResponseEncoder{},
+		NewStreamDecoder:  func() protocols.StreamDecoder { return gemini.NewStreamDecoder() },
+		NewStreamEncoder:  func() protocols.StreamEncoder { return gemini.NewStreamEncoder() },
+		ErrorBody:         gemini.ErrorBody,
+		StreamErrorFrames: gemini.StreamErrorFrames,
 	},
 	protocols.ProtocolResponses: {
 		RequestDecoder:   responses.RequestDecoder{},
@@ -58,6 +76,10 @@ var codecRegistry = map[protocols.ProtocolID]protocolCodecs{
 		ResponseEncoder:  responses.ResponseEncoder{},
 		NewStreamDecoder: func() protocols.StreamDecoder { return responses.NewStreamDecoder() },
 		NewStreamEncoder: func() protocols.StreamEncoder { return responses.NewStreamEncoder() },
+		// The Responses dialect reuses the OpenAI error envelope verbatim
+		// for non-stream errors; only its mid-stream frame shape is its own.
+		ErrorBody:         chat.ErrorBody,
+		StreamErrorFrames: responses.StreamErrorFrames,
 	},
 }
 

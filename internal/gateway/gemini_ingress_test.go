@@ -39,7 +39,7 @@ func TestGeminiIngressToOpenAIUpstream_NonStream(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -119,7 +119,7 @@ func TestGeminiIngressToOpenAIUpstream_Stream(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -219,7 +219,7 @@ func TestGeminiIngressToGeminiProvider_Passthrough(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createGeminiProvider(t, db, "gemini-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-gemini-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-gemini-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gemini-2.0-flash-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -308,7 +308,7 @@ func TestGeminiIngressToGeminiProvider_PassthroughStream(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createGeminiProvider(t, db, "gemini-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-gemini-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-gemini-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gemini-2.0-flash-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -366,7 +366,7 @@ func TestGeminiIngressAllCandidatesFailed_NativeError(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "openai-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-openai-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

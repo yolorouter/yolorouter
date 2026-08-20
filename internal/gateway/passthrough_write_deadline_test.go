@@ -70,7 +70,7 @@ func TestASlowCallerOnAForwardedStreamIsBlamedForTheirOwnTimeout(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p-passthrough-slow", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-passthrough-slow", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-passthrough-slow", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-slow", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -162,7 +162,7 @@ func TestASlowCallerOnADecodedStreamIsBlamedForTheirOwnTimeout(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createGeminiProvider(t, db, "gemini-passthrough-slow", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-gemini-slow", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-gemini-slow", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash-slow", "gemini-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

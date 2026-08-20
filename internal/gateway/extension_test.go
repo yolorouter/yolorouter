@@ -728,7 +728,7 @@ func TestASettlementAfterItsOwnAttemptIsRecordedAgainstThatAttempt(t *testing.T)
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "refuses", refuses.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}

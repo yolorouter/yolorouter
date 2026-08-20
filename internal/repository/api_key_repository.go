@@ -318,7 +318,7 @@ func UpdateAPIKey(db *gorm.DB, id uint, updates map[string]interface{}, modelIDs
 
 // RevokeAPIKey marks a single active key revoked. The WHERE status = active
 // clause makes the UPDATE itself idempotent (0 rows if already revoked) —
-// deliberate defense-in-depth alongside service.RevokeAPIKey's pre-check
+// deliberate defense-in-depth alongside apikey.RevokeAPIKey's pre-check
 // short-circuit, not redundant: the pre-check avoids the write on the common
 // "revoke an already-revoked key" path, this clause keeps the write correct
 // even if that pre-check read was stale.

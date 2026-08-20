@@ -57,7 +57,7 @@ func TestRelayStreamMidFailureOpenAIIngress(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -94,7 +94,7 @@ func TestRelayStreamMidFailureClaudeIngress(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -133,7 +133,7 @@ func TestRelayStreamMidFailureGeminiIngress(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createGeminiProvider(t, db, "gemini-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-gemini-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-gemini-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gemini-2.0-flash-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -176,7 +176,7 @@ func TestRelayStreamMidFailureResponsesIngress(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createResponsesProvider(t, db, "responses-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-responses-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-responses-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

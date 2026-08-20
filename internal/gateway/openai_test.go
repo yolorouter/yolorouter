@@ -6,24 +6,24 @@ import (
 	"testing"
 )
 
-func TestPeekRequest(t *testing.T) {
+func TestParseRequestPeeksModelAndStream(t *testing.T) {
 	body := []byte(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-	model, isStream, err := PeekRequest(body)
+	p, err := parseRequest(body)
 	if err != nil {
-		t.Fatalf("PeekRequest error: %v", err)
+		t.Fatalf("parseRequest error: %v", err)
 	}
-	if model != "gpt-4" || !isStream {
-		t.Fatalf("got model=%q stream=%v, want gpt-4/true", model, isStream)
+	if p.Model != "gpt-4" || !p.Stream {
+		t.Fatalf("got model=%q stream=%v, want gpt-4/true", p.Model, p.Stream)
 	}
 }
 
-func TestPeekRequestInvalidJSON(t *testing.T) {
-	if _, _, err := PeekRequest([]byte(`{bad json`)); err == nil {
+func TestParseRequestInvalidJSON(t *testing.T) {
+	if _, err := parseRequest([]byte(`{bad json`)); err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
 }
 
-func TestValidateRequest(t *testing.T) {
+func TestParsedRequestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
 		body    string
@@ -40,7 +40,10 @@ func TestValidateRequest(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateRequest([]byte(tt.body))
+			p, err := parseRequest([]byte(tt.body))
+			if err == nil {
+				err = p.validate()
+			}
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -51,26 +54,30 @@ func TestValidateRequest(t *testing.T) {
 	}
 }
 
-func TestHasTools(t *testing.T) {
-	if HasTools([]byte(`{"messages":[{"role":"user","content":"hi"}]}`)) {
+func TestParsedRequestHasTools(t *testing.T) {
+	hasTools := func(body string) bool {
+		p, err := parseRequest([]byte(body))
+		return err == nil && p.hasTools()
+	}
+	if hasTools(`{"messages":[{"role":"user","content":"hi"}]}`) {
 		t.Fatal("expected false with no tools")
 	}
-	if HasTools([]byte(`{"tools":[]}`)) {
+	if hasTools(`{"tools":[]}`) {
 		t.Fatal("expected false with empty tools array")
 	}
-	if !HasTools([]byte(`{"tools":[{"type":"function","function":{"name":"f"}}]}`)) {
+	if !hasTools(`{"tools":[{"type":"function","function":{"name":"f"}}]}`) {
 		t.Fatal("expected true with tools")
 	}
 }
 
-// TestRewriteRequestModelPreservesUnknownFields verifies the model swap is
+// TestRewriteModelFieldPreservesUnknownFields verifies the model swap is
 // surgical: an extended OpenAI param (top_k) the gateway doesn't understand
 // must survive into the upstream body, since v0.1 is pure pass-through.
-func TestRewriteRequestModelPreservesUnknownFields(t *testing.T) {
+func TestRewriteModelFieldPreservesUnknownFields(t *testing.T) {
 	body := []byte(`{"model":"external","messages":[{"role":"user","content":"hi"}],"temperature":0.5,"top_k":7}`)
-	out, err := RewriteRequestModel(body, "provider-model")
+	out, err := rewriteModelField(body, "provider-model")
 	if err != nil {
-		t.Fatalf("RewriteRequestModel: %v", err)
+		t.Fatalf("rewriteModelField: %v", err)
 	}
 	var m map[string]interface{}
 	if err := json.Unmarshal(out, &m); err != nil {

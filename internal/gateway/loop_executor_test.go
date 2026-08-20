@@ -202,7 +202,7 @@ func TestRetrySameVerdictFallsBackToTheKernelRouting(t *testing.T) {
 	svc := newSvc(t, db)
 	registerVerdictObserver(svc, fact.KindPayloadRepairedRetrySame)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -263,7 +263,7 @@ func TestTerminalVerdictWithoutAStatusAnswersWithTheUpstreams(t *testing.T) {
 	svc := newSvc(t, db)
 	registerVerdictObserver(svc, fact.KindPricingUnavailableTerminal)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -288,7 +288,7 @@ func TestSurfacedClientErrorKeepsItsAuditCode(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -313,10 +313,10 @@ func TestSurfacedClientErrorKeepsItsAuditCode(t *testing.T) {
 func seedTwoProvidersFirstWithTwoKeys(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string) *model.APIKey {
 	t.Helper()
 	p1 := createProvider(t, db, "p1", upstreamURL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1a", "k1", 1, true)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1b", "k2", 2, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1a", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1b", "k2", 2, true)
 	p2 := createProvider(t, db, "p2", upstreamURL)
-	createProviderKey(t, db, svc.masterKey, p2.ID, "sk-2", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, true)
 
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}

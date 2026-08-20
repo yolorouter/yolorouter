@@ -316,15 +316,8 @@ func (d *StreamDecoder) DecodeChunk(raw string) ([]protocols.IRStreamDelta, erro
 		d.buffer = d.buffer[pos+sepLen:]
 
 		for _, line := range strings.Split(block, "\n") {
-			payload := strings.TrimSpace(line)
-			// SSE makes the space after the colon optional; the TrimSpace
-			// below takes it off when the upstream did send one.
-			payload, ok := strings.CutPrefix(payload, "data:")
-			if !ok {
-				continue
-			}
-			payload = strings.TrimSpace(payload)
-			if payload == "" {
+			payload, ok := protocols.SSEDataPayload(line)
+			if !ok || payload == "" {
 				continue
 			}
 			deltas = append(deltas, d.parseGeminiChunk(json.RawMessage(payload))...)

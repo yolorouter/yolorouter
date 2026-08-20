@@ -30,8 +30,8 @@ type State struct {
 	// candidate dropped early never shows a provider it did not reach.
 	provider *model.Provider
 	// key is the provider key the current rotation step holds, set as each
-	// key is entered — including one that is then skipped without a
-	// dispatch, so the skip's audit row names the key it passed over.
+	// key is entered, so any exit taken after the entry reports this key
+	// rather than an earlier one.
 	key *model.ProviderKey
 	// upstreamURL is the redacted URL of the current dispatch; empty until a
 	// request was actually built.

@@ -72,7 +72,7 @@ func TestAnUpstreamDeadlineIsNotACallerWriteTimeout(t *testing.T) {
 
 	svc := newSvcWithGateway(t, db, gw)
 	p := createAnthropicProvider(t, db, "claude-p-stall", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-stall", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-stall", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-stall", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -181,7 +181,7 @@ func TestUnauthorized401_CASSurvivesAttemptContextExpiry(t *testing.T) {
 
 	svc := newSvcWithGateway(t, db, gw)
 	p := createProvider(t, db, "p-cas-expiry", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-dead-cas", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-dead-cas", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-cas-expiry", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -254,7 +254,7 @@ func TestUnauthorized401_CASSurvivesClientCancel(t *testing.T) {
 
 	svc := newSvcWithGateway(t, db, gw)
 	p := createProvider(t, db, "p-cas-cancel", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-dead-cancel", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-dead-cancel", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-cas-cancel", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

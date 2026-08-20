@@ -9,20 +9,20 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/service"
+	versionsvc "github.com/yolorouter/yolorouter/internal/service/version"
 	"github.com/yolorouter/yolorouter/internal/version"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
 
-// VersionChecker is the subset of *service.VersionService this handler needs.
+// VersionChecker is the subset of *versionsvc.VersionService this handler needs.
 // Declared as an interface so the handler test can substitute a fake instead
 // of standing up a real VersionService against a httptest server.
 type VersionChecker interface {
-	Check(ctx context.Context) service.VersionStatus
+	Check(ctx context.Context) versionsvc.VersionStatus
 	// CheckFresh bypasses the service's result cache — used when the
 	// operator explicitly asks for a check (?force=1) rather than a page
 	// passively showing the last known state.
-	CheckFresh(ctx context.Context) service.VersionStatus
+	CheckFresh(ctx context.Context) versionsvc.VersionStatus
 }
 
 // SystemInfo is the static, build/runtime-known metadata the system info
@@ -56,7 +56,7 @@ func GetSystemVersion(info SystemInfo, svc VersionChecker) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// ?force=1 marks an operator-initiated "check now": skip the result
 		// cache so a release published minutes ago is actually seen.
-		var upd service.VersionStatus
+		var upd versionsvc.VersionStatus
 		if c.Query("force") == "1" {
 			upd = svc.CheckFresh(c.Request.Context())
 		} else {

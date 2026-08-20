@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 
@@ -103,10 +102,13 @@ func writeSSEHeader(w protocols.ClientWriter) error {
 }
 
 func isDataLine(line []byte) bool {
-	// SSE allows "data:" with or without a space after the colon — accept
-	// both so a provider that omits the space isn't misclassified as a
-	// preamble line.
-	return bytes.HasPrefix(bytes.TrimRight(line, "\r\n"), []byte("data:"))
+	// The prefix rule is shared with the decoders, so what counts as a data
+	// line cannot drift between this forwarder and the parsing side. Like
+	// every byte-preserving reader it does not trim leading whitespace off
+	// the line — that is the helper's documented split with the parse-side
+	// reading.
+	_, ok := protocols.SSEDataPayloadStart(bytes.TrimRight(line, "\r\n"))
+	return ok
 }
 
 // writeStreamLine writes one SSE line to the client, rewriting the model
@@ -212,35 +214,17 @@ func usageFromRawMap(m map[string]json.RawMessage) *protocols.IRUsage {
 	return w.toIRUsage()
 }
 
-// writeStreamErrorEvent writes one inline SSE error frame carrying an error,
-// used when the upstream stream breaks AFTER the first byte has already gone
-// to the client (can't switch, can't change status — only emit an inline
-// error event and close). The caller has already verified the response is
-// mid-stream.
+// writeStreamErrorEvent writes the ingress protocol's mid-stream error
+// frames, used when the upstream stream breaks AFTER the first byte has
+// already gone to the client (can't switch, can't change status — only emit
+// an inline error event and close). The caller has already verified the
+// response is mid-stream.
 //
-// The wire shape is protocol-aware:
-//   - Claude (/v1/messages): the Anthropic streaming error shape (event:
-//     error + a {"type":"error",...} envelope), no [DONE] terminator
-//     convention at all.
-//   - Gemini (/v1beta/...): a bare `data: {"error":{code,message,status}}`
-//     frame — Gemini's streamGenerateContent SSE has no [DONE] terminator
-//     convention either (see gemini.StreamEncoder.EncodeDeltas/EncodeDone,
-//     which only ever emit plain data frames), so none is appended.
-//   - Responses (/v1/responses): a bare `data: {"type":"error",...}` frame —
-//     the Responses SSE stream is framed as typed response.* events
-//     (response.created/.../response.completed/response.failed), never
-//     OpenAI Chat's chat.completion.chunk + `data: [DONE]` (see
-//     responses.StreamDecoder, which recognizes "[DONE]" only as a tolerated
-//     no-op, not the completion signal), so no [DONE] is appended here
-//     either.
-//   - Every other ingress (OpenAI Chat) keeps the shape this function has
-//     always produced: a bare `data: {"error":...}` frame followed by
-//     `data: [DONE]` so OpenAI SDKs blocked on [DONE] to finalize their
-//     completion unblock promptly instead of hanging until their own read
-//     timeout.
-//
-// Sending the OpenAI [DONE] convention to a Claude, Gemini, or Responses
-// client would be a protocol violation none of those SDKs expect mid-stream.
+// The frame shape and the terminator convention are the registry entry's
+// knowledge (each protocol package documents its own); this function only
+// sends what the entry built, stopping at the first write error so a
+// terminator is never written to a client the error frame already failed to
+// reach.
 //
 // The stream capture file is still open at this point — the pumps deliberately
 // leave it open past their own return — so these frames land in it alongside
@@ -249,27 +233,22 @@ func usageFromRawMap(m map[string]json.RawMessage) *protocols.IRUsage {
 // body idle timeout longer than the write window cannot leave the deadline
 // already expired by the time this last frame goes out.
 //
-// Returns the first write error so callers can react (skip a subsequent [DONE],
-// say); callers already committed to finalizing may discard it.
+// Returns the first write error so callers can react; callers already
+// committed to finalizing may discard it.
 func writeStreamErrorEvent(w ClientResponse, ingress protocols.ProtocolID, requestID string) error {
-	msg := streamErrorMessage(requestID)
-	switch ingress {
-	case protocols.ProtocolClaude:
-		return writeClaudeStreamErrorEvent(w, msg)
-	case protocols.ProtocolGemini:
-		return writeGeminiStreamErrorEvent(w, msg)
-	case protocols.ProtocolResponses:
-		return writeResponsesStreamErrorEvent(w, msg)
-	default:
-		return writeOpenAIStreamErrorEvent(w, msg)
+	for _, frame := range codecsFor(ingress).StreamErrorFrames(streamErrorMessage(requestID)) {
+		if err := sendSSEFrame(w, frame); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // streamErrorMessage builds the generic mid-stream failure message shared by
 // every ingress protocol — no upstream detail is leaked, only the request id
 // so the caller can quote it to support.
 func streamErrorMessage(requestID string) string {
-	return AppendRequestID("upstream stream interrupted", requestID)
+	return protocols.AppendRequestID("upstream stream interrupted", requestID)
 }
 
 // sendSSEFrame writes one SSE frame to the client and makes sure it actually
@@ -298,65 +277,6 @@ func sendSSEFrame(w ClientResponse, b []byte) error {
 // drifting apart.
 func flushAndCheckError(c *gin.Context) error {
 	return protocols.FlushAndCheckError(c)
-}
-
-// writeOpenAIStreamErrorEvent writes the OpenAI-shaped mid-stream error: an
-// inline `data: {"error":...}` frame followed by `data: [DONE]`. Returns the
-// first Write error so the caller knows whether the terminal frame landed.
-func writeOpenAIStreamErrorEvent(w ClientResponse, msg string) error {
-	evt := fmt.Sprintf(`data: {"error":{"message":%q,"type":"upstream_error"}}`+"\n\n", msg)
-	if err := sendSSEFrame(w, []byte(evt)); err != nil {
-		return err
-	}
-	// Terminate the stream so OpenAI SDK clients that block on [DONE] to
-	// finalize their completion unblock promptly instead of hanging until
-	// their own read timeout. Skip once the error frame itself failed —
-	// the client is already gone.
-	if err := sendSSEFrame(w, []byte("data: [DONE]\n\n")); err != nil {
-		return err
-	}
-	return nil
-}
-
-// writeClaudeStreamErrorEvent writes the Anthropic-shaped mid-stream error:
-// a single `event: error` SSE event carrying the Messages API error
-// envelope. Claude has no [DONE] terminator convention — the Anthropic SDK
-// treats the connection close right after this event as the end of the
-// stream, so nothing further is written.
-func writeClaudeStreamErrorEvent(w ClientResponse, msg string) error {
-	evt := protocols.SSEEvent{
-		Event: "error",
-		Data:  fmt.Sprintf(`{"type":"error","error":{"type":"api_error","message":%q}}`, msg),
-	}
-	return sendSSEFrame(w, []byte(evt.String()))
-}
-
-// writeGeminiStreamErrorEvent writes the Gemini-shaped mid-stream error: a
-// bare `data: {"error":{code,message,status}}` frame, with no [DONE]
-// terminator (Gemini's SSE framing has no such convention at all — see this
-// function's doc comment on writeStreamErrorEvent). The nested error uses
-// http.StatusInternalServerError as its representative status: by this point
-// the response's real HTTP status is already committed as 200 (headers went
-// out with the first upstream chunk), so there is no meaningful per-request
-// status left to report — 500/INTERNAL is the same "opaque upstream failure"
-// choice writeClaudeStreamErrorEvent makes with its fixed api_error type.
-func writeGeminiStreamErrorEvent(w ClientResponse, msg string) error {
-	const midStreamStatus = http.StatusInternalServerError
-	evt := fmt.Sprintf(`data: {"error":{"code":%d,"message":%q,"status":%q}}`+"\n\n",
-		midStreamStatus, msg, geminiErrorStatus(midStreamStatus))
-	return sendSSEFrame(w, []byte(evt))
-}
-
-// writeResponsesStreamErrorEvent writes the Responses-shaped mid-stream
-// error: a bare `data: {"type":"error",...}` frame matching the top-level
-// error event shape responses.StreamDecoder itself recognizes on the decode
-// side (see its "case \"error\":" branch), with no [DONE] terminator — the
-// Responses SSE stream is framed as typed response.* events, never OpenAI
-// Chat's [DONE] sentinel (see this function's doc comment on
-// writeStreamErrorEvent).
-func writeResponsesStreamErrorEvent(w ClientResponse, msg string) error {
-	evt := fmt.Sprintf(`data: {"type":"error","message":%q,"code":null,"param":null}`+"\n\n", msg)
-	return sendSSEFrame(w, []byte(evt))
 }
 
 // isClientWriteError reports whether err represents a downstream (client-side)

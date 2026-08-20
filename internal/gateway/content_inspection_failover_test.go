@@ -21,9 +21,9 @@ import (
 func seedTwoCandidateModel(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string) *model.APIKey {
 	t.Helper()
 	p1 := createProvider(t, db, "p1", upstreamURL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1", "k1", 1, true)
 	p2 := createProvider(t, db, "p2", upstreamURL)
-	createProviderKey(t, db, svc.masterKey, p2.ID, "sk-2", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, true)
 
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
@@ -175,11 +175,11 @@ func TestContentInspectionRefusalDoesNotOutliveASkippedCandidate(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p1 := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1", "k1", 1, true)
 	// Second provider deliberately gets a DISABLED key, so the candidate is
 	// dropped before any request is built or sent.
 	p2 := createProvider(t, db, "p2", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p2.ID, "sk-2", "k1", 1, false)
+	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, false)
 
 	now := time.Now().UTC()
 	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}

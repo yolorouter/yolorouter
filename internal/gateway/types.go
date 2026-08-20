@@ -121,6 +121,14 @@ type Exchange struct {
 	// straddled a breaker transition cannot be booked against the wrong era.
 	circuitGen uint64
 
+	// keyDispatchedAt is when the current attempt handed its key to the
+	// upstream dispatch, stamped from the key pool's clock and handed back
+	// when a success releases the key's bench — so a success whose dispatch
+	// predates the bench (a long stream accepted before another request's
+	// 429) cannot release a verdict it never saw. The key pool's own
+	// documentation carries the full ordering rules.
+	keyDispatchedAt time.Time
+
 	// requestCtx is the context carrying RequestDeadline, set once at Handle
 	// entry. Candidate queries (model/candidate/key GORM reads) and each
 	// per-attempt context derive from this, so a stalled DB cannot overrun

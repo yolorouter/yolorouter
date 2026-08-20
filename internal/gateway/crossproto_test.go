@@ -119,7 +119,7 @@ func TestCrossProtocolOpenAIToAnthropicNonStream(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -217,7 +217,7 @@ func TestCrossProtocolOpenAIToAnthropicStream(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -304,7 +304,7 @@ func TestCrossProtocolOpenAIToAnthropicStream_IncludeUsage(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -373,7 +373,7 @@ func TestCrossProtocolOpenAIToAnthropicNonStream_CapturesResponseBody(t *testing
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -448,9 +448,9 @@ func TestCrossProtocolStreamPreFirstEventFailover(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p1 := createAnthropicProvider(t, db, "claude-empty", emptyUpstream.URL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-claude-empty", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-claude-empty", "k1", 1, true)
 	p2 := createAnthropicProvider(t, db, "claude-good", goodUpstream.URL)
-	createProviderKey(t, db, svc.masterKey, p2.ID, "sk-claude-good", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p2.ID, "sk-claude-good", "k1", 1, true)
 
 	// Both candidates back the same external model, in sort_order so the
 	// empty candidate is tried first.
@@ -568,7 +568,7 @@ func TestCrossProtocolStreamCaptureMatchesClientBytes(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

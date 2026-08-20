@@ -34,7 +34,7 @@ type memberScopeFixture struct {
 func newMemberScopeFixture(t *testing.T) *memberScopeFixture {
 	t.Helper()
 	db := testutil.NewSQLiteDB(t)
-	r, err := New(db, testProviderMasterKey(), t.TempDir(), testUpdateConfig(), false, testGatewayConfig(), "", "")
+	r, err := New(testDeps(t, db))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -286,6 +286,35 @@ func TestMemberAnalyticsPinnedToOwnRows(t *testing.T) {
 	w = f.do(t, http.MethodGet, "/api/admin/analytics/report?dimension=provider", "", f.adminCk)
 	if w.Code != http.StatusOK {
 		t.Fatalf("provider dimension for admin: expected 200, got %d", w.Code)
+	}
+}
+
+// TestAnalyticsPermissionGroupSplit pins which permission group each
+// analytics route sits on: overview/report/export admit a member session
+// (the scoped group), compress-stats is operator-only (the protected
+// group), and none of them admit an anonymous caller. The four routes look
+// alike but sit on two permission groups, and nothing else pins the split —
+// the endpoint tests all authenticate as an admin, which both groups admit.
+func TestAnalyticsPermissionGroupSplit(t *testing.T) {
+	f := newMemberScopeFixture(t)
+
+	for _, path := range []string{
+		"/api/admin/analytics/overview",
+		"/api/admin/analytics/report?dimension=model",
+		"/api/admin/analytics/export?dimension=model",
+	} {
+		if w := f.do(t, http.MethodGet, path, "", f.aliceCk); w.Code != http.StatusOK {
+			t.Fatalf("member GET %s: %d, want 200 (member-visible group)", path, w.Code)
+		}
+	}
+	if w := f.do(t, http.MethodGet, "/api/admin/analytics/compress-stats", "", f.aliceCk); w.Code != http.StatusForbidden {
+		t.Fatalf("member GET compress-stats: %d, want 403 (operator-only group)", w.Code)
+	}
+	if w := f.do(t, http.MethodGet, "/api/admin/analytics/compress-stats", "", f.adminCk); w.Code != http.StatusOK {
+		t.Fatalf("admin GET compress-stats: %d, want 200", w.Code)
+	}
+	if w := f.do(t, http.MethodGet, "/api/admin/analytics/overview", "", nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous GET overview: %d, want 401", w.Code)
 	}
 }
 

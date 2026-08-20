@@ -13,6 +13,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/settings"
 	"github.com/yolorouter/yolorouter/internal/testutil"
+	ycrypto "github.com/yolorouter/yolorouter/pkg/crypto"
 )
 
 // probeProvider is a SettingsProvider whose every method either returns a
@@ -150,11 +151,11 @@ func TestSettingsReadErrorDoesNotBlockTheRequest(t *testing.T) {
 		},
 	}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(db, masterKey, false, failing, testGatewayConfig())
+	svc := NewService(db, ycrypto.NewSecretBox(masterKey), false, failing, testGatewayConfig())
 	svc.client.httpClient.Transport = &http.Transport{}
 
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -314,7 +315,7 @@ func TestSettingsResolveRunsBeforeTheBodyIsValidated(t *testing.T) {
 	stub := stubSettingsProvider{}
 	counting := &countingProvider{inner: stub}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(db, masterKey, false, counting, testGatewayConfig())
+	svc := NewService(db, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig())
 	svc.client.httpClient.Transport = &http.Transport{}
 	// A bare Service records nothing; the recorder is wired here because the
 	// settled reason below is asserted from the persisted row, as production
@@ -322,7 +323,7 @@ func TestSettingsResolveRunsBeforeTheBodyIsValidated(t *testing.T) {
 	RegisterRecorder(svc, requestlog.New(db), func(e *Exchange) requestlog.View { return e })
 
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -370,7 +371,7 @@ func TestSettingsResolveRunsBeforeAnIngressRewriterRefuses(t *testing.T) {
 	stub := stubSettingsProvider{}
 	counting := &countingProvider{inner: stub}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(db, masterKey, false, counting, testGatewayConfig())
+	svc := NewService(db, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig())
 	svc.client.httpClient.Transport = &http.Transport{}
 	// Wired for the same reason as the validation twin: the settled reason is
 	// asserted from the persisted row.
@@ -384,7 +385,7 @@ func TestSettingsResolveRunsBeforeAnIngressRewriterRefuses(t *testing.T) {
 	}}, StageCompress, noView)
 
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

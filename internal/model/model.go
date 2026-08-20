@@ -31,7 +31,7 @@ const (
 	ModelVerificationStatusFailed   = 2
 )
 
-// model_candidates.last_test_result stores service.TestOutcome's int values
+// model_candidates.last_test_result stores providerclient.TestOutcome's int values
 // verbatim (SMALLINT NULL — nil means "never tested") — see provider.go's
 // LastTestResult* constants, which already cover this exact value set and
 // are reused here rather than duplicated.

@@ -159,13 +159,10 @@ func (d *StreamDecoder) DecodeChunk(raw string) ([]protocols.IRStreamDelta, erro
 		d.buffer = d.buffer[pos+sepLen:]
 
 		for _, line := range strings.Split(block, "\n") {
-			// SSE makes the space after the colon optional; the TrimSpace
-			// below takes it off when the upstream did send one.
-			data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:")
+			data, ok := protocols.SSEDataPayload(line)
 			if !ok {
 				continue
 			}
-			data = strings.TrimSpace(data)
 			if data == "[DONE]" {
 				if !d.done {
 					d.done = true

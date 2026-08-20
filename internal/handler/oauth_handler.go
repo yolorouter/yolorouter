@@ -14,7 +14,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/auth"
+	"github.com/yolorouter/yolorouter/internal/service/oauth"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/logger"
@@ -26,7 +27,7 @@ import (
 // GetPublicOAuthProviders handles GET /api/admin/auth/oauth/providers —
 // the login page's button list. Public by necessity (shown before any
 // session exists) and deliberately minimal: slug, name, icon.
-func GetPublicOAuthProviders(svc *service.OAuthLoginService) gin.HandlerFunc {
+func GetPublicOAuthProviders(svc *oauth.OAuthLoginService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providers, err := svc.ListEnabledProviders()
 		if err != nil {
@@ -61,7 +62,7 @@ func writeOAuthStateCookie(c *gin.Context, value string, maxAge int) {
 // redirect URI comes from the configured external URL when set, else is
 // derived from the request's own host (see callbackURL); the exact value
 // is pinned into the state row and repeated at token exchange.
-func PostOAuthState(svc *service.OAuthLoginService, limiter *middleware.Semaphore, rate *middleware.RateWindow, clientRate *middleware.PerClientRateWindow, externalURL string) gin.HandlerFunc {
+func PostOAuthState(svc *oauth.OAuthLoginService, limiter *middleware.Semaphore, rate *middleware.RateWindow, clientRate *middleware.PerClientRateWindow, externalURL string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req oauthStateRequest
 		if !bindJSON(c, &req) {
@@ -92,7 +93,7 @@ func PostOAuthState(svc *service.OAuthLoginService, limiter *middleware.Semaphor
 			middleware.WriteAdminError(c, http.StatusInternalServerError, errcode.DatabaseError)
 			return
 		}
-		writeOAuthStateCookie(c, crypto.HashToken(stateToken), int(service.AuthStateTTL.Seconds()))
+		writeOAuthStateCookie(c, crypto.HashToken(stateToken), int(oauth.AuthStateTTL.Seconds()))
 		response.Success(c, gin.H{"authorize_url": authorizeURL})
 	}
 }
@@ -126,7 +127,7 @@ func callbackURL(c *gin.Context, slug, externalURL string) string {
 // API call, so both outcomes are redirects: success plants the session
 // cookie and lands on the app root; failure lands on the login page with
 // the error code in the query for the page to translate.
-func GetOAuthCallback(svc *service.OAuthLoginService, limiter *middleware.Semaphore) gin.HandlerFunc {
+func GetOAuthCallback(svc *oauth.OAuthLoginService, limiter *middleware.Semaphore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		slug := c.Param("slug")
 		state := c.Query("state")
@@ -169,7 +170,7 @@ func GetOAuthCallback(svc *service.OAuthLoginService, limiter *middleware.Semaph
 			c.Redirect(http.StatusFound, "/login?oauth_error="+strconv.Itoa(oauthErrorCode(err)))
 			return
 		}
-		writeSessionCookie(c, sessionID, int(service.SessionTTL.Seconds()))
+		writeSessionCookie(c, sessionID, int(auth.SessionTTL.Seconds()))
 		c.Redirect(http.StatusFound, "/")
 	}
 }
@@ -223,7 +224,7 @@ type oauthProviderRequest struct {
 // register at the IdP. The form must not derive it from its own page
 // origin: an admin browsing over LAN while external_url points at the
 // public HTTPS origin would otherwise copy a mismatched redirect_uri.
-func GetOAuthProviders(svc *service.OAuthProviderService, externalURL string) gin.HandlerFunc {
+func GetOAuthProviders(svc *oauth.OAuthProviderService, externalURL string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		views, err := svc.ListProviders()
 		if err != nil {
@@ -237,13 +238,13 @@ func GetOAuthProviders(svc *service.OAuthProviderService, externalURL string) gi
 }
 
 // PostOAuthProvider handles POST /api/admin/oauth-providers.
-func PostOAuthProvider(svc *service.OAuthProviderService) gin.HandlerFunc {
+func PostOAuthProvider(svc *oauth.OAuthProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req oauthProviderRequest
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.CreateProvider(service.CreateOAuthProviderInput{
+		view, err := svc.CreateProvider(oauth.CreateOAuthProviderInput{
 			Slug: req.Slug, Name: req.Name, Icon: req.Icon, Enabled: req.Enabled,
 			ClientID: req.ClientID, ClientSecret: req.ClientSecret,
 			AuthorizationEndpoint: req.AuthorizationEndpoint,
@@ -290,7 +291,7 @@ type oauthProviderPatchRequest struct {
 }
 
 // PatchOAuthProvider handles PATCH /api/admin/oauth-providers/:id.
-func PatchOAuthProvider(svc *service.OAuthProviderService) gin.HandlerFunc {
+func PatchOAuthProvider(svc *oauth.OAuthProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -300,7 +301,7 @@ func PatchOAuthProvider(svc *service.OAuthProviderService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.UpdateProvider(id, service.UpdateOAuthProviderInput{
+		view, err := svc.UpdateProvider(id, oauth.UpdateOAuthProviderInput{
 			Name: req.Name, Icon: req.Icon, Enabled: req.Enabled,
 			ClientID: req.ClientID, ClientSecret: req.ClientSecret,
 			AuthorizationEndpoint: req.AuthorizationEndpoint,
@@ -330,7 +331,7 @@ func PatchOAuthProvider(svc *service.OAuthProviderService) gin.HandlerFunc {
 }
 
 // DeleteOAuthProvider handles DELETE /api/admin/oauth-providers/:id.
-func DeleteOAuthProvider(svc *service.OAuthProviderService) gin.HandlerFunc {
+func DeleteOAuthProvider(svc *oauth.OAuthProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -355,7 +356,7 @@ type oauthDiscoverRequest struct {
 // PostOAuthDiscover handles POST /api/admin/oauth-providers/discover —
 // fetches an OIDC well-known document so the admin form can auto-fill the
 // three endpoints.
-func PostOAuthDiscover(svc *service.OAuthProviderService) gin.HandlerFunc {
+func PostOAuthDiscover(svc *oauth.OAuthProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req oauthDiscoverRequest
 		if !bindJSON(c, &req) {

@@ -34,7 +34,7 @@ func seedNCandidates(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string
 	}
 	for i := 0; i < n; i++ {
 		p := createProvider(t, db, "p"+string(rune('1'+i)), upstreamURL)
-		createProviderKey(t, db, svc.masterKey, p.ID, "sk-"+string(rune('1'+i)), "k1", 1, true)
+		createProviderKey(t, db, svc.secrets, p.ID, "sk-"+string(rune('1'+i)), "k1", 1, true)
 		if err := db.Create(&model.ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "c" + string(rune('1'+i)) + "-model",
 			InputPrice: 0, OutputPrice: 0, MaxOutput: 4096,
@@ -112,9 +112,9 @@ func TestAttemptBudgetBoundsKeyRotationAndStickyStillWins(t *testing.T) {
 
 	svc := newSvcWithGateway(t, db, budgetGatewayConfig(2, 20))
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-2", "k2", 2, true)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-3", "k3", 3, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-2", "k2", 2, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-3", "k3", 3, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

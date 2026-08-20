@@ -10,10 +10,10 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/systemsettings"
 )
 
-func setupSettingsRouter(t *testing.T) (*gin.Engine, *service.SystemSettingsService) {
+func setupSettingsRouter(t *testing.T) (*gin.Engine, *systemsettings.SystemSettingsService) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -22,7 +22,7 @@ func setupSettingsRouter(t *testing.T) (*gin.Engine, *service.SystemSettingsServ
 	}
 	db.Exec(`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
 	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('custom_system_prompt_enabled','false'),('custom_system_prompt','')`)
-	svc := service.NewSystemSettingsService(db)
+	svc := systemsettings.NewSystemSettingsService(db)
 	r := gin.New()
 	r.GET("/api/admin/system-settings/custom-system-prompt", GetCustomSystemPrompt(svc))
 	r.PUT("/api/admin/system-settings/custom-system-prompt", PutCustomSystemPrompt(svc))
@@ -110,7 +110,7 @@ func setupSettingsRouterWithIC(t *testing.T) *gin.Engine {
 	}
 	db.Exec(`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
 	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('custom_system_prompt_enabled','false'),('custom_system_prompt',''),('input_compression_enabled','false')`)
-	svc := service.NewSystemSettingsService(db)
+	svc := systemsettings.NewSystemSettingsService(db)
 	r := gin.New()
 	r.GET("/api/admin/system-settings/input-compression", GetInputCompression(svc))
 	r.PUT("/api/admin/system-settings/input-compression", PutInputCompression(svc))
@@ -224,7 +224,7 @@ func setupVisionFallbackRouter(t *testing.T) *gin.Engine {
 	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('vision_fallback_model',''),('vision_fallback_prompt','')`)
 	db.Exec(`CREATE TABLE models (id INTEGER PRIMARY KEY, name TEXT, management_status INTEGER DEFAULT 1, supports_image_input INTEGER NULL, created_at DATETIME, updated_at DATETIME)`)
 	db.Exec(`INSERT INTO models (id, name) VALUES (1, 'glm-4v')`)
-	svc := service.NewSystemSettingsService(db)
+	svc := systemsettings.NewSystemSettingsService(db)
 	r := gin.New()
 	r.GET("/api/admin/system-settings/vision-fallback", GetVisionFallback(svc))
 	r.PUT("/api/admin/system-settings/vision-fallback", PutVisionFallback(svc))

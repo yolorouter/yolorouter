@@ -152,3 +152,51 @@ func TestEncryptFailsWhenRandReaderErrors(t *testing.T) {
 		t.Fatalf("expected error when rand.Reader fails, got nil")
 	}
 }
+
+// TestSecretBoxInteropWithBareFunctions pins that SecretBox is a handle,
+// not a format: ciphertext sealed by either API opens under the other.
+// Every stored secret in the database was written by one of the two, so a
+// SecretBox that diverged in nonce layout or encoding would strand
+// existing rows.
+func TestSecretBoxInteropWithBareFunctions(t *testing.T) {
+	key := testKey(t)
+	box := NewSecretBox(key)
+	const plaintext = "sk-interop-secret"
+
+	boxed, err := box.Encrypt(plaintext)
+	if err != nil {
+		t.Fatalf("box.Encrypt: %v", err)
+	}
+	if got, err := Decrypt(key, boxed); err != nil || got != plaintext {
+		t.Fatalf("bare Decrypt of box ciphertext = %q, %v; want %q", got, err, plaintext)
+	}
+
+	bare, err := Encrypt(key, plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	if got, err := box.Decrypt(bare); err != nil || got != plaintext {
+		t.Fatalf("box.Decrypt of bare ciphertext = %q, %v; want %q", got, err, plaintext)
+	}
+}
+
+func TestGenerateRandomTokenSucceeds(t *testing.T) {
+	token, err := GenerateRandomToken(32, "prefix-")
+	if err != nil {
+		t.Fatalf("GenerateRandomToken failed: %v", err)
+	}
+	if !strings.HasPrefix(token, "prefix-") {
+		t.Fatalf("expected token to start with the given prefix, got %q", token)
+	}
+	if len(token) <= len("prefix-") {
+		t.Fatalf("expected a non-empty encoded body after the prefix, got %q", token)
+	}
+}
+
+// GenerateRandomToken's rand.Read error branch is NOT covered by any test:
+// since Go 1.24, crypto/rand.Read is documented to never return an error —
+// on failure it crashes the program irrecoverably (see
+// https://go.dev/issue/66821) rather than returning one, and crypto/rand.Read
+// no longer goes through the overridable crypto/rand.Reader variable, so it
+// cannot be forced to return an error from a test either. That branch is
+// dead code under the Go version this project builds with.

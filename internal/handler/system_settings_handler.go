@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/systemsettings"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -48,7 +48,7 @@ type putInputCompressionRequest struct {
 
 // GetCustomSystemPrompt returns the authoritative global state (DB read,
 // bypassing the cache) so the admin always sees the committed value.
-func GetCustomSystemPrompt(svc *service.SystemSettingsService) gin.HandlerFunc {
+func GetCustomSystemPrompt(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		s, ver, err := svc.GetCustomSystemPrompt(c.Request.Context())
 		if err != nil {
@@ -62,7 +62,7 @@ func GetCustomSystemPrompt(svc *service.SystemSettingsService) gin.HandlerFunc {
 // PutCustomSystemPrompt validates + CAS-updates the global state. version is
 // required (optimistic lock); enabled/text must both be present (pointers) so
 // a partial body can't silently clear the prompt. A CAS miss returns 409.
-func PutCustomSystemPrompt(svc *service.SystemSettingsService) gin.HandlerFunc {
+func PutCustomSystemPrompt(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req putCustomSystemPromptRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -94,7 +94,7 @@ func PutCustomSystemPrompt(svc *service.SystemSettingsService) gin.HandlerFunc {
 
 // GetInputCompression returns the authoritative global switch state (DB read,
 // bypassing the cache) so the admin always sees the committed value.
-func GetInputCompression(svc *service.SystemSettingsService) gin.HandlerFunc {
+func GetInputCompression(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		enabled, ver, err := svc.GetInputCompressionForHandler(c.Request.Context())
 		if err != nil {
@@ -110,7 +110,7 @@ func GetInputCompression(svc *service.SystemSettingsService) gin.HandlerFunc {
 // body can't silently flip the switch. A CAS miss returns 409 with the
 // InputCompressionConflict code (11014), distinct from the CSP conflict code
 // (11012) so the frontend can route retries to the right setting.
-func PutInputCompression(svc *service.SystemSettingsService) gin.HandlerFunc {
+func PutInputCompression(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req putInputCompressionRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -152,7 +152,7 @@ type putVisionFallbackRequest struct {
 
 // GetVisionFallback returns the authoritative global state (DB read,
 // bypassing the cache) so the admin always sees the committed value.
-func GetVisionFallback(svc *service.SystemSettingsService) gin.HandlerFunc {
+func GetVisionFallback(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		s, ver, err := svc.GetVisionFallbackForHandler(c.Request.Context())
 		if err != nil {
@@ -167,7 +167,7 @@ func GetVisionFallback(svc *service.SystemSettingsService) gin.HandlerFunc {
 // (optimistic lock); model and prompt must both be present (pointers). A CAS
 // miss returns 409 with its own code so the frontend can route retries; an
 // unknown model name is a 400-class validation error.
-func PutVisionFallback(svc *service.SystemSettingsService) gin.HandlerFunc {
+func PutVisionFallback(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req putVisionFallbackRequest
 		if err := c.ShouldBindJSON(&req); err != nil {

@@ -23,7 +23,7 @@ import (
 //
 // NOTE: this DTO — like TrendPoint, TopCaller, UpstreamStatusDTO, and
 // SetupStatusDTO below — is embedded verbatim in the GET /api/admin/dashboard
-// response body (service.DashboardData). Its json tags ARE the public wire
+// response body (dashboard.DashboardData). Its json tags ARE the public wire
 // contract: renaming a field here renames a field the frontend reads. If a
 // dashboard section ever needs to diverge from its SQL row shape, give it a
 // handler-side view type at that point instead of editing these tags.

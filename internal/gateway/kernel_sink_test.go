@@ -118,7 +118,7 @@ func TestSettlementNotesCarryKernelProvenance(t *testing.T) {
 
 		svc := newSvc(t, db)
 		p := createProvider(t, db, "p1", upstream.URL)
-		createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+		createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 		m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 		apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

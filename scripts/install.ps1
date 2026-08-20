@@ -34,7 +34,11 @@
 $REPO = if ($env:YOLO_REPO) { $env:YOLO_REPO } else { 'yolorouter/yolorouter' }
 $BINARY_NAME = 'yolorouter'
 $DEFAULT_PORT = 8080
-$HEALTH_TIMEOUT = 15
+# Seconds to wait for /healthz after start. Generous on purpose: on upgrade
+# the server may snapshot the SQLite database and run schema migrations
+# before it starts listening, and a large database makes that take a while —
+# the poll below exits as soon as the service is actually up.
+$HEALTH_TIMEOUT = 300
 $GITHUB_API = "https://api.github.com/repos/$REPO"
 $GITHUB_DL = "https://github.com/$REPO/releases"
 $SERVICE_NAME = 'Yolorouter'

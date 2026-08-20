@@ -17,7 +17,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/pricecatalog"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/router"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/provider"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/database"
 	"github.com/yolorouter/yolorouter/pkg/logger"
@@ -119,7 +119,16 @@ func runServe(ctx context.Context, args []string) error {
 	// own API; the loopback base is derived from the same port the server is
 	// about to listen on.
 	loopbackBase := fmt.Sprintf("http://localhost:%d", app.Config.Server.Port)
-	r, err := router.New(app.DB, masterKey, bodiesDir, app.Config.Update, app.Config.Security.AllowPrivateUpstreams, app.Config.Gateway, loopbackBase, app.Config.Server.ExternalURL)
+	r, err := router.New(router.Deps{
+		DB:                    app.DB,
+		ProviderMasterKey:     masterKey,
+		BodiesDir:             bodiesDir,
+		Update:                app.Config.Update,
+		AllowPrivateUpstreams: app.Config.Security.AllowPrivateUpstreams,
+		Gateway:               app.Config.Gateway,
+		LoopbackBase:          loopbackBase,
+		ExternalURL:           app.Config.Server.ExternalURL,
+	})
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
 	}
@@ -138,17 +147,26 @@ func runServe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Schema upgrades reach this point unattended (in-app update restart,
+	// Docker image pull), so migrating goes through MigrateWithBackup: on
+	// SQLite it snapshots the database before applying anything, and refuses
+	// to migrate if that snapshot cannot be written. The instance lock held
+	// above makes version check, backup, and migration one critical section.
 	migrationsFS, dir := migrationsFor(app.Config.Database.Driver)
-	if err := database.RunMigrations(sqlDB, app.Config.Database.Driver, migrationsFS, dir); err != nil {
+	backupPath, err := database.MigrateWithBackup(sqlDB, app.Config.Database.Driver, app.Config.Database.SQLitePath, migrationsFS, dir)
+	if err != nil {
 		return fmt.Errorf("startup migration failed: %w", err)
+	}
+	if backupPath != "" {
+		logger.Info("pre-migration database backup available", zap.String("path", backupPath))
 	}
 
 	// nil ProviderClient: VerifyMasterKeyFingerprint only touches s.db/
-	// s.masterKey, never s.client, so this avoids allocating a second,
+	// s.secrets, never s.client, so this avoids allocating a second,
 	// independent HTTPProviderClient (its own semaphore + http.Transport)
 	// purely for a startup DB+crypto check — router.New builds the one
 	// real instance that actually serves provider-test traffic.
-	fingerprintSvc := service.NewProviderService(app.DB, masterKey, nil)
+	fingerprintSvc := provider.NewProviderService(app.DB, crypto.NewSecretBox(masterKey), nil)
 	if err := fingerprintSvc.VerifyMasterKeyFingerprint(time.Now().UTC()); err != nil {
 		return fmt.Errorf("startup check failed: %w", err)
 	}

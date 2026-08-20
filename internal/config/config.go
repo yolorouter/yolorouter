@@ -82,6 +82,11 @@ type GatewayConfig struct {
 	// CircuitOpenTimeout is how long an open breaker refuses traffic before
 	// letting probe requests through. Defaults to 60s.
 	CircuitOpenTimeout time.Duration `yaml:"circuit_open_timeout"`
+	// KeyRateLimitCooldown is how long a plain 429 benches the key it hit in
+	// its provider's rotation. The upstream's Retry-After is honoured
+	// (clamped to 1s..10min); this value is the fallback when the header is
+	// absent or unparsable. Defaults to 60s.
+	KeyRateLimitCooldown time.Duration `yaml:"key_rate_limit_cooldown"`
 }
 
 // Default sizes for the gateway's per-request count budgets. Exported so the
@@ -99,6 +104,10 @@ const (
 	DefaultCircuitSuccessThreshold = 2
 	DefaultCircuitOpenTimeout      = 60 * time.Second
 )
+
+// DefaultKeyRateLimitCooldown is the fallback bench for a rate-limited key
+// whose upstream stated no usable Retry-After.
+const DefaultKeyRateLimitCooldown = 60 * time.Second
 
 type DatabaseConfig struct {
 	Driver     string `yaml:"driver"`
@@ -240,6 +249,9 @@ func applyGatewayDefaults(g *GatewayConfig) {
 	}
 	if g.CircuitOpenTimeout == 0 {
 		g.CircuitOpenTimeout = DefaultCircuitOpenTimeout
+	}
+	if g.KeyRateLimitCooldown == 0 {
+		g.KeyRateLimitCooldown = DefaultKeyRateLimitCooldown
 	}
 }
 
@@ -730,6 +742,11 @@ func validateGatewayTimeouts(g *GatewayConfig) error {
 	// into per-probe intervals, degenerates toward an always-pass rate limit.
 	if g.CircuitOpenTimeout < time.Second {
 		return fmt.Errorf("gateway: circuit_open_timeout must be >= 1s")
+	}
+	// Same sub-second floor for a key's rate-limit bench: shorter than this
+	// cannot separate two requests and only adds pool-map churn.
+	if g.KeyRateLimitCooldown < time.Second {
+		return fmt.Errorf("gateway: key_rate_limit_cooldown must be >= 1s")
 	}
 	return nil
 }

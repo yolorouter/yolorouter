@@ -13,7 +13,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/model"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/auth"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -109,7 +109,7 @@ func bindJSON(c *gin.Context, req interface{}) bool {
 // and the login page.
 func GetAuthState(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		initialized, err := service.CheckState(db)
+		initialized, err := auth.CheckState(db)
 		if err != nil {
 			middleware.WriteAdminError(c, http.StatusInternalServerError, errcode.DatabaseError)
 			return
@@ -126,7 +126,7 @@ func PostSetup(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		user, sessionID, err := service.Setup(db, req.Username, req.Password, time.Now().UTC())
+		user, sessionID, err := auth.Setup(db, req.Username, req.Password, time.Now().UTC())
 		if errors.Is(err, errcode.ErrAccountSetupAlreadyDone) {
 			middleware.WriteAdminError(c, http.StatusConflict, errcode.AccountSetupAlreadyDone)
 			return
@@ -136,7 +136,7 @@ func PostSetup(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		writeSessionCookie(c, sessionID, int(service.SessionTTL.Seconds()))
+		writeSessionCookie(c, sessionID, int(auth.SessionTTL.Seconds()))
 		writeMeResponse(c, user)
 	}
 }
@@ -144,7 +144,7 @@ func PostSetup(db *gorm.DB) gin.HandlerFunc {
 // PostLogin verifies username+password and, on success, issues a session.
 // limiter caps the number of in-flight bcrypt comparisons (see
 // middleware.Semaphore's doc comment) — acquired only around the
-// service.Login call, after bindJSON has already fully read the request
+// auth.Login call, after bindJSON has already fully read the request
 // body, so a slow/stalled request body can't hold a slot hostage.
 func PostLogin(db *gorm.DB, limiter *middleware.Semaphore) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -159,8 +159,8 @@ func PostLogin(db *gorm.DB, limiter *middleware.Semaphore) gin.HandlerFunc {
 		}
 		defer limiter.Release()
 
-		user, sessionID, err := service.Login(db, req.Username, req.Password, time.Now().UTC())
-		var lockedErr *service.LockedError
+		user, sessionID, err := auth.Login(db, req.Username, req.Password, time.Now().UTC())
+		var lockedErr *auth.LockedError
 		switch {
 		case errors.As(err, &lockedErr):
 			// AccountLoginLocked is the one error response that carries an
@@ -179,7 +179,7 @@ func PostLogin(db *gorm.DB, limiter *middleware.Semaphore) gin.HandlerFunc {
 			return
 		}
 
-		writeSessionCookie(c, sessionID, int(service.SessionTTL.Seconds()))
+		writeSessionCookie(c, sessionID, int(auth.SessionTTL.Seconds()))
 		writeMeResponse(c, user)
 	}
 }
@@ -189,7 +189,7 @@ func PostLogout(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token, _ := c.Cookie(middleware.SessionCookieName)
 		if token != "" {
-			if err := service.Logout(db, token); err != nil {
+			if err := auth.Logout(db, token); err != nil {
 				middleware.WriteAdminError(c, http.StatusInternalServerError, errcode.DatabaseError)
 				return
 			}
@@ -206,7 +206,7 @@ func PostLogout(db *gorm.DB) gin.HandlerFunc {
 func GetMe(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.MustGet(middleware.UserIDKey).(uint)
-		user, err := service.Me(db, userID)
+		user, err := auth.Me(db, userID)
 		if err != nil {
 			middleware.WriteAdminError(c, http.StatusInternalServerError, errcode.DatabaseError)
 			return
@@ -237,7 +237,7 @@ func PutPassword(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		userID := c.MustGet(middleware.UserIDKey).(uint)
-		err := service.ChangePassword(db, userID, req.CurrentPassword, req.NewPassword, time.Now().UTC())
+		err := auth.ChangePassword(db, userID, req.CurrentPassword, req.NewPassword, time.Now().UTC())
 		if errors.Is(err, errcode.ErrAccountInvalidCredentials) {
 			middleware.WriteAdminError(c, http.StatusUnauthorized, errcode.AccountInvalidCredentials)
 			return

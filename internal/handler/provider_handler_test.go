@@ -16,8 +16,10 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/provider"
+	"github.com/yolorouter/yolorouter/internal/service/providerclient"
 	"github.com/yolorouter/yolorouter/internal/testutil"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
@@ -30,17 +32,13 @@ func newProviderTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 // (e.g. one that always fails verification, or one whose TestChatCompletion
 // itself errors) to exercise service-layer branches that alwaysSuccessClient
 // can never reach.
-func newProviderTestRouterWithClient(t *testing.T, client service.ProviderClient) (*gin.Engine, *gorm.DB) {
+func newProviderTestRouterWithClient(t *testing.T, client providerclient.ProviderClient) (*gin.Engine, *gorm.DB) {
 	t.Helper()
 	if err := RegisterValidators(); err != nil {
 		t.Fatalf("RegisterValidators failed: %v", err)
 	}
 	db := testutil.NewSQLiteDB(t)
-	masterKey := make([]byte, 32)
-	for i := range masterKey {
-		masterKey[i] = byte(i)
-	}
-	svc := service.NewProviderService(db, masterKey, client)
+	svc := provider.NewProviderService(db, crypto.NewSecretBox(testutil.ProviderMasterKey()), client)
 
 	r := gin.New()
 	admin := r.Group("/api/admin")
@@ -61,24 +59,24 @@ func newProviderTestRouterWithClient(t *testing.T, client service.ProviderClient
 }
 
 // alwaysSuccessClient is provider_handler_test.go's own fake (kept separate
-// from internal/service's own test fakes — handler tests must not depend
+// from the service packages' own test fakes — handler tests must not depend
 // on service package test-only symbols).
 type alwaysSuccessClient struct{}
 
-func (alwaysSuccessClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (service.TestResult, error) {
-	return service.TestResult{Outcome: service.TestSuccess, DurationMs: 5}, nil
+func (alwaysSuccessClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
-func (alwaysSuccessClient) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (service.TestResult, error) {
-	return service.TestResult{Outcome: service.TestSuccess, DurationMs: 5}, nil
+func (alwaysSuccessClient) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
-func (alwaysSuccessClient) TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (service.TestResult, error) {
-	return service.TestResult{Outcome: service.TestSuccess, DurationMs: 5}, nil
+func (alwaysSuccessClient) TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
-func (alwaysSuccessClient) ListModels(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey string) (service.ListModelsResult, error) {
-	return service.ListModelsResult{Models: []string{"model-a", "model-b"}, Outcome: service.TestSuccess, DurationMs: 5}, nil
+func (alwaysSuccessClient) ListModels(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey string) (providerclient.ListModelsResult, error) {
+	return providerclient.ListModelsResult{Models: []string{"model-a", "model-b"}, Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
 // modelNotFoundClient always classifies as TestModelNotFound, which
@@ -89,20 +87,20 @@ func (alwaysSuccessClient) ListModels(ctx context.Context, proto protocols.Proto
 // alwaysSuccessClient can never reach.
 type modelNotFoundClient struct{}
 
-func (modelNotFoundClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (service.TestResult, error) {
-	return service.TestResult{Outcome: service.TestModelNotFound, DurationMs: 3}, nil
+func (modelNotFoundClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3}, nil
 }
 
-func (modelNotFoundClient) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (service.TestResult, error) {
-	return service.TestResult{Outcome: service.TestModelNotFound, DurationMs: 3}, nil
+func (modelNotFoundClient) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3}, nil
 }
 
-func (modelNotFoundClient) TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (service.TestResult, error) {
-	return service.TestResult{Outcome: service.TestModelNotFound, DurationMs: 3}, nil
+func (modelNotFoundClient) TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3}, nil
 }
 
-func (modelNotFoundClient) ListModels(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey string) (service.ListModelsResult, error) {
-	return service.ListModelsResult{Outcome: service.TestModelNotFound, DurationMs: 3, Detail: "HTTP 404"}, nil
+func (modelNotFoundClient) ListModels(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey string) (providerclient.ListModelsResult, error) {
+	return providerclient.ListModelsResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3, Detail: "HTTP 404"}, nil
 }
 
 // erroringClient always returns an error from the client call itself (e.g.
@@ -110,20 +108,20 @@ func (modelNotFoundClient) ListModels(ctx context.Context, proto protocols.Proto
 // PostProviderTestKey's ProviderTestFailed mapping.
 type erroringClient struct{}
 
-func (erroringClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (service.TestResult, error) {
-	return service.TestResult{}, errors.New("client refused the call")
+func (erroringClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{}, errors.New("client refused the call")
 }
 
-func (erroringClient) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (service.TestResult, error) {
-	return service.TestResult{}, errors.New("client refused the call")
+func (erroringClient) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{}, errors.New("client refused the call")
 }
 
-func (erroringClient) TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (service.TestResult, error) {
-	return service.TestResult{}, errors.New("client refused the call")
+func (erroringClient) TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{}, errors.New("client refused the call")
 }
 
-func (erroringClient) ListModels(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey string) (service.ListModelsResult, error) {
-	return service.ListModelsResult{}, errors.New("client refused the call")
+func (erroringClient) ListModels(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey string) (providerclient.ListModelsResult, error) {
+	return providerclient.ListModelsResult{}, errors.New("client refused the call")
 }
 
 // createProviderForTest creates a provider (with alwaysSuccessClient's
@@ -502,8 +500,8 @@ func TestPostProviderTestKeySucceeds(t *testing.T) {
 	if err := json.Unmarshal(env.Data, &data); err != nil {
 		t.Fatalf("unmarshal outcome: %v", err)
 	}
-	if data.Outcome != int(service.TestSuccess) {
-		t.Fatalf("expected outcome %d, got %d", service.TestSuccess, data.Outcome)
+	if data.Outcome != int(providerclient.TestSuccess) {
+		t.Fatalf("expected outcome %d, got %d", providerclient.TestSuccess, data.Outcome)
 	}
 }
 
@@ -533,8 +531,8 @@ func TestPostProviderListModelsReturnsCatalogue(t *testing.T) {
 	if err := json.Unmarshal(env.Data, &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if data.Outcome != int(service.TestSuccess) {
-		t.Fatalf("expected outcome %d, got %d", service.TestSuccess, data.Outcome)
+	if data.Outcome != int(providerclient.TestSuccess) {
+		t.Fatalf("expected outcome %d, got %d", providerclient.TestSuccess, data.Outcome)
 	}
 	if len(data.Models) != 2 || data.Models[0] != "model-a" {
 		t.Fatalf("expected [model-a model-b], got %v", data.Models)

@@ -23,7 +23,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/repository" // for the RequestLogFilter type
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/analytics"
 	"github.com/yolorouter/yolorouter/pkg/csvutil"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
@@ -32,14 +32,14 @@ import (
 // validAnalyticsBuckets is the wire-level allowlist for ?bucket= (only
 // meaningful when dimension=time). Empty defaults to "day".
 var validAnalyticsBuckets = map[string]struct{}{
-	service.BucketDay:  {},
-	service.BucketHour: {},
+	analytics.BucketDay:  {},
+	analytics.BucketHour: {},
 }
 
 // GetAnalyticsOverview handles GET /api/admin/analytics/overview — the four
 // overview cards (calls / success_rate / cost / unknown-cost-calls) plus
 // token totals for the supplied filter window.
-func GetAnalyticsOverview(svc *service.AnalyticsService) gin.HandlerFunc {
+func GetAnalyticsOverview(svc *analytics.AnalyticsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		filter, opts, ok := parseAnalyticsFilter(c)
 		if !ok {
@@ -65,7 +65,7 @@ func GetAnalyticsOverview(svc *service.AnalyticsService) gin.HandlerFunc {
 // picks a report dimension (default model; the legal set lives in the
 // service's dimension vocabulary); ?bucket= picks day|hour for
 // dimension=time (default day). Other params are the shared filter shape.
-func GetAnalyticsReport(svc *service.AnalyticsService) gin.HandlerFunc {
+func GetAnalyticsReport(svc *analytics.AnalyticsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		filter, opts, ok := parseAnalyticsFilter(c)
 		if !ok {
@@ -79,7 +79,7 @@ func GetAnalyticsReport(svc *service.AnalyticsService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		result, err := svc.GetReport(dimension, bucket, &filter, opts, timeNow())
+		result, err := svc.GetReport(c.Request.Context(), dimension, bucket, &filter, opts, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -96,7 +96,7 @@ func GetAnalyticsReport(svc *service.AnalyticsService) gin.HandlerFunc {
 // the JSON envelope on a mid-stream error; we surface the failure via
 // c.Error + Abort — same convention request_log_handler.go's CSV export
 // established.
-func ExportAnalyticsCSV(svc *service.AnalyticsService) gin.HandlerFunc {
+func ExportAnalyticsCSV(svc *analytics.AnalyticsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		filter, opts, ok := parseAnalyticsFilter(c)
 		if !ok {
@@ -114,7 +114,7 @@ func ExportAnalyticsCSV(svc *service.AnalyticsService) gin.HandlerFunc {
 		// Build BEFORE committing HTTP 200 / BOM so a build failure (bad
 		// dimension/bucket, DB error) returns a JSON envelope, not a truncated
 		// CSV reported as success (same pattern as request-log export).
-		headers, records, err := svc.BuildCSVRecords(dimension, bucket, &filter, opts, timeNow())
+		headers, records, err := svc.BuildCSVRecords(c.Request.Context(), dimension, bucket, &filter, opts, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -135,7 +135,7 @@ func ExportAnalyticsCSV(svc *service.AnalyticsService) gin.HandlerFunc {
 // GetCompressStats handles GET /api/admin/analytics/compress-stats — the
 // input-compression roll-up. ?limit= sets the per-api-key Top-N row count
 // (default 5, capped at 20). Other params are the shared filter shape.
-func GetCompressStats(svc *service.AnalyticsService) gin.HandlerFunc {
+func GetCompressStats(svc *analytics.AnalyticsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		filter, opts, ok := parseAnalyticsFilter(c)
 		if !ok {
@@ -162,34 +162,34 @@ func GetCompressStats(svc *service.AnalyticsService) gin.HandlerFunc {
 // status validation is shared with the request-log endpoints, backed by
 // repository.ValidStatusClasses, and the wire contract (RFC3339-only
 // timestamps, plain uint ids) is the same.
-func parseAnalyticsFilter(c *gin.Context) (repository.RequestLogFilter, service.AnalyticsOptions, bool) {
+func parseAnalyticsFilter(c *gin.Context) (repository.RequestLogFilter, analytics.AnalyticsOptions, bool) {
 	statusClass, ok := parseStatusClassParam(c)
 	if !ok {
-		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
+		return repository.RequestLogFilter{}, analytics.AnalyticsOptions{}, false
 	}
 	filter := repository.RequestLogFilter{
 		RequestID:   c.Query("request_id"),
 		ModelName:   c.Query("model_name"),
 		StatusClass: statusClass,
 	}
-	var opts service.AnalyticsOptions
+	var opts analytics.AnalyticsOptions
 	// Opt-in: only the analytics report page asks for failover counts;
 	// the cost pages hit the same endpoint and skip the scan behind it.
 	opts.WithFailovers = c.Query("with_failovers") == "1"
 	if !applyUintQueryParam(c, "api_key_id", func(v uint) { filter.APIKeyID = &v }) {
-		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
+		return repository.RequestLogFilter{}, analytics.AnalyticsOptions{}, false
 	}
 	if !applyUintQueryParam(c, "user_id", func(v uint) { filter.UserID = &v }) {
-		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
+		return repository.RequestLogFilter{}, analytics.AnalyticsOptions{}, false
 	}
 	if !applyUintQueryParam(c, "provider_id", func(v uint) { filter.ProviderID = &v }) {
-		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
+		return repository.RequestLogFilter{}, analytics.AnalyticsOptions{}, false
 	}
 	if !applyTimeQueryParam(c, "start", func(v time.Time) { filter.StartTime = &v }) {
-		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
+		return repository.RequestLogFilter{}, analytics.AnalyticsOptions{}, false
 	}
 	if !applyTimeQueryParam(c, "end", func(v time.Time) { filter.EndTime = &v }) {
-		return repository.RequestLogFilter{}, service.AnalyticsOptions{}, false
+		return repository.RequestLogFilter{}, analytics.AnalyticsOptions{}, false
 	}
 	if loc, ok := c.Get("timezone"); ok {
 		opts.Location = loc.(*time.Location)
@@ -213,14 +213,14 @@ func parseAnalyticsFilter(c *gin.Context) (repository.RequestLogFilter, service.
 }
 
 // parseTopNParam parses the optional ?limit= query param used by compress-stats
-// for the per-api-key Top-N row count. Defaults to service.DefaultCompressTopN
-// when absent; clamped to service.MaxCompressTopN. Returns false (after
+// for the per-api-key Top-N row count. Defaults to analytics.DefaultCompressTopN
+// when absent; clamped to analytics.MaxCompressTopN. Returns false (after
 // writing a 400) when the value is present but not a positive integer — same
 // shape as applyUintQueryParam but with a ceiling.
 func parseTopNParam(c *gin.Context) (int, bool) {
 	raw := c.Query("limit")
 	if raw == "" {
-		return service.DefaultCompressTopN, true
+		return analytics.DefaultCompressTopN, true
 	}
 	v, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil || v == 0 {
@@ -228,27 +228,27 @@ func parseTopNParam(c *gin.Context) (int, bool) {
 		return 0, false
 	}
 	n := int(v)
-	if n > service.MaxCompressTopN {
-		n = service.MaxCompressTopN
+	if n > analytics.MaxCompressTopN {
+		n = analytics.MaxCompressTopN
 	}
 	return n, true
 }
 
 // parseDimensionParam returns the dimension query param, defaulting to
 // "model" when absent. The allowlist and the 400 text derive from the
-// service's single dimension vocabulary (service.IsValidDimension /
-// service.DimensionList) — there is no handler-side copy to drift.
+// service's single dimension vocabulary (analytics.IsValidDimension /
+// analytics.DimensionList) — there is no handler-side copy to drift.
 // Returns false (after writing a 400) on an unrecognized value, or (after
 // writing a 403) when a member requests the provider dimension —
 // per-provider aggregates name the upstream vendors, which is operator
 // information members never see.
 func parseDimensionParam(c *gin.Context) (string, bool) {
-	dimension := c.DefaultQuery("dimension", service.DimensionModel)
-	if !service.IsValidDimension(dimension) {
-		response.ParamError(c, "dimension must be one of: "+service.DimensionList())
+	dimension := c.DefaultQuery("dimension", analytics.DimensionModel)
+	if !analytics.IsValidDimension(dimension) {
+		response.ParamError(c, "dimension must be one of: "+analytics.DimensionList())
 		return "", false
 	}
-	if dimension == service.DimensionProvider && middleware.ViewScopeOf(c).Member {
+	if dimension == analytics.DimensionProvider && middleware.ViewScopeOf(c).Member {
 		middleware.WriteAdminError(c, http.StatusForbidden, errcode.AccountPageForbidden)
 		return "", false
 	}
@@ -258,7 +258,7 @@ func parseDimensionParam(c *gin.Context) (string, bool) {
 // parseBucketParam returns the bucket query param, defaulting to "day" when
 // absent. Returns false (after writing a 400) on an unrecognized value.
 func parseBucketParam(c *gin.Context) (string, bool) {
-	bucket := c.DefaultQuery("bucket", service.BucketDay)
+	bucket := c.DefaultQuery("bucket", analytics.BucketDay)
 	if _, ok := validAnalyticsBuckets[bucket]; !ok {
 		response.ParamError(c, "bucket must be one of: day, hour")
 		return "", false

@@ -20,7 +20,7 @@ import "golang.org/x/sync/semaphore"
 // valid headers and then stall mid-body would then permanently exhaust
 // every slot at zero CPU cost — worse than the unbounded-bcrypt problem
 // this was built to fix. Acquiring only around the bcrypt-triggering
-// service.Login call, after the body has already been fully read and
+// auth.Login call, after the body has already been fully read and
 // parsed, avoids that.
 type Semaphore struct {
 	weighted *semaphore.Weighted

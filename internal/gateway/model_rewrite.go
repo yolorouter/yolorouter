@@ -112,25 +112,23 @@ func rewriteGeminiResponseModelVersion(body []byte, externalModel string) ([]byt
 // whose payload parsed and mutate reported a change; otherwise returns the
 // original line and false. Preserves the trailing newline bytes.
 //
-// The space after the colon is optional, because SSE says so and because
-// isDataLine already accepts both. Two answers to "is this a data line" is one
-// too many: a provider that omits the space would have its frame counted as
-// data — committing the response — while every rewrite below quietly did
-// nothing, and the provider's own name for the model would go out to a caller
-// who never heard of it.
+// What counts as a data line — and where its payload starts — comes from the
+// shared prefix rule, the same one isDataLine and the decoders answer with.
+// Two answers to "is this a data line" is one too many: a provider that omits
+// the space after the colon would have its frame counted as data — committing
+// the response — while every rewrite below quietly did nothing, and the
+// provider's own name for the model would go out to a caller who never heard
+// of it.
 func rewriteSSEDataLineJSON(line []byte, mutate func(obj map[string]json.RawMessage) bool) ([]byte, bool) {
-	rest, ok := bytes.CutPrefix(line, []byte("data:"))
+	start, ok := protocols.SSEDataPayloadStart(line)
 	if !ok {
 		return line, false
 	}
 	// Whichever framing the provider used is put back verbatim. This function
 	// renames a model; reformatting the caller's stream on the way past is not
 	// its business, and a caller diffing against the provider would see us do it.
-	if after, spaced := bytes.CutPrefix(rest, []byte(" ")); spaced {
-		rest = after
-	}
-	prefix := line[:len(line)-len(rest)]
-	payload := rest
+	prefix := line[:start]
+	payload := line[start:]
 	trimmed := bytes.TrimRight(payload, "\r\n")
 	trailing := payload[len(trimmed):]
 

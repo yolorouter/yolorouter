@@ -230,8 +230,8 @@ func TestAVerdictDoesNotOutliveTheKeyThatEarnedIt(t *testing.T) {
 	// Two keys on ONE provider, so the second attempt is a key rotation rather
 	// than a failover to a different candidate.
 	p1 := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1", "k1", 1, true)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-2", "k2", 2, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-2", "k2", 2, true)
 	apiKey := seedModelOnProvider(t, db, p1)
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
@@ -243,16 +243,13 @@ func TestAVerdictDoesNotOutliveTheKeyThatEarnedIt(t *testing.T) {
 	}
 }
 
-// TestAVerdictDoesNotOutliveAKeyThatWasNeverTried covers the paths that skip an
-// attempt without making one.
-//
-// A key can be passed over before anything is sent: its authorization is scoped
-// to a provider destination that has since changed, or it will not decrypt. Both
-// jump straight to the next key. A clear placed inside the attempt would never
-// run for them, and the previous key's verdict would survive into a request that
-// ended with no usable key at all — reported to the caller as a rate limit one
-// key hit, for a failure that had nothing to do with rate limits.
-func TestAVerdictDoesNotOutliveAKeyThatWasNeverTried(t *testing.T) {
+// A key whose ciphertext will not decrypt is unroutable, and is filtered
+// out with the disabled, unverified, and destination-stale keys BEFORE
+// rotation: it must never be dispatched, and — exactly like those other
+// filtered keys — it does not silence the last real attempt's verdict.
+// The request below ends on key 1's genuine rate limit, and that verdict
+// is the honest outcome to report.
+func TestUndecryptableKeyIsFilteredNotDispatched(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	var calls int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -270,13 +267,13 @@ func TestAVerdictDoesNotOutliveAKeyThatWasNeverTried(t *testing.T) {
 	}, func(*Exchange) struct{} { return struct{}{} })
 
 	p1 := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-1", "k1", 1, true)
-	createProviderKey(t, db, svc.masterKey, p1.ID, "sk-2", "k2", 2, true)
-	// The second key is authorized for a destination the provider no longer
-	// has, so it is skipped without ever being dispatched.
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p1.ID, "sk-2", "k2", 2, true)
+	// The second key's ciphertext is corrupted, so it is skipped without
+	// ever being dispatched: decryption fails after the key is entered.
 	if err := db.Model(&model.ProviderKey{}).Where("label = ?", "k2").
-		Update("authorized_destination_version", 99).Error; err != nil {
-		t.Fatalf("stale the second key: %v", err)
+		Update("encrypted_key", "corrupt-ciphertext").Error; err != nil {
+		t.Fatalf("corrupt the second key: %v", err)
 	}
 	apiKey := seedModelOnProvider(t, db, p1)
 
@@ -284,12 +281,12 @@ func TestAVerdictDoesNotOutliveAKeyThatWasNeverTried(t *testing.T) {
 	svc.Handle(c, apiKey)
 
 	if calls != 1 {
-		t.Fatalf("upstream called %d times, want 1: the second key must be skipped without a "+
-			"request, or this test is not exercising the path it claims", calls)
+		t.Fatalf("upstream called %d times, want 1: the undecryptable key must be filtered "+
+			"before the walk, never dispatched", calls)
 	}
-	if bytes.Contains(w.Body.Bytes(), []byte("throttle says so")) {
-		t.Errorf("the first key's verdict survived a key that was never tried, and was reported "+
-			"as what ended the request: %s", w.Body.String())
+	if !bytes.Contains(w.Body.Bytes(), []byte("throttle says so")) {
+		t.Errorf("the sole routable key's rate-limit verdict should be the reported outcome; "+
+			"got: %s", w.Body.String())
 	}
 }
 

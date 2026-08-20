@@ -92,40 +92,6 @@ func parseRequest(body []byte) (*parsedRequest, error) {
 	return p, nil
 }
 
-// PeekRequest extracts model + stream from a caller body. Kept as a public
-// convenience for callers that only need those two fields (and for tests);
-// the production hot path (Handle) calls peekIngress (which wraps
-// parseRequest for the OpenAI ingress) once and reads the fields directly
-// off the returned ingressMeta.
-func PeekRequest(body []byte) (model string, isStream bool, err error) {
-	p, err := parseRequest(body)
-	if err != nil {
-		return "", false, err
-	}
-	return p.Model, p.Stream, nil
-}
-
-// ValidateRequest checks the request's structural invariants. Public
-// convenience wrapper over parseRequest + validate; Handle uses the parsed
-// struct directly to avoid a second decode.
-func ValidateRequest(body []byte) error {
-	p, err := parseRequest(body)
-	if err != nil {
-		return err
-	}
-	return p.validate()
-}
-
-// HasTools reports whether the request carries a non-empty tools array.
-// Public convenience wrapper; Handle reads parsedRequest.hasTools() instead.
-func HasTools(body []byte) bool {
-	p, err := parseRequest(body)
-	if err != nil {
-		return false
-	}
-	return p.hasTools()
-}
-
 // rewriteJSONStringField sets a top-level string field to newValue in a JSON
 // object body. When requirePresent is true, an absent field leaves the body
 // unchanged (never adds it); when false, the field is set even if absent. A
@@ -161,12 +127,6 @@ func rewriteJSONStringField(body []byte, field, newValue string, requirePresent 
 // non-stream response (provider name -> external name).
 func rewriteModelField(body []byte, newModel string) ([]byte, error) {
 	return rewriteJSONStringField(body, "model", newModel, false)
-}
-
-// RewriteRequestModel swaps the caller's external model name for the
-// candidate's provider_model_name in the upstream-bound body.
-func RewriteRequestModel(body []byte, providerModelName string) ([]byte, error) {
-	return rewriteModelField(body, providerModelName)
 }
 
 // EnsureStreamUsageInjection forces stream_options.include_usage=true on a

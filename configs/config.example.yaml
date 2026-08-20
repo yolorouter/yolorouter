@@ -75,3 +75,4 @@ gateway:
   circuit_failure_threshold: 5 # consecutive provider faults that open its breaker (traffic then skips the provider)
   circuit_success_threshold: 2 # successful probes that close an open breaker again
   circuit_open_timeout: 60s    # how long an open breaker refuses traffic before probe requests are let through
+  key_rate_limit_cooldown: 60s # how long a plain-429 key is demoted behind healthy ones in its provider's pool (Retry-After honoured, clamped to 1s~10m)

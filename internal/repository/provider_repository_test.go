@@ -334,13 +334,13 @@ func TestCreateProviderKeyPendingTestSnapshotsCurrentDestinationVersion(t *testi
 }
 
 // TestCreateProviderKeyPendingTestSortOrderCollisionErrorNamesSortOrder is
-// the direct regression test for: isUniqueViolation couldn't distinguish UNIQUE(provider_id, label) from
+// the direct regression test for: IsUniqueViolation could not distinguish UNIQUE(provider_id, label) from
 // UNIQUE(provider_id, sort_order) violations on this table, so a
 // concurrent "add key" race that only collided on sort_order (an internal
 // bookkeeping value the caller never chose) was misreported to the admin
 // as their chosen label being taken. This pins down that the real driver
 // error text for a sort_order collision actually contains "sort_order" —
-// the fact isSortOrderUniqueViolation (provider_service.go) relies on to
+// the fact IsSortOrderUniqueViolation (db_errors.go) relies on to
 // tell the two constraints apart and retry only the sort_order case.
 func TestCreateProviderKeyPendingTestSortOrderCollisionErrorNamesSortOrder(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -856,7 +856,7 @@ func TestProviderKeyFingerprintClaimAndGet(t *testing.T) {
 // silently overwrite the earlier one's row — ClaimProviderKeyFingerprintIfAbsent
 // is a DO NOTHING insert, so the first writer's probe always wins and the
 // second caller's own probe is simply discarded (its caller then correctly
-// fails the decrypt-verify step in service.VerifyMasterKeyFingerprint,
+// fails the decrypt-verify step in provider.VerifyMasterKeyFingerprint,
 // covered in its own tests).
 // TestCreateProviderWithKeyFailsWhenProviderNameAlreadyExists covers the
 // tx.Create(provider) error branch with a genuine DB error (a UNIQUE

@@ -1,7 +1,7 @@
 // Package pricecatalog holds the built-in seed of canonical model prices,
 // embedded into the binary via catalog.json. It is the fallback source for
 // auto-suggesting candidate prices when no historical price exists for a
-// provider+model pair (see service.SuggestCandidatePrice).
+// provider+model pair (see modeladmin.SuggestCandidatePrice).
 //
 // Prices follow the provider, not the vendor: the key is the provider's
 // base_url host, so an aggregator (e.g. SiliconFlow) carries its own resale

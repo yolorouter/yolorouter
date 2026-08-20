@@ -14,7 +14,7 @@ import (
 
 // newIngressTestContext builds a gin test context wired to a real
 // httptest.ResponseRecorder, mirroring the pattern used by
-// TestWriteOpenAIErrorStashesResponseBody in error_test.go.
+// TestWriteIngressError_OpenAIStashesResponseBody in error_test.go.
 func newIngressTestContext(t *testing.T, path string) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -24,13 +24,13 @@ func newIngressTestContext(t *testing.T, path string) (*gin.Context, *httptest.R
 	return c, w
 }
 
-// TestWriteClaudeError_Envelope confirms WriteClaudeError writes the
-// Anthropic-native shape: top-level type + request_id, and a nested
+// TestWriteIngressError_ClaudeEnvelopeDetails confirms the Claude ingress
+// gets the Anthropic-native shape: top-level type + request_id, and a nested
 // error.type/error.message — not the OpenAI-shaped nested-only envelope.
-func TestWriteClaudeError_Envelope(t *testing.T) {
+func TestWriteIngressError_ClaudeEnvelopeDetails(t *testing.T) {
 	c, w := newIngressTestContext(t, "/v1/messages")
 
-	WriteClaudeError(c, http.StatusTooManyRequests, "rate_limit_error", "too many requests", "req_abc")
+	WriteIngressError(c, protocols.ProtocolClaude, http.StatusTooManyRequests, errTypeRateLimit, "too many requests", "req_abc")
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
@@ -63,16 +63,15 @@ func TestWriteClaudeError_Envelope(t *testing.T) {
 	}
 }
 
-// TestWriteClaudeError_StashesResponseBody mirrors
-// TestWriteOpenAIErrorStashesResponseBody: when a Exchange is on the gin
-// context, the Claude error JSON actually sent to the caller must also be
-// stashed into rc.ResponseBody() so the audit trail matches.
-func TestWriteClaudeError_StashesResponseBody(t *testing.T) {
+// TestWriteIngressError_StashesResponseBody: when an Exchange is on the gin
+// context, the error JSON actually sent to the caller must also be stashed
+// into rc.ResponseBody() so the audit trail matches.
+func TestWriteIngressError_StashesResponseBody(t *testing.T) {
 	c, w := newIngressTestContext(t, "/v1/messages")
 	rc := &Exchange{requestID: "req_x"}
 	c.Set(relayContextKey, rc)
 
-	WriteClaudeError(c, http.StatusNotFound, "not_found_error", "model does not exist", "req_x")
+	WriteIngressError(c, protocols.ProtocolClaude, http.StatusNotFound, errTypeNotFound, "model does not exist", "req_x")
 
 	if rc.ResponseBody() == nil {
 		t.Fatal("rc.ResponseBody() was not stashed")
@@ -82,50 +81,21 @@ func TestWriteClaudeError_StashesResponseBody(t *testing.T) {
 	}
 }
 
-// TestWriteClaudeError_NoExchangeIsNoop confirms the stash is a true
+// TestWriteIngressError_NoExchangeIsNoop confirms the stash is a true
 // no-op (no panic) when no Exchange is on the context.
-func TestWriteClaudeError_NoExchangeIsNoop(t *testing.T) {
+func TestWriteIngressError_NoExchangeIsNoop(t *testing.T) {
 	c, w := newIngressTestContext(t, "/v1/messages")
 
-	WriteClaudeError(c, http.StatusUnauthorized, "authentication_error", "missing API key", "req_y")
+	WriteIngressError(c, protocols.ProtocolClaude, http.StatusUnauthorized, errTypeAuthentication, "missing API key", "req_y")
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
 	}
 }
 
-// TestAnthropicErrorType covers every errType* constant's mapping to a valid
-// Anthropic error type, per the internal->Anthropic table.
-func TestAnthropicErrorType(t *testing.T) {
-	tests := []struct {
-		name    string
-		errType string
-		want    string
-	}{
-		{"authentication", errTypeAuthentication, "authentication_error"},
-		{"permission", errTypePermission, "permission_error"},
-		{"invalid_request", errTypeInvalidRequest, "invalid_request_error"},
-		{"not_found", errTypeNotFound, "not_found_error"},
-		{"rate_limit", errTypeRateLimit, "rate_limit_error"},
-		{"insufficient_quota", errTypeInsufficientQuota, "invalid_request_error"},
-		{"unavailable", errTypeUnavailable, "overloaded_error"},
-		{"upstream", errTypeUpstream, "api_error"},
-		{"server", errTypeServer, "api_error"},
-		{"unknown_default", "some_unmapped_type", "api_error"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := anthropicErrorType(tt.errType); got != tt.want {
-				t.Errorf("anthropicErrorType(%q) = %q, want %q", tt.errType, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestWriteIngressError_Claude confirms WriteIngressError routes
-// /v1/messages traffic to the Anthropic envelope, with errType mapped
-// through anthropicErrorType and the message left untouched (id not
-// appended).
+// /v1/messages traffic to the Anthropic envelope, with errType mapped to
+// Anthropic's vocabulary and the message left untouched (id not appended).
 func TestWriteIngressError_Claude(t *testing.T) {
 	c, w := newIngressTestContext(t, "/v1/messages")
 
@@ -228,65 +198,36 @@ func TestLocalIngressErrorBody_MatchesSentBody(t *testing.T) {
 		c, w := newIngressTestContext(t, "/v1/chat/completions")
 		WriteIngressError(c, protocols.ProtocolOpenAI, http.StatusBadRequest, errTypeInvalidRequest, "bad body", "req_2")
 
-		// WriteIngressError appends the request id into the message for the
-		// OpenAI ingress, so the audit body must be built with that same
-		// message to match — LocalErrorBody does not append it itself.
-		got := LocalIngressErrorBody(protocols.ProtocolOpenAI, http.StatusBadRequest, errTypeInvalidRequest, "bad body (request: req_2)", "req_2")
+		// The builder is authoritative for the OpenAI dialect's id-in-message
+		// rule: the raw message goes in on both sides and the bytes match.
+		got := LocalIngressErrorBody(protocols.ProtocolOpenAI, http.StatusBadRequest, errTypeInvalidRequest, "bad body", "req_2")
 		if string(got) != w.Body.String() {
 			t.Errorf("LocalIngressErrorBody = %s, want it to equal sent body %s", got, w.Body.String())
 		}
 	})
 }
 
-// TestLocalClaudeErrorBody_Shape confirms LocalClaudeErrorBody produces the
-// exact same shape WriteClaudeError sends, independent of WriteIngressError.
-func TestLocalClaudeErrorBody_Shape(t *testing.T) {
+// TestLocalIngressErrorBody_ClaudeOverloadedShape pins one more Claude
+// mapping through the audit-parity path: service_unavailable surfaces as
+// Anthropic's overloaded_error, and the audit bytes equal the sent bytes.
+func TestLocalIngressErrorBody_ClaudeOverloadedShape(t *testing.T) {
 	c, w := newIngressTestContext(t, "/v1/messages")
-	WriteClaudeError(c, http.StatusServiceUnavailable, "overloaded_error", "overloaded", "req_3")
+	WriteIngressError(c, protocols.ProtocolClaude, http.StatusServiceUnavailable, errTypeUnavailable, "overloaded", "req_3")
 
-	got := LocalClaudeErrorBody("overloaded_error", "overloaded", "req_3")
+	got := LocalIngressErrorBody(protocols.ProtocolClaude, http.StatusServiceUnavailable, errTypeUnavailable, "overloaded", "req_3")
 	if string(got) != w.Body.String() {
-		t.Errorf("LocalClaudeErrorBody = %s, want it to equal sent body %s", got, w.Body.String())
+		t.Errorf("LocalIngressErrorBody = %s, want it to equal sent body %s", got, w.Body.String())
 	}
 }
 
-// TestGeminiErrorStatus covers every HTTP status geminiErrorStatus has an
-// explicit mapping for, plus the generic 4xx/5xx fallbacks, per the Google
-// canonical-status table (see the function's own doc comment).
-func TestGeminiErrorStatus(t *testing.T) {
-	tests := []struct {
-		name   string
-		status int
-		want   string
-	}{
-		{"bad_request", http.StatusBadRequest, "INVALID_ARGUMENT"},
-		{"unauthorized", http.StatusUnauthorized, "UNAUTHENTICATED"},
-		{"forbidden", http.StatusForbidden, "PERMISSION_DENIED"},
-		{"not_found", http.StatusNotFound, "NOT_FOUND"},
-		{"too_many_requests", http.StatusTooManyRequests, "RESOURCE_EXHAUSTED"},
-		{"internal_server_error", http.StatusInternalServerError, "INTERNAL"},
-		{"service_unavailable", http.StatusServiceUnavailable, "UNAVAILABLE"},
-		{"gateway_timeout", http.StatusGatewayTimeout, "DEADLINE_EXCEEDED"},
-		{"other_4xx", http.StatusConflict, "INVALID_ARGUMENT"},
-		{"other_5xx", http.StatusBadGateway, "INTERNAL"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := geminiErrorStatus(tt.status); got != tt.want {
-				t.Errorf("geminiErrorStatus(%d) = %q, want %q", tt.status, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestWriteGeminiError_Envelope confirms WriteGeminiError writes the Google
-// API error shape: a single nested "error" object carrying code/message/
-// status, with no top-level request_id field (unlike Anthropic's envelope)
-// and the request id only on the X-Request-Id header.
-func TestWriteGeminiError_Envelope(t *testing.T) {
+// TestWriteIngressError_GeminiEnvelopeDetails confirms the Gemini ingress
+// gets the Google API error shape: a single nested "error" object carrying
+// code/message/status, with no top-level request_id field (unlike
+// Anthropic's envelope) and the request id only on the X-Request-Id header.
+func TestWriteIngressError_GeminiEnvelopeDetails(t *testing.T) {
 	c, w := newIngressTestContext(t, "/v1beta/models/gemini-2.0-flash:generateContent")
 
-	WriteGeminiError(c, http.StatusTooManyRequests, "too many requests", "req_gemini")
+	WriteIngressError(c, protocols.ProtocolGemini, http.StatusTooManyRequests, errTypeRateLimit, "too many requests", "req_gemini")
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)

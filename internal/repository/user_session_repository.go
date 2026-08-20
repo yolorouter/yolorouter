@@ -26,7 +26,7 @@ func hashSessionToken(token string) string {
 }
 
 // CreateSession inserts a new session row for rawToken — the
-// caller-generated opaque token (internal/service never generates IDs
+// caller-generated opaque token (the auth service never generates IDs
 // itself here) that becomes the cookie value. This is the only function
 // that ever constructs a user_sessions row: callers never see or set the
 // token hash directly, so there's exactly one place the
@@ -103,7 +103,7 @@ func DeleteAllSessionsForUser(db *gorm.DB, userID uint) error {
 // user who simply lets the 24h TTL lapse without logging out (the common
 // case) would otherwise leave that row behind forever, one dead row per
 // login with no ceiling. This mirrors an established cleanup pattern:
-// called from inside Login's existing transaction (service.Login) so the
+// called from inside Login's existing transaction (auth.Login) so the
 // cleanup cost is amortized across normal logins rather than needing a
 // separate cleanup worker/cron.
 func DeleteExpiredSessions(db *gorm.DB, now time.Time) error {

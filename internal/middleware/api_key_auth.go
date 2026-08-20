@@ -212,22 +212,16 @@ func logAuthRejectionForKey(c *gin.Context, db *gorm.DB, ingress protocols.Proto
 		// auth-rejected request, mirroring gateway.Handle's own capture.
 		reqHeaders = gateway.SanitizeHeaders(c.Request.Header)
 	}
-	// gateway.WriteIngressError appends " (request: <id>)" into message for
-	// the OpenAI ingress but leaves it untouched for the Claude and Gemini
-	// ingresses (the id travels in Claude's top-level request_id field, and
-	// in Gemini's case only ever reaches the caller via the X-Request-Id
-	// header — see WriteGeminiError) — mirror that exact transform here so
-	// the stored response_body matches what the caller actually received
-	// byte for byte, on every ingress.
-	auditMessage := message
-	if ingress != protocols.ProtocolClaude && ingress != protocols.ProtocolGemini {
-		auditMessage = gateway.AppendRequestID(message, requestID)
-	}
+	// LocalIngressErrorBody is authoritative for each ingress dialect's
+	// request-id handling (inside the message, a structural field, or
+	// header-only), so the raw message goes in and the stored response_body
+	// matches what the caller actually received byte for byte, on every
+	// ingress — no transform is mirrored here.
 	bodyRow := &model.RequestLogBody{
 		RequestID:      requestID,
 		RequestHeaders: string(reqHeaders),
 		RequestBody:    string(reqBody),
-		ResponseBody:   string(gateway.LocalIngressErrorBody(ingress, status, errType, auditMessage, requestID)),
+		ResponseBody:   string(gateway.LocalIngressErrorBody(ingress, status, errType, message, requestID)),
 	}
 	if err := repository.UpsertRequestLogBody(db, bodyRow); err != nil {
 		logger.Warn("middleware: write auth-rejection body row failed",

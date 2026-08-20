@@ -35,6 +35,27 @@ func CollectPtrIDs[T any](items []T, id func(*T) *uint) []uint {
 	return ids
 }
 
+// backfillByPtrID is the write-back half of the lookup shape: collect the
+// distinct non-nil ids, run one batch lookup, then assign each row its
+// looked-up value. Rows with a nil id (a report's unattributed bucket) are
+// left untouched; rows whose id is absent from the lookup result receive
+// V's zero value, so a hard-deleted referent renders as empty rather than
+// failing the view.
+func backfillByPtrID[R any, V any](db *gorm.DB, rows []R, id func(*R) *uint, lookup func(*gorm.DB, []uint) (map[uint]V, error), assign func(*R, V)) error {
+	values, err := lookup(db, CollectPtrIDs(rows, id))
+	if err != nil {
+		return err
+	}
+	for i := range rows {
+		p := id(&rows[i])
+		if p == nil {
+			continue
+		}
+		assign(&rows[i], values[*p])
+	}
+	return nil
+}
+
 // FindProviderNamesByIDs batch-resolves provider ids to display names.
 // Hard-deleted / unknown ids are absent from the map — callers render an
 // empty name rather than failing the whole view.

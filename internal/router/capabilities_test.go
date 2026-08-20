@@ -5,6 +5,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/gateway"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
 )
 
 // TestAdmissionRosterIsPinned pins which admissions are assembled, in order.
@@ -23,7 +24,7 @@ import (
 // rather than inherited from wherever the new line happened to be typed. From
 // that point on it is a real ordering check.
 func TestAdmissionRosterIsPinned(t *testing.T) {
-	svc := gateway.NewService(nil, nil, false, nil, config.GatewayConfig{})
+	svc := gateway.NewService(nil, crypto.SecretBox{}, false, nil, config.GatewayConfig{})
 	registerCapabilities(svc, nil, "")
 
 	want := []string{"ratelimit"}

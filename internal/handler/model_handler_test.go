@@ -11,8 +11,10 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/repository"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
+	"github.com/yolorouter/yolorouter/internal/service/providerclient"
 	"github.com/yolorouter/yolorouter/internal/testutil"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
@@ -21,17 +23,13 @@ func newModelTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 	return newModelTestRouterWithClient(t, &alwaysSuccessClient{})
 }
 
-func newModelTestRouterWithClient(t *testing.T, client service.ProviderClient) (*gin.Engine, *gorm.DB) {
+func newModelTestRouterWithClient(t *testing.T, client providerclient.ProviderClient) (*gin.Engine, *gorm.DB) {
 	t.Helper()
 	if err := RegisterValidators(); err != nil {
 		t.Fatalf("RegisterValidators failed: %v", err)
 	}
 	db := testutil.NewSQLiteDB(t)
-	masterKey := make([]byte, 32)
-	for i := range masterKey {
-		masterKey[i] = byte(i)
-	}
-	svc := service.NewModelService(db, masterKey, client)
+	svc := modeladmin.NewModelService(db, crypto.NewSecretBox(testutil.ProviderMasterKey()), client)
 
 	r := gin.New()
 	admin := r.Group("/api/admin")
@@ -268,9 +266,9 @@ func createProviderAndKeyForModelTest(t *testing.T, r *gin.Engine) uint {
 	return view.ID
 }
 
-func newModelTestRouterSharingProviderDB(t *testing.T, db *gorm.DB, client service.ProviderClient) *gin.Engine {
+func newModelTestRouterSharingProviderDB(t *testing.T, db *gorm.DB, client providerclient.ProviderClient) *gin.Engine {
 	t.Helper()
-	svc := service.NewModelService(db, testHandlerMasterKey(), client)
+	svc := modeladmin.NewModelService(db, crypto.NewSecretBox(testHandlerMasterKey()), client)
 	r := gin.New()
 	admin := r.Group("/api/admin")
 	admin.POST("/models", PostModel(svc))
@@ -287,11 +285,7 @@ func newModelTestRouterSharingProviderDB(t *testing.T, db *gorm.DB, client servi
 }
 
 func testHandlerMasterKey() []byte {
-	masterKey := make([]byte, 32)
-	for i := range masterKey {
-		masterKey[i] = byte(i)
-	}
-	return masterKey
+	return testutil.ProviderMasterKey()
 }
 
 func TestPostModelCandidateCreatesCandidate(t *testing.T) {

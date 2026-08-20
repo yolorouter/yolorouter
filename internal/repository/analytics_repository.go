@@ -1,7 +1,7 @@
 // Package repository provides by-dimension GROUP
 // BY analytics aggregations on top of the shared RequestLogFilter. Pure data-access
 // only: no HTTP shaping, no CSV, no business judgment. The service layer
-// (internal/service/analytics_service.go) composes these into the report
+// (internal/service/analytics) composes these into the report
 // envelope and the CSV export.
 //
 // Reuse pattern: every AggregateBy* function calls f.applyFilter(db) to
@@ -15,7 +15,7 @@
 // (created_at, status_code, ...) and a second table in play makes columns
 // that exist on both (created_at is on both request_logs and providers)
 // ambiguous under Postgres. Names are resolved in a post-fetch batch lookup
-// — the same pattern request_log_service.go's fetchRelatedNames established.
+// — the same pattern requestlog's fetchRelatedNames established.
 package repository
 
 import (
@@ -151,11 +151,6 @@ type UserReportRow struct {
 // layout's literal ":00" suffix zeroes minutes — Go's time.Format treats the
 // standalone "00" as a literal since it doesn't match any reference-time
 // field (the canonical minute pattern is "04").
-//
-// Unlike the model/provider/caller rows, TimeReportRow has no finalizeRate
-// method: AggregateByTime delegates each bucket's totals to
-// AggregateRequestLogMetrics and copies m.SuccessRate() directly, so the
-// rate is always populated at construction time.
 type TimeReportRow struct {
 	Bucket          string `json:"bucket"`
 	ReportCallStats `gorm:"embedded"`
@@ -187,29 +182,59 @@ const tokenCostSumCols = `
 		COALESCE(SUM(cost_micros), 0) AS cost_micros,
 		SUM(CASE WHEN cost_known = ? THEN 1 ELSE 0 END) AS unknown_cost_calls`
 
-// runEntityAggregate is the one query shape every entity dimension shares:
+// groupedQuery describes one GROUP BY aggregation over the filtered
+// request_logs set. selectArgs must carry exactly the bind values for
+// selectExpr's ? placeholders — passing them explicitly (rather than
+// assuming one cost_known bind) keeps a dimension with a different
+// placeholder count from silently binding wrong. where / having / limit are
+// optional (empty string / zero = absent): the report dimensions group the
+// whole filtered set, while the Top-N breakdowns gate rows before the
+// aggregate, exclude their unattributed bucket per group, and rank into a
+// bounded window.
+type groupedQuery[R any] struct {
+	selectExpr string
+	selectArgs []any
+	where      string
+	groupCol   string
+	having     string
+	orderExpr  string
+	limit      int
+	resolve    func(*gorm.DB, []R) error
+	finalize   func(*R)
+}
+
+// runGroupedAggregate is the one query pipeline every grouped aggregation
+// shares — the report dimensions and the compress Top-N breakdowns alike:
 // filtered SELECT, GROUP BY the dimension key, ORDER BY the ranking column,
 // optional post-fetch name resolution, then the Go-side rate computation.
 // A new dimension is one call to this runner plus its row type — the SQL
 // assembly, nil-slice normalization and finalize walk exist only here.
-// selectArgs must carry exactly the bind values for selectExpr's ?
-// placeholders — passing them explicitly (rather than assuming one
-// cost_known bind) keeps a dimension with a different placeholder count
-// from silently binding wrong.
-func runEntityAggregate[R any](db *gorm.DB, f *RequestLogFilter, selectExpr string, selectArgs []any, groupCol, orderExpr string,
-	resolve func(*gorm.DB, []R) error, finalize func(*R)) ([]R, error) {
+func runGroupedAggregate[R any](ctx context.Context, db *gorm.DB, f *RequestLogFilter, q groupedQuery[R]) ([]R, error) {
+	db = db.WithContext(ctx)
+	scoped := f.applyFilter(db)
+	if q.where != "" {
+		scoped = scoped.Where(q.where)
+	}
+	scoped = scoped.Select(q.selectExpr, q.selectArgs...).Group(q.groupCol)
+	if q.having != "" {
+		scoped = scoped.Having(q.having)
+	}
+	scoped = scoped.Order(q.orderExpr)
+	if q.limit > 0 {
+		scoped = scoped.Limit(q.limit)
+	}
 	var rows []R
-	if err := f.applyFilter(db).Select(selectExpr, selectArgs...).Group(groupCol).Order(orderExpr).Scan(&rows).Error; err != nil {
+	if err := scoped.Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	if resolve != nil {
-		if err := resolve(db, rows); err != nil {
+	if q.resolve != nil {
+		if err := q.resolve(db, rows); err != nil {
 			return nil, err
 		}
 	}
-	if finalize != nil {
+	if q.finalize != nil {
 		for i := range rows {
-			finalize(&rows[i])
+			q.finalize(&rows[i])
 		}
 	}
 	if rows == nil {
@@ -220,11 +245,15 @@ func runEntityAggregate[R any](db *gorm.DB, f *RequestLogFilter, selectExpr stri
 
 // AggregateByModel groups by model_name (dimension "model"), ordered by
 // call volume.
-func AggregateByModel(db *gorm.DB, f *RequestLogFilter) ([]ModelReportRow, error) {
-	return runEntityAggregate[ModelReportRow](db, f,
-		`
-		model_name,`[1:]+successEndedCols+`,`+tokenCostSumCols, []any{false},
-		"model_name", "calls DESC", nil, (*ModelReportRow).finalizeRate)
+func AggregateByModel(ctx context.Context, db *gorm.DB, f *RequestLogFilter) ([]ModelReportRow, error) {
+	return runGroupedAggregate(ctx, db, f, groupedQuery[ModelReportRow]{
+		selectExpr: `
+		model_name,`[1:] + successEndedCols + `,` + tokenCostSumCols,
+		selectArgs: []any{false},
+		groupCol:   "model_name",
+		orderExpr:  "calls DESC",
+		finalize:   (*ModelReportRow).finalizeRate,
+	})
 }
 
 // AggregateByProvider groups by provider_id (dimension "provider").
@@ -233,15 +262,20 @@ func AggregateByModel(db *gorm.DB, f *RequestLogFilter) ([]ModelReportRow, error
 // successful duration still aggregate at 0 via COALESCE. Providers report
 // latency rather than token volume, so this is the one entity dimension
 // with its own metric tail instead of tokenCostSumCols.
-func AggregateByProvider(db *gorm.DB, f *RequestLogFilter) ([]ProviderReportRow, error) {
-	return runEntityAggregate[ProviderReportRow](db, f,
-		`
-		provider_id,`[1:]+successEndedCols+`,
+func AggregateByProvider(ctx context.Context, db *gorm.DB, f *RequestLogFilter) ([]ProviderReportRow, error) {
+	return runGroupedAggregate(ctx, db, f, groupedQuery[ProviderReportRow]{
+		selectExpr: `
+		provider_id,`[1:] + successEndedCols + `,
 		COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
 		COALESCE(SUM(cost_micros), 0) AS cost_micros,
 		SUM(CASE WHEN cost_known = ? THEN 1 ELSE 0 END) AS unknown_cost_calls
-	`, []any{false},
-		"provider_id", "calls DESC", resolveProviderNames, (*ProviderReportRow).finalizeRate)
+	`,
+		selectArgs: []any{false},
+		groupCol:   "provider_id",
+		orderExpr:  "calls DESC",
+		resolve:    resolveProviderNames,
+		finalize:   (*ProviderReportRow).finalizeRate,
+	})
 }
 
 // AttachProviderFailovers decorates a provider aggregate with each
@@ -251,7 +285,8 @@ func AggregateByProvider(db *gorm.DB, f *RequestLogFilter) ([]ProviderReportRow,
 // report wants that, the cost breakdowns reuse the same aggregate and never
 // render failovers, and making them pay for the scan — or see zero-only
 // synthesized rows their tables cannot explain — served nobody.
-func AttachProviderFailovers(db *gorm.DB, f *RequestLogFilter, rows []ProviderReportRow) ([]ProviderReportRow, error) {
+func AttachProviderFailovers(ctx context.Context, db *gorm.DB, f *RequestLogFilter, rows []ProviderReportRow) ([]ProviderReportRow, error) {
+	db = db.WithContext(ctx)
 	failovers, err := collectProviderFailovers(db, f)
 	if err != nil {
 		return nil, err
@@ -351,16 +386,10 @@ func collectProviderFailovers(db *gorm.DB, f *RequestLogFilter) (map[uint]int64,
 // or whose provider has been hard-deleted surface as "" — the frontend
 // renders those as the "unknown" / "unrouted" bucket.
 func resolveProviderNames(db *gorm.DB, rows []ProviderReportRow) error {
-	names, err := FindProviderNamesByIDs(db, CollectPtrIDs(rows, func(r *ProviderReportRow) *uint { return r.ProviderID }))
-	if err != nil {
-		return err
-	}
-	for i := range rows {
-		if rows[i].ProviderID != nil {
-			rows[i].ProviderName = names[*rows[i].ProviderID]
-		}
-	}
-	return nil
+	return backfillByPtrID(db, rows,
+		func(r *ProviderReportRow) *uint { return r.ProviderID },
+		FindProviderNamesByIDs,
+		func(r *ProviderReportRow, name string) { r.ProviderName = name })
 }
 
 // AggregateByCaller groups by api_key_id (dimension "caller"). NULL
@@ -369,112 +398,146 @@ func resolveProviderNames(db *gorm.DB, rows []ProviderReportRow) error {
 // first is whoever costs the most, and a cheap chatty key outranking an
 // expensive quiet one would bury it; the table offers call-count sorting
 // client-side.
-func AggregateByCaller(db *gorm.DB, f *RequestLogFilter) ([]CallerReportRow, error) {
-	return runEntityAggregate[CallerReportRow](db, f,
-		`
-		api_key_id,`[1:]+successEndedCols+`,`+tokenCostSumCols, []any{false},
-		"api_key_id", "cost_micros DESC", resolveOwnerUsernames, (*CallerReportRow).finalizeRate)
+func AggregateByCaller(ctx context.Context, db *gorm.DB, f *RequestLogFilter) ([]CallerReportRow, error) {
+	return runGroupedAggregate(ctx, db, f, groupedQuery[CallerReportRow]{
+		selectExpr: `
+		api_key_id,`[1:] + successEndedCols + `,` + tokenCostSumCols,
+		selectArgs: []any{false},
+		groupCol:   "api_key_id",
+		orderExpr:  "cost_micros DESC",
+		resolve:    resolveOwnerUsernames,
+		finalize:   (*CallerReportRow).finalizeRate,
+	})
 }
 
 // AggregateByUser groups the same aggregates by owning account
 // (request_logs.user_id). Rows with NULL user_id form their own bucket
 // (auth-rejected traffic never tied to an account). Ordered by spend for
 // the same reason as the caller report.
-func AggregateByUser(db *gorm.DB, f *RequestLogFilter) ([]UserReportRow, error) {
-	return runEntityAggregate[UserReportRow](db, f,
-		`
-		user_id,`[1:]+successEndedCols+`,`+tokenCostSumCols, []any{false},
-		"user_id", "cost_micros DESC", resolveAccountUsernames, (*UserReportRow).finalizeRate)
+func AggregateByUser(ctx context.Context, db *gorm.DB, f *RequestLogFilter) ([]UserReportRow, error) {
+	return runGroupedAggregate(ctx, db, f, groupedQuery[UserReportRow]{
+		selectExpr: `
+		user_id,`[1:] + successEndedCols + `,` + tokenCostSumCols,
+		selectArgs: []any{false},
+		groupCol:   "user_id",
+		orderExpr:  "cost_micros DESC",
+		resolve:    resolveAccountUsernames,
+		finalize:   (*UserReportRow).finalizeRate,
+	})
 }
 
 // resolveAccountUsernames populates Username on user-report rows via the
 // shared batch lookup. Missing user rows simply stay "".
 func resolveAccountUsernames(db *gorm.DB, rows []UserReportRow) error {
-	names, err := FindUsernamesByIDs(db, CollectPtrIDs(rows, func(r *UserReportRow) *uint { return r.UserID }))
-	if err != nil {
-		return err
-	}
-	for i := range rows {
-		if rows[i].UserID != nil {
-			rows[i].Username = names[*rows[i].UserID]
-		}
-	}
-	return nil
+	return backfillByPtrID(db, rows,
+		func(r *UserReportRow) *uint { return r.UserID },
+		FindUsernamesByIDs,
+		func(r *UserReportRow, name string) { r.Username = name })
 }
 
 // resolveOwnerUsernames populates Username via a single batched query
 // joining api_keys to users. Same nil / hard-deleted semantics as
 // resolveProviderNames.
 func resolveOwnerUsernames(db *gorm.DB, rows []CallerReportRow) error {
-	names, err := FindOwnerIdentitiesByKeyIDs(db, CollectPtrIDs(rows, func(r *CallerReportRow) *uint { return r.APIKeyID }))
-	if err != nil {
-		return err
-	}
-	for i := range rows {
-		if rows[i].APIKeyID != nil {
-			rows[i].Username = names[*rows[i].APIKeyID].Username
-			rows[i].KeyPrefix = names[*rows[i].APIKeyID].KeyPrefix
-		}
-	}
-	return nil
+	return backfillByPtrID(db, rows,
+		func(r *CallerReportRow) *uint { return r.APIKeyID },
+		FindOwnerIdentitiesByKeyIDs,
+		func(r *CallerReportRow, o OwnerIdentity) { r.Username, r.KeyPrefix = o.Username, o.KeyPrefix })
 }
 
-// AggregateByTime walks the [start, end) range one bucket at a time and
-// delegates each bucket's totals to AggregateRequestLogMetrics — that keeps
-// the success/ended/unknown-cost definition identical to the overview card,
-// and avoids dialect-specific date-trunc (SQLite strftime vs Postgres
-// to_char). Buckets with no data are still emitted (with zeros) so the
-// frontend can draw a continuous trend without patching gaps client-side.
+// AggregateByTime aggregates the [start, end) range into time buckets with
+// ONE grouped query rather than one query per bucket — per-bucket querying
+// would cost up to 90 round-trips for a 90-day day-bucket window and 720
+// for a 30-day hour window. Bucket boundaries are computed in Go, walking
+// the range with the bucket's advance function, so the boundary semantics
+// are untouched: day buckets follow the local calendar (a DST-transition
+// day is 23 or 25 hours long), and all buckets stay anchored at the range
+// start rather than snapping to clock boundaries.
 //
-// Range defaults to [today end, today end - 7 days) when the filter doesn't
-// carry start/end. day bucket caps at 90 days, hour at 30 days.
-func AggregateByTime(db *gorm.DB, f *RequestLogFilter, loc *time.Location, bucket string, now time.Time) ([]TimeReportRow, error) {
+// The SQL side groups at minute granularity on driver-neutral epoch
+// arithmetic (no timezone SQL, one expression shape per dialect); Go then
+// assigns each minute group to its bucket by binary search over the
+// boundary list. Every real boundary is a whole minute — timezone offsets
+// are whole minutes, so local midnight is too — which makes the assignment
+// exact; only a caller-supplied sub-minute start could blur a boundary, by
+// less than one minute of rows. The SELECT reuses successEndedCols +
+// tokenCostSumCols, so the success/ended/unknown-cost definition stays
+// identical to the overview card by construction.
+//
+// Buckets with no data are still emitted (with zeros) so the frontend can
+// draw a continuous trend without patching gaps client-side. Range defaults
+// to [today end, today end - 7 days) when the filter doesn't carry
+// start/end. day bucket caps at 90 days, hour at 30 days.
+func AggregateByTime(ctx context.Context, db *gorm.DB, f *RequestLogFilter, loc *time.Location, bucket string, now time.Time) ([]TimeReportRow, error) {
 	layout, advance, err := timeBucketConfig(bucket)
 	if err != nil {
 		return nil, err
 	}
 	end, start := ResolveTimeRange(f, loc, bucket, now)
 
-	cursor := start.In(loc)
+	// Bucket boundary walk — ascending start times, one per emitted row.
+	bounds := make([]time.Time, 0)
 	endLocal := end.In(loc)
-	result := make([]TimeReportRow, 0)
-	for cursor.Before(endLocal) {
-		next := advance(cursor)
-		ff := *f
-		bucketStartUTC := cursor.UTC()
-		bucketEndUTC := next.UTC()
-		ff.StartTime = &bucketStartUTC
-		ff.EndTime = &bucketEndUTC
-		m, err := AggregateRequestLogMetrics(db, &ff)
-		if err != nil {
-			return nil, err
+	for cursor := start.In(loc); cursor.Before(endLocal); cursor = advance(cursor) {
+		bounds = append(bounds, cursor)
+	}
+	if len(bounds) == 0 {
+		// Empty or inverted range: nothing to emit and nothing to query.
+		return []TimeReportRow{}, nil
+	}
+
+	// One grouped query over the whole window. The filter copy pins the
+	// resolved [start, end) so the SQL sees exactly the walked range even
+	// when the caller's filter carried no explicit times.
+	ff := *f
+	startUTC := start.UTC()
+	endUTC := end.UTC()
+	ff.StartTime = &startUTC
+	ff.EndTime = &endUTC
+	var groups []struct {
+		MinuteIndex     int64 `gorm:"column:minute_index"`
+		ReportCallStats `gorm:"embedded"`
+		ReportTokenCost `gorm:"embedded"`
+	}
+	if err := ff.applyFilter(db.WithContext(ctx)).
+		Select(minuteIndexExpr(db)+` AS minute_index,`+successEndedCols+`,`+tokenCostSumCols, false).
+		Group("minute_index").
+		Scan(&groups).Error; err != nil {
+		return nil, err
+	}
+
+	// Assign each minute group to the last bucket starting at or before it,
+	// summing the counters. A sub-minute range start floors the first
+	// minute's group to just before bounds[0]; its rows are still >= start
+	// (the SQL guarantees that), so the group clamps to the first bucket.
+	result := make([]TimeReportRow, len(bounds))
+	for _, g := range groups {
+		minuteStart := time.Unix(g.MinuteIndex*60, 0).UTC()
+		i := sort.Search(len(bounds), func(i int) bool { return bounds[i].After(minuteStart) }) - 1
+		if i < 0 {
+			i = 0
 		}
+		r := &result[i]
+		r.Calls += g.Calls
+		r.SuccessCalls += g.SuccessCalls
+		r.EndedCalls += g.EndedCalls
+		r.InputTokens += g.InputTokens
+		r.OutputTokens += g.OutputTokens
+		r.CacheWriteTokens += g.CacheWriteTokens
+		r.CacheReadTokens += g.CacheReadTokens
+		r.CostMicros += g.CostMicros
+		r.UnknownCostCalls += g.UnknownCostCalls
+	}
+	for i, b := range bounds {
 		// For hourly buckets, append the UTC offset to the label so fall-back
 		// DST hours (e.g., two 01:00 entries) are distinguishable. Day buckets
 		// never repeat so they stay as YYYY-MM-DD.
-		bucketLabel := cursor.Format(layout)
 		if bucket == TimeBucketHour {
-			bucketLabel = cursor.Format("2006-01-02 15:04 -07:00")
+			result[i].Bucket = b.Format("2006-01-02 15:04 -07:00")
+		} else {
+			result[i].Bucket = b.Format(layout)
 		}
-		row := TimeReportRow{
-			Bucket: bucketLabel,
-			ReportCallStats: ReportCallStats{
-				Calls:        m.TotalCalls,
-				SuccessCalls: m.SuccessCalls,
-				EndedCalls:   m.EndedCalls,
-				SuccessRate:  m.SuccessRate(),
-			},
-			ReportTokenCost: ReportTokenCost{
-				InputTokens:      m.InputTokens,
-				OutputTokens:     m.OutputTokens,
-				CacheWriteTokens: m.CacheWriteTokens,
-				CacheReadTokens:  m.CacheReadTokens,
-				CostMicros:       m.KnownCostMicros,
-				UnknownCostCalls: m.UnknownCostCalls,
-			},
-		}
-		result = append(result, row)
-		cursor = next
+		result[i].finalizeRate()
 	}
 	// Newest-first: someone scanning the report wants today at the top, not
 	// a week ago. The walk above is ascending only because gap-fill needs
@@ -485,6 +548,17 @@ func AggregateByTime(db *gorm.DB, f *RequestLogFilter, loc *time.Location, bucke
 		result[i], result[j] = result[j], result[i]
 	}
 	return result, nil
+}
+
+// minuteIndexExpr builds the dialect's epoch-minute grouping key:
+// floor(unix epoch of created_at / 60). Integer epoch arithmetic is the
+// whole point — no timezone or date-truncation SQL, so both dialects
+// compute the identical key and all calendar/DST logic stays in Go.
+func minuteIndexExpr(db *gorm.DB) string {
+	if db.Dialector.Name() == "postgres" { //nolint:staticcheck // QF1008 false-positive
+		return "(floor(extract(epoch FROM created_at) / 60))::bigint"
+	}
+	return "(CAST(strftime('%s', created_at) AS INTEGER) / 60)"
 }
 
 // timeBucketConfig maps bucket to (time format layout, advance function).
@@ -618,39 +692,40 @@ func AggregateCompressTopAPIKeys(ctx context.Context, db *gorm.DB, f *RequestLog
 	if limit < 1 {
 		limit = 1
 	}
-	var rows []CompressTopAPIKeyRow
-	err := f.applyFilter(db.WithContext(ctx)).Select(`
+	return runGroupedAggregate(ctx, db, f, groupedQuery[CompressTopAPIKeyRow]{
+		selectExpr: `
 		api_key_id,
 		COUNT(*) AS calls,
 		COALESCE(SUM(compress_estimated_tokens_saved), 0) AS tokens_saved
-	`[1:]).Group("api_key_id").Having("api_key_id IS NOT NULL").Order("tokens_saved DESC, api_key_id ASC").Limit(limit).Scan(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	if rows == nil {
-		rows = []CompressTopAPIKeyRow{}
-	}
-	if err := resolveCompressOwnerUsernames(db.WithContext(ctx), rows); err != nil {
-		return nil, err
-	}
-	return rows, nil
+	`[1:],
+		groupCol:  "api_key_id",
+		having:    "api_key_id IS NOT NULL",
+		orderExpr: "tokens_saved DESC, api_key_id ASC",
+		limit:     limit,
+		resolve:   resolveCompressOwnerUsernames,
+	})
 }
 
 // resolveCompressOwnerUsernames populates Username via a single batched
 // SELECT — same nil / hard-deleted semantics as resolveOwnerUsernames.
 func resolveCompressOwnerUsernames(db *gorm.DB, rows []CompressTopAPIKeyRow) error {
-	names, err := FindOwnerIdentitiesByKeyIDs(db, CollectPtrIDs(rows, func(r *CompressTopAPIKeyRow) *uint { return r.APIKeyID }))
-	if err != nil {
-		return err
-	}
-	for i := range rows {
-		if rows[i].APIKeyID != nil {
-			rows[i].Username = names[*rows[i].APIKeyID].Username
-			rows[i].KeyPrefix = names[*rows[i].APIKeyID].KeyPrefix
-		}
-	}
-	return nil
+	return backfillByPtrID(db, rows,
+		func(r *CompressTopAPIKeyRow) *uint { return r.APIKeyID },
+		FindOwnerIdentitiesByKeyIDs,
+		func(r *CompressTopAPIKeyRow, o OwnerIdentity) { r.Username, r.KeyPrefix = o.Username, o.KeyPrefix })
 }
+
+// compressSavingsSumCols is the SELECT tail shared by the model and provider
+// compress Top-N breakdowns — the two differ only in their grouping key.
+// compressed_calls counts rows that actually ran compression; under the
+// compressors_applied != ” row gate both breakdowns apply, it equals
+// total_calls, but the two columns are kept separate so the wire shape
+// doesn't encode the gate.
+const compressSavingsSumCols = `
+		COALESCE(SUM(compress_estimated_tokens_saved), 0) AS tokens_saved,
+		COALESCE(SUM(compress_estimated_cost_saved_micros), 0) AS cost_saved_micros,
+		SUM(CASE WHEN compressors_applied != '' THEN 1 ELSE 0 END) AS compressed_calls,
+		COUNT(*) AS total_calls`
 
 // CompressTopModelRow is one row of the per-model Top N. Same shape as
 // CompressTopAPIKeyRow but keyed by model_name (NOT NULL, so no nil bucket).
@@ -675,25 +750,14 @@ func AggregateCompressTopModels(ctx context.Context, db *gorm.DB, f *RequestLogF
 	if limit < 1 {
 		limit = 1
 	}
-	var rows []CompressTopModelRow
-	err := f.applyFilter(db.WithContext(ctx)).Select(`
-		model_name,
-		COALESCE(SUM(compress_estimated_tokens_saved), 0) AS tokens_saved,
-		COALESCE(SUM(compress_estimated_cost_saved_micros), 0) AS cost_saved_micros,
-		SUM(CASE WHEN compressors_applied != '' THEN 1 ELSE 0 END) AS compressed_calls,
-		COUNT(*) AS total_calls
-	`[1:]).Where("compressors_applied != ''").
-		Group("model_name").
-		Having("model_name != ''").
-		Order("tokens_saved DESC, model_name ASC").
-		Limit(limit).Scan(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	if rows == nil {
-		rows = []CompressTopModelRow{}
-	}
-	return rows, nil
+	return runGroupedAggregate(ctx, db, f, groupedQuery[CompressTopModelRow]{
+		selectExpr: "model_name," + compressSavingsSumCols,
+		where:      "compressors_applied != ''",
+		groupCol:   "model_name",
+		having:     "model_name != ''",
+		orderExpr:  "tokens_saved DESC, model_name ASC",
+		limit:      limit,
+	})
 }
 
 // CompressTopProviderRow is one row of the per-provider Top N. ProviderID is
@@ -717,44 +781,25 @@ func AggregateCompressTopProviders(ctx context.Context, db *gorm.DB, f *RequestL
 	if limit < 1 {
 		limit = 1
 	}
-	var rows []CompressTopProviderRow
-	err := f.applyFilter(db.WithContext(ctx)).Select(`
-		provider_id,
-		COALESCE(SUM(compress_estimated_tokens_saved), 0) AS tokens_saved,
-		COALESCE(SUM(compress_estimated_cost_saved_micros), 0) AS cost_saved_micros,
-		SUM(CASE WHEN compressors_applied != '' THEN 1 ELSE 0 END) AS compressed_calls,
-		COUNT(*) AS total_calls
-	`[1:]).Where("compressors_applied != ''").
-		Group("provider_id").
-		Having("provider_id IS NOT NULL").
-		Order("tokens_saved DESC, provider_id ASC").
-		Limit(limit).Scan(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	if rows == nil {
-		rows = []CompressTopProviderRow{}
-	}
-	if err := resolveCompressProviderNames(db.WithContext(ctx), rows); err != nil {
-		return nil, err
-	}
-	return rows, nil
+	return runGroupedAggregate(ctx, db, f, groupedQuery[CompressTopProviderRow]{
+		selectExpr: "provider_id," + compressSavingsSumCols,
+		where:      "compressors_applied != ''",
+		groupCol:   "provider_id",
+		having:     "provider_id IS NOT NULL",
+		orderExpr:  "tokens_saved DESC, provider_id ASC",
+		limit:      limit,
+		resolve:    resolveCompressProviderNames,
+	})
 }
 
 // resolveCompressProviderNames populates ProviderName via a single batched
 // SELECT against providers — same nil / hard-deleted semantics as
 // resolveProviderNames.
 func resolveCompressProviderNames(db *gorm.DB, rows []CompressTopProviderRow) error {
-	names, err := FindProviderNamesByIDs(db, CollectPtrIDs(rows, func(r *CompressTopProviderRow) *uint { return r.ProviderID }))
-	if err != nil {
-		return err
-	}
-	for i := range rows {
-		if rows[i].ProviderID != nil {
-			rows[i].ProviderName = names[*rows[i].ProviderID]
-		}
-	}
-	return nil
+	return backfillByPtrID(db, rows,
+		func(r *CompressTopProviderRow) *uint { return r.ProviderID },
+		FindProviderNamesByIDs,
+		func(r *CompressTopProviderRow, name string) { r.ProviderName = name })
 }
 
 // CompressDailySeriesRow is one day of the daily token-saved trend. Bucket is

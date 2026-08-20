@@ -63,7 +63,7 @@ func TestMultiProtocolProvider_BothIngresses_RouteToCorrectPerProtocolUpstream(t
 	if err := db.Create(p).Error; err != nil {
 		t.Fatalf("seed multi-protocol provider: %v", err)
 	}
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-multi-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-multi-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "provider-model", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -163,7 +163,7 @@ func TestDestinationVersionBump_RevokesStaleKeyUntilReVerified(t *testing.T) {
 
 	svc := newSvc(t, db)
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-claude-upstream", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 

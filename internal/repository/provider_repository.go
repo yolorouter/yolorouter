@@ -1,6 +1,6 @@
 // Package repository provides pure data access for
 // providers/provider_keys — no business judgment here (that's
-// internal/service/provider_service.go's job).
+// internal/service/provider's job).
 package repository
 
 import (
@@ -39,7 +39,7 @@ func FindProviderByID(db *gorm.DB, id uint) (*model.Provider, error) {
 // FindProviderByName returns gorm.ErrRecordNotFound if no provider has that
 // exact name — used by the service layer for a friendly pre-check before
 // insert (the real uniqueness guarantee is the UNIQUE constraint itself;
-// see service.CreateProvider).
+// see provider.CreateProvider).
 func FindProviderByName(db *gorm.DB, name string) (*model.Provider, error) {
 	var provider model.Provider
 	if err := db.Where("name = ?", name).First(&provider).Error; err != nil {
@@ -492,7 +492,7 @@ func SwapProviderKeySortOrder(db *gorm.DB, providerID, keyID uint, direction str
 // write, with the later Save silently overwriting the earlier one's probe
 // — leaving one instance's key permanently, silently mismatched with no
 // error at that moment. Because this call can never overwrite a winner,
-// service.VerifyMasterKeyFingerprint always re-reads and
+// provider.VerifyMasterKeyFingerprint always re-reads and
 // decrypt-verifies AFTER calling this, regardless of whether its own
 // claim actually won or lost — the losing instance correctly fails that
 // verification instead of silently believing it succeeded.

@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/apikey"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
 
@@ -52,7 +52,7 @@ type createAPIKeyRequest struct {
 // slice: nil/omitted means "leave the whitelist unchanged"; an explicit []
 // (non-nil empty slice) means "clear the whitelist". Go's
 // encoding/json does distinguish these ([] -> non-nil empty, omitted -> nil),
-// and service.UpdateAPIKey keys off `ModelIDs != nil` to tell them apart.
+// and apikey.UpdateAPIKey keys off `ModelIDs != nil` to tell them apart.
 // ExpectedUpdatedAt carries the caller's CAS snapshot (from a prior GET) —
 // when present the service/repo pair qualifies the UPDATE with it and a
 // mismatch returns 11013 (409). Omitted on legacy callers (EditKeyModal etc.).
@@ -110,14 +110,14 @@ func validateExpiryFuture(c *gin.Context, expiry *time.Time) bool {
 // ignored (which would return the unfiltered list) — mirroring the request-log
 // handler's status-class allowlist.
 var validAPIKeyStatusFilters = map[string]struct{}{
-	"":                             {},
-	service.APIKeyDisplayActive:    {},
-	service.APIKeyDisplayExpired:   {},
-	service.APIKeyDisplayRevoked:   {},
-	service.APIKeyDisplayBudgetHit: {},
+	"":                            {},
+	apikey.APIKeyDisplayActive:    {},
+	apikey.APIKeyDisplayExpired:   {},
+	apikey.APIKeyDisplayRevoked:   {},
+	apikey.APIKeyDisplayBudgetHit: {},
 }
 
-func GetAPIKeys(svc *service.APIKeyService) gin.HandlerFunc {
+func GetAPIKeys(svc *apikey.APIKeyService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		page, pageSize := parseAPIKeyPagination(c)
 		status := c.Query("status")
@@ -144,7 +144,7 @@ func GetAPIKeys(svc *service.APIKeyService) gin.HandlerFunc {
 // PostAPIKey creates a key and returns the plaintext once at create time. The
 // same plaintext is also persisted as AES-GCM ciphertext, so it remains
 // recoverable via GET /api-keys/:id/plaintext (the list-page reveal).
-func PostAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
+func PostAPIKey(svc *apikey.APIKeyService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createAPIKeyRequest
 		if !bindJSON(c, &req) {
@@ -156,7 +156,7 @@ func PostAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 		if middleware.ViewScopeOf(c).Member && !memberCreateAllowed(c, &req) {
 			return
 		}
-		result, err := svc.CreateAPIKey(service.CreateAPIKeyInput{
+		result, err := svc.CreateAPIKey(apikey.CreateAPIKeyInput{
 			// The session user owns the key they create. RequireSession has
 			// already resolved the identity or this handler is unreachable.
 			UserID:         c.MustGet(middleware.UserIDKey).(uint),
@@ -199,7 +199,7 @@ func denyStorage(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 }
 
-func GetAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
+func GetAPIKey(svc *apikey.APIKeyService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -218,7 +218,7 @@ func GetAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 // button. The plaintext_key field name matches PostAPIKey's create response so
 // the frontend reuses one code path. Returns 11016 when the key predates the
 // encrypted_key column and cannot be recovered.
-func GetAPIKeyPlaintext(svc *service.APIKeyService) gin.HandlerFunc {
+func GetAPIKeyPlaintext(svc *apikey.APIKeyService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -234,7 +234,7 @@ func GetAPIKeyPlaintext(svc *service.APIKeyService) gin.HandlerFunc {
 	}
 }
 
-func PatchAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
+func PatchAPIKey(svc *apikey.APIKeyService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {
@@ -251,7 +251,7 @@ func PatchAPIKey(svc *service.APIKeyService) gin.HandlerFunc {
 		if scope.Member && !memberPatchAllowed(c, &req) {
 			return
 		}
-		view, err := svc.UpdateAPIKey(id, service.UpdateAPIKeyInput{
+		view, err := svc.UpdateAPIKey(id, apikey.UpdateAPIKeyInput{
 			Remark:         req.Remark,
 			AllowAllModels: req.AllowAllModels, ModelIDs: req.ModelIDs,
 			ExpiresAt: req.ExpiresAt, RPMLimit: req.RPMLimit, TPMLimit: req.TPMLimit,
@@ -322,7 +322,7 @@ func memberPatchAllowed(c *gin.Context, req *updateAPIKeyRequest) bool {
 	return true
 }
 
-func PatchAPIKeyRevoke(svc *service.APIKeyService) gin.HandlerFunc {
+func PatchAPIKeyRevoke(svc *apikey.APIKeyService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
 		if !ok {

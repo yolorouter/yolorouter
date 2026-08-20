@@ -14,44 +14,18 @@ import (
 
 // relayContextKey is the gin.Context key Handle stores the in-flight
 // Exchange under (relay.go: c.Set(relayContextKey, rc)), so
-// WriteOpenAIError* can stash the local error JSON it is about to return
+// WriteIngressError can stash the local error JSON it is about to return
 // into the response-body capture without threading an
 // *Exchange parameter through every call site. Absent on paths that
 // never call Handle (e.g. unit tests, or middleware.APIKeyAuth's own 401s
-// before Handle ever runs) — stashLocalErrorBody is then a no-op.
+// before Handle ever runs) — the stash is then a no-op.
 const relayContextKey = "relay_context"
-
-// openaiErrorBody is the OpenAI-compatible error envelope. Gateway traffic
-// uses upstream's native wire format, NOT pkg/response — so
-// these responses intentionally do not carry the admin API's Code/Message
-// envelope.
-type openaiErrorBody struct {
-	Error openaiError `json:"error"`
-}
-
-type openaiError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-// LocalErrorBody serializes the OpenAI-compatible error envelope used by
-// WriteOpenAIError/WriteOpenAIErrorWithRequestID. Exported so
-// middleware.logAuthRejection (a different package, rejecting requests
-// before Handle — and any Exchange — ever exists) can build the exact
-// same response_body JSON for its own request_log_bodies row instead of
-// duplicating the envelope shape (single source of truth for
-// shared logic).
-func LocalErrorBody(errType, message string) []byte {
-	b, _ := json.Marshal(openaiErrorBody{Error: openaiError{Message: message, Type: errType}})
-	return b
-}
 
 // relayContextFrom retrieves the in-flight Exchange Handle stashed on c
 // (see relayContextKey), or nil when none is present — e.g. a path that
 // never called Handle (unit tests, or an early 401 in middleware.APIKeyAuth
-// before Handle ever runs). The single lookup + two-step type assertion both
-// stashLocalErrorBody (here) and stashLocalClaudeErrorBody (ingress_error.go)
-// need.
+// before Handle ever runs). The single lookup + two-step type assertion
+// every local-error stash path needs.
 func relayContextFrom(c *gin.Context) *Exchange {
 	v, ok := c.Get(relayContextKey)
 	if !ok {
@@ -59,19 +33,6 @@ func relayContextFrom(c *gin.Context) *Exchange {
 	}
 	rc, _ := v.(*Exchange)
 	return rc
-}
-
-// stashLocalErrorBody records the local error JSON WriteOpenAIError is about
-// to return, as response_body for this request's request_log_bodies row
-// No-op when no Exchange is on the context. The
-// body is a gateway-generated error envelope (no caller/upstream content), so
-// it is stored verbatim — v0.1 does not scrub body content.
-func stashLocalErrorBody(c *gin.Context, errType, message string) {
-	rc := relayContextFrom(c)
-	if rc == nil {
-		return
-	}
-	rc.bodies.SetResponse(LocalErrorBody(errType, message))
 }
 
 // Caller-facing error "type" values. The canonical constants live in the
@@ -95,35 +56,6 @@ const (
 // distinguishable in the audit row from a gateway fault, because the two demand
 // opposite responses from whoever reads it.
 const StatusClientClosedRequest = decision.StatusClientClosedRequest
-
-// WriteOpenAIError writes one OpenAI-compatible error response and aborts
-// the chain. status is the HTTP status; errType is the error.type string;
-// message is shown verbatim to the caller.
-func WriteOpenAIError(c *gin.Context, status int, errType, message string) {
-	stashLocalErrorBody(c, errType, message)
-	c.AbortWithStatusJSON(status, openaiErrorBody{
-		Error: openaiError{Message: message, Type: errType},
-	})
-}
-
-// AppendRequestID appends " (request: <id>)" to message so a caller
-// reporting an error can quote the id and the admin can find the row. A no-op
-// (returns message unchanged) when requestID is empty. Shared by every call
-// site that builds this exact suffix, so they can't drift out of sync.
-func AppendRequestID(message, requestID string) string {
-	if requestID == "" {
-		return message
-	}
-	return message + " (request: " + requestID + ")"
-}
-
-// WriteOpenAIErrorWithRequestID is WriteOpenAIError with the request id
-// appended to the message, so a caller reporting an error can quote the id
-// and the admin can find the row.
-func WriteOpenAIErrorWithRequestID(c *gin.Context, status int, errType, message, requestID string) {
-	message = AppendRequestID(message, requestID)
-	WriteOpenAIError(c, status, errType, message)
-}
 
 // statusCategory classifies a non-2xx upstream HTTP status into the relay
 // loop's three branches: rotate to another Key on the same
@@ -161,9 +93,10 @@ type upstreamStatusClass struct {
 // is the only evidence there is, and the routing it implies must come out of
 // the same table as everything else rather than out of a parallel switch.
 //
-// The mapping mirrors classifyUpstreamStatus, which keeps the label-side
-// vocabulary (attempt outcome, caller-facing error type); the two must agree
-// on which statuses mean what, and a test holds them together.
+// This is the single reading of "which statuses mean what":
+// classifyUpstreamStatus derives the label-side vocabulary (attempt outcome,
+// caller-facing error type) from the kind returned here, so the two cannot
+// disagree by construction.
 func kindForUpstreamStatus(status int) fact.Kind {
 	switch {
 	case status == http.StatusUnauthorized:
@@ -225,25 +158,25 @@ func kernelUpstreamFact(status int) fact.Fact {
 }
 
 // classifyUpstreamStatus maps a non-2xx upstream status to its relay
-// classification. One call site (attemptOne), one source of truth —
-// replaces the former statusIsKeyRotation / statusIsCandidateFailover /
-// clientErrorTypeFor / keyOutcome quartet that was spread across two files
-// and had already drifted (the candidate/client branches hardcoded outcome
-// labels while the rotate branch used a separate keyOutcome helper).
+// classification — the label-side vocabulary (routing category, attempt
+// outcome, caller-facing error type) for the reading kindForUpstreamStatus
+// gives in the fact vocabulary. Deriving from the kind rather than
+// re-reading the status is what makes "which statuses mean what" a single
+// definition, and only this direction of derivation works: the kind
+// distinguishes 401 from 429 while the rotate-Key category folds them
+// together.
 //
 // 403 is intentionally NOT a rotate-Key status: a 403 from an
 // OpenAI-compatible provider is usually account/permission scoped (the whole
 // provider is forbidden), so rotating Keys within it is futile and we fall
 // through to terminal.
 func classifyUpstreamStatus(status int) upstreamStatusClass {
-	switch {
-	case status == http.StatusUnauthorized, status == http.StatusTooManyRequests:
-		outcome, errType := AttemptAuthFailed, errTypeAuthentication
-		if status == http.StatusTooManyRequests {
-			outcome, errType = AttemptRateLimited, errTypeRateLimit
-		}
-		return upstreamStatusClass{Category: statusRotateKey, Outcome: outcome, ErrorType: errType}
-	case status >= 500:
+	switch kindForUpstreamStatus(status) {
+	case fact.KindUpstreamAuthRejected:
+		return upstreamStatusClass{Category: statusRotateKey, Outcome: AttemptAuthFailed, ErrorType: errTypeAuthentication}
+	case fact.KindUpstreamRateLimited:
+		return upstreamStatusClass{Category: statusRotateKey, Outcome: AttemptRateLimited, ErrorType: errTypeRateLimit}
+	case fact.KindUpstreamServerError:
 		return upstreamStatusClass{Category: statusFailover, Outcome: AttemptServerError, ErrorType: errTypeUpstream}
 	default:
 		errType := errTypeInvalidRequest

@@ -89,9 +89,9 @@ func (d *StreamDecoder) DecodeChunk(raw string) ([]protocols.IRStreamDelta, erro
 	if raw == "" {
 		return nil, nil
 	}
-	// tolerate an upstream that still has a glued-on "data: " prefix
-	if strings.HasPrefix(raw, "data:") {
-		raw = strings.TrimSpace(raw[len("data:"):])
+	// tolerate an upstream that still has a glued-on "data:" prefix
+	if payload, ok := protocols.SSEDataPayload(raw); ok {
+		raw = payload
 	}
 	if raw == "[DONE]" || raw == "" {
 		return nil, nil

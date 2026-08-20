@@ -11,7 +11,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/dashboard"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
@@ -26,7 +26,7 @@ func newDashboardTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	db := testutil.NewSQLiteDB(t)
-	svc := service.NewDashboardService(db)
+	svc := dashboard.NewDashboardService(db)
 	r := gin.New()
 	r.GET("/api/admin/dashboard", GetDashboard(svc))
 	return r, db
@@ -159,8 +159,8 @@ func TestGetDashboardReturnsZeroEnvelopeOnFreshDB(t *testing.T) {
 		body.Today.SuccessRate != 0 || body.Today.UnknownCostCalls != 0 {
 		t.Fatalf("expected all-zero today section, got %+v", body.Today)
 	}
-	if len(body.Trend) != service.DashboardTrendDays {
-		t.Fatalf("expected %d trend points, got %d", service.DashboardTrendDays, len(body.Trend))
+	if len(body.Trend) != dashboard.DashboardTrendDays {
+		t.Fatalf("expected %d trend points, got %d", dashboard.DashboardTrendDays, len(body.Trend))
 	}
 	// Trend must be oldest-first, ending today, contiguous days.
 	wantToday := dashboardTestNow.Format("2006-01-02")
@@ -317,8 +317,8 @@ func TestGetDashboardTrendIncludesTodayRowOnly(t *testing.T) {
 	if err := json.Unmarshal(env.Data, &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(body.Trend) != service.DashboardTrendDays {
-		t.Fatalf("Trend len: want %d, got %d", service.DashboardTrendDays, len(body.Trend))
+	if len(body.Trend) != dashboard.DashboardTrendDays {
+		t.Fatalf("Trend len: want %d, got %d", dashboard.DashboardTrendDays, len(body.Trend))
 	}
 	today := body.Trend[len(body.Trend)-1]
 	wantToday := now.Format("2006-01-02")

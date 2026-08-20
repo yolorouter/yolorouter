@@ -20,8 +20,18 @@ import (
 	"github.com/yolorouter/yolorouter/internal/handler"
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/selfupdate"
-	"github.com/yolorouter/yolorouter/internal/service"
+	"github.com/yolorouter/yolorouter/internal/service/analytics"
+	"github.com/yolorouter/yolorouter/internal/service/apikey"
+	"github.com/yolorouter/yolorouter/internal/service/dashboard"
+	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
+	"github.com/yolorouter/yolorouter/internal/service/oauth"
+	"github.com/yolorouter/yolorouter/internal/service/provider"
+	"github.com/yolorouter/yolorouter/internal/service/providerclient"
+	"github.com/yolorouter/yolorouter/internal/service/requestlog"
+	"github.com/yolorouter/yolorouter/internal/service/systemsettings"
+	versionsvc "github.com/yolorouter/yolorouter/internal/service/version"
 	"github.com/yolorouter/yolorouter/internal/version"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/web"
 )
@@ -98,25 +108,45 @@ func validateEmbeddedFrontend(distFS fs.FS) error {
 	return nil
 }
 
+// Deps carries everything the router assembly needs. One struct instead of a
+// positional list: several of these dependencies share a type, and a list
+// that long is a silent-swap waiting to happen at every call site.
+type Deps struct {
+	DB *gorm.DB
+	// ProviderMasterKey is the already-decoded 32-byte AES-256-GCM key
+	// (cmd/yolorouter/serve.go decodes it via crypto.KeyFromBase64 before
+	// calling New) — passed here rather than read from a global so
+	// the provider service's dependencies stay explicit, same as DB.
+	ProviderMasterKey []byte
+	// BodiesDir is the absolute data/bodies/ directory (already created by
+	// cmd/yolorouter/serve.go at boot) that the gateway's stream body capture
+	// appends sent-SSE files under. The gateway package has no direct access
+	// to app config — passing the resolved absolute path down and stashing it
+	// on every request's gin.Context is how it crosses that boundary without
+	// an import cycle.
+	BodiesDir string
+	// Update carries the version-update settings the system-info endpoint
+	// resolves its GitHub release source from.
+	Update config.UpdateConfig
+	// AllowPrivateUpstreams (config.SecurityConfig.AllowPrivateUpstreams) is
+	// forwarded to the provider-test and gateway-relay clients' SSRF
+	// transport, letting a self-hosted operator reach a LAN/localhost model
+	// server.
+	AllowPrivateUpstreams bool
+	// Gateway carries the relay timeouts and limits, threaded through so the
+	// wiring stays identical to production instead of a zero struct.
+	Gateway config.GatewayConfig
+	// LoopbackBase is the server's own base URL, which the gateway's
+	// vision-fallback capability calls back into.
+	LoopbackBase string
+	// ExternalURL is the public base URL OAuth providers redirect back to.
+	ExternalURL string
+}
+
 // New builds the router against the real embedded frontend (web.DistFS,
 // selected at compile time by the embed build tag — see web/embed_real.go
-// / web/embed_stub.go). providerMasterKey is the already-decoded 32-byte
-// AES-256-GCM key (cmd/yolorouter/serve.go decodes it via
-// crypto.KeyFromBase64 before calling this) — passed here rather than read
-// from a global so provider_service.go's dependencies stay explicit, same
-// as db.
-// bodiesDir is the absolute data/bodies/ directory (already created by
-// cmd/yolorouter/serve.go at boot) that the gateway's stream body
-// capture (internal/gateway/stream.go) appends sent-SSE files under. The
-// gateway package has no direct access to app config — passing the
-// resolved absolute path down through New/newWithDistFS and stashing it on
-// every request's gin.Context (below) is how it crosses that boundary
-// without an import cycle. updateCfg carries the version-update settings the
-// system-info endpoint resolves its GitHub release source from.
-// allowPrivateUpstreams (config.SecurityConfig.AllowPrivateUpstreams) is
-// forwarded to the provider-test and gateway-relay clients' SSRF transport,
-// letting a self-hosted operator reach a LAN/localhost model server.
-func New(db *gorm.DB, providerMasterKey []byte, bodiesDir string, updateCfg config.UpdateConfig, allowPrivateUpstreams bool, gatewayCfg config.GatewayConfig, loopbackBase, externalURL string) (*gin.Engine, error) {
+// / web/embed_stub.go).
+func New(deps Deps) (*gin.Engine, error) {
 	// fs.Sub never actually errors here, in either build variant: it only
 	// validates that "dist" is a syntactically-valid path string, not that
 	// it exists in web.DistFS (confirmed against io/fs's Sub implementation
@@ -126,10 +156,14 @@ func New(db *gorm.DB, providerMasterKey []byte, bodiesDir string, updateCfg conf
 	// fs.Stat call at each call site below, which correctly reports
 	// "not found" for every path against an empty embedded FS.
 	distFS, _ := fs.Sub(web.DistFS, "dist")
-	return newWithDistFS(distFS, db, providerMasterKey, bodiesDir, updateCfg, allowPrivateUpstreams, gatewayCfg, loopbackBase, externalURL)
+	return newWithDistFS(distFS, deps)
 }
 
-func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDir string, updateCfg config.UpdateConfig, allowPrivateUpstreams bool, gatewayCfg config.GatewayConfig, loopbackBase, externalURL string) (*gin.Engine, error) {
+func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
+	db, secrets := deps.DB, crypto.NewSecretBox(deps.ProviderMasterKey)
+	bodiesDir, updateCfg := deps.BodiesDir, deps.Update
+	allowPrivateUpstreams, gatewayCfg := deps.AllowPrivateUpstreams, deps.Gateway
+	loopbackBase, externalURL := deps.LoopbackBase, deps.ExternalURL
 	if err := validateEmbeddedFrontend(distFS); err != nil {
 		return nil, err
 	}
@@ -222,11 +256,11 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	// loginConcurrencyLimit caps the number of in-flight bcrypt
 	// comparisons PostLogin can trigger at once — an unknown username
 	// still runs a full bcrypt comparison (see
-	// internal/service/auth_service.go's dummyPasswordHashForTiming,
+	// internal/service/auth's dummyPasswordHashForTiming,
 	// added to close an account-enumeration timing side channel), and the
 	// per-account lockout can't apply to a username with no matching row.
 	// See middleware.Semaphore's doc comment for why PostLogin acquires
-	// this itself around just the service.Login call, rather than this
+	// this itself around just the auth.Login call, rather than this
 	// being a middleware wrapping the whole handler (including the
 	// request body read).
 	const loginConcurrencyLimit = 8
@@ -240,7 +274,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	// both expose nothing beyond what the login page must render, and the
 	// browser-facing callback lives at the root (it is a navigation target
 	// the identity provider redirects to, not an API call).
-	oauthLoginSvc := service.NewOAuthLoginService(db, providerMasterKey)
+	oauthLoginSvc := oauth.NewOAuthLoginService(db, secrets)
 	admin.GET("/auth/oauth/providers", handler.GetPublicOAuthProviders(oauthLoginSvc))
 	// Rate shape: a generous global ceiling (600/min) so the endpoint can
 	// never grow auth_states unboundedly, plus a per-client budget
@@ -281,7 +315,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	protected.PATCH("/users/:id/status", handler.PatchUserStatus(db))
 	protected.PATCH("/users/:id/role", handler.PatchUserRole(db))
 
-	providerSvc := service.NewProviderService(db, providerMasterKey, service.NewHTTPProviderClient(allowPrivateUpstreams))
+	providerSvc := provider.NewProviderService(db, secrets, providerclient.NewHTTPProviderClient(allowPrivateUpstreams))
 	protected.GET("/providers", handler.GetProviders(providerSvc))
 	protected.POST("/providers", handler.PostProvider(providerSvc))
 	protected.POST("/providers/test-key", handler.PostProviderTestKey(providerSvc))
@@ -298,7 +332,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	protected.POST("/providers/:id/keys/:keyId/test", handler.PostProviderKeyTest(providerSvc))
 	protected.POST("/providers/:id/keys/test-all", handler.PostProviderKeysTestAll(providerSvc))
 
-	modelSvc := service.NewModelService(db, providerMasterKey, service.NewHTTPProviderClient(allowPrivateUpstreams))
+	modelSvc := modeladmin.NewModelService(db, secrets, providerclient.NewHTTPProviderClient(allowPrivateUpstreams))
 	protected.GET("/models", handler.GetModels(modelSvc))
 	protected.POST("/models", handler.PostModel(modelSvc))
 	protected.POST("/models/batch", handler.PostModelsBatch(modelSvc))
@@ -318,7 +352,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	protected.POST("/models/:id/candidates/:candidateId/test", handler.PostModelCandidateTest(modelSvc))
 	protected.DELETE("/models/:id/candidates/:candidateId", handler.DeleteModelCandidate(modelSvc))
 
-	apiKeySvc := service.NewAPIKeyService(db, providerMasterKey)
+	apiKeySvc := apikey.NewAPIKeyService(db, secrets)
 	scoped.GET("/api-keys", handler.GetAPIKeys(apiKeySvc))
 	scoped.POST("/api-keys", handler.PostAPIKey(apiKeySvc))
 	scoped.GET("/api-keys/:id", handler.GetAPIKey(apiKeySvc))
@@ -329,8 +363,8 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	// Custom system prompt (global setting). Read returns the authoritative
 	// DB state; PUT uses CAS on version. Registered alongside the other admin
 	// resources under the session-protected group.
-	settingsSvc := service.NewSystemSettingsService(db)
-	oauthProviderSvc := service.NewOAuthProviderService(db, providerMasterKey)
+	settingsSvc := systemsettings.NewSystemSettingsService(db)
+	oauthProviderSvc := oauth.NewOAuthProviderService(db, secrets)
 	protected.GET("/oauth-providers", handler.GetOAuthProviders(oauthProviderSvc, externalURL))
 	protected.POST("/oauth-providers", handler.PostOAuthProvider(oauthProviderSvc))
 	protected.PATCH("/oauth-providers/:id", handler.PatchOAuthProvider(oauthProviderSvc))
@@ -349,16 +383,16 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	// gateway), layered handler → service → repository. The
 	// /request-logs/export route MUST be registered before /request-logs/:requestId
 	// or gin treats "export" as a requestId.
-	dashboardSvc := service.NewDashboardService(db)
+	dashboardSvc := dashboard.NewDashboardService(db)
 	scoped.GET("/dashboard", handler.GetDashboard(dashboardSvc))
 
-	analyticsSvc := service.NewAnalyticsService(db)
+	analyticsSvc := analytics.NewAnalyticsService(db)
 	scoped.GET("/analytics/overview", handler.GetAnalyticsOverview(analyticsSvc))
 	scoped.GET("/analytics/report", handler.GetAnalyticsReport(analyticsSvc))
 	scoped.GET("/analytics/export", handler.ExportAnalyticsCSV(analyticsSvc))
 	protected.GET("/analytics/compress-stats", handler.GetCompressStats(analyticsSvc))
 
-	requestLogSvc := service.NewRequestLogService(db)
+	requestLogSvc := requestlog.NewRequestLogService(db)
 	protected.GET("/request-logs", handler.GetRequestLogs(requestLogSvc))
 	protected.GET("/request-logs/export", handler.ExportRequestLogsCSV(requestLogSvc))
 	protected.GET("/request-logs/:requestId", handler.GetRequestLogDetail(requestLogSvc))
@@ -371,7 +405,7 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	// surfaced as check_failed, not an error.
 	resolvedRepo := version.ResolveRepo(updateCfg.Enabled, updateCfg.GitHubRepo)
 	updateMode := selfupdate.Mode(resolvedRepo, version.Version)
-	versionSvc := service.NewVersionService(resolvedRepo, updateCfg.GitHubProxy)
+	versionSvc := versionsvc.NewVersionService(resolvedRepo, updateCfg.GitHubProxy)
 	protected.GET("/system/version", handler.GetSystemVersion(handler.SystemInfo{
 		Version:    version.Version,
 		Commit:     version.Commit,
@@ -413,7 +447,11 @@ func newWithDistFS(distFS fs.FS, db *gorm.DB, providerMasterKey []byte, bodiesDi
 	// gateway.PostChatCompletions/Service.Handle dispatch by request
 	// path (gateway.IngressProtocol) to pick the caller's actual wire
 	// protocol.
-	relaySvc := gateway.NewService(db, providerMasterKey, allowPrivateUpstreams, settingsSvc, gatewayCfg)
+	relaySvc := gateway.NewService(db, secrets, allowPrivateUpstreams, settingsSvc, gatewayCfg)
+	// A retest that PROVES a key works releases the key pool's rate-limit
+	// bench — the only reliable recovery signal, since a merely claimed or
+	// inconclusive retest proves nothing.
+	providerSvc.SetKeyRetestPassedListener(relaySvc.NoteKeyRetestPassed)
 
 	registerCapabilities(relaySvc, db, loopbackBase)
 

@@ -608,6 +608,9 @@ func TestGatewayTimeoutsDefaults(t *testing.T) {
 	if cfg.Gateway.TLSHandshakeTimeout != 10*time.Second {
 		t.Errorf("TLSHandshakeTimeout default = %v, want 10s", cfg.Gateway.TLSHandshakeTimeout)
 	}
+	if cfg.Gateway.KeyRateLimitCooldown != 60*time.Second {
+		t.Errorf("KeyRateLimitCooldown default = %v, want 60s", cfg.Gateway.KeyRateLimitCooldown)
+	}
 }
 
 // TestGenerateDefaultConfigWritesRealGatewayTimeouts pins the requirement that
@@ -696,6 +699,7 @@ func TestGatewayTimeoutsValidation(t *testing.T) {
 		CircuitFailureThreshold: DefaultCircuitFailureThreshold,
 		CircuitSuccessThreshold: DefaultCircuitSuccessThreshold,
 		CircuitOpenTimeout:      DefaultCircuitOpenTimeout,
+		KeyRateLimitCooldown:    DefaultKeyRateLimitCooldown,
 	}
 	cases := []struct {
 		name    string
@@ -721,6 +725,7 @@ func TestGatewayTimeoutsValidation(t *testing.T) {
 		{"zero circuit_failure_threshold", func(g *GatewayConfig) { g.CircuitFailureThreshold = 0 }, true},
 		{"negative circuit_success_threshold", func(g *GatewayConfig) { g.CircuitSuccessThreshold = -1 }, true},
 		{"sub-second circuit_open_timeout", func(g *GatewayConfig) { g.CircuitOpenTimeout = 500 * time.Millisecond }, true},
+		{"sub-second key_rate_limit_cooldown", func(g *GatewayConfig) { g.KeyRateLimitCooldown = 500 * time.Millisecond }, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

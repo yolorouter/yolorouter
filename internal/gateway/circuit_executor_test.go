@@ -42,7 +42,7 @@ func TestProviderFaultsOpenTheBreaker(t *testing.T) {
 
 	svc := newSvcWithGateway(t, db, circuitGatewayConfig(3, 2, time.Hour))
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -100,7 +100,7 @@ func TestFailedDeliveriesOpenTheBreaker(t *testing.T) {
 		return g
 	}())
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -146,7 +146,7 @@ func TestRateLimitsOpenTheBreakerOnlyAtDoubleThreshold(t *testing.T) {
 
 	svc := newSvcWithGateway(t, db, circuitGatewayConfig(2, 2, time.Hour))
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -196,9 +196,9 @@ func TestTripMidRotationStopsTheKeyLoop(t *testing.T) {
 	// happens exactly on the second key of the rotation.
 	svc := newSvcWithGateway(t, db, circuitGatewayConfig(1, 2, time.Hour))
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-2", "k2", 2, true)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-3", "k3", 3, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-2", "k2", 2, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-3", "k3", 3, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -241,7 +241,7 @@ func TestPersistentStreamTruncationOpensTheBreaker(t *testing.T) {
 
 	svc := newSvcWithGateway(t, db, circuitGatewayConfig(2, 2, time.Hour))
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -294,7 +294,7 @@ func TestRoutineNoTerminatorStreamsBookNothing(t *testing.T) {
 
 	svc := newSvcWithGateway(t, db, circuitGatewayConfig(2, 2, time.Hour))
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -358,7 +358,7 @@ func TestRoutineStreamsCloseAHalfOpenBreaker(t *testing.T) {
 		clockMu.Unlock()
 	}
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -409,7 +409,7 @@ func TestSuccessResetsTheFailureStreak(t *testing.T) {
 
 	svc := newSvcWithGateway(t, db, circuitGatewayConfig(3, 2, time.Hour))
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
@@ -464,7 +464,7 @@ func TestOpenWindowElapsesIntoAServedProbe(t *testing.T) {
 		return fakeNow
 	})
 	p := createProvider(t, db, "p1", upstream.URL)
-	createProviderKey(t, db, svc.masterKey, p.ID, "sk-1", "k1", 1, true)
+	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
