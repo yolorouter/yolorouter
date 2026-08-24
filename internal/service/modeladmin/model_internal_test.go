@@ -49,7 +49,7 @@ func TestClassifyCapabilityResult(t *testing.T) {
 }
 
 func TestComputeModelRunningStatusAvailableWhenFirstCandidateRoutable(t *testing.T) {
-	status := computeModelRunningStatus([]CandidateView{
+	status := computeModelRunningStatus(model.ModelSchedulingModeFailover, []CandidateView{
 		{VerificationStatus: model.ModelVerificationStatusPassed, Routable: true},
 		{VerificationStatus: model.ModelVerificationStatusUntested, Routable: false},
 	})
@@ -59,7 +59,7 @@ func TestComputeModelRunningStatusAvailableWhenFirstCandidateRoutable(t *testing
 }
 
 func TestComputeModelRunningStatusDegradedWhenOnlyLaterCandidateRoutable(t *testing.T) {
-	status := computeModelRunningStatus([]CandidateView{
+	status := computeModelRunningStatus(model.ModelSchedulingModeFailover, []CandidateView{
 		{VerificationStatus: model.ModelVerificationStatusFailed, Routable: false},
 		{VerificationStatus: model.ModelVerificationStatusPassed, Routable: true},
 	})
@@ -69,12 +69,42 @@ func TestComputeModelRunningStatusDegradedWhenOnlyLaterCandidateRoutable(t *test
 }
 
 func TestComputeModelRunningStatusUnavailableWhenNoCandidateRoutable(t *testing.T) {
-	status := computeModelRunningStatus([]CandidateView{
+	status := computeModelRunningStatus(model.ModelSchedulingModeFailover, []CandidateView{
 		{VerificationStatus: model.ModelVerificationStatusPassed, Routable: false},
 		{VerificationStatus: model.ModelVerificationStatusFailed, Routable: false},
 	})
 	if status != ModelRunningStatusUnavailable {
 		t.Fatalf("expected unavailable, got %q", status)
+	}
+}
+
+// A balanced model has no designated head: the verdict must not depend on
+// sort_order, a dead candidate among live ones reads as degraded even when
+// the head is healthy, and the empty pre-migration mode keeps the failover
+// reading.
+func TestComputeModelRunningStatusBalancedIgnoresOrder(t *testing.T) {
+	mixed := []CandidateView{
+		{VerificationStatus: model.ModelVerificationStatusPassed, Routable: true},
+		{VerificationStatus: model.ModelVerificationStatusPassed, Routable: false},
+	}
+	swapped := []CandidateView{mixed[1], mixed[0]}
+	if got := computeModelRunningStatus(model.ModelSchedulingModeBalanced, mixed); got != ModelRunningStatusDegraded {
+		t.Fatalf("balanced with a dead candidate = %q, want degraded even with a healthy head", got)
+	}
+	if got := computeModelRunningStatus(model.ModelSchedulingModeBalanced, swapped); got != ModelRunningStatusDegraded {
+		t.Fatalf("balanced verdict changed with order: swapped = %q, want degraded", got)
+	}
+	allUp := []CandidateView{
+		{VerificationStatus: model.ModelVerificationStatusPassed, Routable: true},
+		{VerificationStatus: model.ModelVerificationStatusPassed, Routable: true},
+	}
+	if got := computeModelRunningStatus(model.ModelSchedulingModeBalanced, allUp); got != ModelRunningStatusAvailable {
+		t.Fatalf("balanced with every candidate live = %q, want available", got)
+	}
+	// The failover reading survives for the empty legacy value: a healthy
+	// head is available no matter the tail.
+	if got := computeModelRunningStatus("", mixed); got != ModelRunningStatusAvailable {
+		t.Fatalf("legacy empty mode = %q, want the failover reading (available)", got)
 	}
 }
 

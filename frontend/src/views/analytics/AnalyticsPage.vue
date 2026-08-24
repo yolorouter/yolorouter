@@ -139,6 +139,13 @@
     <div class="section-card  table-card">
       <NTabs :value="dimension" type="line" @update:value="onDimensionChange">
         <NTabPane v-if="authStore.isAdmin" :name="'user'" :tab="t('analytics.dimensionUser')">
+          <!-- Stated in the open rather than in the column tooltip: the
+               mobile card layout promotes this dimension's column to the
+               card header, which renders the value without its title, so a
+               tooltip here would be invisible on a phone. -->
+          <p v-if="overviewCountsExcludedTraffic" class="unattributed-note">
+            {{ t('analytics.unattributedExcluded') }}
+          </p>
           <FilterSelectField
             v-if="isMobile"
             v-model:value="mobileSort"
@@ -151,7 +158,7 @@
           <ResponsiveDataTable
             :columns="userColumns"
             :data="displayedUserRows"
-            :row-props="(r: UserReportRow) => drillRowProps(r.user_id != null ? { user_id: r.user_id } : null)"
+            :row-props="(r: AttributedUserRow) => drillRowProps({ user_id: r.user_id })"
             :loading="loading"
             :scroll-x="1330"
             :row-key="userRowKey"
@@ -362,7 +369,11 @@ const modelRows = ref<ModelReportRow[]>([])
 const providerRows = ref<ProviderReportRow[]>([])
 const isMobile = useIsMobile()
 const callerRows = ref<CallerReportRow[]>([])
-const userRows = ref<UserReportRow[]>([])
+// A report row that belongs to a real account. reload() narrows to this on the
+// way in, which is what lets the row key and the drill-down below read
+// user_id without a null case to handle.
+type AttributedUserRow = UserReportRow & { user_id: number }
+const userRows = ref<AttributedUserRow[]>([])
 // Mobile-only sort preference, shared across the account/model/provider/caller tabs
 // (the time tab stays chronological — reordering date buckets destroys the
 // trend it exists to show). null keeps each dimension's server order: calls
@@ -418,6 +429,14 @@ const displayedModelRows = computed(() => mobileSorted(modelRows.value))
 const displayedProviderRows = computed(() => mobileSorted(providerRows.value))
 const displayedCallerRows = computed(() => mobileSorted(callerRows.value))
 const displayedUserRows = computed(() => mobileSorted(userRows.value))
+
+// The overview cards obey the same filter as the table. Narrowed to one
+// account or one key, accountless traffic falls outside both, the two agree,
+// and the notice would be describing a gap that isn't there — so it is shown
+// only while the filter bar leaves both of those unset.
+const overviewCountsExcludedTraffic = computed(
+  () => filter.value.user_id == null && filter.value.api_key_id == null,
+)
 const timeRows = ref<TimeReportRow[]>([])
 const loading = ref(false)
 const exporting = ref(false)
@@ -496,7 +515,19 @@ async function reload() {
         callerRows.value = (report.rows as CallerReportRow[]) ?? []
         break
       case 'user':
-        userRows.value = (report.rows as UserReportRow[]) ?? []
+        // The server already leaves the accountless bucket out. This repeats
+        // it because a rolling upgrade can serve this bundle from an older
+        // binary that still sends the row, and this report is defined as
+        // per-account: a row belonging to no account has no place in it, and
+        // showing one would also contradict the notice above the table.
+        // Narrowing here rather than testing for null at each use is what
+        // keeps the rest of the page free of a case that cannot occur.
+        // The CSV export is a browser navigation straight to the server, so
+        // this cannot cover it; an older binary's export still carries the
+        // row until every instance is upgraded.
+        userRows.value = ((report.rows as UserReportRow[]) ?? []).filter(
+          (r): r is AttributedUserRow => r.user_id != null,
+        )
         break
       case 'time':
         timeRows.value = (report.rows as TimeReportRow[]) ?? []
@@ -596,21 +627,22 @@ function onExport() {
   }
 }
 
-// === Row keys for NULL-id buckets =========================================
+// === Row keys =============================================================
 //
 // The provider/caller dimensions include a synthetic bucket for rows with
 // NULL provider_id / api_key_id (auth failed before routing, etc.). naive-ui
 // needs a unique string row-key; fall back to a fixed sentinel for those
-// NULL rows so they're still selectable / paginated correctly.
+// NULL rows so they're still selectable / paginated correctly. The account
+// dimension has no such bucket to key around.
 
 function providerRowKey(r: ProviderReportRow): string {
   return r.provider_id == null ? '__null_provider__' : `p-${r.provider_id}`
 }
 
-// NULL bucket has no id; a fixed sentinel keeps its expand/render state
-// stable, same as the caller table's key.
-function userRowKey(r: UserReportRow): string {
-  return r.user_id != null ? String(r.user_id) : 'unattributed'
+// No sentinel here, unlike the two above: this dimension's rows are narrowed
+// to real accounts before they reach the table, so the id is always present.
+function userRowKey(r: AttributedUserRow): string {
+  return String(r.user_id)
 }
 
 function callerRowKey(r: CallerReportRow): string {
@@ -677,21 +709,21 @@ const callerColumns = computed<DataTableColumns<CallerReportRow>>(() => [
   unknownCostColumn<CallerReportRow>(t),
 ])
 
-const userColumns = computed<DataTableColumns<UserReportRow>>(() => [
+const userColumns = computed<DataTableColumns<AttributedUserRow>>(() => [
   {
     title: columnTitle(t('analytics.userColumn'), t('analytics.userColumn_tip')),
     key: 'username',
     minWidth: 200,
-    render: (r) => r.username || t('analytics.unknownUserBucket'),
+    render: (r) => r.username || '—',
   },
-  callsColumn<UserReportRow>(t, { sortable: true }),
-  successRateColumn<UserReportRow>(t),
-  tokenColumn<UserReportRow>(t, 'input_tokens', 'inputTokensColumn'),
-  tokenColumn<UserReportRow>(t, 'output_tokens', 'outputTokensColumn'),
-  tokenColumn<UserReportRow>(t, 'cache_write_tokens', 'cacheWriteTokensColumn', 150),
-  tokenColumn<UserReportRow>(t, 'cache_read_tokens', 'cacheReadTokensColumn', 150),
-  costColumn<UserReportRow>(t, { sortable: true, defaultDescend: true }),
-  unknownCostColumn<UserReportRow>(t),
+  callsColumn<AttributedUserRow>(t, { sortable: true }),
+  successRateColumn<AttributedUserRow>(t),
+  tokenColumn<AttributedUserRow>(t, 'input_tokens', 'inputTokensColumn'),
+  tokenColumn<AttributedUserRow>(t, 'output_tokens', 'outputTokensColumn'),
+  tokenColumn<AttributedUserRow>(t, 'cache_write_tokens', 'cacheWriteTokensColumn', 150),
+  tokenColumn<AttributedUserRow>(t, 'cache_read_tokens', 'cacheReadTokensColumn', 150),
+  costColumn<AttributedUserRow>(t, { sortable: true, defaultDescend: true }),
+  unknownCostColumn<AttributedUserRow>(t),
 ])
 
 const timeColumns = computed<DataTableColumns<TimeReportRow>>(() => [
@@ -717,6 +749,12 @@ const timeColumns = computed<DataTableColumns<TimeReportRow>>(() => [
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+.unattributed-note {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
 }
 
 .bucket-label {

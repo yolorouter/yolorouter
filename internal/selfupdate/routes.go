@@ -1,7 +1,9 @@
-// Route fallback for update traffic: try GitHub directly, and when it is
-// unreachable or the download stalls, retry through the built-in mirror —
-// so a deployment behind a slow or blocked GitHub upgrades without anyone
-// having to discover and hand-edit update.github_proxy first.
+// Route fallback for update traffic. Without a configured proxy: try GitHub
+// directly, and when it is unreachable or the download stalls, retry through
+// the built-in mirror — so a deployment behind a slow or blocked GitHub
+// upgrades without anyone having to discover and hand-edit
+// update.github_proxy first. With one: the configured proxy leads and direct
+// GitHub trails it as a no-cost fallback.
 package selfupdate
 
 import (
@@ -47,8 +49,8 @@ func redactURL(raw string) string {
 // the route that last worked promoted to the front so the later downloads of
 // the same run do not re-pay a failed route's probe time.
 //
-// An explicit proxy is the operator's decision and gets no fallback: it is
-// the only route. Without one, the set is direct-then-mirror.
+// The order comes from version.UpdateRoutes, which is where the reasoning
+// for each shape lives.
 type routeSet struct {
 	routes []string
 }
@@ -111,8 +113,9 @@ func walkBudget(ctx context.Context, client *http.Client) (context.Context, cont
 
 // tryEach runs attempt against every route in order and returns on the first
 // success, promoting that route for the rest of the run. Non-final attempts
-// run under HoldBackForFallback, so a first route that hangs until the walk
-// deadline cannot starve the fallback the walk exists for.
+// are capped below the walk deadline, so one that hangs cannot starve the
+// fallback the walk exists for; the bool handed to attempt says whether this
+// is the last route, with everything that remains to spend.
 //
 // No between-routes cancellation check is needed: every attempt carries the
 // caller's context into its HTTP request, so once the caller gives up the

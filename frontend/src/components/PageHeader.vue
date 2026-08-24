@@ -1,5 +1,5 @@
-<!-- Ported from the reference project's shared/components/PageHeader.vue
-     (yolorouter-frontend/src/shared/components/PageHeader.vue). -->
+<!-- The shared page header: eyebrow + title + description, with an actions
+     slot on the right. -->
 <script setup lang="ts">
 defineProps<{
   eyebrow?: string

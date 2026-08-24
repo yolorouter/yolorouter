@@ -4,6 +4,8 @@ package modeladmin
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -31,12 +33,40 @@ const (
 	ModelRunningStatusUnavailable   = "unavailable"
 )
 
-var modelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+// Slashes are allowed as SEGMENT SEPARATORS because upstream catalogs
+// routinely namespace model ids (Qwen/Qwen3-..., deepseek-ai/DeepSeek-...) and
+// bulk import keeps the external name equal to the upstream name. Leading,
+// trailing, and doubled slashes are rejected: no real upstream id has them,
+// and the discovery route trims boundary slashes from its catch-all parameter,
+// so a name like "foo/" could never be retrieved as itself. Known limit: a
+// slash-named model cannot be addressed through the Gemini-native ingress,
+// whose URL shape embeds the model name in a path segment — such models are
+// called via the JSON-body protocols.
+var modelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)*$`)
 
 type ModelService struct {
 	db      *gorm.DB
 	secrets crypto.SecretBox
 	client  providerclient.ProviderClient
+	// bindingCounts, when wired by the assembly layer, supplies the
+	// per-candidate sticky-binding counts the model detail view shows for
+	// balanced models. Nil (tests, embedders) reads as "no bindings".
+	bindingCounts BindingCounter
+}
+
+// BindingCounter is the read-only window into the gateway's sticky-binding
+// registry: how many caller keys are currently pinned to each provider for
+// one model. An interface rather than the concrete registry so this package
+// stays independent of the gateway's internals and tests can stub it.
+type BindingCounter interface {
+	BindingCounts(modelID uint) map[uint]int
+}
+
+// SetBindingCounter wires the binding-count source, shared with the gateway
+// so the admin view and the router read the same registry. Call once at
+// assembly; a second call replaces the first, which only tests do.
+func (s *ModelService) SetBindingCounter(bc BindingCounter) {
+	s.bindingCounts = bc
 }
 
 func NewModelService(db *gorm.DB, secrets crypto.SecretBox, client providerclient.ProviderClient) *ModelService {
@@ -69,13 +99,25 @@ type CandidateView struct {
 	LastTestResult     *int       `json:"last_test_result"`
 	LastTestDurationMs *int64     `json:"last_test_duration_ms"`
 	LastTestedAt       *time.Time `json:"last_tested_at"`
+	// BindingCount is how many caller API keys the gateway currently has
+	// pinned to this candidate's provider for THIS model — the balanced
+	// scheduling's evenness gauge. POPULATED ONLY by the model-detail
+	// endpoint (the count scan takes the registry lock, a cost the list and
+	// mutation responses do not pay), so a 0 anywhere else means "not
+	// collected here", not "nobody bound". A momentary in-memory number a
+	// restart resets; nothing but display should read it.
+	BindingCount int `json:"binding_count"`
 }
 
 type ModelView struct {
 	ID               uint   `json:"id"`
 	Name             string `json:"name"`
 	ManagementStatus int    `json:"management_status"`
-	RunningStatus    string `json:"running_status"`
+	// SchedulingMode is how the gateway orders this model's candidate chain:
+	// failover (sort_order priority) or balanced (per-caller-key spread).
+	// Normalized to failover for rows stored before the column existed.
+	SchedulingMode model.SchedulingMode `json:"scheduling_mode"`
+	RunningStatus  string               `json:"running_status"`
 	// SupportsImageInput mirrors the admin's tri-state declaration (nil =
 	// undeclared): whether this model can read images, driving the vision
 	// fallback and strip behaviors in the gateway.
@@ -128,29 +170,43 @@ func CandidateBlockedBy(c model.ModelCandidate, providerEnabled, providerHasAvai
 	}
 }
 
-func computeModelRunningStatus(candidates []CandidateView) string {
+// computeModelRunningStatus aggregates candidate routability into one status.
+// The two schedulers read "degraded" differently. Failover has a designated
+// head: a healthy head is available regardless of the tail, and a dead head
+// with a live backup means traffic failed over. Balanced has no head — each
+// caller key enters at its own bound candidate — so any dead candidate among
+// live ones means part of the spread is failing over, and swapping
+// sort_order must never change the verdict.
+func computeModelRunningStatus(mode model.SchedulingMode, candidates []CandidateView) string {
 	if len(candidates) == 0 {
 		return ModelRunningStatusNotConfigured
 	}
 	anyVerified := false
+	routableCount := 0
 	for _, c := range candidates {
 		if c.VerificationStatus == model.ModelVerificationStatusPassed {
 			anyVerified = true
-			break
+		}
+		if c.Routable {
+			routableCount++
 		}
 	}
 	if !anyVerified {
 		return ModelRunningStatusPending
 	}
+	if routableCount == 0 {
+		return ModelRunningStatusUnavailable
+	}
+	if mode.Normalized() == model.ModelSchedulingModeBalanced {
+		if routableCount == len(candidates) {
+			return ModelRunningStatusAvailable
+		}
+		return ModelRunningStatusDegraded
+	}
 	if candidates[0].Routable {
 		return ModelRunningStatusAvailable
 	}
-	for _, c := range candidates[1:] {
-		if c.Routable {
-			return ModelRunningStatusDegraded
-		}
-	}
-	return ModelRunningStatusUnavailable
+	return ModelRunningStatusDegraded
 }
 
 // ProviderHasAvailableKey applies the same "available key" rule
@@ -189,6 +245,35 @@ func buildCandidateView(c model.ModelCandidate, providerName string, blockedBy s
 // the caller via repository.ListProviderKeysByProviderIDs) so that listing
 // many models doesn't turn into one key query per candidate.
 func (s *ModelService) toModelView(m model.Model, candidates []model.ModelCandidate, keysByProvider map[uint][]model.ProviderKey) ModelView {
+	views := s.buildCandidateViews(candidates, keysByProvider)
+	return ModelView{
+		ID: m.ID, Name: m.Name, ManagementStatus: m.ManagementStatus, SupportsImageInput: m.SupportsImageInput,
+		SchedulingMode: m.SchedulingMode.Normalized(),
+		RunningStatus:  computeModelRunningStatus(m.SchedulingMode, views), Candidates: views, CreatedAt: m.CreatedAt,
+	}
+}
+
+// toModelDetailView is toModelView plus the per-candidate sticky-binding
+// counts, which only the detail endpoint serves: the count lookup takes the
+// registry's lock and scans it, fine once per request but not as a per-model
+// cost inside a list response — and the list UI shows no such column.
+//
+// Counts are a balanced-model concern: failover chains have no bindings to
+// count, and showing zeros there would read as "balanced but nobody bound" —
+// a state that model cannot even be in.
+func (s *ModelService) toModelDetailView(m model.Model, candidates []model.ModelCandidate, keysByProvider map[uint][]model.ProviderKey) ModelView {
+	view := s.toModelView(m, candidates, keysByProvider)
+	if !m.IsBalanced() || s.bindingCounts == nil {
+		return view
+	}
+	counts := s.bindingCounts.BindingCounts(m.ID)
+	for i := range view.Candidates {
+		view.Candidates[i].BindingCount = counts[view.Candidates[i].ProviderID]
+	}
+	return view
+}
+
+func (s *ModelService) buildCandidateViews(candidates []model.ModelCandidate, keysByProvider map[uint][]model.ProviderKey) []CandidateView {
 	views := make([]CandidateView, 0, len(candidates))
 	for _, c := range candidates {
 		providerEnabled := false
@@ -202,10 +287,7 @@ func (s *ModelService) toModelView(m model.Model, candidates []model.ModelCandid
 		blockedBy := CandidateBlockedBy(c, providerEnabled, hasAvailableKey)
 		views = append(views, buildCandidateView(c, providerName, blockedBy))
 	}
-	return ModelView{
-		ID: m.ID, Name: m.Name, ManagementStatus: m.ManagementStatus, SupportsImageInput: m.SupportsImageInput,
-		RunningStatus: computeModelRunningStatus(views), Candidates: views, CreatedAt: m.CreatedAt,
-	}
+	return views
 }
 
 // KeysByProviderForCandidates batches the provider-keys lookup for every
@@ -276,28 +358,49 @@ func (s *ModelService) GetModelDetail(id uint) (*ModelView, error) {
 	if err != nil {
 		return nil, err
 	}
-	view := s.toModelView(*m, candidates, keysByProvider)
+	view := s.toModelDetailView(*m, candidates, keysByProvider)
 	return &view, nil
 }
 
 type CreateModelInput struct {
 	Name string
+	// SchedulingMode is optional: the empty value means the default
+	// (failover). Any other value must be one of the two modes.
+	SchedulingMode model.SchedulingMode
 }
 
 func isValidModelName(name string) bool {
 	return len(name) > 0 && len(name) <= 100 && modelNamePattern.MatchString(name)
 }
 
+// resolveSchedulingMode validates a creation-submitted mode and maps the
+// empty value onto the default: a create request that never mentions the
+// field gets failover. Updates do NOT share this mapping — there "present but
+// empty" is an invalid value, not a request for the default.
+func resolveSchedulingMode(mode model.SchedulingMode) (model.SchedulingMode, error) {
+	if mode == "" {
+		return model.ModelSchedulingModeFailover, nil
+	}
+	if !mode.Valid() {
+		return "", errcode.ErrModelSchedulingModeInvalid
+	}
+	return mode, nil
+}
+
 func (s *ModelService) CreateModel(input CreateModelInput, now time.Time) (*ModelView, error) {
 	if !isValidModelName(input.Name) {
-		return nil, fmt.Errorf("%w: model name must contain only letters, digits, dots, hyphens, and underscores", errcode.ErrModelNameTaken)
+		return nil, fmt.Errorf("%w: model name must be slash-separated segments of letters, digits, dots, hyphens, and underscores", errcode.ErrModelNameTaken)
+	}
+	schedulingMode, err := resolveSchedulingMode(input.SchedulingMode)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := repository.FindModelByName(s.db, input.Name); err == nil {
 		return nil, errcode.ErrModelNameTaken
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
-	m := &model.Model{Name: input.Name, ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &model.Model{Name: input.Name, ManagementStatus: model.ModelStatusEnabled, SchedulingMode: schedulingMode, CreatedAt: now, UpdatedAt: now}
 	if err := repository.CreateModel(s.db, m); err != nil {
 		if repository.IsUniqueViolation(err) {
 			return nil, errcode.ErrModelNameTaken
@@ -325,6 +428,15 @@ type BatchCreateModelsResult struct {
 	Skipped []BatchSkippedModel `json:"skipped"`
 }
 
+// CreateModelsBatchInput is CreateModelInput's batch sibling. SchedulingMode
+// applies to every created row (empty = the failover default) — the batch
+// endpoint is the create dialog's preset quick-add, and a mode chosen there
+// is a statement about the whole submission, not one name.
+type CreateModelsBatchInput struct {
+	Names          []string
+	SchedulingMode model.SchedulingMode
+}
+
 // CreateModelsBatch creates each requested name best-effort: invalid names and
 // names that already exist are skipped and reported, the rest are created. A
 // name repeated within the batch is created once; later occurrences skip as
@@ -336,10 +448,14 @@ type BatchCreateModelsResult struct {
 // models silently committed while it sees a total failure (which would make a
 // retry report those committed names as already-existing). Invalid/duplicate
 // names are skips, not errors, so they never abort the transaction.
-func (s *ModelService) CreateModelsBatch(names []string, now time.Time) (*BatchCreateModelsResult, error) {
+func (s *ModelService) CreateModelsBatch(in CreateModelsBatchInput, now time.Time) (*BatchCreateModelsResult, error) {
+	resolvedMode, err := resolveSchedulingMode(in.SchedulingMode)
+	if err != nil {
+		return nil, err
+	}
 	result := &BatchCreateModelsResult{Created: []ModelView{}, Skipped: []BatchSkippedModel{}}
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		for _, name := range names {
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		for _, name := range in.Names {
 			if !isValidModelName(name) {
 				result.Skipped = append(result.Skipped, BatchSkippedModel{Name: name, Reason: BatchSkipReasonInvalid})
 				continue
@@ -350,7 +466,7 @@ func (s *ModelService) CreateModelsBatch(names []string, now time.Time) (*BatchC
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
-			m := &model.Model{Name: name, ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+			m := &model.Model{Name: name, ManagementStatus: model.ModelStatusEnabled, SchedulingMode: resolvedMode, CreatedAt: now, UpdatedAt: now}
 			if err := repository.CreateModel(tx, m); err != nil {
 				// A unique violation here means a concurrent request claimed
 				// the name between the lookup above and this insert; roll the
@@ -367,8 +483,8 @@ func (s *ModelService) CreateModelsBatch(names []string, now time.Time) (*BatchC
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
+	if txErr != nil {
+		return nil, txErr
 	}
 	return result, nil
 }
@@ -383,6 +499,12 @@ type CreateCandidateInput struct {
 	MaxOutput         int
 	ManagementStatus  int // requested target status; only ==Enabled triggers the server-side retest
 }
+
+// Where a suggested price came from; empty ("") means nothing matched.
+const (
+	PriceSourceHistory = "history"
+	PriceSourceSeed    = "seed"
+)
 
 // SuggestedPrice is one auto-fill result for a provider+model pair. The four
 // price slots mirror model.ModelCandidate; Source records where the value came
@@ -429,7 +551,7 @@ func (s *ModelService) SuggestCandidatePrice(providerID uint, providerModelName 
 			OutputPrice:     hist.OutputPrice,
 			CacheWritePrice: hist.CacheWritePrice,
 			CacheReadPrice:  hist.CacheReadPrice,
-			Source:          "history",
+			Source:          PriceSourceHistory,
 		}, nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return SuggestedPrice{}, err
@@ -449,7 +571,7 @@ func (s *ModelService) SuggestCandidatePrice(providerID uint, providerModelName 
 			OutputPrice:      p.Output,
 			CacheWritePrice:  p.CacheWrite,
 			CacheReadPrice:   p.CacheRead,
-			Source:           "seed",
+			Source:           PriceSourceSeed,
 			CatalogUpdatedAt: pricecatalog.UpdatedAt(),
 		}, nil
 	}
@@ -560,6 +682,10 @@ type ProbeReport struct {
 	Supported  *bool `json:"supported"`
 	Outcome    *int  `json:"outcome"`
 	DurationMs int64 `json:"duration_ms"`
+	// Detail is the probe's admin-facing diagnostic (empty on success). For the
+	// basic probe it is also what gets persisted as the mapping's failure
+	// reason, so asynchronous probe failures stay explainable after the fact.
+	Detail string `json:"detail,omitempty"`
 	// verificationStatus carries the basic probe's decisive verdict for the
 	// verification_status column, or nil when the probe was inconclusive and the
 	// stored status must be left alone. Unexported because it is an internal
@@ -607,7 +733,7 @@ func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.P
 	}
 	basicOutcome := int(basic.Outcome)
 	basicPassed := basic.Outcome == providerclient.TestSuccess
-	report.Basic = ProbeReport{Ran: true, Supported: &basicPassed, Outcome: &basicOutcome, DurationMs: basic.DurationMs}
+	report.Basic = ProbeReport{Ran: true, Supported: &basicPassed, Outcome: &basicOutcome, DurationMs: basic.DurationMs, Detail: basic.Detail}
 	if status, overwrite := classifyBasicResult(basic); overwrite {
 		report.Basic.verificationStatus = &status
 	}
@@ -663,13 +789,24 @@ func toProbeCommit(report CandidateTestReport) repository.CandidateProbeCommit {
 	// A basic probe that never ran leaves the mapping untested, not failed:
 	// "failed" is a verdict the upstream returned, and claiming one that was
 	// never obtained would misreport a mapping nobody has been able to check yet.
-	return repository.CandidateProbeCommit{
+	commit := repository.CandidateProbeCommit{
 		VerificationStatus:      report.Basic.verificationStatus,
 		SupportsStreaming:       report.Streaming.Supported,
 		SupportsFunctionCalling: report.FunctionCalling.Supported,
 		LastTestResult:          report.Basic.Outcome,
 		DurationMs:              report.Basic.DurationMs,
 	}
+	// The failure reason is only (re)written when a basic probe actually ran:
+	// a pass clears it, a failure stores the diagnostic, and a probe that
+	// never happened must not erase the reason from the last one that did.
+	if report.Basic.Ran {
+		commit.WriteLastTestError = true
+		if !report.Basic.Passed() && report.Basic.Detail != "" {
+			detail := report.Basic.Detail
+			commit.LastTestError = &detail
+		}
+	}
+	return commit
 }
 
 // probeCandidateMapping resolves the provider, its highest-priority usable key
@@ -780,6 +917,10 @@ func (s *ModelService) createCandidateWithProbeResults(
 	if report.Basic.Ran {
 		candidate.LastTestDurationMs = &commit.DurationMs
 		candidate.LastTestedAt = &now
+		candidate.LastTestError = commit.LastTestError
+		// A probe genuinely ran, so the row starts with a run token — the
+		// baseline the next probe's compare-and-set reads.
+		candidate.LastProbeRunID = newProbeRunID()
 	}
 	if err := s.insertCandidateWithSortOrder(candidate); err != nil {
 		return nil, err
@@ -878,8 +1019,10 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 	// create that otherwise succeeded. The view returned below is re-read from the
 	// database, so the caller always sees the state that was actually stored.
 	if input.ManagementStatus == model.ModelCandidateStatusEnabled {
-		_, _, _ = s.probeAndCommitExistingCandidate(ctx, candidate.ID, input.ProviderID, providerModelName,
-			model.ModelCandidateStatusDisabled, true, now)
+		// The row was inserted moments ago and has never been probed, so the
+		// commit expects no probe-run token yet.
+		_, _, _, _ = s.probeAndCommitExistingCandidate(ctx, candidate.ID, input.ProviderID, providerModelName,
+			model.ModelCandidateStatusDisabled, "", newProbeRunID(), true, false, candidate.UpdatedAt, now)
 	}
 
 	reloaded, err := repository.FindModelCandidateByID(s.db, candidate.ID)
@@ -889,8 +1032,219 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 	return s.toCandidateView(*reloaded)
 }
 
+// probePersistBackoff spaces out retries of the reads and writes that
+// surround a probe. A probe is seconds of paid upstream round trips; losing
+// its verdict to a transient database failure would strand the row untested —
+// the progress pollers would wait on it forever — or leave a passed mapping
+// disabled, and the background queue has no operator watching to click retry.
+// The first retry is immediate (a dropped connection), the later ones wait
+// out a brief outage; a database that stays down past the last attempt still
+// surfaces as the error it is, and the row remains recoverable through a
+// manual retest or a re-import.
+var probePersistBackoff = []time.Duration{0, 500 * time.Millisecond, 2 * time.Second}
+
+func retryProbePersist[T any](ctx context.Context, op func() (T, error)) (T, error) {
+	var out T
+	var err error
+	for attempt := 0; ; attempt++ {
+		out, err = op()
+		if err == nil || attempt >= len(probePersistBackoff) {
+			return out, err
+		}
+		if delay := probePersistBackoff[attempt]; delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				// A shutting-down worker must not sleep out the schedule.
+				return out, err
+			}
+		}
+	}
+}
+
+// newProbeRunID mints the unique token one probe run commits alongside its
+// verdict. Random rather than sequential so concurrent runs on separate
+// instances can never mint the same value.
+func newProbeRunID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		// The system CSPRNG failing is not a condition to limp through with a
+		// predictable token that could collide.
+		panic(err)
+	}
+	return hex.EncodeToString(buf)
+}
+
+// requeueRunIDPrefix namespaces the tokens a re-import requeue writes: a
+// requeue starts a new probe GENERATION, and a superseded run that lost its
+// CAS must be able to tell "a requeue owns the row now" (give up — the fresh
+// generation will probe) apart from "an admin status write advanced the
+// token" (re-land the verdict — it still describes the mapping). armed_at
+// cannot carry that distinction: a same-name edit re-aligns it without
+// starting a generation. Tokens are opaque and only ever compared for
+// equality, so the prefix costs nothing.
+const requeueRunIDPrefix = "rq-"
+
+func newRequeueRunID() string {
+	return requeueRunIDPrefix + newProbeRunID()
+}
+
+func isRequeueRunID(id string) bool {
+	return strings.HasPrefix(id, requeueRunIDPrefix)
+}
+
+// commitProbeResultsDurably persists one probe run's outcome under its unique
+// run id, retrying transient failures with backoff — and recognizing the
+// run's OWN already-applied write: the database can apply an update and lose
+// the connection before acknowledging it, in which case the retry's
+// compare-and-set misses its own effect. Without the readback the run would
+// misreport itself as superseded, and its management transition as skipped.
+// applied=false with a nil error means a competitor genuinely owns the row.
+func (s *ModelService) commitProbeResultsDurably(
+	ctx context.Context, candidateID uint, probedModelName, expectedRunID, runID string,
+	commit repository.CandidateProbeCommit, now time.Time,
+) (bool, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		applied, err := repository.CommitModelCandidateProbeResults(s.db, candidateID, probedModelName, expectedRunID, runID, commit, now)
+		if err == nil {
+			if applied {
+				return true, nil
+			}
+			// Guard miss: either a competitor moved the row, or an EARLIER
+			// attempt of this very run applied before its acknowledgment was
+			// lost. The run id is unique, so a readback settles which — and the
+			// readback itself retries and surfaces its failure, because the
+			// same flaky connection that lost the acknowledgment can fail this
+			// read too, and swallowing it would misreport a stored outcome as
+			// superseded.
+			//
+			// Ownership is (token, target), not the token alone: a retarget
+			// keeps last_probe_run_id while clearing the verdict, so a row
+			// whose name moved no longer holds this run's outcome even when
+			// the token still reads as ours.
+			c, rerr := retryProbePersist(ctx, func() (*model.ModelCandidate, error) {
+				return repository.FindModelCandidateByID(s.db, candidateID)
+			})
+			if rerr != nil {
+				return false, rerr
+			}
+			return c.LastProbeRunID == runID && c.ProviderModelName == probedModelName, nil
+		}
+		lastErr = err
+		if attempt >= len(probePersistBackoff) {
+			return false, lastErr
+		}
+		if delay := probePersistBackoff[attempt]; delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				// A shutting-down worker must not sleep out the schedule.
+				return false, lastErr
+			}
+		}
+	}
+}
+
+// verdictRecommitAttempts bounds recommitDiscardedVerdict's read-then-commit
+// loop, same shape as the queue's abandonment stamp: each extra pass is only
+// needed when yet another writer advanced the token inside the read→commit
+// window.
+const verdictRecommitAttempts = 3
+
+// recommitDiscardedVerdict re-lands a probe verdict whose commit lost its
+// token CAS to a write that was NOT a probe — an explicit disable advances the
+// token without producing any evidence about the mapping, and discarding a
+// verdict over it would leave the row's previous verification standing (a
+// stale Passed the status toggle would trust to re-enable a mapping just
+// proven broken). The verdict still describes the row's current target, so it
+// commits under the current token — with this run's enable dropped, because
+// whoever advanced the token owns the management decision.
+//
+// It gives up, reporting false, when the verdict no longer describes the row:
+// the mapping was retargeted (name moved), another probe's verdict landed in
+// the meantime (the attempt stamp moved — probe commits always restamp it,
+// admin status writes never touch it), or the row was re-armed by a requeue
+// (the armed columns moved — that requeue advanced the token precisely to
+// supersede THIS run, and re-landing the old verdict would bump the row clock
+// and break the alignment the requeue just established). baseline is the row
+// as this run read it before probing.
+func (s *ModelService) recommitDiscardedVerdict(
+	ctx context.Context, candidateID uint, probedModelName string, baseline *model.ModelCandidate,
+	runID string, commit repository.CandidateProbeCommit, now time.Time,
+) (bool, error) {
+	commit.EnableOnPass = false
+	// The armed COMMIT MODE (not the enable itself) stays on for a row that
+	// was armed at this run's read: the token that discarded the first commit
+	// was advanced by a write that also bumped the row clock, so the enable
+	// leg's alignment check cannot fire — what the mode contributes here is
+	// the armed settlement rules, so a promise the row still carries is
+	// consumed or revoked by its misalignment instead of surviving as a dead
+	// flag a later same-name edit could re-align and resurrect.
+	commit.EnableOnPassWhenArmed = baseline.AutoEnableOnPass
+	// Forced here rather than trusted from the caller: a re-landed decisive
+	// failure needs its demote in the SAME statement exactly like a first
+	// landing — a caller that rebuilt the commit from the report would
+	// otherwise drop it, and a concurrent enable granted off the row's stale
+	// Passed would survive next to the fresh Failed verdict.
+	commit.DisableOnFail = true
+	for attempt := 0; attempt < verdictRecommitAttempts; attempt++ {
+		fresh, err := retryProbePersist(ctx, func() (*model.ModelCandidate, error) {
+			return repository.FindModelCandidateByID(s.db, candidateID)
+		})
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// Deleted while probing — the verdict has nothing to land on.
+				return false, nil
+			}
+			return false, err
+		}
+		if fresh.ProviderModelName != probedModelName {
+			return false, nil
+		}
+		if !timePtrEqual(fresh.LastTestedAt, baseline.LastTestedAt) {
+			return false, nil
+		}
+		// The requeue token namespace identifies a new probe generation: a row
+		// whose current token came from a requeue is owned by that fresh
+		// generation, and this superseded run's verdict must not sneak back
+		// in. Any OTHER token advance is an admin status write — a disable, a
+		// revoked promise — which says nothing about the mapping itself, so
+		// the verdict re-lands. (armed_at cannot carry this distinction: a
+		// same-name edit re-aligns it without starting a generation, and an
+		// explicit disable clears the flag without touching it.)
+		if isRequeueRunID(fresh.LastProbeRunID) {
+			return false, nil
+		}
+		commit.ExpectedRowUpdatedAt = fresh.UpdatedAt
+		applied, err := s.commitProbeResultsDurably(ctx, candidateID, probedModelName, fresh.LastProbeRunID, runID, commit, now)
+		if err != nil || applied {
+			return applied, err
+		}
+		// Guard miss again: yet another write advanced the token inside this
+		// attempt's read→commit window — loop to re-read the fresh state.
+	}
+	return false, nil
+}
+
+func timePtrEqual(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
 // probeAndCommitExistingCandidate probes an already-stored candidate and
-// commits the verdicts, optionally enabling it when the basic probe passes.
+// commits the verdicts, enabling it in the same write when the basic probe
+// passes and enableIfPassed is set.
+//
+// expectedProbeRunID is the row's last_probe_run_id as the caller read it
+// before probing ("" for a never-probed row); the commit lands only while that
+// token still holds, so an overlapping probe of the same row — background
+// queue vs a manual retest, on any instance — cannot overwrite the fresher
+// verdict with its stale one. probeRunID is THIS run's freshly minted token,
+// supplied by the caller so it can later re-check ownership (a reload that no
+// longer shows this token means a competitor has taken the row since).
 //
 // ran reports whether a verdict was actually obtained. It is false when the probe
 // could not be started at all — an unresolvable provider or key, a saturated test
@@ -901,35 +1255,48 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 // Probing runs outside any transaction so a slow upstream never holds one open.
 func (s *ModelService) probeAndCommitExistingCandidate(
 	ctx context.Context, candidateID, providerID uint, providerModelName string,
-	expectedManagementStatus int, enableIfPassed bool, now time.Time,
-) (report CandidateTestReport, ran bool, err error) {
+	expectedManagementStatus int, expectedProbeRunID, probeRunID string, enableIfPassed, enableWhenArmed bool,
+	expectedRowUpdatedAt time.Time, now time.Time,
+) (report CandidateTestReport, applied, ran bool, err error) {
 	report, err = s.probeCandidateMapping(ctx, providerID, providerModelName)
 	if err != nil {
-		return report, false, err
+		return report, false, false, err
 	}
-	// Surfaced rather than swallowed: if the verdict does not reach the database,
-	// silently continuing would let the enable below be skipped while the caller
-	// is told the save succeeded, leaving a row whose stored state contradicts
-	// what the operator was shown.
-	applied, err := repository.CommitModelCandidateProbeResults(s.db, candidateID, providerModelName, toProbeCommit(report), now)
+	// A context that died while the probe was upstream invalidates the whole
+	// run before it is committed: the production client reports a request
+	// killed mid-flight as an inconclusive RESULT (unreachable, nil error),
+	// so without this check a server shutdown would stamp rows with attempt
+	// timestamps and a "context canceled" diagnostic that no upstream ever
+	// produced — exactly where restart recovery expects untouched rows.
+	// ran=false: no verdict was obtained, and the caller must not treat this
+	// as a failing mapping.
+	if ctx.Err() != nil {
+		return report, false, false, ctx.Err()
+	}
+	// Surfaced rather than swallowed: if the verdict does not reach the
+	// database, silently continuing would tell the caller the save succeeded
+	// while the stored state contradicts what the operator was shown. The
+	// enable rides in the same statement as the verdict, so no observer can
+	// catch a "passed but not yet enabled" row in between. applied=false with
+	// a nil error means a competitor's probe owns the row now — this run's
+	// report describes an outcome the row does not hold, and callers showing
+	// the report to a user must say so instead of presenting it as current.
+	commit := toProbeCommit(report)
+	commit.EnableOnPass = enableIfPassed
+	commit.EnableOnPassWhenArmed = enableWhenArmed
+	commit.ExpectedManagementStatus = expectedManagementStatus
+	commit.ExpectedRowUpdatedAt = expectedRowUpdatedAt
+	// A decisive failure demotes in the SAME statement as the verdict (the
+	// repository applies this only when the verdict is decisively not a
+	// pass): splitting the demote into a follow-up write would let a
+	// competing pass land between the two and be knocked off by the stale
+	// failure's demote — and a crash between them would leave Failed+Enabled.
+	commit.DisableOnFail = true
+	applied, err = s.commitProbeResultsDurably(ctx, candidateID, providerModelName, expectedProbeRunID, probeRunID, commit, now)
 	if err != nil {
-		return report, true, err
+		return report, false, true, err
 	}
-	if !applied {
-		// A concurrent edit retargeted the candidate while this probe was in
-		// flight, so the verdict describes a mapping the row no longer has. It is
-		// dropped, and enablement is not attempted — the edit that moved the row
-		// runs its own probe and owns the outcome.
-		return report, true, nil
-	}
-	if enableIfPassed && report.Basic.Passed() {
-		if _, err := repository.EnableModelCandidateAfterProbe(
-			s.db, candidateID, providerModelName, expectedManagementStatus, model.ModelCandidateStatusEnabled, now,
-		); err != nil {
-			return report, true, err
-		}
-	}
-	return report, true, nil
+	return report, applied, true, nil
 }
 
 func (s *ModelService) toCandidateView(c model.ModelCandidate) (*CandidateView, error) {
@@ -967,10 +1334,14 @@ type UpdateCandidateInput struct {
 
 // UpdateCandidateResult carries the updated candidate plus the probe run, if
 // one was needed. Report is nil when nothing about the change could have
-// invalidated the stored verdicts.
+// invalidated the stored verdicts. ReportApplied says whether that probe's
+// verdict is the one the row now holds: false means a concurrent probe won the
+// commit race, the report describes an outcome the row does not carry, and a
+// client presenting it as the saved state would contradict the list.
 type UpdateCandidateResult struct {
-	Candidate *CandidateView       `json:"candidate"`
-	Report    *CandidateTestReport `json:"report"`
+	Candidate     *CandidateView       `json:"candidate"`
+	Report        *CandidateTestReport `json:"report"`
+	ReportApplied bool                 `json:"report_applied"`
 }
 
 // sameOptionalPrice compares two nullable prices, where nil ("this model has no
@@ -1030,15 +1401,37 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 		input.OutputPrice != candidate.OutputPrice ||
 		!sameOptionalPrice(input.CacheWritePrice, candidate.CacheWritePrice) ||
 		!sameOptionalPrice(input.CacheReadPrice, candidate.CacheReadPrice)
-	if err := repository.UpdateModelCandidate(s.db, id, providerModelName, input.InputPrice, input.OutputPrice,
-		input.CacheWritePrice, input.CacheReadPrice, input.MaxOutput, targetChanged, priceChanged, now); err != nil {
-		return nil, err
-	}
-
 	wasEnabled := candidate.ManagementStatus == model.ModelCandidateStatusEnabled
 	targetEnabled := wasEnabled
 	if input.ManagementStatus != nil {
 		targetEnabled = *input.ManagementStatus == model.ModelCandidateStatusEnabled
+	}
+
+	// One transaction for the status instruction and the field update, so a
+	// failure on either write rolls back both — the caller's error response
+	// then describes the whole edit, not a half-applied one where the disable
+	// stuck but the fields did not.
+	//
+	// Within it, an explicit "disabled" lands BEFORE the field update on
+	// purpose: the field update re-aligns an armed row's armed_at, and doing
+	// that first would open a window in which a passing queue probe sees an
+	// armed, aligned row and briefly enables it — moments before this
+	// instruction disables it again. Clearing the flag and advancing the
+	// token first makes any in-flight commit miss instead. It needs the same
+	// write as the dedicated status toggle (token advance + armed revocation)
+	// even when the stored status is already Disabled; the value-only
+	// reconciliation at the end cannot cover that.
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if input.ManagementStatus != nil && !targetEnabled {
+			if err := repository.SetModelCandidateManagementStatusAdvancingProbeToken(tx, id,
+				model.ModelCandidateStatusDisabled, newProbeRunID(), now); err != nil {
+				return err
+			}
+		}
+		return repository.UpdateModelCandidate(tx, id, providerModelName, input.InputPrice, input.OutputPrice,
+			input.CacheWritePrice, input.CacheReadPrice, input.MaxOutput, targetChanged, priceChanged, now)
+	}); err != nil {
+		return nil, err
 	}
 
 	// Probing only earns its cost when the outcome can change something: the
@@ -1053,9 +1446,45 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 	// row serves no traffic while the admin list shows it as on.
 	wasVerified := candidate.VerificationStatus == model.ModelVerificationStatusPassed
 	var report *CandidateTestReport
+	reportApplied := false
+	probeRunID := ""
 	if targetEnabled && (targetChanged || !wasEnabled || !wasVerified) {
-		r, ran, err := s.probeAndCommitExistingCandidate(ctx, id, candidate.ProviderID, providerModelName,
-			candidate.ManagementStatus, true, now)
+		// The run token is re-read AFTER the field update above, not taken from
+		// the initial read: another probe can commit in between, advancing the
+		// token, and probing with the stale one would see its guard miss even
+		// though it tested the row's current target — stranding the mapping
+		// untested and disabled. The commit additionally guards on the NEW
+		// name, so a further concurrent retarget still discards this verdict.
+		//
+		// The enable's CAS baseline is the INITIAL read, not the fresh one: the
+		// baseline exists to detect "someone changed the status since this edit
+		// looked", and taking it from a read issued after a concurrent explicit
+		// disable would make that check trivially true — the passing probe
+		// would re-enable the mapping the API just acknowledged as off.
+		fresh, err := repository.FindModelCandidateByID(s.db, id)
+		if err != nil {
+			return nil, err
+		}
+		// A token that moved between the edit's two reads means someone else
+		// acted on the row in the meantime — an explicit disable (which may
+		// change no stored value, so the status baseline cannot see it) or a
+		// competing probe. Either way this edit's enable is forfeited: probing
+		// with the fresh token lets the verdict land, but pairing that token
+		// with the pre-move status baseline would satisfy both commit guards
+		// at once and re-enable a row whose later disable was already
+		// acknowledged. The row can still come out enabled through the row's
+		// own state (a queue probe honoring the armed promise), just not
+		// through this edit's request.
+		// An armed row's probe commits in the ARMED mode here too, for the
+		// same reason as the retest path: the armed mode fulfills the promise
+		// under the alignment check and re-aligns it on failure, while the
+		// explicit mode would bump the clock without realigning — the next
+		// queue pass would then refuse the enable and revoke the promise.
+		enableWhenArmed := fresh.AutoEnableOnPass
+		enableIfPassed := !enableWhenArmed && fresh.LastProbeRunID == candidate.LastProbeRunID
+		probeRunID = newProbeRunID()
+		r, applied, ran, err := s.probeAndCommitExistingCandidate(ctx, id, candidate.ProviderID, providerModelName,
+			candidate.ManagementStatus, fresh.LastProbeRunID, probeRunID, enableIfPassed, enableWhenArmed, fresh.UpdatedAt, now)
 		if err != nil && ran {
 			// The probe produced a verdict but persisting it failed. Continuing
 			// would report success over a row whose stored state no longer matches
@@ -1064,38 +1493,62 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 			// enablement reconciliation below handles the resulting state.
 			return nil, err
 		}
+		if ran && !applied && err == nil {
+			// Same recovery as the retest path: a guard miss caused by an admin
+			// status write (not by a fresher probe) must not cost the verdict —
+			// on a same-name enable-edit, discarding a decisive failure would
+			// leave the row's previous Passed standing for the status toggle to
+			// trust. The re-commit lands the verdict under the current token
+			// without this edit's enable; it gives up when the mapping was
+			// retargeted or another probe's verdict landed.
+			applied, err = s.recommitDiscardedVerdict(ctx, id, providerModelName, fresh, probeRunID, toProbeCommit(r), now)
+			if err != nil {
+				return nil, err
+			}
+		}
 		report = &r
+		reportApplied = applied
 	}
 
 	reloaded, err := repository.FindModelCandidateByID(s.db, id)
 	if err != nil {
 		return nil, err
 	}
+	// Same post-reload ownership check as the retest path: a competitor can
+	// commit right after this edit's probe and before this read, so a token
+	// that is no longer this run's means the returned view carries someone
+	// else's verdict — the report must not be presented as the saved state.
+	// The target name is part of ownership: a concurrent retarget keeps the
+	// token while replacing the mapping, and the report describes the OLD one.
+	if reportApplied && (reloaded.LastProbeRunID != probeRunID || reloaded.ProviderModelName != providerModelName) {
+		reportApplied = false
+	}
 
-	// Enablement is settled from the row as it now stands, against one invariant:
-	// an enabled candidate must be verified. Probing can only ever GRANT the
-	// enabled state, so every case that has to take it away is handled here, and
-	// deriving the decision from stored state covers all of them at once — an
-	// outright request to disable, a probe that ran and failed, a probe that never
-	// started after a rename already reset verification, and a row that was
-	// already enabled-but-unverified before this edit.
-	//
-	// Reading the stored status rather than the probe report is what closes the
-	// last of those: a rename commits the verification reset up front, so if the
-	// probe could not even start the row would otherwise be left enabled and
-	// unverified — silently serving nothing while the admin list showed it as on
-	// and the API reported success.
-	//
-	// The write is skipped when the row already reads disabled, so an edit that
-	// changes nothing about enablement does not issue a no-op UPDATE.
-	nowVerified := reloaded.VerificationStatus == model.ModelVerificationStatusPassed
-	nowEnabled := reloaded.ManagementStatus == model.ModelCandidateStatusEnabled
-	if nowEnabled && (!targetEnabled || !nowVerified) {
-		if err := repository.SetModelCandidateManagementStatus(s.db, id, model.ModelCandidateStatusDisabled, now); err != nil {
+	// The enabled-implies-verified backstop, settled from the row as it now
+	// stands: a probe that never started after a rename already reset
+	// verification would otherwise leave the row enabled and unverified —
+	// silently serving nothing while the admin list shows it as on. The
+	// demote is a CAS (only while the row STILL reads enabled-but-unverified)
+	// so a competing probe landing a pass with its enable in between keeps
+	// its result. Decisive failures no longer need this path — their demote
+	// rides in the probe commit itself — and an explicit disable was written
+	// (transactionally, token-advancing) before the field update; a row that
+	// reads enabled here despite a disable request was re-enabled by a LATER
+	// explicit action, which wins.
+	if reloaded.ManagementStatus == model.ModelCandidateStatusEnabled &&
+		reloaded.VerificationStatus != model.ModelVerificationStatusPassed {
+		if _, err := repository.DemoteUnverifiedEnabledCandidate(s.db, id, providerModelName, reloaded.UpdatedAt, now); err != nil {
 			return nil, err
 		}
+		// Re-read regardless of whether the demote applied: a CAS miss means a
+		// competitor moved the row between the reload above and the demote,
+		// and returning the stale reload would misdescribe the outcome. The
+		// ownership check runs again on what the re-read shows.
 		if reloaded, err = repository.FindModelCandidateByID(s.db, id); err != nil {
 			return nil, err
+		}
+		if reportApplied && (reloaded.LastProbeRunID != probeRunID || reloaded.ProviderModelName != providerModelName) {
+			reportApplied = false
 		}
 	}
 
@@ -1103,7 +1556,7 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 	if err != nil {
 		return nil, err
 	}
-	return &UpdateCandidateResult{Candidate: view, Report: report}, nil
+	return &UpdateCandidateResult{Candidate: view, Report: report, ReportApplied: reportApplied}, nil
 }
 
 // verifyCandidateEnableAllowed mirrors the provider-key enable check: enabling a
@@ -1124,7 +1577,11 @@ func (s *ModelService) SetCandidateStatus(id uint, enabled bool, now time.Time) 
 		return err
 	}
 	if !enabled {
-		return repository.SetModelCandidateManagementStatus(s.db, id, model.ModelCandidateStatusDisabled, now)
+		// The token advance is what makes this instruction visible to a probe
+		// already in flight: disabling an imported (already disabled) row
+		// changes no stored value, and without it the probe's in-statement
+		// auto-enable would sail through and undo the admin moments later.
+		return repository.SetModelCandidateManagementStatusAdvancingProbeToken(s.db, id, model.ModelCandidateStatusDisabled, newProbeRunID(), now)
 	}
 	if err := verifyCandidateEnableAllowed(candidate); err != nil {
 		return err
@@ -1150,43 +1607,104 @@ func (s *ModelService) SetCandidateStatus(id uint, enabled bool, now time.Time) 
 // definite answer, and offering one probe at a time only pushes the choice of
 // which to run onto the operator.
 //
-// Retesting never ENABLES anything — a candidate an admin disabled stays disabled
-// even if every probe passes. It does demote one whose mapping is now decisively
-// broken, because verification_status not being Passed already stops the gateway
-// routing to it; leaving management_status enabled would only make the admin list
-// claim it is serving traffic when it is not.
-func (s *ModelService) RetestModelCandidate(ctx context.Context, id uint, now time.Time) (*CandidateView, error) {
+// Enablement follows the verdict in one direction each way. A retest that lands
+// the mapping's FIRST pass enables it — imported and failed mappings sit
+// disabled only because no probe had proven them, and the one-click retest
+// carries the import queue's promise that pass means routable. A mapping whose
+// verification was ALREADY Passed is different: it can only be disabled by an
+// admin's explicit choice, so a re-confirming retest leaves that choice alone.
+// A decisive failure demotes an enabled mapping, because verification_status
+// not being Passed already stops the gateway routing to it; leaving
+// management_status enabled would only make the admin list claim it is serving
+// traffic when it is not.
+//
+// applied reports whether THIS retest's verdict is the one that was recorded.
+// It is false when a concurrent probe or edit won the commit race — the
+// returned view then reflects the competitor's result, and a client that
+// announced it as this retest's outcome could state the exact opposite of
+// what this run observed.
+func (s *ModelService) RetestModelCandidate(ctx context.Context, id uint, now time.Time) (*CandidateView, bool, error) {
 	candidate, err := repository.FindModelCandidateByID(s.db, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errcode.ErrModelCandidateNotFound
+			return nil, false, errcode.ErrModelCandidateNotFound
 		}
-		return nil, err
+		return nil, false, err
 	}
 	report, err := s.probeCandidateMapping(ctx, candidate.ProviderID, candidate.ProviderModelName)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	// Same cancellation guard as probeAndCommitExistingCandidate: a context
+	// that died mid-probe (aborted request, shutdown) makes the "unreachable"
+	// result a cancellation artifact, not something to persist.
+	if ctx.Err() != nil {
+		return nil, false, ctx.Err()
+	}
+	// The verdict and its management transition commit as ONE write, under this
+	// run's unique token: the first pass enables (unless the admin's toggle
+	// moved mid-probe — the in-row CAS keeps their disable), a decisive failure
+	// demotes an enabled row, and no observer can catch a half-applied state
+	// in between.
 	commit := toProbeCommit(report)
-	applied, err := repository.CommitModelCandidateProbeResults(s.db, id, candidate.ProviderModelName, commit, now)
-	if err != nil {
-		return nil, err
+	// An armed row's retest commits in the ARMED mode, not the explicit one:
+	// the armed mode is what keeps the promise usable across rounds — a pass
+	// fulfills it under the alignment check, and a failure re-aligns armed_at
+	// with the clock it just bumped. The explicit mode would bump the clock
+	// without realigning, so the next queue pass would refuse the enable and
+	// revoke the promise — stranding the mapping Passed+Disabled because
+	// someone once clicked retest.
+	if candidate.AutoEnableOnPass {
+		commit.EnableOnPassWhenArmed = true
+	} else {
+		commit.EnableOnPass = candidate.VerificationStatus != model.ModelVerificationStatusPassed
 	}
-	// Only a decisive verdict demotes, and only if the verdict was actually
-	// stored: applied being false means a concurrent edit retargeted the row, so
-	// this result describes a mapping it no longer has. An inconclusive probe
-	// leaves verification_status untouched, so there is nothing to reconcile.
-	if applied && commit.VerificationStatus != nil && *commit.VerificationStatus != model.ModelVerificationStatusPassed &&
-		candidate.ManagementStatus == model.ModelCandidateStatusEnabled {
-		if err := repository.SetModelCandidateManagementStatus(s.db, id, model.ModelCandidateStatusDisabled, now); err != nil {
-			return nil, err
+	commit.ExpectedManagementStatus = candidate.ManagementStatus
+	// Unconditional, not gated on the status read before probing: a
+	// concurrent enable does not advance the probe token, so this verdict
+	// still lands — and a decisive failure must demote whatever the toggle
+	// says NOW, or the row ends Failed+Enabled, listed as serving traffic it
+	// cannot serve. The repository applies it only on a decisive failure, so
+	// a pass or an inconclusive run never touches enablement through it.
+	commit.DisableOnFail = true
+	commit.ExpectedRowUpdatedAt = candidate.UpdatedAt
+	runID := newProbeRunID()
+	applied, err := s.commitProbeResultsDurably(ctx, id, candidate.ProviderModelName, candidate.LastProbeRunID, runID, commit, now)
+	if err != nil {
+		return nil, false, err
+	}
+	if !applied {
+		// The guard miss does not have to mean a fresher verdict exists: an
+		// explicit disable advances the token without probing anything, and
+		// discarding this verdict over it would leave the row's PREVIOUS
+		// verification standing — a stale Passed that the status toggle would
+		// trust to re-enable a mapping this probe just proved broken. The
+		// verdict re-commits under the row's current token, dropping this
+		// run's enable (whoever advanced the token owns management), and gives
+		// up only when the mapping was retargeted or another probe's verdict
+		// landed in the meantime.
+		applied, err = s.recommitDiscardedVerdict(ctx, id, candidate.ProviderModelName, candidate, runID, commit, now)
+		if err != nil {
+			return nil, false, err
 		}
 	}
 	reloaded, err := repository.FindModelCandidateByID(s.db, id)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return s.toCandidateView(*reloaded)
+	// applied promises the returned view shows THIS run's outcome, so it must
+	// survive the reload too: a competitor probe can commit right after this
+	// run's write and before this read. Ownership is (run token, target name)
+	// — timestamps could tie or even order a slow competitor BEFORE this run,
+	// and a retarget keeps the token while replacing the mapping.
+	if applied && (reloaded.LastProbeRunID != runID || reloaded.ProviderModelName != candidate.ProviderModelName) {
+		applied = false
+	}
+	view, err := s.toCandidateView(*reloaded)
+	if err != nil {
+		return nil, false, err
+	}
+	return view, applied, nil
 }
 
 func (s *ModelService) ReorderModelCandidate(modelID, candidateID uint, direction string) error {
@@ -1207,9 +1725,22 @@ func (s *ModelService) DeleteModelCandidate(id uint) error {
 	return repository.DeleteModelCandidate(s.db, id)
 }
 
-// UpdateModelNameStatus saves the model's name — and, when imageInputSet is
-// true, the tri-state image-input declaration in the same statement, so
-// concurrent PATCHes cannot interleave the two fields. A rename also follows
+// UpdateModelInput carries one PATCH's submitted fields. ImageInput pairs a
+// set-flag with a tri-state value (nil with ImageInputSet=true clears the
+// declaration). SchedulingMode's pointer alone carries set-ness: nil keeps
+// the current scheduler, and a present value must be one of the two modes —
+// an empty string is rejected, never read as "the default", so no caller can
+// reset a model's scheduler by submitting nothing.
+type UpdateModelInput struct {
+	Name           string
+	ImageInputSet  bool
+	ImageInput     *bool
+	SchedulingMode *model.SchedulingMode
+}
+
+// UpdateModel saves the model's name and every submitted optional field in
+// one statement, so concurrent PATCHes cannot interleave the fields. A
+// rename also follows
 // through to the vision-fallback setting when the renamed model is the
 // configured describe model: the setting stores the public name, and leaving
 // the old name behind would silently disable the feature at describe time.
@@ -1218,9 +1749,12 @@ func (s *ModelService) DeleteModelCandidate(id uint) error {
 // gateway's settings cache picks the renamed reference up within its 30s
 // TTL; in that window a describe lookup misses and the image passes through
 // unconverted, which is the feature's normal degrade mode.
-func (s *ModelService) UpdateModelNameStatus(id uint, name string, imageInputSet bool, imageInput *bool, now time.Time) (*ModelView, error) {
-	if !isValidModelName(name) {
-		return nil, fmt.Errorf("%w: model name must contain only letters, digits, dots, hyphens, and underscores", errcode.ErrModelNameTaken)
+func (s *ModelService) UpdateModel(id uint, in UpdateModelInput, now time.Time) (*ModelView, error) {
+	if !isValidModelName(in.Name) {
+		return nil, fmt.Errorf("%w: model name must be slash-separated segments of letters, digits, dots, hyphens, and underscores", errcode.ErrModelNameTaken)
+	}
+	if in.SchedulingMode != nil && !in.SchedulingMode.Valid() {
+		return nil, errcode.ErrModelSchedulingModeInvalid
 	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		m, err := repository.FindModelByID(tx, id)
@@ -1230,11 +1764,16 @@ func (s *ModelService) UpdateModelNameStatus(id uint, name string, imageInputSet
 			}
 			return err
 		}
-		if err := repository.UpdateModelNameStatus(tx, id, name, m.ManagementStatus, imageInputSet, imageInput, now); err != nil {
+		update := repository.ModelUpdate{
+			Name: in.Name, Status: m.ManagementStatus,
+			ImageInputSet: in.ImageInputSet, ImageInput: in.ImageInput,
+			SchedulingMode: in.SchedulingMode,
+		}
+		if err := repository.UpdateModel(tx, id, update, now); err != nil {
 			return err
 		}
-		if name != m.Name {
-			return repository.RenameVisionFallbackModel(tx, m.Name, name)
+		if in.Name != m.Name {
+			return repository.RenameVisionFallbackModel(tx, m.Name, in.Name)
 		}
 		return nil
 	})
@@ -1262,7 +1801,7 @@ func (s *ModelService) SetModelStatus(id uint, enabled bool, now time.Time) erro
 	if enabled {
 		status = model.ModelStatusEnabled
 	}
-	return repository.UpdateModelNameStatus(s.db, id, m.Name, status, false, nil, now)
+	return repository.UpdateModel(s.db, id, repository.ModelUpdate{Name: m.Name, Status: status}, now)
 }
 
 // modelImpactRecentWindow is how far back the impact preview counts live

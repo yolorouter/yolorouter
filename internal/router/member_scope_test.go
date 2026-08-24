@@ -40,9 +40,9 @@ func newMemberScopeFixture(t *testing.T) *memberScopeFixture {
 	}
 	now := time.Now().UTC()
 
-	seed := func(username, role string, isLocal bool, token string) *model.User {
+	seed := func(username, role string, isLocal, isBootstrap bool, token string) *model.User {
 		u := &model.User{Username: username, Role: role, Status: model.UserStatusEnabled, IsLocal: isLocal,
-			PasswordHash: "hash", CreatedAt: now, UpdatedAt: now}
+			IsBootstrap: isBootstrap, PasswordHash: "hash", CreatedAt: now, UpdatedAt: now}
 		if err := repository.CreateUser(db, u); err != nil {
 			t.Fatalf("seed %s: %v", username, err)
 		}
@@ -51,9 +51,10 @@ func newMemberScopeFixture(t *testing.T) *memberScopeFixture {
 		}
 		return u
 	}
-	admin := seed("boss", model.RoleAdmin, true, "tok-admin")
-	alice := seed("alice", model.RoleMember, false, "tok-alice")
-	bob := seed("bob", model.RoleMember, false, "tok-bob")
+	// boss mirrors first-run setup: the one bootstrap local admin.
+	admin := seed("boss", model.RoleAdmin, true, true, "tok-admin")
+	alice := seed("alice", model.RoleMember, false, false, "tok-alice")
+	bob := seed("bob", model.RoleMember, false, false, "tok-bob")
 	_ = admin
 
 	seedKey := func(owner uint, hash string) uint {

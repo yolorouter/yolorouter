@@ -48,6 +48,12 @@
         </template>
         <n-input v-model:value="form.name" :placeholder="t('models.nameHint')" />
       </n-form-item>
+      <n-form-item path="schedulingMode">
+        <template #label>
+          <HelpLabel :tip="t('models.schedulingModeCreate_tip')">{{ t('models.schedulingMode') }}</HelpLabel>
+        </template>
+        <n-select v-model:value="form.schedulingMode" :options="schedulingModeOptions" />
+      </n-form-item>
     </n-form>
 
     <template #footer>
@@ -66,13 +72,15 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { NCheckbox, useMessage, type FormInst, type FormItemRule, type FormRules } from 'naive-ui'
+import { NCheckbox, NSelect, useMessage, type FormInst, type FormItemRule, type FormRules } from 'naive-ui'
 import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { modelNameFormatRule } from '../../utils/modelValidators'
+import { useSchedulingModeOptions } from '../../utils/schedulingMode'
 import { MODEL_PRESET_GROUPS, type ModelPresetGroup } from '../../config/modelPresets'
+import type { SchedulingMode } from '../../api/models'
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ 'update:show': [boolean] }>()
@@ -91,8 +99,12 @@ const store = useModelsStore()
 
 const formRef = ref<FormInst | null>(null)
 const submitting = ref(false)
-const form = reactive({ name: '' })
+// form.schedulingMode applies to everything this submission creates — the
+// manual name and any preset picks alike.
+const form = reactive<{ name: string; schedulingMode: SchedulingMode }>({ name: '', schedulingMode: 'failover' })
 const selected = ref(new Set<string>())
+
+const schedulingModeOptions = useSchedulingModeOptions()
 
 // Names already present, so preset entries for them can be disabled + badged.
 const existingNames = computed(() => new Set(store.list.map((m) => m.name)))
@@ -152,6 +164,7 @@ watch(
   (visible) => {
     if (visible) {
       form.name = ''
+      form.schedulingMode = 'failover'
       selected.value = new Set()
     }
   },
@@ -170,7 +183,7 @@ async function onSubmit() {
   if (selected.value.size === 0) {
     submitting.value = true
     try {
-      const created = await store.create(manual)
+      const created = await store.create(manual, form.schedulingMode)
       showModel.value = false
       router.push(`/models/${created.id}`)
     } catch (err) {
@@ -186,7 +199,7 @@ async function onSubmit() {
   if (manual) names.add(manual)
   submitting.value = true
   try {
-    const result = await store.createBatch([...names])
+    const result = await store.createBatch([...names], form.schedulingMode)
     const created = result.created.length
     const skipped = result.skipped.length
     if (created === 0) {

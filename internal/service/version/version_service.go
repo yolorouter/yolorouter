@@ -222,25 +222,37 @@ func (s *VersionService) fetchLatest(ctx context.Context) *versionCacheEntry {
 		defer cancel()
 	}
 	for i, proxy := range s.routes {
-		// A non-final attempt leaves the fallback routes a share of the
-		// walk budget — a hanging direct request must not starve the
-		// mirror the walk exists to reach.
+		// A non-final attempt leaves the routes behind it a share of the
+		// walk budget — a hanging request must not starve the fallback the
+		// walk exists to reach.
 		attemptCtx, cancel := version.RouteAttemptContext(ctx, i == len(s.routes)-1)
-		entry := s.fetchLatestVia(attemptCtx, proxy)
+		entry, routeFailed := s.fetchLatestVia(attemptCtx, proxy)
 		cancel()
 		if entry != nil {
 			return entry
+		}
+		// The route answered and the answer is simply not installable —
+		// every other route reaches the same GitHub release and returns the
+		// same thing. Walking on would spend a second request, and a second
+		// slice of the very quota this walk exists to conserve, to be told
+		// the same thing twice.
+		if !routeFailed {
+			break
 		}
 	}
 	return s.failEntry()
 }
 
-// fetchLatestVia is one route's lookup attempt; nil means try the next route.
-func (s *VersionService) fetchLatestVia(ctx context.Context, proxy string) *versionCacheEntry {
+// fetchLatestVia is one route's lookup attempt. A nil entry with routeFailed
+// true means this route did not deliver an answer and the next one is worth
+// trying; nil with routeFailed false means the route delivered GitHub's
+// answer and that answer is not installable, which no other route can
+// change.
+func (s *VersionService) fetchLatestVia(ctx context.Context, proxy string) (entry *versionCacheEntry, routeFailed bool) {
 	url := version.ProxyURL(proxy, fmt.Sprintf("%s/repos/%s/releases/latest", s.baseURL, s.repo))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil
+		return nil, true
 	}
 	// User-Agent is required by the GitHub REST API; without it requests are
 	// rejected. Accept pins the documented JSON media type.
@@ -249,7 +261,7 @@ func (s *VersionService) fetchLatestVia(ctx context.Context, proxy string) *vers
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil
+		return nil, true
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -257,17 +269,20 @@ func (s *VersionService) fetchLatestVia(ctx context.Context, proxy string) *vers
 	// (rate limit), and 5xx all degrade identically: check_failed (after the
 	// remaining routes also fail), not a 500 to the admin UI.
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return nil, true
 	}
 
 	var rel githubRelease
+	// A body that will not decode is a broken route, not a broken release: a
+	// misconfigured proxy answering with its own HTML lands here, and the
+	// next route may well return the real JSON.
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return nil
+		return nil, true
 	}
 	// A tag_name that isn't valid semver can't be compared against current,
 	// so treat it as a failed check rather than a misleading "no update".
 	if !semver.IsValid(rel.TagName) {
-		return nil
+		return nil, false
 	}
 	// A prerelease latest (v1.3.0-rc1) is incomparable: currentUpdatable
 	// refuses to install it and buildStatus reports CheckFailed. Cache it as
@@ -275,13 +290,13 @@ func (s *VersionService) fetchLatestVia(ctx context.Context, proxy string) *vers
 	// stable release is picked up on the next negTTL cycle rather than being
 	// hidden for 10 minutes.
 	if semver.Prerelease(rel.TagName) != "" {
-		return nil
+		return nil, false
 	}
 	return &versionCacheEntry{
 		latest:     rel.TagName,
 		releaseURL: rel.HTMLURL,
 		fetchedAt:  time.Now(),
-	}
+	}, false
 }
 
 func (s *VersionService) failEntry() *versionCacheEntry {

@@ -10,6 +10,8 @@ export default {
   edit: '编辑',
   delete: '删除',
   copy: '复制',
+  copied: '已复制',
+  copyFailed: '复制失败，请手动选择复制',
   allAccounts: '全部账号',
   confirm: '确定',
   networkError: '网络请求失败，请检查网络连接',

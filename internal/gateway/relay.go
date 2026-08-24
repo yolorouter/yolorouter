@@ -128,6 +128,13 @@ type Service struct {
 	// demotion-not-exclusion guarantee lives with the type (keypool.go).
 	keyPool *keyPool
 
+	// bindings is the sticky-binding registry balanced models route through:
+	// caller keys pinned to providers, least-bound-first on assignment. Only
+	// balanced models consult it; failover chains never do. Exposed via
+	// Bindings so the assembly layer can share the one instance with the
+	// admin model view (the per-candidate binding counts).
+	bindings *BindingRegistry
+
 	// secondaryFetch is the shared client for downloading responses an upstream
 	// referred to rather than returned. Built once, on first use: a transport
 	// per request would pool connections nobody ever reuses or closes.
@@ -219,8 +226,18 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 			SuccessThreshold: gatewayCfg.CircuitSuccessThreshold,
 			OpenTimeout:      gatewayCfg.CircuitOpenTimeout,
 		}),
-		keyPool: newKeyPool(time.Now),
+		keyPool:  newKeyPool(time.Now),
+		bindings: NewBindingRegistry(time.Now),
 	}
+}
+
+// Bindings exposes the sticky-binding registry so the assembly layer can
+// hand the same instance to consumers outside the gateway (the admin model
+// view reads per-candidate binding counts from it). The registry is created
+// with the service and lives exactly as long; there is deliberately no
+// setter — two registries would mean two spreads.
+func (s *Service) Bindings() *BindingRegistry {
+	return s.bindings
 }
 
 // derefLimit reads an optional limit. An absent limit and a zero limit both
@@ -550,10 +567,22 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// whichever provider happened to sort first, and the chain can end on a
 	// different one. Fixed here, in one place, so there is a single answer to
 	// pick apart rather than one per call site. Nothing outside this file reads
-	// it; the field's own note says why not.
+	// it; the field's own note says why not. Read BEFORE the balanced reorder
+	// below, so the basis is the admin's sort_order head for every request of
+	// a model — a per-key bound provider must not make the estimate drift
+	// between callers. Nothing consumes the estimate today (the text modality
+	// answers that it cannot say), so the head-vs-walked-candidate gap is
+	// presently harmless either way.
 	rc.pricingBasis = PricingView{
 		InputPricePerMillion:  routable[0].InputPrice,
 		OutputPricePerMillion: routable[0].OutputPrice,
+	}
+
+	// Balanced models reorder the chain per caller key before the walk enters
+	// it. Failover models keep the repository's sort_order untouched — the
+	// historical behaviour, byte for byte.
+	if m.IsBalanced() {
+		routable = s.reorderBalanced(rc, m.ID, routable)
 	}
 
 	// Asked before any candidate is tried, because that is the only window in
@@ -684,6 +713,27 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 		rc.spendBudget(decision.BudgetConsumeProbe)
 		rc.recordAttempt(cand, provider, nil, 0, outcome, note)
 	}
+	// skipDeadEndCandidate is skipCandidate for provider-level dead ends the
+	// circuit breaker cannot see: provider row missing or disabled, no
+	// usable or decryptable key, destination mismatch. Beyond the skip row,
+	// it quarantines the provider — EVERY dead end observed on the walk, so
+	// none of them sits at zero bindings attracting the next new key — and,
+	// when the dead end IS the caller's bound candidate, flags the binding
+	// for replacement: the binding itself is NOT released here, so a walk
+	// that ends with no candidate serving (everything else breaker-refused,
+	// say) leaves the caller's affinity intact; the candidate that actually
+	// writes the response replaces it instead. Everything else stays on
+	// plain skipCandidate: request-shaped refusals (capability, build,
+	// egress verdicts) and transient errors say nothing about the
+	// provider's health, and the breaker's own refusal is the recovery path
+	// working, not a dead end.
+	skipDeadEndCandidate := func(cand model.ModelCandidate, provider *model.Provider, outcome, note string) {
+		skipCandidate(cand, provider, outcome, note)
+		s.bindings.Quarantine(cand.ProviderID)
+		if rc.binding.candidateID != 0 && cand.ID == rc.binding.candidateID {
+			rc.binding.invalidated = true
+		}
+	}
 	for i := range candidates {
 		// Cleared here as well as on entry to each attempt, because the two
 		// clears cover paths the other cannot reach. A candidate can be dropped
@@ -734,11 +784,11 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 		// and pins both skip rows — and cost nothing when idle.
 		provider := cand.Provider
 		if provider == nil {
-			skipCandidate(cand, nil, AttemptBadStatus, "provider missing (preload)")
+			skipDeadEndCandidate(cand, nil, AttemptBadStatus, "provider missing (preload)")
 			continue
 		}
 		if provider.ManagementStatus != model.ProviderStatusEnabled {
-			skipCandidate(cand, provider, AttemptBadStatus, "provider disabled")
+			skipDeadEndCandidate(cand, provider, AttemptBadStatus, "provider disabled")
 			continue
 		}
 		// The health record answers before any work is done for the
@@ -748,7 +798,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 		// window, Allow admits a bounded number of requests as the probes.
 		allowed, circuitGen := s.breaker.Allow(provider.ID, provider.DestinationVersion)
 		if !allowed {
-			skipCandidate(cand, provider, AttemptBadStatus, "provider circuit open")
+			skipCandidate(cand, provider, AttemptBadStatus, skipReasonCircuitRefused)
 			continue
 		}
 		rc.circuitGen = circuitGen
@@ -775,7 +825,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 			if anyEnabledKey {
 				reason = "no verified key"
 			}
-			skipCandidate(cand, provider, AttemptBadStatus, reason)
+			skipDeadEndCandidate(cand, provider, AttemptBadStatus, reason)
 			continue
 		}
 		// Destination-version guard (credential-scope mechanism): a key is
@@ -795,7 +845,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 			}
 		}
 		if n == 0 {
-			skipCandidate(cand, provider, AttemptAuthFailed, "destination version mismatch")
+			skipDeadEndCandidate(cand, provider, AttemptAuthFailed, "destination version mismatch")
 			continue
 		}
 		enabled = enabled[:n]
@@ -822,7 +872,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 			n++
 		}
 		if n == 0 {
-			skipCandidate(cand, provider, AttemptBadStatus, "no decryptable key")
+			skipDeadEndCandidate(cand, provider, AttemptBadStatus, "no decryptable key")
 			continue
 		}
 		enabled = enabled[:n]
@@ -912,6 +962,21 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 		enabled = s.keyPool.walkOrder(provider.ID, enabled)
 		attemptsBefore := rc.attemptsSpent
 		if s.tryKeys(c, rc, adm, enabled, plain, egress, outBody, url, start) == outcomeDone {
+			// The response was written by this candidate — a success, or a
+			// terminal answer that is the caller's own to act on; either
+			// way the provider was reachable and served. A caller whose
+			// bound candidate proved a dead end mid-walk re-binds here to
+			// the candidate that actually answered — deferred to this
+			// point so a walk that never finds a server leaves the old
+			// affinity intact instead of deleting it. A walk that ended
+			// because the CLIENT hung up proves nothing about the
+			// candidate, so a disconnect keeps the old affinity too.
+			if rc.binding.invalidated && !isClientDisconnected(c) {
+				if served := rc.attempt.Candidate(); served != nil {
+					s.bindings.Rebind(rc.apiKeyID, rc.binding.modelID, served.ProviderID, served.ID, rc.binding.candidateID)
+					rc.binding.invalidated = false
+				}
+			}
 			return
 		}
 		if rc.attemptsSpent == attemptsBefore {
@@ -1698,6 +1763,56 @@ func (s *Service) allCandidatesFailed(c *gin.Context, rc *Exchange, start time.T
 	}
 	s.rejectRequest(c, rc, http.StatusBadGateway, errTypeUpstream,
 		"all upstream candidates failed", "all_candidates_failed", fact.FaultUpstream, start)
+}
+
+// reorderBalanced puts the caller key's bound candidate at the head of the
+// chain and leaves the rest in sort_order relative order. It is the whole of
+// what balanced scheduling changes on the hot path: everything downstream —
+// failure handling, key rotation, circuit booking, budgets — is the same
+// machinery a failover chain runs, so the mode's only degree of freedom is
+// which candidate the walk enters first.
+//
+// A zero return from Route (no bindings wired, or every provider currently
+// dead) keeps the caller's slice untouched: sort_order order, failover
+// behaviour — the degrade is "not balanced right now", never "not routed".
+func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []model.ModelCandidate) []model.ModelCandidate {
+	if len(candidates) < 2 {
+		// A single-candidate chain has nothing to balance; Route would bind
+		// it all the same, but the binding would only burn LRU capacity —
+		// the chain's order is forced either way.
+		return candidates
+	}
+	// The routable filter guarantees a preloaded, enabled provider on every
+	// candidate, so each provider's current destination version is at hand —
+	// the snapshot must not hold a repaired destination's predecessor
+	// against it.
+	destByProvider := make(map[uint]int, len(candidates))
+	for _, cand := range candidates {
+		if cand.Provider != nil {
+			destByProvider[cand.ProviderID] = cand.Provider.DestinationVersion
+		}
+	}
+	first := s.bindings.Route(rc.apiKeyID, modelID, candidates, func(providerID uint) bool {
+		return s.breaker.IsOpen(providerID, destByProvider[providerID])
+	})
+	if first == 0 {
+		return candidates
+	}
+	rc.binding.modelID, rc.binding.candidateID = modelID, first
+	for i, cand := range candidates {
+		if cand.ID != first {
+			continue
+		}
+		if i == 0 {
+			return candidates
+		}
+		out := make([]model.ModelCandidate, 0, len(candidates))
+		out = append(out, candidates[i])
+		out = append(out, candidates[:i]...)
+		out = append(out, candidates[i+1:]...)
+		return out
+	}
+	return candidates
 }
 
 // filterCandidates returns the subset of candidates eligible for this request:

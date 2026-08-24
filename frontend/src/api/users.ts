@@ -17,9 +17,11 @@ export interface UserSummary {
   role: string
   status: number
   is_local: boolean
+  /** First-run setup account — the escape hatch with no row actions. */
+  is_bootstrap: boolean
   last_login_at: string | null
   created_at: string
-  /** Login providers the account arrived through; empty for the local password account. */
+  /** Login providers the account arrived through; empty for local password accounts. */
   providers: string[]
   key_count: number
   spend_micros: number
@@ -27,6 +29,33 @@ export interface UserSummary {
 
 export function listUsers(): Promise<{ users: UserSummary[] }> {
   return apiFetch<{ users: UserSummary[] }>('/api/admin/users')
+}
+
+export interface CreateUserInput {
+  username: string
+  display_name?: string
+  /** Informational only — this build sends no mail; recorded for the directory. */
+  email?: string
+  password: string
+}
+
+// Provisions a local password member. The password travels once in this
+// request; the backend stores only its bcrypt hash and never echoes it.
+export function createUser(input: CreateUserInput): Promise<{ user: UserSummary }> {
+  return apiFetch<{ user: UserSummary }>('/api/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+// Replaces another local account's password. Reserved to the bootstrap
+// administrator (the backend refuses everyone else with 10021); the
+// target's live sessions die with the reset.
+export function resetUserPassword(id: number, password: string): Promise<null> {
+  return apiFetch<null>(`/api/admin/users/${id}/password`, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
 }
 
 // toUserOptions maps accounts to naive-ui <select> options. Kept here —

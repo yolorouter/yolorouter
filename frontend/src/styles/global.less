@@ -1,6 +1,5 @@
-// Global styles ported from the reference project's global.less
-// (/Users/haodou/git/arm/yolorouter/yolorouter-frontend/src/styles/global.less),
-// trimmed to what this admin UI actually uses — marketing/landing-only
+// Global styles shared across the admin UI, trimmed to what it actually
+// uses — marketing/landing-only
 // classes (hero, metric-card gradients, auth-feature-list split panel)
 // are intentionally left out; the layout/component classes this app's
 // pages need are kept.
@@ -258,9 +257,9 @@ a {
   font-size: var(--text-xs);
 }
 
-// Single-panel auth card treatment (this app has one admin account, not
-// the reference project's marketed sign-up split panel — the typography
-// tokens are the same, the layout is simplified to match).
+// Single-panel auth card treatment: one admin account needs no marketed
+// sign-up split panel — the typography tokens are the same, the layout is
+// simplified to match.
 .auth-title {
   font-size: var(--text-2xl);
   font-weight: 800;
@@ -451,4 +450,22 @@ a {
   .data-table-wrapper {
     border: 0;
   }
+}
+/* Shared muted/diagnostic cells of the import dialog and mapping tables
+   (select view, progress view, provider detail model tab) — the render
+   helpers live in utils/probeStateTag.ts, and .candidate-muted also greys
+   already-added rows in the import select table. */
+.candidate-fail-reason {
+  color: var(--color-danger);
+  font-size: var(--text-xs);
+  word-break: break-all;
+}
+
+.candidate-cache-price {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.candidate-muted {
+  color: var(--color-text-muted);
 }

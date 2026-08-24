@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-08-18",
+  "updated_at": "2026-08-23",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
@@ -94,6 +94,12 @@
       }
     },
     "api.siliconflow.cn": {
+      "deepseek-ai/DeepSeek-V4-Flash": {
+        "input": 1,
+        "output": 2,
+        "cacheWrite": null,
+        "cacheRead": null
+      },
       "meituan-longcat/LongCat-2.0": {
         "input": 5,
         "output": 20,
@@ -133,12 +139,6 @@
       "zai-org/GLM-5.2": {
         "input": 6,
         "output": 28,
-        "cacheWrite": null,
-        "cacheRead": null
-      },
-      "deepseek-ai/DeepSeek-V4-Flash": {
-        "input": 1,
-        "output": 2,
         "cacheWrite": null,
         "cacheRead": null
       },
@@ -653,6 +653,12 @@
       "qwen3.8-2.4t-a95b": {
         "input": 12,
         "output": 36,
+        "cacheWrite": null,
+        "cacheRead": null
+      },
+      "qwen3.8-27b": {
+        "input": 3,
+        "output": 12,
         "cacheWrite": null,
         "cacheRead": null
       },

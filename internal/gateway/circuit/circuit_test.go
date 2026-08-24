@@ -274,3 +274,84 @@ func TestNilBreakerNeverOpens(t *testing.T) {
 		t.Fatal("nil breaker refused traffic")
 	}
 }
+
+func TestIsOpenTracksTheOpenWindowWithoutTransitions(t *testing.T) {
+	b, now := testBreaker()
+
+	if b.IsOpen(1, 0) {
+		t.Fatal("unknown provider reported open")
+	}
+	for i := 0; i < 3; i++ {
+		allow(t, b, 1)
+		b.RecordFailure(1, 0)
+	}
+	if !b.IsOpen(1, 0) {
+		t.Fatal("open breaker within its window reported not open")
+	}
+
+	// The window elapses. IsOpen flips to false — the provider deserves
+	// recovery traffic — while the read itself stays side-effect-free (the
+	// generation-stability half of that promise is pinned by
+	// TestIsOpenHasNoSideEffectsOnGeneration).
+	*now = now.Add(2 * time.Minute)
+	if b.IsOpen(1, 0) {
+		t.Fatal("open breaker past its window still reported open")
+	}
+}
+
+func TestIsOpenIgnoresRecordsFromAnotherDestination(t *testing.T) {
+	b, _ := testBreaker()
+	for i := 0; i < 3; i++ {
+		allow(t, b, 1)
+		b.RecordFailure(1, 0)
+	}
+	if !b.IsOpen(1, 0) {
+		t.Fatal("open breaker not reported open for its own destination")
+	}
+	// The admin repaired the provider: a changed destination version means
+	// the open record describes a backend that no longer exists, and holding
+	// it against the repaired one would demote it for the remainder of a
+	// stale window.
+	if b.IsOpen(1, 1) {
+		t.Fatal("a stale destination's open record was reported against the repaired destination")
+	}
+}
+
+func TestIsOpenReportsHalfOpenAsAlive(t *testing.T) {
+	b, now := testBreaker()
+	for i := 0; i < 3; i++ {
+		allow(t, b, 1)
+		b.RecordFailure(1, 0)
+	}
+	*now = now.Add(time.Minute)
+	allow(t, b, 1) // transitions to half-open and admits the probe
+	if b.IsOpen(1, 0) {
+		t.Fatal("half-open breaker reported open; it is already letting probes through")
+	}
+}
+
+func TestIsOpenHasNoSideEffectsOnGeneration(t *testing.T) {
+	b, now := testBreaker()
+	for i := 0; i < 3; i++ {
+		allow(t, b, 1)
+		b.RecordFailure(1, 0)
+	}
+	// Trip bumped provider 1's generation. Admit a half-open probe to get a
+	// LIVE generation, then hammer IsOpen: a read-only snapshot must neither
+	// revoke the live admission nor resurrect one the trip already revoked.
+	*now = now.Add(time.Minute)
+	_, gen := b.Allow(1, 0)
+	for i := 0; i < 10; i++ {
+		b.IsOpen(1, 0)
+	}
+	if !b.StillAllowed(1, gen) {
+		t.Fatal("IsOpen reads revoked a live admission; a read-only snapshot must not bump the generation")
+	}
+	// Generation 0 is what every admission carried before the trip (no
+	// transition had bumped it yet), so asserting against the literal pins
+	// that era without pretending a live admission was captured.
+	var generationZero uint64 // the pre-trip era's generation
+	if b.StillAllowed(1, generationZero) {
+		t.Fatal("admission from before the trip reads as current after IsOpen reads")
+	}
+}

@@ -5,16 +5,28 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
 
+// scheduling_mode carries NO binding tag anywhere below: the service layer
+// is its single validator, answering every invalid value with the field's
+// own error code rather than the generic bad-request a binding tag would
+// produce — and tags cannot reference the model package's constants, so a
+// tag would also be a second, driftable copy of the vocabulary.
 type createModelRequest struct {
 	Name string `json:"name" binding:"required,max=100"`
+	// SchedulingMode is optional; the empty value creates the model with
+	// the failover default.
+	SchedulingMode model.SchedulingMode `json:"scheduling_mode"`
 }
 
 type batchCreateModelsRequest struct {
 	Names []string `json:"names" binding:"required,min=1,max=200,dive,max=100"`
+	// SchedulingMode applies to every model the batch creates (empty = the
+	// failover default), matching the single-create endpoint's contract.
+	SchedulingMode model.SchedulingMode `json:"scheduling_mode"`
 }
 
 type updateModelRequest struct {
@@ -24,6 +36,12 @@ type updateModelRequest struct {
 	// distinguishable from "field absent, don't touch" (nil), which a *bool
 	// cannot express through JSON.
 	ImageInput *string `json:"image_input" binding:"omitempty,oneof=yes no unknown"`
+	// SchedulingMode follows the same nil-means-leave-alone convention as
+	// ImageInput: present switches the model's scheduler, absent keeps it. A
+	// present empty string is invalid — the service rejects it rather than
+	// reading it as the default, which would let a submission that carries
+	// nothing silently reset the scheduler.
+	SchedulingMode *model.SchedulingMode `json:"scheduling_mode"`
 }
 
 type setModelStatusRequest struct {
@@ -90,7 +108,7 @@ func PostModel(svc *modeladmin.ModelService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.CreateModel(modeladmin.CreateModelInput{Name: req.Name}, timeNow())
+		view, err := svc.CreateModel(modeladmin.CreateModelInput{Name: req.Name, SchedulingMode: req.SchedulingMode}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -108,7 +126,7 @@ func PostModelsBatch(svc *modeladmin.ModelService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		result, err := svc.CreateModelsBatch(req.Names, timeNow())
+		result, err := svc.CreateModelsBatch(modeladmin.CreateModelsBatchInput{Names: req.Names, SchedulingMode: req.SchedulingMode}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -156,7 +174,12 @@ func PatchModel(svc *modeladmin.ModelService) gin.HandlerFunc {
 				imageInput = &f
 			}
 		}
-		view, err := svc.UpdateModelNameStatus(id, req.Name, req.ImageInput != nil, imageInput, timeNow())
+		view, err := svc.UpdateModel(id, modeladmin.UpdateModelInput{
+			Name:           req.Name,
+			ImageInputSet:  req.ImageInput != nil,
+			ImageInput:     imageInput,
+			SchedulingMode: req.SchedulingMode,
+		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -301,12 +324,25 @@ func PostModelCandidateTest(svc *modeladmin.ModelService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		view, err := svc.RetestModelCandidate(c.Request.Context(), candidateID, timeNow())
+		view, applied, err := svc.RetestModelCandidate(c.Request.Context(), candidateID, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
 		}
-		response.Success(c, view)
+		// applied=false means a concurrent probe or edit won the commit race and
+		// the view reflects the competitor's result — the client needs the flag
+		// to avoid announcing another probe's outcome as this retest's.
+		//
+		// The embedded view keeps the candidate's fields at the TOP level of
+		// data alongside the nested form: this endpoint used to return the
+		// bare candidate, and browser tabs loaded before a server upgrade
+		// still read it that way — for them a shape-only change would turn
+		// every successful retest into a warning.
+		response.Success(c, struct {
+			*modeladmin.CandidateView
+			Candidate *modeladmin.CandidateView `json:"candidate"`
+			Applied   bool                      `json:"applied"`
+		}{CandidateView: view, Candidate: view, Applied: applied})
 	}
 }
 

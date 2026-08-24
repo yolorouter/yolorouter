@@ -70,7 +70,7 @@ func TestListModelsOrdersByID(t *testing.T) {
 	}
 }
 
-func TestUpdateModelNameStatus(t *testing.T) {
+func TestUpdateModel(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	m := &model.Model{Name: "smart", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
@@ -78,8 +78,8 @@ func TestUpdateModelNameStatus(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 
-	if err := UpdateModelNameStatus(db, m.ID, "smart-v2", model.ModelStatusDisabled, false, nil, now); err != nil {
-		t.Fatalf("UpdateModelNameStatus failed: %v", err)
+	if err := UpdateModel(db, m.ID, ModelUpdate{Name: "smart-v2", Status: model.ModelStatusDisabled}, now); err != nil {
+		t.Fatalf("UpdateModel failed: %v", err)
 	}
 	reloaded, err := FindModelByID(db, m.ID)
 	if err != nil {
@@ -217,23 +217,6 @@ func TestUpdateModelCandidate(t *testing.T) {
 	}
 }
 
-func TestSetModelCandidateManagementStatus(t *testing.T) {
-	db := testutil.NewSQLiteDB(t)
-	_, _, candidate := seedModelWithCandidate(t, db, "smart", "provider-a")
-	now := time.Now().UTC().Truncate(time.Second)
-
-	if err := SetModelCandidateManagementStatus(db, candidate.ID, model.ModelCandidateStatusEnabled, now); err != nil {
-		t.Fatalf("SetModelCandidateManagementStatus failed: %v", err)
-	}
-	reloaded, err := FindModelCandidateByID(db, candidate.ID)
-	if err != nil {
-		t.Fatalf("FindModelCandidateByID failed: %v", err)
-	}
-	if reloaded.ManagementStatus != model.ModelCandidateStatusEnabled {
-		t.Fatalf("expected management_status=enabled, got %d", reloaded.ManagementStatus)
-	}
-}
-
 // TestSetModelCandidateManagementStatusIfVerifiedAppliesWhenVerified and
 // TestSetModelCandidateManagementStatusIfVerifiedSkipsWhenUntested are the
 // direct regression tests for the CAS guard on enabling a candidate — the
@@ -290,7 +273,7 @@ func TestCommitModelCandidateProbeResultsWritesVerificationAndCapabilities(t *te
 	supported := true
 	unsupported := false
 
-	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", CandidateProbeCommit{
+	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", "", "run-1", CandidateProbeCommit{
 		VerificationStatus:      &passed,
 		LastTestResult:          &outcome,
 		DurationMs:              42,
@@ -331,7 +314,7 @@ func TestCommitModelCandidateProbeResultsLeavesCapabilitiesAloneWhenNotProbed(t 
 	passed := model.ModelVerificationStatusPassed
 	supported := true
 
-	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", CandidateProbeCommit{
+	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", "", "run-1", CandidateProbeCommit{
 		VerificationStatus:      &passed,
 		LastTestResult:          &outcome,
 		SupportsStreaming:       &supported,
@@ -341,7 +324,7 @@ func TestCommitModelCandidateProbeResultsLeavesCapabilitiesAloneWhenNotProbed(t 
 	}
 	authFailed := 1
 	failed := model.ModelVerificationStatusFailed
-	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", CandidateProbeCommit{
+	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", "run-1", "run-2", CandidateProbeCommit{
 		VerificationStatus: &failed,
 		LastTestResult:     &authFailed,
 		// Both capability verdicts nil: those probes were skipped, so the stored
@@ -617,8 +600,9 @@ func TestFindLatestCandidatePriceIgnoresNonPriceUpdates(t *testing.T) {
 
 	// Toggling the older candidate's status bumps its updated_at past the newer
 	// one's without restating its price.
-	if err := SetModelCandidateManagementStatus(db, stale.ID, model.ModelCandidateStatusEnabled, now.Add(time.Hour)); err != nil {
-		t.Fatalf("SetModelCandidateManagementStatus failed: %v", err)
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", stale.ID).
+		Updates(map[string]interface{}{"management_status": model.ModelCandidateStatusEnabled, "updated_at": now.Add(time.Hour)}).Error; err != nil {
+		t.Fatalf("bump stale candidate failed: %v", err)
 	}
 
 	got, err := FindLatestCandidatePrice(db, provider.ID, "deepseek-v4-pro")
@@ -776,5 +760,474 @@ func TestUpdateModelCandidateStampsPriceClockOnRetarget(t *testing.T) {
 	}
 	if got.InputPrice != 1 || got.OutputPrice != 2 {
 		t.Fatalf("the retargeted row should be newest for this name, got %v/%v", got.InputPrice, got.OutputPrice)
+	}
+}
+
+// Two probes of one mapping can overlap — the background import queue and
+// manual retests both take seconds of upstream round trips — and the one that
+// STARTED first can finish last. Its verdict describes older state, so the
+// commit must land only while the row still carries the run token this probe
+// read before starting; otherwise the stale verdict overwrites the fresher one.
+func TestCommitModelCandidateProbeResultsGuardsOnProbeRunID(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	_, _, candidate := seedModelWithCandidate(t, db, "smart", "provider-a")
+	now := time.Now().UTC().Truncate(time.Second)
+	passed := model.ModelVerificationStatusPassed
+	failed := model.ModelVerificationStatusFailed
+	ok := 0
+
+	// First probe: the row has never been probed, so it expects no token.
+	applied, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", "", "run-1", CandidateProbeCommit{
+		VerificationStatus: &passed, LastTestResult: &ok, WriteLastTestError: true,
+	}, now)
+	if err != nil || !applied {
+		t.Fatalf("expected the first commit against an unprobed row to apply, got applied=%v err=%v", applied, err)
+	}
+
+	// A probe that read the row BEFORE that commit tries to land a stale failure.
+	notFound := 2
+	detail := "stale verdict"
+	applied, err = CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", "", "run-2", CandidateProbeCommit{
+		VerificationStatus: &failed, LastTestResult: &notFound,
+		LastTestError: &detail, WriteLastTestError: true,
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("stale commit errored: %v", err)
+	}
+	if applied {
+		t.Fatal("expected a commit whose expected run token is stale to be discarded")
+	}
+	reloaded, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("FindModelCandidateByID failed: %v", err)
+	}
+	if reloaded.VerificationStatus != model.ModelVerificationStatusPassed || reloaded.LastTestError != nil {
+		t.Fatalf("expected the fresher pass to stand, got verification=%d error=%v", reloaded.VerificationStatus, reloaded.LastTestError)
+	}
+	if reloaded.LastProbeRunID != "run-1" {
+		t.Fatalf("expected the winning run's token stored, got %q", reloaded.LastProbeRunID)
+	}
+
+	// A probe that read the row AFTER the first commit lands normally.
+	applied, err = CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", "run-1", "run-3", CandidateProbeCommit{
+		VerificationStatus: &failed, LastTestResult: &notFound,
+		LastTestError: &detail, WriteLastTestError: true,
+	}, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("fresh commit errored: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected a commit whose expected run token matches the stored one to apply")
+	}
+}
+
+// The verdict and its management transition are ONE statement: a pass with
+// EnableOnPass lands Passed+Enabled atomically, so no observer — including a
+// poller on another instance — can catch a "passed but not yet enabled" row in
+// between. The in-row CAS on ExpectedManagementStatus keeps a mid-probe admin
+// toggle: the verdict lands, the enable does not.
+func TestCommitModelCandidateProbeResultsAppliesManagementTransitionsAtomically(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	passed := model.ModelVerificationStatusPassed
+	failed := model.ModelVerificationStatusFailed
+	ok := 0
+	notFound := 2
+
+	// (a) pass + EnableOnPass with the expected toggle → enabled in the same call.
+	_, _, c1 := seedModelWithCandidate(t, db, "smart", "provider-a")
+	b1, err := FindModelCandidateByID(db, c1.ID)
+	if err != nil {
+		t.Fatalf("read baseline c1: %v", err)
+	}
+	if _, err := CommitModelCandidateProbeResults(db, c1.ID, "gpt-4o", "", "run-a", CandidateProbeCommit{
+		VerificationStatus: &passed, LastTestResult: &ok, WriteLastTestError: true,
+		EnableOnPass: true, ExpectedManagementStatus: model.ModelCandidateStatusDisabled,
+		ExpectedRowUpdatedAt: b1.UpdatedAt,
+	}, now); err != nil {
+		t.Fatalf("commit(a) errored: %v", err)
+	}
+	r1, err := FindModelCandidateByID(db, c1.ID)
+	if err != nil {
+		t.Fatalf("reload c1: %v", err)
+	}
+	if r1.VerificationStatus != model.ModelVerificationStatusPassed || r1.ManagementStatus != model.ModelCandidateStatusEnabled {
+		t.Fatalf("expected Passed+Enabled from one atomic commit, got verification=%d management=%d", r1.VerificationStatus, r1.ManagementStatus)
+	}
+
+	// (b) pass + EnableOnPass but the toggle moved mid-probe → verdict lands,
+	// the admin's state stays.
+	_, _, c2 := seedModelWithCandidate(t, db, "smart-2", "provider-b")
+	if _, err := CommitModelCandidateProbeResults(db, c2.ID, "gpt-4o", "", "run-b", CandidateProbeCommit{
+		VerificationStatus: &passed, LastTestResult: &ok, WriteLastTestError: true,
+		EnableOnPass: true, ExpectedManagementStatus: model.ModelCandidateStatusEnabled, // reads Disabled → mismatch
+	}, now); err != nil {
+		t.Fatalf("commit(b) errored: %v", err)
+	}
+	r2, err := FindModelCandidateByID(db, c2.ID)
+	if err != nil {
+		t.Fatalf("reload c2: %v", err)
+	}
+	if r2.VerificationStatus != model.ModelVerificationStatusPassed || r2.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the verdict to land while the mismatched toggle stays, got verification=%d management=%d", r2.VerificationStatus, r2.ManagementStatus)
+	}
+
+	// (c) decisive failure + DisableOnFail on an enabled row → demoted in the
+	// same call.
+	_, _, c3 := seedModelWithCandidate(t, db, "smart-3", "provider-c")
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", c3.ID).
+		Update("management_status", model.ModelCandidateStatusEnabled).Error; err != nil {
+		t.Fatalf("seed enabled state: %v", err)
+	}
+	if _, err := CommitModelCandidateProbeResults(db, c3.ID, "gpt-4o", "", "run-c", CandidateProbeCommit{
+		VerificationStatus: &failed, LastTestResult: &notFound, WriteLastTestError: true,
+		DisableOnFail: true,
+	}, now); err != nil {
+		t.Fatalf("commit(c) errored: %v", err)
+	}
+	r3, err := FindModelCandidateByID(db, c3.ID)
+	if err != nil {
+		t.Fatalf("reload c3: %v", err)
+	}
+	if r3.VerificationStatus != model.ModelVerificationStatusFailed || r3.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected Failed+Disabled from one atomic commit, got verification=%d management=%d", r3.VerificationStatus, r3.ManagementStatus)
+	}
+}
+
+// Binaries from before the auto_enable_on_pass / last_probe_run_id columns
+// existed can still disable a candidate — writing only management_status and
+// updated_at. During a mixed-version rollout such a disable clears neither the
+// armed flag nor the token, so the in-statement enable checks cannot see it.
+// updated_at is the one column EVERY writer bumps, old binaries included:
+// both enable transitions must additionally require it unchanged since the
+// prober's read, forfeiting the enable (never the verdict) when any write
+// landed mid-probe.
+func TestCommitModelCandidateProbeResultsForfeitsArmedEnableWhenRowTouchedSinceRead(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	passed := model.ModelVerificationStatusPassed
+	ok := 0
+
+	_, _, candidate := seedModelWithCandidate(t, db, "smart", "provider-a")
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", candidate.ID).
+		Update("auto_enable_on_pass", true).Error; err != nil {
+		t.Fatalf("arm candidate: %v", err)
+	}
+	baseline, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+
+	// An old binary's explicit disable: only management_status and updated_at.
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", candidate.ID).
+		Updates(map[string]interface{}{
+			"management_status": model.ModelCandidateStatusDisabled,
+			"updated_at":        baseline.UpdatedAt.Add(time.Second),
+		}).Error; err != nil {
+		t.Fatalf("simulate old-binary disable: %v", err)
+	}
+
+	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", baseline.LastProbeRunID, "run-armed", CandidateProbeCommit{
+		VerificationStatus: &passed, LastTestResult: &ok, WriteLastTestError: true,
+		EnableOnPassWhenArmed: true, ExpectedRowUpdatedAt: baseline.UpdatedAt,
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("commit errored: %v", err)
+	}
+	r, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if r.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected the verdict to land, got verification=%d", r.VerificationStatus)
+	}
+	if r.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the old binary's disable to stand against the armed enable, got management=%d", r.ManagementStatus)
+	}
+}
+
+// The armed enable trusts the ROW's own arming alignment, not any baseline
+// the prober read: arming writes armed_at = updated_at in one statement, and
+// every later write — including one from a binary too old to know the armed
+// columns — bumps updated_at away from armed_at. A pass over a misaligned row
+// must not enable, and must revoke the flag for good: realigning or leaving
+// it armed would let the very next probe reverse a disable the old binary's
+// admin already saw acknowledged.
+func TestCommitModelCandidateProbeResultsRevokesArmedOnMisalignedPass(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	passed := model.ModelVerificationStatusPassed
+	ok := 0
+
+	_, _, candidate := seedModelWithCandidate(t, db, "smart", "provider-a")
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", candidate.ID).
+		Updates(map[string]interface{}{"auto_enable_on_pass": true, "armed_at": now, "updated_at": now}).Error; err != nil {
+		t.Fatalf("arm candidate: %v", err)
+	}
+	// An old binary's explicit disable, BEFORE the worker ever reads the row:
+	// only management_status and updated_at move, and the baseline the worker
+	// then reads is already the post-disable value — only the in-row
+	// misalignment can betray the write.
+	touched := now.Add(time.Second)
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", candidate.ID).
+		Updates(map[string]interface{}{
+			"management_status": model.ModelCandidateStatusDisabled,
+			"updated_at":        touched,
+		}).Error; err != nil {
+		t.Fatalf("simulate old-binary disable: %v", err)
+	}
+	baseline, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+
+	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", baseline.LastProbeRunID, "run-armed", CandidateProbeCommit{
+		VerificationStatus: &passed, LastTestResult: &ok, WriteLastTestError: true,
+		EnableOnPassWhenArmed: true, ExpectedRowUpdatedAt: baseline.UpdatedAt,
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("commit errored: %v", err)
+	}
+	r, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if r.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected the verdict to land, got verification=%d", r.VerificationStatus)
+	}
+	if r.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the old binary's disable to stand, got management=%d", r.ManagementStatus)
+	}
+	if r.AutoEnableOnPass {
+		t.Fatal("expected the misaligned pass to revoke the armed flag for good")
+	}
+}
+
+// Same guard on the explicit-flow enable: an old binary's no-op disable moves
+// neither the status value nor the token, so the expected-status check passes
+// — only the updated_at bump betrays it.
+func TestCommitModelCandidateProbeResultsForfeitsExplicitEnableWhenRowTouchedSinceRead(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	passed := model.ModelVerificationStatusPassed
+	ok := 0
+
+	_, _, candidate := seedModelWithCandidate(t, db, "smart", "provider-a")
+	baseline, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", candidate.ID).
+		Updates(map[string]interface{}{
+			"management_status": model.ModelCandidateStatusDisabled,
+			"updated_at":        baseline.UpdatedAt.Add(time.Second),
+		}).Error; err != nil {
+		t.Fatalf("simulate old-binary disable: %v", err)
+	}
+
+	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", baseline.LastProbeRunID, "run-explicit", CandidateProbeCommit{
+		VerificationStatus: &passed, LastTestResult: &ok, WriteLastTestError: true,
+		EnableOnPass: true, ExpectedManagementStatus: model.ModelCandidateStatusDisabled,
+		ExpectedRowUpdatedAt: baseline.UpdatedAt,
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("commit errored: %v", err)
+	}
+	r, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if r.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected the verdict to land, got verification=%d", r.VerificationStatus)
+	}
+	if r.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the mid-probe write to forfeit the enable, got management=%d", r.ManagementStatus)
+	}
+}
+
+// Retargeting ends the auto-enable promise along with the verification it
+// resets: the promise was made for the OLD mapping, nothing re-enqueues the
+// renamed row, and carrying the armed flag forward would leave an
+// untested-unstamped-armed row that every poller watches while no queue owes
+// it anything. A same-name edit keeps the promise (and re-aligns it).
+func TestUpdateModelCandidateRetargetRevokesArmedPromise(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	_, _, candidate := seedModelWithCandidate(t, db, "smart", "provider-a")
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", candidate.ID).
+		Updates(map[string]interface{}{"auto_enable_on_pass": true, "armed_at": now, "updated_at": now}).Error; err != nil {
+		t.Fatalf("arm candidate: %v", err)
+	}
+
+	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-mini", 1, 2, nil, nil, 0, true, false, now.Add(time.Second)); err != nil {
+		t.Fatalf("retarget failed: %v", err)
+	}
+	r, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if r.AutoEnableOnPass {
+		t.Fatal("expected the retarget to revoke the auto-enable promise")
+	}
+
+	// A same-name edit keeps the armed promise alive and re-aligned.
+	_, _, keep := seedModelWithCandidate(t, db, "smart-2", "provider-b")
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", keep.ID).
+		Updates(map[string]interface{}{"auto_enable_on_pass": true, "armed_at": now, "updated_at": now}).Error; err != nil {
+		t.Fatalf("arm candidate: %v", err)
+	}
+	if err := UpdateModelCandidate(db, keep.ID, "gpt-4o", 3, 4, nil, nil, 0, false, true, now.Add(time.Second)); err != nil {
+		t.Fatalf("same-name edit failed: %v", err)
+	}
+	k, err := FindModelCandidateByID(db, keep.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !k.AutoEnableOnPass {
+		t.Fatal("expected a same-name edit to keep the promise armed")
+	}
+	if k.ArmedAt == nil || !k.ArmedAt.Equal(k.UpdatedAt) {
+		t.Fatalf("expected the kept promise re-aligned, got armed_at=%v updated_at=%v", k.ArmedAt, k.UpdatedAt)
+	}
+}
+
+// A requeue supersedes every probe already in flight for the row: it advances
+// the probe token in the same write that re-arms the promise, so a verdict
+// obtained against the pre-requeue row misses its CAS instead of landing —
+// its updated_at bump would break the freshly established arming alignment
+// and strand the renewed promise as Passed+Disabled.
+func TestClearCandidatesProbeResidueAdvancesProbeToken(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	passed := model.ModelVerificationStatusPassed
+	ok := 0
+
+	_, _, candidate := seedModelWithCandidate(t, db, "smart", "provider-a")
+	staleToken := candidate.LastProbeRunID
+
+	if err := ClearCandidatesProbeResidue(db, []uint{candidate.ID}, "rq-requeue-run", now); err != nil {
+		t.Fatalf("residue clear failed: %v", err)
+	}
+
+	// A probe that read the row before the requeue commits with the stale
+	// token: the verdict must be discarded.
+	applied, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", staleToken, "old-run", CandidateProbeCommit{
+		VerificationStatus: &passed, LastTestResult: &ok, WriteLastTestError: true,
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("stale commit errored: %v", err)
+	}
+	if applied {
+		t.Fatal("expected the pre-requeue probe's commit to miss the advanced token")
+	}
+	r, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if r.VerificationStatus != model.ModelVerificationStatusUntested {
+		t.Fatalf("expected the row still waiting for the requeued probe, got verification=%d", r.VerificationStatus)
+	}
+}
+
+// The requeue's conditional re-arm can miss rows a concurrent probe settled
+// between the caller's read and the UPDATE; the caller must report (and
+// enqueue) only the rows actually re-armed, which the requeue token
+// identifies exactly.
+func TestListCandidateIDsByProbeRunIDReturnsOnlyReArmedRows(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	_, _, waiting := seedModelWithCandidate(t, db, "smart", "provider-a")
+	_, _, settled := seedModelWithCandidate(t, db, "smart-2", "provider-b")
+	// One row settled (a concurrent probe landed a failure) before the
+	// conditional clear ran; the Untested guard leaves it untouched.
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", settled.ID).
+		Update("verification_status", model.ModelVerificationStatusFailed).Error; err != nil {
+		t.Fatalf("settle candidate: %v", err)
+	}
+
+	if err := ClearCandidatesProbeResidue(db, []uint{waiting.ID, settled.ID}, "rq-hit-test", now); err != nil {
+		t.Fatalf("residue clear failed: %v", err)
+	}
+	ids, err := ListCandidateIDsByProbeRunID(db, []uint{waiting.ID, settled.ID}, "rq-hit-test")
+	if err != nil {
+		t.Fatalf("ListCandidateIDsByProbeRunID failed: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != waiting.ID {
+		t.Fatalf("expected only the re-armed row, got %v", ids)
+	}
+}
+
+// The residue clear is decided from rows read as Untested, but the UPDATE can
+// execute after a concurrent probe already landed a pass. Wiping that fresh
+// record would leave a verified row with no probe history — and the worker
+// skips passed rows, so nothing would ever restore it. The clear must apply
+// only while the row still reads Untested.
+func TestClearCandidatesProbeResidueLeavesSettledRowsAlone(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	_, _, candidate := seedModelWithCandidate(t, db, "smart", "provider-a")
+	now := time.Now().UTC().Truncate(time.Second)
+	passed := model.ModelVerificationStatusPassed
+	ok := 0
+	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", "", "run-1", CandidateProbeCommit{
+		VerificationStatus: &passed, LastTestResult: &ok, DurationMs: 42, WriteLastTestError: true,
+	}, now); err != nil {
+		t.Fatalf("seed passing commit: %v", err)
+	}
+
+	// The re-import read this row BEFORE the pass landed; its clear arrives late.
+	if err := ClearCandidatesProbeResidue(db, []uint{candidate.ID}, "rq-requeue-run-2", now.Add(time.Minute)); err != nil {
+		t.Fatalf("ClearCandidatesProbeResidue errored: %v", err)
+	}
+
+	reloaded, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("FindModelCandidateByID failed: %v", err)
+	}
+	if reloaded.LastTestedAt == nil || reloaded.LastTestResult == nil {
+		t.Fatalf("expected the settled row's probe record to survive a late residue clear, got tested_at=%v result=%v",
+			reloaded.LastTestedAt, reloaded.LastTestResult)
+	}
+}
+
+// Retargeting invalidates everything the last probe recorded, not just the
+// verdict: leaving last_test_error/result/tested_at behind would display the
+// OLD target's failure next to the new untested name, and a stale
+// last_tested_at makes a fresh retarget read as "probed but inconclusive".
+func TestUpdateModelCandidateClearsProbeResidueOnRetarget(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	_, _, candidate := seedModelWithCandidate(t, db, "smart", "provider-a")
+	now := time.Now().UTC().Truncate(time.Second)
+	failed := model.ModelVerificationStatusFailed
+	outcome := 2
+	detail := "HTTP 404: model not found"
+	if _, err := CommitModelCandidateProbeResults(db, candidate.ID, "gpt-4o", "", "run-1", CandidateProbeCommit{
+		VerificationStatus: &failed,
+		LastTestResult:     &outcome,
+		DurationMs:         42,
+		LastTestError:      &detail,
+		WriteLastTestError: true,
+	}, now); err != nil {
+		t.Fatalf("seed failing probe failed: %v", err)
+	}
+
+	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-mini", 1, 2, nil, nil, 0, true, true, now.Add(time.Minute)); err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+
+	reloaded, err := FindModelCandidateByID(db, candidate.ID)
+	if err != nil {
+		t.Fatalf("FindModelCandidateByID failed: %v", err)
+	}
+	if reloaded.VerificationStatus != model.ModelVerificationStatusUntested {
+		t.Fatalf("expected verification reset to Untested, got %d", reloaded.VerificationStatus)
+	}
+	if reloaded.LastTestError != nil {
+		t.Fatalf("expected last_test_error cleared on retarget, got %q", *reloaded.LastTestError)
+	}
+	if reloaded.LastTestResult != nil {
+		t.Fatalf("expected last_test_result cleared on retarget, got %v", *reloaded.LastTestResult)
+	}
+	if reloaded.LastTestDurationMs != nil {
+		t.Fatalf("expected last_test_duration_ms cleared on retarget, got %v", *reloaded.LastTestDurationMs)
+	}
+	if reloaded.LastTestedAt != nil {
+		t.Fatalf("expected last_tested_at cleared on retarget, got %v", *reloaded.LastTestedAt)
 	}
 }

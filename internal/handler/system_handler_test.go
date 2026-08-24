@@ -72,6 +72,53 @@ func TestGetSystemVersionReportsBuildInfo(t *testing.T) {
 	// button or a per-runtime hint; dropping it would silently hide the
 	// button everywhere.
 	assertField(t, data, "update_mode", "in_place")
+	// The gateway address is not part of this payload — it has its own
+	// endpoint, readable without the admin role.
+	if _, ok := data["endpoint"]; ok {
+		t.Fatalf("endpoint must not ride along on the version payload, got %v", data)
+	}
+}
+
+func newEndpointTestRouter(externalURL string) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/api/admin/system/endpoint", GetSystemEndpoint(externalURL))
+	return r
+}
+
+func endpointFor(t *testing.T, externalURL string, prepare func(*http.Request)) map[string]any {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/system/endpoint", nil)
+	if prepare != nil {
+		prepare(req)
+	}
+	w := httptest.NewRecorder()
+	newEndpointTestRouter(externalURL).ServeHTTP(w, req)
+	return decodeEnvelopeData(t, w.Body.Bytes())
+}
+
+func TestGetSystemEndpointConfiguredWins(t *testing.T) {
+	// The configured origin is pinned regardless of client-controlled
+	// Host / X-Forwarded-Proto headers.
+	data := endpointFor(t, "https://gateway.example.com", func(req *http.Request) {
+		req.Header.Set("X-Forwarded-Proto", "http")
+		req.Host = "attacker.example"
+	})
+	assertField(t, data, "endpoint", "https://gateway.example.com")
+}
+
+func TestGetSystemEndpointDerivesFromForwarding(t *testing.T) {
+	data := endpointFor(t, "", func(req *http.Request) {
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Host = "router.lan:8080"
+	})
+	assertField(t, data, "endpoint", "https://router.lan:8080")
+}
+
+func TestGetSystemEndpointFallsBackToPlainHost(t *testing.T) {
+	// No configured value and no forwarding header: derive from the Host
+	// alone (httptest defaults to example.com).
+	assertField(t, endpointFor(t, "", nil), "endpoint", "http://example.com")
 }
 
 func TestGetSystemVersionMergesUpdateStatus(t *testing.T) {

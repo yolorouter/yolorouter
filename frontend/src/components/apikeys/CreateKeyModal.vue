@@ -95,9 +95,17 @@
       </n-alert>
       <n-input :value="plaintext" readonly class="plaintext-field">
         <template #suffix>
-          <n-button size="small" @click="onCopy" quaternary >{{ copied ? t('apiKeys.copied') : t('apiKeys.copy') }}</n-button>
+          <n-button size="small" @click="onCopy" quaternary >{{ copied ? t('common.copied') : t('common.copy') }}</n-button>
         </template>
       </n-input>
+      <!-- Access info at the exact moment the user holds a fresh key: the
+           base URL it goes with, and a copy-ready request using this key
+           (safe to include — the plaintext is already on screen once-only
+           and never stored). -->
+      <div class="endpoint-stack">
+        <EndpointRow :label="t('apiKeys.endpointOpenAI')" :value="openAIBaseUrl" :pending="endpointPending" />
+        <EndpointRow :label="t('apiKeys.endpointExample')" :value="curlWithKey" :pending="endpointPending" wide />
+      </div>
     </div>
     <template #footer>
       <n-space justify="end">
@@ -121,6 +129,8 @@ import type { CreateAPIKeyInput } from '../../api/apiKeys'
 import { toMicros } from '../../utils/money'
 import { modelIdsRule } from '../../utils/apiKeyValidators'
 import { copyToClipboard } from '../../utils/clipboard'
+import { useGatewayEndpoint } from '../../composables/useGatewayEndpoint'
+import EndpointRow from './EndpointRow.vue'
 import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
 import FilterSelectField from '../common/FilterSelectField.vue'
@@ -155,6 +165,11 @@ const submitting = ref(false)
 const step = ref<'form' | 'plaintext'>('form')
 const plaintext = ref('')
 const copied = ref(false)
+
+// Access info shown on the plaintext step: the gateway base URL this key
+// goes with, and a copy-ready example request carrying the fresh key.
+const { openAIBaseUrl, curlExample, pending: endpointPending } = useGatewayEndpoint()
+const curlWithKey = computed(() => curlExample(plaintext.value))
 
 function initialForm() {
   return {
@@ -244,7 +259,7 @@ async function onGenerate() {
 async function onCopy(): Promise<boolean> {
   const ok = await copyToClipboard(plaintext.value)
   if (!ok) {
-    message.error(t('apiKeys.copyFailed'))
+    message.error(t('common.copyFailed'))
     return false
   }
   copied.value = true
@@ -298,6 +313,16 @@ function reset() {
 <style scoped lang="less">
 .full-width {
   width: 100%;
+}
+
+/* The one-time plaintext step's access info: the endpoint this key goes
+   with, plus a copy-ready example request carrying it. Each row is an
+   EndpointRow and owns its own layout — only the stacking is set here. */
+.endpoint-stack {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 /* Group the rate/budget caps under a labelled divider so they read as one

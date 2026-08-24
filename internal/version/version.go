@@ -68,34 +68,59 @@ func ResolveRepo(enabled bool, githubRepo string) string {
 // that prefixes the original URL). It is only ever used as an automatic
 // FALLBACK: direct GitHub is always tried first, so deployments with a
 // healthy path to GitHub never send update traffic through it, and an
-// explicitly configured proxy suppresses it entirely.
+// explicitly configured proxy replaces it with the operator's proxy.
 const DefaultMirror = "https://gh.yolorouter.com"
 
 // UpdateRoutes is the ordered list of proxy prefixes update-related GitHub
-// traffic (release lookups, version checks, asset downloads) tries: an
-// explicit proxy is the operator's decision and gets no fallback; without
-// one, direct first, then the built-in mirror. "" means direct.
+// traffic (release lookups, version checks, asset downloads) tries. "" means
+// direct. An explicit proxy goes first, with direct GitHub behind it as a
+// fallback: a shared mirror answers from a pool of egress addresses whose
+// GitHub quota every deployment behind it spends, so it can be rate-limited
+// into 403 while the deployment's own path to GitHub is perfectly healthy.
+// The fallback only ever runs once the proxy attempt has failed, and it is
+// cheap to the proxy: it is handed a reserveShare slice of the walk rather
+// than an even split, so a working proxy keeps nearly all of its budget. A
+// deployment on a network without direct access loses nothing either — the
+// extra attempt fails on connect and the walk ends in the failure it would
+// have had anyway.
 func UpdateRoutes(explicitProxy string) []string {
 	if explicitProxy != "" {
-		return []string{explicitProxy}
+		return []string{explicitProxy, ""}
 	}
 	return []string{"", DefaultMirror}
 }
 
-// fallbackReserve is how much of a route walk's remaining budget every
-// non-final attempt must leave untouched for the routes behind it. One
-// minute is enough for the mirror to move an asset at ordinary speed while
-// costing a healthy earlier route only its final sliver of budget.
+// fallbackReserve caps how much of a route walk's remaining budget a
+// non-final attempt leaves untouched for the routes behind it. One minute is
+// enough for the mirror to move an asset at ordinary speed while costing a
+// healthy earlier route only its final sliver of budget.
 const fallbackReserve = time.Minute
+
+// reserveShare is the fraction of the remaining budget held back when
+// fallbackReserve is more than there is to give — which is every short walk,
+// the release lookup among them.
+//
+// A quarter, not a half. On the lookup's ten-second budget a half left an
+// explicit proxy five seconds where it used to have all ten, so a mirror
+// that answered in seven stopped working the day the direct fallback was
+// added — the fallback is supposed to cost the route in front of it nothing
+// it was using. A quarter leaves that proxy seven and a half seconds and
+// still hands the route behind it two and a half, which is ample for a
+// lookup that answers in well under a second. Longer walks never see this:
+// asset downloads are budgeted in minutes, so fallbackReserve caps them
+// first and their share is unchanged.
+const reserveShare = 4
 
 // RouteAttemptContext bounds one route attempt of a walk. The final attempt
 // runs on the walk context as-is — everything that remains is its to spend.
 // Any earlier attempt is capped below the walk deadline so the fallback
 // routes behind it always inherit a usable share: without this, a first
 // route that hangs until the walk deadline starves the very fallback the
-// walk exists for. The cap is the remainder minus a reserve —
-// fallbackReserve, or half the remainder when less than that is left. A
-// context without a deadline is returned as-is.
+// walk exists for — and a fallback that only survives its predecessor's
+// FAST failures is no fallback against the slow ones. The cap is the
+// remainder minus a reserve — fallbackReserve, or a reserveShare slice of
+// the remainder when less than that is left. A context without a deadline is
+// returned as-is.
 func RouteAttemptContext(ctx context.Context, finalAttempt bool) (context.Context, context.CancelFunc) {
 	if finalAttempt {
 		return ctx, func() {}
@@ -104,7 +129,7 @@ func RouteAttemptContext(ctx context.Context, finalAttempt bool) (context.Contex
 	if !ok {
 		return ctx, func() {}
 	}
-	reserve := min(time.Until(deadline)/2, fallbackReserve)
+	reserve := min(time.Until(deadline)/reserveShare, fallbackReserve)
 	if reserve <= 0 {
 		return ctx, func() {}
 	}

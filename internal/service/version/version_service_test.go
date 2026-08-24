@@ -190,6 +190,62 @@ func TestCheckPrereleaseLatestNeverReportsUpdate(t *testing.T) {
 	}
 }
 
+// TestCheckUnusableReleaseStopsTheWalk pins that an answer GitHub actually
+// delivered ends the walk. A prerelease or unparseable tag is what every
+// route will report — they all read the same release — so walking on buys
+// nothing and spends a second request against the quota the fallback exists
+// to work around. Contrast TestCheckRouteFailureWalksOn below: a route that
+// never delivered an answer IS worth retrying elsewhere.
+func TestCheckUnusableReleaseStopsTheWalk(t *testing.T) {
+	withVersion(t, "v1.2.0")
+	for _, latest := range []string{"v1.3.0-rc1", "not-semver"} {
+		t.Run(latest, func(t *testing.T) {
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(githubRelease{TagName: latest})
+			}))
+			defer srv.Close()
+			svc := NewVersionService("owner/repo", "")
+			// Two routes, both pointed at the same server: whatever the walk
+			// does, the second request would be answered identically.
+			svc.routes = []string{"", ""}
+			svc.baseURL = srv.URL
+
+			if st := svc.Check(context.Background()); !st.CheckFailed {
+				t.Fatalf("latest %q must report CheckFailed", latest)
+			}
+			if got := hits.Load(); got != 1 {
+				t.Errorf("server saw %d requests, want 1 — the release was delivered and unusable, so the second route can only fetch the same answer", got)
+			}
+		})
+	}
+}
+
+// TestCheckRouteFailureWalksOn is the other half of the rule: a route that
+// fails to deliver leaves the answer unknown, so the next route is tried.
+func TestCheckRouteFailureWalksOn(t *testing.T) {
+	withVersion(t, "v1.2.0")
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		// 403 is the shared-quota rejection the direct fallback exists for.
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	svc := NewVersionService("owner/repo", "")
+	svc.routes = []string{"", ""}
+	svc.baseURL = srv.URL
+
+	if st := svc.Check(context.Background()); !st.CheckFailed {
+		t.Fatal("every route rejected the lookup, want CheckFailed")
+	}
+	if got := hits.Load(); got != 2 {
+		t.Errorf("server saw %d requests, want 2 — a route that never answered must not end the walk", got)
+	}
+}
+
 func TestCheckCachesSuccessfulResult(t *testing.T) {
 	withVersion(t, "v0.1.0")
 	svc, hits, closeSrv := newTestService(t, http.StatusOK, githubRelease{TagName: "v0.2.0"})

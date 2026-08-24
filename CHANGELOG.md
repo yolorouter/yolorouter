@@ -7,6 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-25
+
+### Added
+
+- Admins can provision local username/password accounts straight from the
+  Users page — the new "Add user" dialog creates an enabled member that
+  signs in with the ordinary login form, with an optional display name and
+  a hand-typed or randomly generated initial password (the admin hands it
+  to the user out of band; only the bcrypt hash is stored). The
+  first-run-setup account is now marked as the bootstrap account (new
+  `is_bootstrap` flag, migration 00032): it stays the one account that can
+  never be disabled or demoted — the OAuth-failure escape hatch — while
+  every other local account is fully manageable (promote, demote,
+  disable) like any externally-provisioned one. Previously the local
+  password account was unique by schema and admins had no way to create
+  one. The create dialog also takes an optional, informational email
+  (recorded for the directory; no mail is ever sent), and the bootstrap
+  administrator can reset another local account's password from the same
+  page — promoted admins manage roles and status but never credentials,
+  and a reset ends every live session of the target.
+
+- The API Keys page now shows where to point clients at: the gateway base
+  URL in both its OpenAI-compatible (`{base}/v1`) and Anthropic-compatible
+  forms, plus a copy-ready example request. The address is resolved
+  server-side — the configured `server.external_url` when set, derived from
+  the request otherwise — so it stays right on reverse-proxied, LAN and
+  container deployments where the console's own origin is not the gateway's.
+  The create-key dialog repeats it on the one-time plaintext step with the
+  fresh key already filled into the example, and CC-Switch profile exports
+  now carry the same resolved address instead of the console's own origin.
+  Previously the address the keys were for appeared nowhere in the console,
+  and an exported profile could point somewhere the gateway does not answer.
+
+- Model mappings can be imported from a provider in bulk. The provider page
+  lists what the upstream offers and imports the selection in one
+  transaction, resolving prices for the whole batch in a single pass
+  (previously recorded prices first, the built-in catalog second).
+  Imported mappings arrive disabled and unverified, so nothing routes until
+  it has been probed. Model names may now be slash-namespaced
+  (`vendor/model`), and `GET /v1/models/{model}` resolves those ids.
+
+- Imported mappings are verified by a background probe queue, and a mapping
+  that passes is enabled automatically if it was armed for that at import
+  time (migrations 00027-00030). The queue survives restarts by re-deriving
+  itself from the armed rows, and an explicit disable always wins over a
+  probe still in flight — including one started by a different instance or
+  an older binary.
+
+- Models can choose how they pick among their providers
+  (`scheduling_mode`, migration 00031). The default, `failover`, behaves
+  exactly as before. `balanced` spreads caller API keys across the
+  providers of one model and keeps each key on the provider it landed on,
+  so a key's traffic stays warm on one upstream instead of hopping; a
+  provider that turns out to be a dead end is quarantined briefly and the
+  key rebinds to whatever actually served it.
+
+- The cost-optimization page now estimates what Concise Output saves, as an
+  amount per million output tokens: the traffic-weighted output price of
+  the window's priced traffic times a measured coefficient. Savings are
+  shown as two cards, one per switch — input compression's measured
+  roll-up, and this projection alongside its coefficient, priced volume and
+  pricing coverage. The coefficient is the median of a paired on/off
+  benchmark across five models, published in full — method and all 150 raw
+  measurement pairs — in `docs/concise-output-benchmark.md` and its Chinese
+  edition, so the number can be checked rather than taken on faith.
+
+- SQLite databases are snapshotted automatically before a startup migration,
+  and the migration is refused outright if the snapshot cannot be written.
+  Snapshots are named after the schema version they were taken at, refreshed
+  on every attempt, and pruned to the newest five only after a migration
+  fully succeeds. PostgreSQL deployments are not auto-backed up — the
+  official image carries no dump tooling — so startup warns to run
+  `db:backup` only when an upgrade is actually pending.
+
+### Fixed
+
+- Update traffic no longer gives up when a configured proxy is rate-limited.
+  A configured proxy used to be the only route; direct GitHub now trails it
+  as a fallback. This matters for the mirror the installer writes by
+  default: it answers from shared egress addresses whose GitHub quota every
+  deployment behind it spends, so it can be rate-limited into 403 while the
+  deployment's own path to GitHub is perfectly healthy — and the console
+  then reported "check failed" indefinitely with nothing an operator could
+  see or fix. The fallback is cheap to the proxy in front of it, which
+  keeps three quarters of the walk budget.
+
+- The per-account usage report no longer invents an account. Requests
+  rejected before they resolved to an API key were grouped into a synthetic
+  row of their own; that row is not an account and is now dropped from the
+  report and its CSV export alike. The overview cards above still count that
+  traffic, and a note on the table says so.
+
+- Copy buttons work on plain-HTTP deployments. Two of them called the
+  clipboard API directly, which browsers leave undefined outside a secure
+  context — the typical self-hosted LAN setup — so those copies silently
+  failed where the fallback would have worked.
+
+- CC-Switch profile exports name each key by its id rather than its display
+  prefix, which two distinct keys can share.
+
+- Turning on Concise Output no longer runs the two built-in prompt examples
+  together in English (`...technical detail.Prefer standard library...`).
+
+### Changed
+
+- The Concise Output coefficient is 12.6%, re-measured. The first benchmark
+  installed only one of the two sentences the switch actually writes, so it
+  described a prompt no deployment uses. Re-running it against the real one
+  reverses the headline finding: every model measured now shows a positive
+  median, where a reasoning model previously measured negative. Both
+  editions of the published benchmark are regenerated from the raw pairs and
+  now state plainly which prompt and which language were measured.
+
 ## [0.1.7] - 2026-08-19
 
 ### Added
@@ -357,7 +470,8 @@ failover, and observe usage and cost.
 - Single binary with the web console embedded via `go:embed`; SQLite or PostgreSQL storage; upstream keys encrypted at rest (AES-256).
 - Self-update via the `update` command and update-check API.
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/yolorouter/yolorouter/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/yolorouter/yolorouter/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/yolorouter/yolorouter/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/yolorouter/yolorouter/compare/v0.1.4...v0.1.5

@@ -362,7 +362,7 @@ func stubIdentity(userID uint, role string) gin.HandlerFunc {
 	}
 }
 
-func TestGetAuthStateReturns500WhenCountLocalUsersFails(t *testing.T) {
+func TestGetAuthStateReturns500WhenCountBootstrapUsersFails(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	r := newAuthTestRouter(t, db)
 	dropUsersTable(t, db)
@@ -376,7 +376,7 @@ func TestGetAuthStateReturns500WhenCountLocalUsersFails(t *testing.T) {
 	}
 }
 
-func TestPostSetupReturns500WhenCountLocalUsersFails(t *testing.T) {
+func TestPostSetupReturns500WhenCountBootstrapUsersFails(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	r := newAuthTestRouter(t, db)
 	dropUsersTable(t, db)

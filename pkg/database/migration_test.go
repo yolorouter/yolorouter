@@ -297,28 +297,117 @@ func TestMigration00024BackfillsOwnershipToLocalAdmin(t *testing.T) {
 	}
 }
 
-// TestMigration00023EnforcesSingleLocalUser proves the partial unique
-// index survives the round trip through goose: two enabled local rows
-// must be impossible, while any number of non-local rows is fine.
-func TestMigration00023EnforcesSingleLocalUser(t *testing.T) {
+// TestMigration00032BootstrapUniquenessAndMultipleLocals proves the new
+// invariants survive the round trip through goose: any number of local
+// (password-login) rows is fine now that admins provision them from the
+// console, while a second bootstrap row — the first-run-setup escape
+// hatch — must remain impossible.
+func TestMigration00032BootstrapUniquenessAndMultipleLocals(t *testing.T) {
 	db := newMemoryDB(t)
 	if err := RunMigrations(db, "sqlite", migrations.SQLiteFS, "sqlite"); err != nil {
 		t.Fatalf("RunMigrations failed: %v", err)
 	}
 
-	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, created_at, updated_at)
-		VALUES ('local-one', 'admin', 1, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err != nil {
-		t.Fatalf("first local insert failed: %v", err)
+	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('setup-admin', 'admin', 1, 1, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err != nil {
+		t.Fatalf("bootstrap insert failed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, created_at, updated_at)
-		VALUES ('local-two', 'admin', 1, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err == nil {
-		t.Fatalf("expected the second local user to violate the partial unique index")
+	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('bootstrap-two', 'admin', 1, 1, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err == nil {
+		t.Fatalf("expected the second bootstrap user to violate the partial unique index")
 	}
-	for _, name := range []string{"member-a", "member-b"} {
-		if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, created_at, updated_at)
-			VALUES (?, 'member', 1, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`, name); err != nil {
-			t.Fatalf("non-local insert %q should be allowed: %v", name, err)
+	// Console-provisioned local members carry no bootstrap flag — any
+	// number of them must coexist with the setup account.
+	for _, name := range []string{"local-member-a", "local-member-b"} {
+		if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, is_bootstrap, created_at, updated_at)
+			VALUES (?, 'member', 1, 1, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`, name); err != nil {
+			t.Fatalf("local member insert %q should be allowed: %v", name, err)
 		}
+	}
+	// Externally-provisioned rows keep working exactly as before.
+	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('oauth-member', 'member', 1, 0, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err != nil {
+		t.Fatalf("non-local insert should be allowed: %v", err)
+	}
+}
+
+// TestMigration00032BackfillsBootstrapFlag replays the upgrade from the
+// pre-00032 schema: the single local account created by first-run setup
+// must come out flagged is_bootstrap = 1 (it inherits the escape-hatch
+// protections), while externally-provisioned accounts stay 0. Remove the
+// backfill UPDATE from the migration and this goes red.
+func TestMigration00032BackfillsBootstrapFlag(t *testing.T) {
+	db := newMemoryDB(t)
+	if err := RunMigrations(db, "sqlite", migrations.SQLiteFS, "sqlite"); err != nil {
+		t.Fatalf("RunMigrations failed: %v", err)
+	}
+	if err := RollbackTo(db, "sqlite", migrations.SQLiteFS, "sqlite", 31); err != nil {
+		t.Fatalf("RollbackTo(31) failed: %v", err)
+	}
+
+	// Schema at version 31 has no is_bootstrap column — seed the
+	// pre-upgrade world directly: the setup account plus one OAuth member.
+	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, status, is_local, created_at, updated_at)
+		VALUES (5, 'boss', 'hash', 'admin', 1, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err != nil {
+		t.Fatalf("seed setup admin: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (id, username, role, status, is_local, created_at, updated_at)
+		VALUES (6, 'ext-user', 'member', 1, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err != nil {
+		t.Fatalf("seed external user: %v", err)
+	}
+
+	if err := RunMigrations(db, "sqlite", migrations.SQLiteFS, "sqlite"); err != nil {
+		t.Fatalf("re-running migrations failed: %v", err)
+	}
+
+	var setupFlag, extFlag int
+	if err := db.QueryRow(`SELECT is_bootstrap FROM users WHERE id = 5`).Scan(&setupFlag); err != nil {
+		t.Fatalf("read setup admin flag: %v", err)
+	}
+	if setupFlag != 1 {
+		t.Fatalf("expected the pre-existing local account to be backfilled is_bootstrap=1, got %d", setupFlag)
+	}
+	if err := db.QueryRow(`SELECT is_bootstrap FROM users WHERE id = 6`).Scan(&extFlag); err != nil {
+		t.Fatalf("read external user flag: %v", err)
+	}
+	if extFlag != 0 {
+		t.Fatalf("expected the external account to stay is_bootstrap=0, got %d", extFlag)
+	}
+}
+
+// TestMigration00032DownRefusesWhenExtraLocalsExist pins what the Down
+// migration promises in its own comment: once an admin has provisioned local
+// accounts, the downgrade cannot restore the old one-local-account index, and
+// it has to fail saying so rather than quietly discarding accounts. Delete
+// the CREATE UNIQUE INDEX from the Down and the rollback starts succeeding,
+// so this goes red — which is the point: without that index the downgrade
+// silently proceeds past accounts it has no room for.
+func TestMigration00032DownRefusesWhenExtraLocalsExist(t *testing.T) {
+	db := newMemoryDB(t)
+	if err := RunMigrations(db, "sqlite", migrations.SQLiteFS, "sqlite"); err != nil {
+		t.Fatalf("RunMigrations failed: %v", err)
+	}
+	// The setup account, plus one an admin created from the console.
+	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('setup-admin', 'admin', 1, 1, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err != nil {
+		t.Fatalf("seed bootstrap account: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('console-member', 'member', 1, 1, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err != nil {
+		t.Fatalf("seed console-created local member: %v", err)
+	}
+
+	if err := RollbackTo(db, "sqlite", migrations.SQLiteFS, "sqlite", 31); err == nil {
+		t.Fatal("expected the downgrade to be refused while two local accounts exist")
+	}
+
+	// Refused, not destructive: both accounts are still there.
+	var locals int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE is_local = 1`).Scan(&locals); err != nil {
+		t.Fatalf("count local accounts after the refused downgrade: %v", err)
+	}
+	if locals != 2 {
+		t.Fatalf("expected both local accounts to survive the refused downgrade, got %d", locals)
 	}
 }
 

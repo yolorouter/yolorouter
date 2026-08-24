@@ -368,3 +368,78 @@ func TestWriteModelObject(t *testing.T) {
 		}
 	})
 }
+
+// The route uses a catch-all parameter so slash-namespaced ids match, which
+// makes gin hand the handler the name with a leading "/" — the handler must
+// strip it before the lookup.
+func TestRetrieveModel_SlashNamedModelViaCatchAllParam(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	m := seedModel(t, db, "deepseek-ai/DeepSeek-V4", true)
+	k := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+
+	c, w := newModelsGetCtx("/v1/models/deepseek-ai/DeepSeek-V4", false)
+	c.Params = gin.Params{{Key: "model", Value: "/deepseek-ai/DeepSeek-V4"}}
+	SetGatewayAuth(c, k)
+	RetrieveModel(db)(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &obj); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, w.Body.String())
+	}
+	if obj["id"] != "deepseek-ai/DeepSeek-V4" {
+		t.Errorf("obj=%v want id=deepseek-ai/DeepSeek-V4", obj)
+	}
+}
+
+// The old ":model" route relied on gin's trailing-slash redirect; the
+// catch-all matches "/alpha/" directly, so the handler must ignore trailing
+// slashes itself to keep that behavior.
+func TestRetrieveModel_TrailingSlashResolvesModel(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	m := seedModel(t, db, "alpha", true)
+	k := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+
+	c, w := newModelsGetCtx("/v1/models/alpha/", false)
+	c.Params = gin.Params{{Key: "model", Value: "/alpha/"}}
+	SetGatewayAuth(c, k)
+	RetrieveModel(db)(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if obj["id"] != "alpha" {
+		t.Errorf("obj=%v want id=alpha", obj)
+	}
+}
+
+// "/v1/models/" reaches the catch-all with an empty (all-slash) name; the old
+// route redirected that to the list endpoint, so the handler falls back to the
+// same listing instead of a bogus not-found.
+func TestRetrieveModel_EmptyNameFallsBackToList(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	m := seedModel(t, db, "alpha", true)
+	k := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+
+	c, w := newModelsGetCtx("/v1/models/", false)
+	c.Params = gin.Params{{Key: "model", Value: "/"}}
+	SetGatewayAuth(c, k)
+	RetrieveModel(db)(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if obj["object"] != "list" {
+		t.Errorf("obj=%v want object=list", obj)
+	}
+}

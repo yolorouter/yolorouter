@@ -84,6 +84,9 @@ type Exchange struct {
 	// actually does, and adds the accessor then.
 	pricingBasis PricingView
 	apiKeyID     uint
+	// binding is this request's sticky-binding state — one value, because
+	// its fields only ever travel together. See requestBinding.
+	binding requestBinding
 	// userID is the key owner's account id, resolved once from the key at
 	// Handle entry so the request-log row can carry ownership without a
 	// join at write time.
@@ -428,6 +431,23 @@ const (
 	// input inspection refused the payload, which another candidate may not.
 	AttemptContentFiltered = "content_filtered"
 )
+
+// skipReasonCircuitRefused is the note for the one pre-dispatch skip the
+// circuit breaker itself produces — an open window, or a half-open probe
+// slot already spent this interval. A named constant so the tests assert
+// the exact row the walk writes instead of re-typing a driftable literal.
+const skipReasonCircuitRefused = "provider circuit open"
+
+// requestBinding is the sticky-binding state one request carries: the
+// registry entry the balanced reorder put at the chain head (zero-valued
+// when no reorder happened — failover models, or a balanced chain the
+// routing left untouched), and whether the walk released it as a dead end,
+// in which case the candidate that ends up serving re-binds.
+type requestBinding struct {
+	modelID     uint
+	candidateID uint
+	invalidated bool
+}
 
 // beginUpstreamAttempt drops whatever the previous send left on the exchange,
 // so nothing this attempt did not produce is read as belonging to it.

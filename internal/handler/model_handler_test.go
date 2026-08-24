@@ -18,12 +18,30 @@ import (
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
+// scheduling_mode deliberately carries no binding tag: the service layer is
+// its single validator, so every invalid value — on create, batch create,
+// and update alike — answers with the field's own error code instead of the
+// generic bad-request envelope. TestModelSchedulingModeRejectsUnknownValue
+// pins that code on each path.
+
 func newModelTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 	t.Helper()
 	return newModelTestRouterWithClient(t, &alwaysSuccessClient{})
 }
 
+func newModelTestRouterWithQueue(t *testing.T) (*gin.Engine, *gorm.DB, *modeladmin.ProbeQueue) {
+	t.Helper()
+	r, db, queue := newModelTestRouterFull(t, &alwaysSuccessClient{})
+	return r, db, queue
+}
+
 func newModelTestRouterWithClient(t *testing.T, client providerclient.ProviderClient) (*gin.Engine, *gorm.DB) {
+	t.Helper()
+	r, db, _ := newModelTestRouterFull(t, client)
+	return r, db
+}
+
+func newModelTestRouterFull(t *testing.T, client providerclient.ProviderClient) (*gin.Engine, *gorm.DB, *modeladmin.ProbeQueue) {
 	t.Helper()
 	if err := RegisterValidators(); err != nil {
 		t.Fatalf("RegisterValidators failed: %v", err)
@@ -47,7 +65,13 @@ func newModelTestRouterWithClient(t *testing.T, client providerclient.ProviderCl
 	admin.POST("/models/:id/candidates/:candidateId/test", PostModelCandidateTest(svc))
 	admin.GET("/models/candidates/suggest-price", GetCandidateSuggestPrice(svc))
 	admin.DELETE("/models/:id/candidates/:candidateId", DeleteModelCandidate(svc))
-	return r, db
+	// Unstarted on purpose: handler tests assert what got queued, not the
+	// asynchronous probing itself (that lives in the modeladmin suite).
+	queue := modeladmin.NewProbeQueue(svc, modeladmin.DefaultProbeWorkers)
+	admin.POST("/providers/:id/models/import", PostProviderModelsImport(svc, queue))
+	admin.POST("/providers/:id/models/suggest-prices", PostProviderSuggestPrices(svc))
+	admin.GET("/providers/:id/candidates", GetProviderCandidates(svc, queue))
+	return r, db, queue
 }
 
 type modelResponse struct {
@@ -58,8 +82,9 @@ type modelResponse struct {
 }
 
 type candidateResponse struct {
-	ID               uint `json:"id"`
-	ManagementStatus int  `json:"management_status"`
+	ID                 uint `json:"id"`
+	ManagementStatus   int  `json:"management_status"`
+	VerificationStatus int  `json:"verification_status"`
 }
 
 func createModelForTest(t *testing.T, r *gin.Engine, name string) uint {
@@ -413,6 +438,59 @@ func TestPostModelCandidateTestAndCreateReportsProbesAndCreates(t *testing.T) {
 	}
 }
 
+// The retest response serves two client generations at once during a rolling
+// upgrade: browser tabs still running the previous frontend read the candidate
+// fields at the TOP LEVEL of data, while the current frontend reads
+// data.candidate plus data.applied. Both shapes must be present — dropping the
+// top-level fields makes every old tab misreport a successful retest.
+func TestPostModelCandidateTestServesBothWireShapes(t *testing.T) {
+	providerRouter, db := newProviderTestRouter(t)
+	providerID := createProviderAndKeyForModelTest(t, providerRouter)
+	r := newModelTestRouterSharingProviderDB(t, db, &alwaysSuccessClient{})
+	id := createModelForTest(t, r, "smart")
+
+	w, env := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/models/%d/candidates/test-and-create", id), map[string]interface{}{
+		"provider_id": providerID, "provider_model_name": "gpt-4o", "input_price": 1, "output_price": 2,
+		"management_status": 1,
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed candidate: expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Candidate *candidateResponse `json:"candidate"`
+	}
+	if err := json.Unmarshal(env.Data, &created); err != nil || created.Candidate == nil {
+		t.Fatalf("unmarshal created candidate: %v, %s", err, env.Data)
+	}
+
+	w, env = doJSON(t, r, http.MethodPost,
+		fmt.Sprintf("/api/admin/models/%d/candidates/%d/test", id, created.Candidate.ID), nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		// Old-client shape: the candidate itself at the top level.
+		VerificationStatus *int `json:"verification_status"`
+		ManagementStatus   *int `json:"management_status"`
+		// Current shape.
+		Candidate *candidateResponse `json:"candidate"`
+		Applied   *bool              `json:"applied"`
+	}
+	if err := json.Unmarshal(env.Data, &body); err != nil {
+		t.Fatalf("unmarshal retest response: %v, %s", err, env.Data)
+	}
+	if body.Candidate == nil || body.Applied == nil {
+		t.Fatalf("expected the current shape (candidate + applied), got %s", env.Data)
+	}
+	if body.VerificationStatus == nil || body.ManagementStatus == nil {
+		t.Fatalf("expected the old-client shape (top-level candidate fields), got %s", env.Data)
+	}
+	if *body.VerificationStatus != body.Candidate.VerificationStatus {
+		t.Fatalf("expected both shapes to describe the same row, got top-level=%d nested=%d",
+			*body.VerificationStatus, body.Candidate.VerificationStatus)
+	}
+}
+
 func TestPostModelCandidateTestAndCreateReturns400ForBadModelID(t *testing.T) {
 	r, _ := newModelTestRouter(t)
 	w, _ := doJSON(t, r, http.MethodPost, "/api/admin/models/abc/candidates/test-and-create", map[string]interface{}{
@@ -442,14 +520,25 @@ func TestPostModelCandidateTestRetestsWithoutABody(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
-	var updated struct {
-		VerificationStatus      int   `json:"verification_status"`
-		SupportsStreaming       *bool `json:"supports_streaming"`
-		SupportsFunctionCalling *bool `json:"supports_function_calling"`
+	// The response distinguishes the row from whether THIS retest's verdict was
+	// the one recorded (a concurrent probe can win the commit race, in which
+	// case the row reflects the competitor's result) — the client needs the
+	// flag to avoid announcing another probe's outcome as this click's.
+	var result struct {
+		Applied bool `json:"applied"`
+		Updated struct {
+			VerificationStatus      int   `json:"verification_status"`
+			SupportsStreaming       *bool `json:"supports_streaming"`
+			SupportsFunctionCalling *bool `json:"supports_function_calling"`
+		} `json:"candidate"`
 	}
-	if err := json.Unmarshal(env2.Data, &updated); err != nil {
+	if err := json.Unmarshal(env2.Data, &result); err != nil {
 		t.Fatalf("unmarshal test response: %v", err)
 	}
+	if !result.Applied {
+		t.Fatal("expected applied=true for an uncontended retest")
+	}
+	updated := result.Updated
 	if updated.VerificationStatus != 1 {
 		t.Fatalf("expected verification_status=1 (passed), got %d", updated.VerificationStatus)
 	}
@@ -914,5 +1003,134 @@ func TestPatchModelRenameFollowsVisionFallbackSetting(t *testing.T) {
 	}
 	if _, _, err := repository.UpdateVisionFallback(db, snapVer, "eyes-v2", "still saveable"); err != nil {
 		t.Fatalf("CAS save after rename must succeed, got: %v", err)
+	}
+}
+
+type schedulingModelResponse struct {
+	ID             uint   `json:"id"`
+	Name           string `json:"name"`
+	SchedulingMode string `json:"scheduling_mode"`
+}
+
+func TestModelSchedulingModeRoundTrip(t *testing.T) {
+	r, _ := newModelTestRouter(t)
+	w, env := doJSON(t, r, http.MethodPost, "/api/admin/models",
+		map[string]interface{}{"name": "spread", "scheduling_mode": "balanced"}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var created schedulingModelResponse
+	if err := json.Unmarshal(env.Data, &created); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+	if created.SchedulingMode != "balanced" {
+		t.Fatalf("created scheduling_mode = %q, want balanced", created.SchedulingMode)
+	}
+
+	w, env = doJSON(t, r, http.MethodPatch, fmt.Sprintf("/api/admin/models/%d", created.ID),
+		map[string]interface{}{"name": "spread", "scheduling_mode": "failover"}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var patched schedulingModelResponse
+	if err := json.Unmarshal(env.Data, &patched); err != nil {
+		t.Fatalf("unmarshal patch response: %v", err)
+	}
+	if patched.SchedulingMode != "failover" {
+		t.Fatalf("patched scheduling_mode = %q, want failover", patched.SchedulingMode)
+	}
+
+	w, env = doJSON(t, r, http.MethodGet, fmt.Sprintf("/api/admin/models/%d", created.ID), nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var detail schedulingModelResponse
+	if err := json.Unmarshal(env.Data, &detail); err != nil {
+		t.Fatalf("unmarshal detail response: %v", err)
+	}
+	if detail.SchedulingMode != "failover" {
+		t.Fatalf("detail scheduling_mode = %q, want failover", detail.SchedulingMode)
+	}
+}
+
+func TestModelSchedulingModeRejectsUnknownValue(t *testing.T) {
+	r, _ := newModelTestRouter(t)
+	w, env := doJSON(t, r, http.MethodPost, "/api/admin/models",
+		map[string]interface{}{"name": "broken", "scheduling_mode": "round-robin"}, nil)
+	if w.Code != http.StatusBadRequest || env.Code != errcode.ModelSchedulingModeInvalid {
+		t.Fatalf("create with invalid mode = (%d, code %d), want (400, %d); body: %s", w.Code, env.Code, errcode.ModelSchedulingModeInvalid, w.Body.String())
+	}
+	w, env = doJSON(t, r, http.MethodPost, "/api/admin/models/batch",
+		map[string]interface{}{"names": []string{"broken-b"}, "scheduling_mode": "round-robin"}, nil)
+	if w.Code != http.StatusBadRequest || env.Code != errcode.ModelSchedulingModeInvalid {
+		t.Fatalf("batch create with invalid mode = (%d, code %d), want (400, %d); body: %s", w.Code, env.Code, errcode.ModelSchedulingModeInvalid, w.Body.String())
+	}
+	id := createModelForTest(t, r, "still-broken")
+	w, env = doJSON(t, r, http.MethodPatch, fmt.Sprintf("/api/admin/models/%d", id),
+		map[string]interface{}{"name": "still-broken", "scheduling_mode": "weighted"}, nil)
+	if w.Code != http.StatusBadRequest || env.Code != errcode.ModelSchedulingModeInvalid {
+		t.Fatalf("patch with invalid mode = (%d, code %d), want (400, %d); body: %s", w.Code, env.Code, errcode.ModelSchedulingModeInvalid, w.Body.String())
+	}
+	// A present-but-empty mode must be rejected too — never read as "the
+	// default", which would let a submission that carries nothing silently
+	// reset the scheduler.
+	w, env = doJSON(t, r, http.MethodPatch, fmt.Sprintf("/api/admin/models/%d", id),
+		map[string]interface{}{"name": "still-broken", "scheduling_mode": ""}, nil)
+	if w.Code != http.StatusBadRequest || env.Code != errcode.ModelSchedulingModeInvalid {
+		t.Fatalf("patch with empty mode = (%d, code %d), want (400, %d); body: %s", w.Code, env.Code, errcode.ModelSchedulingModeInvalid, w.Body.String())
+	}
+}
+
+// JSON null reads as "field absent" on every scheduling_mode path — the same
+// convention image_input follows: create falls to the failover default,
+// update keeps the current mode. Pinned so the null contract stays a
+// decision rather than an accident.
+func TestModelSchedulingModeNullMeansAbsent(t *testing.T) {
+	r, _ := newModelTestRouter(t)
+	w, env := doJSON(t, r, http.MethodPost, "/api/admin/models",
+		map[string]interface{}{"name": "nullish", "scheduling_mode": nil}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create with null mode = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var created schedulingModelResponse
+	if err := json.Unmarshal(env.Data, &created); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+	if created.SchedulingMode != "failover" {
+		t.Fatalf("create with null mode = %q, want the failover default", created.SchedulingMode)
+	}
+
+	// Switch to balanced, then PATCH with null: the mode must survive.
+	w, _ = doJSON(t, r, http.MethodPatch, fmt.Sprintf("/api/admin/models/%d", created.ID),
+		map[string]interface{}{"name": "nullish", "scheduling_mode": "balanced"}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("switch to balanced = %d; body: %s", w.Code, w.Body.String())
+	}
+	w, env = doJSON(t, r, http.MethodPatch, fmt.Sprintf("/api/admin/models/%d", created.ID),
+		map[string]interface{}{"name": "nullish", "scheduling_mode": nil}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch with null mode = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var patched schedulingModelResponse
+	if err := json.Unmarshal(env.Data, &patched); err != nil {
+		t.Fatalf("unmarshal patch response: %v", err)
+	}
+	if patched.SchedulingMode != "balanced" {
+		t.Fatalf("null patch changed the mode to %q, want balanced preserved", patched.SchedulingMode)
+	}
+
+	w, env = doJSON(t, r, http.MethodPost, "/api/admin/models/batch",
+		map[string]interface{}{"names": []string{"nullish-b"}, "scheduling_mode": nil}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch create with null mode = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var batch struct {
+		Created []schedulingModelResponse `json:"created"`
+	}
+	if err := json.Unmarshal(env.Data, &batch); err != nil {
+		t.Fatalf("unmarshal batch response: %v", err)
+	}
+	if len(batch.Created) != 1 || batch.Created[0].SchedulingMode != "failover" {
+		t.Fatalf("batch create with null mode = %+v, want one model with the failover default", batch.Created)
 	}
 }

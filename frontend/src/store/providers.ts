@@ -13,10 +13,16 @@ import type {
 interface ProvidersState {
   list: Provider[]
   loading: boolean
+  // One-shot handoff from "create provider" to "import models": the list page
+  // sets this before navigating to the new provider's detail page, which
+  // consumes it once and auto-opens the import dialog. Deliberately NOT a URL
+  // query: DefaultLayout keys its router-view by fullPath, so any query change
+  // remounts the page and would wipe the just-opened dialog.
+  pendingImportProviderId: number | null
 }
 
 export const useProvidersStore = defineStore('providers', {
-  state: (): ProvidersState => ({ list: [], loading: false }),
+  state: (): ProvidersState => ({ list: [], loading: false, pendingImportProviderId: null }),
   actions: {
     async fetchList() {
       this.loading = true

@@ -11,13 +11,28 @@ import (
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
-// newLocalAdmin builds the shape first-run setup creates: the one
-// password-login account, admin role, enabled.
-func newLocalAdmin(username string, now time.Time) *model.User {
+// newBootstrapAdmin builds the shape first-run setup creates: the one
+// password-login bootstrap account, admin role, enabled.
+func newBootstrapAdmin(username string, now time.Time) *model.User {
 	return &model.User{
 		Username:     username,
 		PasswordHash: "hash",
 		Role:         model.RoleAdmin,
+		Status:       model.UserStatusEnabled,
+		IsLocal:      true,
+		IsBootstrap:  true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+}
+
+// newLocalMember builds the shape console provisioning creates: a
+// password-login member without the bootstrap flag.
+func newLocalMember(username string, now time.Time) *model.User {
+	return &model.User{
+		Username:     username,
+		PasswordHash: "hash",
+		Role:         model.RoleMember,
 		Status:       model.UserStatusEnabled,
 		IsLocal:      true,
 		CreatedAt:    now,
@@ -37,15 +52,15 @@ func newMemberUser(username string, now time.Time) *model.User {
 	}
 }
 
-func TestCountLocalUsersIsZeroOnFreshDB(t *testing.T) {
+func TestCountBootstrapUsersIsZeroOnFreshDB(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 
-	count, err := CountLocalUsers(db)
+	count, err := CountBootstrapUsers(db)
 	if err != nil {
-		t.Fatalf("CountLocalUsers failed: %v", err)
+		t.Fatalf("CountBootstrapUsers failed: %v", err)
 	}
 	if count != 0 {
-		t.Fatalf("expected 0 local users on fresh db, got %d", count)
+		t.Fatalf("expected 0 bootstrap users on fresh db, got %d", count)
 	}
 }
 
@@ -53,7 +68,7 @@ func TestCreateUserAndFindLocalByUsername(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
-	user := newLocalAdmin("alice", now)
+	user := newBootstrapAdmin("alice", now)
 	if err := CreateUser(db, user); err != nil {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
@@ -69,33 +84,38 @@ func TestCreateUserAndFindLocalByUsername(t *testing.T) {
 		t.Fatalf("unexpected user: %+v", found)
 	}
 
-	count, err := CountLocalUsers(db)
+	count, err := CountBootstrapUsers(db)
 	if err != nil {
-		t.Fatalf("CountLocalUsers failed: %v", err)
+		t.Fatalf("CountBootstrapUsers failed: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("expected 1 local user, got %d", count)
+		t.Fatalf("expected 1 bootstrap user, got %d", count)
 	}
 }
 
-// TestCountLocalUsersIgnoresNonLocalUsers is what makes CountLocalUsers a
-// correct "is setup done" signal: externally-provisioned accounts must
-// not make the setup page disappear on an instance whose local admin was
-// never created. Remove the is_local filter and this goes red.
-func TestCountLocalUsersIgnoresNonLocalUsers(t *testing.T) {
+// TestCountBootstrapUsersIgnoresNonBootstrapAccounts is what makes
+// CountBootstrapUsers a correct "is setup done" signal: neither
+// externally-provisioned accounts nor console-created local members carry
+// the flag, so neither may make the setup page disappear on an instance
+// whose bootstrap admin was never created. Remove the is_bootstrap filter
+// and this goes red.
+func TestCountBootstrapUsersIgnoresNonBootstrapAccounts(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
 	if err := CreateUser(db, newMemberUser("ext-user", now)); err != nil {
 		t.Fatalf("CreateUser(member) failed: %v", err)
 	}
+	if err := CreateUser(db, newLocalMember("console-member", now)); err != nil {
+		t.Fatalf("CreateUser(local member) failed: %v", err)
+	}
 
-	count, err := CountLocalUsers(db)
+	count, err := CountBootstrapUsers(db)
 	if err != nil {
-		t.Fatalf("CountLocalUsers failed: %v", err)
+		t.Fatalf("CountBootstrapUsers failed: %v", err)
 	}
 	if count != 0 {
-		t.Fatalf("expected 0 local users when only a non-local user exists, got %d", count)
+		t.Fatalf("expected 0 bootstrap users when no bootstrap account exists, got %d", count)
 	}
 }
 
@@ -126,32 +146,37 @@ func TestFindLocalUserByUsernameReturnsNotFoundForMissingUsername(t *testing.T) 
 	}
 }
 
-// TestSecondLocalUserIsRejectedByDatabase exercises the partial unique
-// index on users.is_local — the database-level replacement for the old
+// TestSecondBootstrapUserIsRejectedByDatabase exercises the partial unique
+// index on users.is_bootstrap — the database-level replacement for the old
 // single-admin singleton column. App-level checks alone are a
 // check-then-act race under concurrent first-run setup requests, so the
-// constraint itself must hold.
-func TestSecondLocalUserIsRejectedByDatabase(t *testing.T) {
+// constraint itself must hold. Local (password-login) rows without the
+// flag are the console-provisioned kind and must coexist freely.
+func TestSecondBootstrapUserIsRejectedByDatabase(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
-	if err := CreateUser(db, newLocalAdmin("first", now)); err != nil {
-		t.Fatalf("CreateUser(first local) failed: %v", err)
+	if err := CreateUser(db, newBootstrapAdmin("first", now)); err != nil {
+		t.Fatalf("CreateUser(bootstrap) failed: %v", err)
 	}
-	if err := CreateUser(db, newLocalAdmin("second", now)); err == nil {
-		t.Fatalf("expected the database to reject a second local user")
+	second := newBootstrapAdmin("second", now)
+	if err := CreateUser(db, second); err == nil {
+		t.Fatalf("expected the database to reject a second bootstrap user")
+	}
+	if err := CreateUser(db, newLocalMember("plain-local", now)); err != nil {
+		t.Fatalf("expected a local member to coexist with the bootstrap account, got: %v", err)
 	}
 }
 
 // TestMultipleAdminsAreAllowed pins the multi-account model's key
 // difference from the old schema: any number of admin-role users may
-// exist, as long as at most one is the local password account.
+// exist, as long as at most one is the bootstrap account.
 func TestMultipleAdminsAreAllowed(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
-	if err := CreateUser(db, newLocalAdmin("root", now)); err != nil {
-		t.Fatalf("CreateUser(local admin) failed: %v", err)
+	if err := CreateUser(db, newBootstrapAdmin("root", now)); err != nil {
+		t.Fatalf("CreateUser(bootstrap admin) failed: %v", err)
 	}
 	second := newMemberUser("promoted", now)
 	second.Role = model.RoleAdmin
@@ -163,7 +188,7 @@ func TestMultipleAdminsAreAllowed(t *testing.T) {
 func TestRecordLoginFailureIncrementsCountAndLocksAtThreshold(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	user := newLocalAdmin("bob", now)
+	user := newBootstrapAdmin("bob", now)
 	if err := CreateUser(db, user); err != nil {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
@@ -218,7 +243,7 @@ func TestRecordLoginFailureIncrementsCountAndLocksAtThreshold(t *testing.T) {
 func TestRecordLoginFailureAfterExpiredLockStartsFreshCount(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	past := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Second)
-	user := newLocalAdmin("carol", past)
+	user := newBootstrapAdmin("carol", past)
 	if err := CreateUser(db, user); err != nil {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
@@ -255,7 +280,7 @@ func TestRecordLoginFailureAfterExpiredLockStartsFreshCount(t *testing.T) {
 func TestRecordLoginSuccessResetsCountLockAndStampsLastLogin(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	user := newLocalAdmin("dave", now)
+	user := newBootstrapAdmin("dave", now)
 	if err := CreateUser(db, user); err != nil {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
@@ -309,7 +334,7 @@ func TestRecordLoginFailureReturnsErrorWhenDBUnavailable(t *testing.T) {
 func TestUpdateUserPasswordHash(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
-	user := newLocalAdmin("erin", now)
+	user := newBootstrapAdmin("erin", now)
 	user.PasswordHash = "old"
 	if err := CreateUser(db, user); err != nil {
 		t.Fatalf("CreateUser failed: %v", err)

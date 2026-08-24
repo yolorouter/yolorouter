@@ -47,3 +47,32 @@ func TestIsSortOrderUniqueViolationNarrowsToTheSortOrderConstraint(t *testing.T)
 		})
 	}
 }
+
+func TestIsTxSerializationFailure(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"ERROR: deadlock detected (SQLSTATE 40P01)", true},
+		{"ERROR: could not serialize access due to concurrent update (SQLSTATE 40001)", true},
+		{"UNIQUE constraint failed: models.name", false},
+		{"connection refused", false},
+	}
+	for _, tc := range cases {
+		if got := IsTxSerializationFailure(errors.New(tc.msg)); got != tc.want {
+			t.Errorf("IsTxSerializationFailure(%q) = %v, want %v", tc.msg, got, tc.want)
+		}
+	}
+}
+
+// PostgreSQL localizes constraint messages under non-English lc_messages, but
+// the SQLSTATE code survives translation — detection must key on it too.
+func TestIsUniqueViolationDetectsLocalizedPostgresMessageBySQLState(t *testing.T) {
+	err := errors.New(`ERROR: 重复键违反唯一约束"models_name_key" (SQLSTATE 23505)`)
+	if !IsUniqueViolation(err) {
+		t.Fatal("expected a localized 23505 message to be detected as a unique violation")
+	}
+	if IsUniqueViolation(errors.New("ERROR: some other failure (SQLSTATE 40P01)")) {
+		t.Fatal("a non-23505 SQLSTATE must not be treated as a unique violation")
+	}
+}

@@ -10,7 +10,23 @@ import "strings"
 // database error.
 func IsUniqueViolation(err error) bool {
 	msg := err.Error()
-	return strings.Contains(msg, "UNIQUE constraint") || strings.Contains(msg, "duplicate key value violates unique constraint")
+	// "23505" is PostgreSQL's SQLSTATE for unique_violation. The driver appends
+	// it to the message untranslated, so it still matches when lc_messages
+	// localizes the human-readable text the other two patterns rely on.
+	return strings.Contains(msg, "UNIQUE constraint") || strings.Contains(msg, "duplicate key value violates unique constraint") ||
+		strings.Contains(msg, "23505")
+}
+
+// IsTxSerializationFailure reports whether err is a PostgreSQL transaction
+// abort that is safe to retry wholesale: a deadlock (40P01) or a
+// serialization failure (40001). Both mean the transaction was rolled back
+// cleanly because it lost a race with a concurrent transaction — nothing was
+// persisted, so a bounded re-run resolves the conflict. SQLite cannot produce
+// either (single writer), so this matching is Postgres-only by construction.
+func IsTxSerializationFailure(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "40P01") || strings.Contains(msg, "40001") ||
+		strings.Contains(msg, "deadlock detected") || strings.Contains(msg, "could not serialize access")
 }
 
 // IsSortOrderUniqueViolation narrows IsUniqueViolation to specifically the

@@ -52,15 +52,15 @@ func TestSetupRejectsSecondCall(t *testing.T) {
 	}
 }
 
-// TestConcurrentSetupOnlyCreatesOneLocalUser exercises the actual race
+// TestConcurrentSetupOnlyCreatesOneBootstrapUser exercises the actual race
 // the sequential TestSetupRejectsSecondCall can't: many goroutines
 // calling Setup with DIFFERENT usernames at the same time, before any of
-// them has observed the others' CountLocalUsers result. Without the
-// partial unique index on users.is_local (migration
-// 00023_users_multi_account.sql) and Setup's re-check-after-failure
-// logic, this could create more than one local password account — a
-// direct violation of the single-local-account invariant.
-func TestConcurrentSetupOnlyCreatesOneLocalUser(t *testing.T) {
+// them has observed the others' CountBootstrapUsers result. Without the
+// partial unique index on users.is_bootstrap (migration
+// 00032_users_bootstrap_account.sql) and Setup's re-check-after-failure
+// logic, this could create more than one bootstrap account — a direct
+// violation of the single-escape-hatch invariant.
+func TestConcurrentSetupOnlyCreatesOneBootstrapUser(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC()
 
@@ -94,12 +94,12 @@ func TestConcurrentSetupOnlyCreatesOneLocalUser(t *testing.T) {
 		t.Fatalf("expected the other %d attempts to see ErrAccountSetupAlreadyDone, got %d", attempts-1, alreadyDone)
 	}
 
-	count, err := repository.CountLocalUsers(db)
+	count, err := repository.CountBootstrapUsers(db)
 	if err != nil {
-		t.Fatalf("CountLocalUsers failed: %v", err)
+		t.Fatalf("CountBootstrapUsers failed: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("expected exactly 1 local user row to exist after the race, got %d", count)
+		t.Fatalf("expected exactly 1 bootstrap user row to exist after the race, got %d", count)
 	}
 }
 
@@ -114,10 +114,11 @@ func TestSetupIssuesAWorkingSession(t *testing.T) {
 	if admin.Username != "admin" {
 		t.Fatalf("expected username=admin, got %q", admin.Username)
 	}
-	// Setup must create the account as the local admin, or the whole
-	// role/escape-hatch model collapses on first run.
-	if admin.Role != model.RoleAdmin || !admin.IsLocal || admin.Status != model.UserStatusEnabled {
-		t.Fatalf("expected an enabled local admin, got role=%q is_local=%v status=%d", admin.Role, admin.IsLocal, admin.Status)
+	// Setup must create the account as the bootstrap local admin, or the
+	// whole role/escape-hatch model collapses on first run.
+	if admin.Role != model.RoleAdmin || !admin.IsLocal || !admin.IsBootstrap || admin.Status != model.UserStatusEnabled {
+		t.Fatalf("expected an enabled bootstrap local admin, got role=%q is_local=%v is_bootstrap=%v status=%d",
+			admin.Role, admin.IsLocal, admin.IsBootstrap, admin.Status)
 	}
 	if sessionID == "" {
 		t.Fatalf("expected a non-empty session id")
@@ -278,8 +279,8 @@ func TestSetupErrorsWhenPasswordTooLongToHash(t *testing.T) {
 
 // TestSetupRollsBackAndReturnsRawErrorWhenSessionCreationFails exercises
 // Setup's txErr path where the transaction genuinely fails (as opposed to
-// losing the single-local-user race) — the user insert must be rolled
-// back (leaving CountLocalUsers at 0) so the raw error is returned
+// losing the single-bootstrap-user race) — the user insert must be rolled
+// back (leaving CountBootstrapUsers at 0) so the raw error is returned
 // instead of ErrAccountSetupAlreadyDone.
 func TestSetupRollsBackAndReturnsRawErrorWhenSessionCreationFails(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
@@ -294,12 +295,12 @@ func TestSetupRollsBackAndReturnsRawErrorWhenSessionCreationFails(t *testing.T) 
 		t.Fatalf("expected the raw transaction error, not ErrAccountSetupAlreadyDone, got %v", err)
 	}
 
-	count, countErr := repository.CountLocalUsers(db)
+	count, countErr := repository.CountBootstrapUsers(db)
 	if countErr != nil {
-		t.Fatalf("CountLocalUsers failed: %v", countErr)
+		t.Fatalf("CountBootstrapUsers failed: %v", countErr)
 	}
 	if count != 0 {
-		t.Fatalf("expected the failed transaction to roll back the user insert, found %d local users", count)
+		t.Fatalf("expected the failed transaction to roll back the user insert, found %d bootstrap users", count)
 	}
 }
 

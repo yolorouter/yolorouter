@@ -27,9 +27,11 @@ const (
 	OAuthProviderConfigInvalid = 10015 // provider configuration rejected: required field blank, or an endpoint is not an absolute http(s) URL
 	OAuthDiscoveryFailed       = 10016 // OIDC well-known discovery document fetch/parse failed
 
-	AccountSelfOperation  = 10017 // admins cannot change their own status or role — another admin must do it
-	AccountUserNotFound   = 10018 // target user id does not exist
-	AccountLocalProtected = 10019 // the local password account is the OAuth-failure escape hatch — it cannot be disabled or demoted
+	AccountSelfOperation       = 10017 // admins cannot change their own status or role — another admin must do it
+	AccountUserNotFound        = 10018 // target user id does not exist
+	AccountBootstrapProtected  = 10019 // the bootstrap account is the OAuth-failure escape hatch — it cannot be disabled or demoted
+	AccountUsernameTaken       = 10020 // another account (local or externally provisioned) already uses that username
+	AccountPasswordResetDenied = 10021 // password resets are reserved to the bootstrap administrator, for other local accounts only
 
 	// === API Key errors (11xxx) — "API Key security model" ===
 	APIKeyNotFound             = 11001
@@ -79,6 +81,8 @@ const (
 	// "not filled in" state cannot be distinguished from "explicitly set to 0"
 	// and is fundamentally unreachable; this dead branch was removed rather
 	// than kept as an error code that can never fire.
+
+	ModelSchedulingModeInvalid = 12107 // scheduling_mode is not one of failover/balanced
 
 	// === User group errors (13xxx) — user group serving three roles at once ===
 	UserGroupNotFound       = 13001
@@ -144,7 +148,9 @@ var ErrorMessages = map[int]string{
 	OAuthDiscoveryFailed:       "OIDC discovery document fetch failed",
 	AccountSelfOperation:       "operation refused: you cannot change your own status or role",
 	AccountUserNotFound:        "user not found",
-	AccountLocalProtected:      "operation refused: the local recovery account cannot be disabled or demoted",
+	AccountBootstrapProtected:  "operation refused: the bootstrap account cannot be disabled or demoted",
+	AccountUsernameTaken:       "username already taken",
+	AccountPasswordResetDenied: "operation refused: only the setup administrator may reset other local accounts' passwords",
 
 	APIKeyNotFound:             "api key not found",
 	APIKeyInvalid:              "api key invalid",
@@ -186,6 +192,7 @@ var ErrorMessages = map[int]string{
 	ModelCandidateNotFound:      "model candidate not found",
 	ModelCandidateProviderTaken: "this provider is already a candidate for this model",
 	ModelCandidateNotVerified:   "cannot enable a candidate that has not passed the basic test",
+	ModelSchedulingModeInvalid:  "scheduling mode must be failover or balanced",
 
 	UserGroupNotFound:       "user group not found",
 	UserGroupNameTaken:      "user group name already taken",
@@ -223,7 +230,9 @@ var (
 	ErrAccountLastAdminProtected  = errors.New(ErrorMessages[AccountLastAdminProtected])
 	ErrAccountSelfOperation       = errors.New(ErrorMessages[AccountSelfOperation])
 	ErrAccountUserNotFound        = errors.New(ErrorMessages[AccountUserNotFound])
-	ErrAccountLocalProtected      = errors.New(ErrorMessages[AccountLocalProtected])
+	ErrAccountBootstrapProtected  = errors.New(ErrorMessages[AccountBootstrapProtected])
+	ErrAccountUsernameTaken       = errors.New(ErrorMessages[AccountUsernameTaken])
+	ErrAccountPasswordResetDenied = errors.New(ErrorMessages[AccountPasswordResetDenied])
 	ErrAccountSetupAlreadyDone    = errors.New(ErrorMessages[AccountSetupAlreadyDone])
 	ErrOAuthProviderNotFound      = errors.New(ErrorMessages[OAuthProviderNotFound])
 	ErrOAuthStateInvalid          = errors.New(ErrorMessages[OAuthStateInvalid])
@@ -273,6 +282,7 @@ var (
 	ErrModelCandidateNotFound      = errors.New(ErrorMessages[ModelCandidateNotFound])
 	ErrModelCandidateProviderTaken = errors.New(ErrorMessages[ModelCandidateProviderTaken])
 	ErrModelCandidateNotVerified   = errors.New(ErrorMessages[ModelCandidateNotVerified])
+	ErrModelSchedulingModeInvalid  = errors.New(ErrorMessages[ModelSchedulingModeInvalid])
 
 	ErrUserGroupNotFound       = errors.New(ErrorMessages[UserGroupNotFound])
 	ErrUserGroupNameTaken      = errors.New(ErrorMessages[UserGroupNameTaken])

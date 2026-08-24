@@ -44,6 +44,7 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/oauth-providers",
 		"/api/admin/providers",
 		"/api/admin/providers/:id",
+		"/api/admin/providers/:id/candidates",
 		"/api/admin/providers/:id/impact",
 		"/api/admin/providers/:id/models",
 		"/api/admin/request-logs",
@@ -55,6 +56,7 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/system-settings/vision-fallback",
 		"/api/admin/system/version",
 		"/api/admin/analytics/compress-stats",
+		"/api/admin/analytics/concise-output-projection",
 		"/api/admin/users",
 	}
 
@@ -96,6 +98,9 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/auth/me":              {needsSession: true},
 		"/api/admin/auth/oauth/providers": {needsSession: false},
 		"/api/admin/auth/state":           {needsSession: false},
+		// This deployment's own public address — member-readable by design
+		// (rationale on GetSystemEndpoint); carries no account data.
+		"/api/admin/system/endpoint": {needsSession: true},
 	}
 
 	// bob's sentinel: his username or request id anywhere in a

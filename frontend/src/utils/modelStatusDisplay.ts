@@ -82,3 +82,13 @@ export const MODEL_RUNNING_STATUS_DISPLAY: Record<string, { i18nKey: string; tag
 export function modelRunningStatusDisplay(status: string) {
   return MODEL_RUNNING_STATUS_DISPLAY[status] ?? MODEL_RUNNING_STATUS_DISPLAY.unavailable
 }
+
+// modelHeaderDescription builds the detail page's header line — running
+// status plus scheduling mode. A pure function over plain values so the
+// wiring stays type-checked (passing a ref instead of its value is a compile
+// error here) and the string shape is unit-testable.
+export function modelHeaderDescription(t: (key: string) => string, status: string, balanced: boolean): string {
+  const running = `${t('models.runningStatusColumn')}: ${t(`models.running${modelRunningStatusDisplay(status).i18nKey}`)}`
+  const mode = balanced ? t('models.schedulingModeBalancedShort') : t('models.schedulingModeFailoverShort')
+  return `${running} · ${t('models.schedulingMode')}: ${mode}`
+}

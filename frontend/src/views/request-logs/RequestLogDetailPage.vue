@@ -301,6 +301,7 @@ import {
 import { APIError, displayMessage } from '../../api/client'
 import { formatMicros } from '../../utils/money'
 import { columnTitle } from '../../utils/columnTitle'
+import { copyToClipboard } from '../../utils/clipboard'
 import { SKIP_REASON_KEYS } from '../../utils/compressSkipReason'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -368,11 +369,12 @@ function onBack() {
 }
 
 async function copyBody(raw: string) {
-  try {
-    await navigator.clipboard.writeText(raw)
+  // The success toast keeps its body-specific wording; the failure text
+  // is generic, so it shares the console-wide key.
+  if (await copyToClipboard(raw)) {
     message.success(t('requestLogs.copyBodySuccess'))
-  } catch {
-    message.error(t('requestLogs.copyBodyFailed'))
+  } else {
+    message.error(t('common.copyFailed'))
   }
 }
 

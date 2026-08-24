@@ -1,6 +1,10 @@
 package version
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+)
 
 // TestResolveRepo drives every precedence branch of the repo resolution:
 // disabled short-circuits even with a configured repo; an explicit
@@ -59,5 +63,93 @@ func TestProxyURL(t *testing.T) {
 				t.Fatalf("ProxyURL(%q, raw) = %q, want %q", tc.proxy, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUpdateRoutes(t *testing.T) {
+	tests := []struct {
+		name  string
+		proxy string
+		want  []string
+	}{
+		{name: "explicit proxy keeps direct fallback", proxy: "https://gh.example.com/", want: []string{"https://gh.example.com/", ""}},
+		{name: "no proxy: direct first then built-in mirror", proxy: "", want: []string{"", DefaultMirror}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := UpdateRoutes(tc.proxy)
+			if len(got) != len(tc.want) {
+				t.Fatalf("UpdateRoutes(%q) = %v, want %v", tc.proxy, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("UpdateRoutes(%q)[%d] = %q, want %q", tc.proxy, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRouteAttemptContextSplitsShortWalk pins both ends of the reserve on a
+// short walk — the release lookup's ten seconds. The first route has to keep
+// enough to do its job (a half left an explicit proxy five seconds where it
+// used to have ten, and a mirror answering in seven stopped working), and
+// the route behind it has to get enough to do its (a fallback that only
+// survives its predecessor's fast failures is no fallback against a hang).
+func TestRouteAttemptContextSplitsShortWalk(t *testing.T) {
+	const budget = 10 * time.Second
+	walk, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	walkDeadline, _ := walk.Deadline()
+
+	attempt, cancelAttempt := RouteAttemptContext(walk, false)
+	defer cancelAttempt()
+	attemptDeadline, ok := attempt.Deadline()
+	if !ok {
+		t.Fatal("attempt context lost the walk deadline")
+	}
+
+	// One number decides both ends: whatever is reserved is what the routes
+	// behind get, and the rest is what this one keeps. Spelled out as a
+	// literal rather than derived from reserveShare — deriving it would move
+	// with the constant and pin nothing.
+	const wantReserved = 2500 * time.Millisecond
+	reserved := walkDeadline.Sub(attemptDeadline)
+	if reserved.Round(500*time.Millisecond) != wantReserved {
+		t.Errorf("reserved %v of a %v walk, want %v (leaving the first route %v)",
+			reserved.Round(100*time.Millisecond), budget, wantReserved, budget-wantReserved)
+	}
+}
+
+// TestRouteAttemptContextCapsLongWalk pins that a long walk is unaffected by
+// the share: an asset download is budgeted in minutes, so fallbackReserve is
+// the smaller of the two and decides.
+func TestRouteAttemptContextCapsLongWalk(t *testing.T) {
+	walk, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	walkDeadline, _ := walk.Deadline()
+
+	attempt, cancelAttempt := RouteAttemptContext(walk, false)
+	defer cancelAttempt()
+	attemptDeadline, _ := attempt.Deadline()
+
+	if reserved := walkDeadline.Sub(attemptDeadline); reserved.Round(time.Second) != fallbackReserve {
+		t.Errorf("reserved %v of a 10m walk, want fallbackReserve (%v)", reserved.Round(time.Second), fallbackReserve)
+	}
+}
+
+// TestRouteAttemptContextFinalSpendsEverything: the last route has nothing
+// behind it to protect.
+func TestRouteAttemptContextFinalSpendsEverything(t *testing.T) {
+	walk, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	walkDeadline, _ := walk.Deadline()
+
+	attempt, cancelAttempt := RouteAttemptContext(walk, true)
+	defer cancelAttempt()
+
+	attemptDeadline, ok := attempt.Deadline()
+	if !ok || !attemptDeadline.Equal(walkDeadline) {
+		t.Errorf("final attempt deadline = %v, want the walk's own %v", attemptDeadline, walkDeadline)
 	}
 }

@@ -17,7 +17,9 @@ import (
 	"github.com/yolorouter/yolorouter/internal/pricecatalog"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/router"
+	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/internal/service/provider"
+	"github.com/yolorouter/yolorouter/internal/service/providerclient"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/database"
 	"github.com/yolorouter/yolorouter/pkg/logger"
@@ -115,6 +117,36 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("create bodies dir: %w", err)
 	}
 
+	// Background probe queue: bulk import stores mappings disabled+untested
+	// and hands them here; each probe that passes auto-enables its mapping.
+	// The queue gets its own ModelService (services are stateless; the router
+	// builds its own instances the same way). Signal-driven shutdown does NOT
+	// cancel serve's ctx (signals land on a channel, see below), so
+	// gracefulShutdown stops the queue explicitly inside its budget; this
+	// bounded deferred stop only matters for the error returns before that,
+	// where the just-started queue is idle and stops instantly. Bounded rather
+	// than Stop() because an unbounded wait on a stuck probe would hold the
+	// exiting process past any supervisor grace.
+	// Constructed here because router.New needs the handle, but NOT started
+	// yet: the queue probes upstreams and writes verdicts, and none of that
+	// may happen before the startup checks below (migration, master-key
+	// fingerprint) have passed — a worker running with a wrong master key
+	// would stamp queued rows with abandonment notes moments before the
+	// fingerprint check aborts the boot, and those rows would no longer be
+	// recovered once the key is fixed.
+	probeSvc := modeladmin.NewModelService(app.DB, crypto.NewSecretBox(masterKey),
+		providerclient.NewHTTPProviderClient(app.Config.Security.AllowPrivateUpstreams))
+	probeQueue := modeladmin.NewProbeQueue(probeSvc, modeladmin.DefaultProbeWorkers)
+	// Disarmed once gracefulShutdown takes over: that path stops the queue
+	// inside the 15s budget itself, and letting this defer wait ANOTHER second
+	// afterwards would push a worst-case shutdown past the stated budget.
+	queueStopHandedOff := false
+	defer func() {
+		if !queueStopHandedOff {
+			probeQueue.StopWithin(time.Second)
+		}
+	}()
+
 	// The gateway's vision-fallback capability calls back into this server's
 	// own API; the loopback base is derived from the same port the server is
 	// about to listen on.
@@ -128,6 +160,7 @@ func runServe(ctx context.Context, args []string) error {
 		Gateway:               app.Config.Gateway,
 		LoopbackBase:          loopbackBase,
 		ExternalURL:           app.Config.Server.ExternalURL,
+		ProbeQueue:            probeQueue,
 	})
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
@@ -270,6 +303,19 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	logger.Info("http server listening", fields...)
 
+	// Only now — schema migrated, master key verified, listener bound — may
+	// the queue touch upstreams or rows: every startup failure mode that can
+	// still abort the boot (a port already in use, above) has passed, so no
+	// probe spends upstream calls or writes verdicts for a process that then
+	// exits. The in-memory queue dies with the process; the untested-
+	// unstamped ARMED rows in the database are its durable form, and
+	// recovering them here turns every way a queued probe can be lost — a
+	// crash, a shutdown racing an import's enqueue — into a self-healing
+	// restart. Failure is non-fatal: the rows stay recoverable by re-import,
+	// and the server is still fully usable.
+	probeQueue.Start(ctx)
+	probeQueue.RecoverPendingInBackground()
+
 	serveErrCh := make(chan error, 1)
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -304,10 +350,11 @@ func runServe(ctx context.Context, args []string) error {
 		logger.Info("shutdown context cancelled")
 	}
 
-	return gracefulShutdown(srv, &taskWG, sigCh)
+	queueStopHandedOff = true
+	return gracefulShutdown(srv, &taskWG, probeQueue, sigCh)
 }
 
-func gracefulShutdown(srv *http.Server, taskWG *sync.WaitGroup, sigCh <-chan os.Signal) error {
+func gracefulShutdown(srv *http.Server, taskWG *sync.WaitGroup, probeQueue *modeladmin.ProbeQueue, sigCh <-chan os.Signal) error {
 	const totalBudget = 15 * time.Second
 	deadline := time.Now().Add(totalBudget)
 	remaining := func() time.Duration {
@@ -344,6 +391,19 @@ func gracefulShutdown(srv *http.Server, taskWG *sync.WaitGroup, sigCh <-chan os.
 		}
 	}()
 
+	// Phase 1b: cancel in-flight probes NOW and collect the workers later,
+	// inside the budget. Signals land on a channel rather than cancelling
+	// serve's ctx, so nothing else stops the queue during shutdown — without
+	// this, probes would keep issuing upstream calls through the HTTP drain
+	// and the deferred stop would wait for them only after the budget was
+	// already spent. Stopping runs concurrently with the drain: probes are
+	// outbound work with no relation to in-flight HTTP requests.
+	queueStopped := make(chan struct{})
+	go func() {
+		probeQueue.Stop()
+		close(queueStopped)
+	}()
+
 	// Phase 2: stop accepting new HTTP connections.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), phaseTimeout(10*time.Second))
 	defer cancel()
@@ -377,6 +437,16 @@ func gracefulShutdown(srv *http.Server, taskWG *sync.WaitGroup, sigCh <-chan os.
 	case <-waitCh:
 	case <-time.After(phaseTimeout(3 * time.Second)):
 		logger.Error("background goroutines did not exit within budget, continuing shutdown")
+	}
+
+	// Phase 3b: collect the probe workers cancelled in phase 1b. Usually
+	// instant — cancellation aborts their upstream calls — but a probe stuck
+	// in a call that ignores it must not hold the process past the budget:
+	// the leaked worker dies with the process moments later.
+	select {
+	case <-queueStopped:
+	case <-time.After(phaseTimeout(2 * time.Second)):
+		logger.Error("probe workers did not exit within budget, continuing shutdown")
 	}
 
 	// Every phase above already logs its own errors as they happen (each

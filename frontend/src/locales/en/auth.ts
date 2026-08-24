@@ -23,6 +23,7 @@ export default {
   oauthButton: 'Continue with {name}',
   usernameRuleMessage: '3-32 characters: letters, digits, hyphens, and underscores only',
   passwordRuleMessage: 'At least 10 characters, with both letters and digits, at most 72 bytes',
+  emailRuleMessage: 'Invalid email address',
   fieldRequired: 'This field is required',
   confirmPasswordMismatch: 'Passwords do not match',
   lockedCountdown: 'Too many failed attempts, try again in {seconds}s',

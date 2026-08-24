@@ -9,6 +9,7 @@
     :confirm-text="t('providers.save')"
     :cancel-text="t('providers.cancel')"
     :loading="submitting"
+    :dismissable="!submitting"
     :back-label="t('common.back')"
     @confirm="onSubmit"
   >
@@ -104,6 +105,7 @@ import { useI18n } from 'vue-i18n'
 import { useMessage, type FormInst, type FormRules } from 'naive-ui'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
+import type { Provider } from '../../api/providers'
 import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
 import ProtocolConfigFields from './ProtocolConfigFields.vue'
@@ -113,7 +115,7 @@ import { emptyProtocolConfig, protocolEndpointsValid, serializeProtocolConfig, t
 import { PROVIDER_PRESETS } from '../../config/providerPresets'
 
 const props = defineProps<{ show: boolean }>()
-const emit = defineEmits<{ 'update:show': [boolean] }>()
+const emit = defineEmits<{ 'update:show': [boolean]; created: [Provider] }>()
 
 // ModalDrawer owns a v-model:show; bridge it to this component's existing
 // :show / @update:show contract so parents (ProviderListPage, CandidateEditModal)
@@ -212,7 +214,21 @@ function onUpdateShow(value: boolean) {
   emit('update:show', value)
 }
 
+// One generation per dialog opening: a create request that outlives its own
+// opening (the dialog was somehow dismissed and reopened while the request
+// was in flight) must neither close the NEW opening nor announce its stale
+// provider through `created` — a parent consuming that event would silently
+// bind work to the wrong provider.
+let openGeneration = 0
+watch(
+  () => props.show,
+  (open) => {
+    if (open) openGeneration++
+  },
+)
+
 async function onSubmit() {
+  if (submitting.value) return
   try {
     await formRef.value?.validate()
   } catch {
@@ -222,9 +238,10 @@ async function onSubmit() {
     message.error(t('providers.protocolEndpointUrlInvalid'))
     return
   }
+  const generation = openGeneration
   submitting.value = true
   try {
-    await store.create({
+    const created = await store.create({
       name: form.name,
       base_url: form.baseUrl,
       note: form.note,
@@ -234,11 +251,16 @@ async function onSubmit() {
       management_status: 1, // this modal's fixed behavior: the first key is always submitted requesting enabled (server independently re-verifies before honoring it)
       ...serializeProtocolConfig(form.protocol),
     })
+    if (generation !== openGeneration) return
     onUpdateShow(false)
+    // Parents that host the first-setup flow chain straight into model import
+    // from this; the embedded quick-create inside the candidate form ignores it.
+    emit('created', created)
   } catch (err) {
+    if (generation !== openGeneration) return
     message.error(displayMessage(err, t))
   } finally {
-    submitting.value = false
+    if (generation === openGeneration) submitting.value = false
   }
 }
 </script>

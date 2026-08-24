@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import * as modelsApi from '../api/models'
-import type { Model, ModelCandidate, CreateCandidateInput, UpdateCandidateInput } from '../api/models'
+import type { Model, ModelCandidate, CreateCandidateInput, UpdateCandidateInput, SchedulingMode } from '../api/models'
 
 interface ModelsState {
   list: Model[]
@@ -47,18 +47,18 @@ export const useModelsStore = defineStore('models', {
     async fetchDetail(id: number): Promise<Model> {
       return modelsApi.getModel(id)
     },
-    async create(name: string): Promise<Model> {
-      const created = await modelsApi.createModel(name)
+    async create(name: string, schedulingMode?: SchedulingMode): Promise<Model> {
+      const created = await modelsApi.createModel(name, schedulingMode)
       await this.fetchList()
       return created
     },
-    async createBatch(names: string[]): Promise<modelsApi.BatchCreateModelsResult> {
-      const result = await modelsApi.createModelsBatch(names)
+    async createBatch(names: string[], schedulingMode?: SchedulingMode): Promise<modelsApi.BatchCreateModelsResult> {
+      const result = await modelsApi.createModelsBatch(names, schedulingMode)
       await this.fetchList()
       return result
     },
-    async update(id: number, name: string, imageInput?: modelsApi.ImageInputChoice): Promise<Model> {
-      return modelsApi.updateModel(id, name, imageInput)
+    async update(id: number, patch: modelsApi.ModelPatch): Promise<Model> {
+      return modelsApi.updateModel(id, patch)
     },
     async setStatus(id: number, enabled: boolean) {
       await modelsApi.setModelStatus(id, enabled)
@@ -82,7 +82,7 @@ export const useModelsStore = defineStore('models', {
     async setCandidateStatus(modelId: number, candidateId: number, enabled: boolean) {
       await modelsApi.setCandidateStatus(modelId, candidateId, enabled)
     },
-    async retestCandidate(modelId: number, candidateId: number): Promise<ModelCandidate> {
+    async retestCandidate(modelId: number, candidateId: number): Promise<modelsApi.RetestCandidateResult> {
       return modelsApi.retestCandidate(modelId, candidateId)
     },
     async deleteCandidate(modelId: number, candidateId: number) {

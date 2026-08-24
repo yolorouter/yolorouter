@@ -122,10 +122,9 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { useUpdateStore } from '../../store/update'
-import { useAuthStore } from '../../store/auth'
 import { getSystemVersion, postSystemUpdate } from '../../api/system'
-import { APIError, displayMessage, errorCodeOf } from '../../api/client'
-import { ACCOUNT_SESSION_INVALID } from '../../api/errcodes'
+import { APIError, displayMessage } from '../../api/client'
+import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
 import PageHeader from '../../components/PageHeader.vue'
 import ModalDrawer from '../../components/common/ModalDrawer.vue'
 import logo from '../../assets/logo.svg'
@@ -135,15 +134,9 @@ const router = useRouter()
 const updateStore = useUpdateStore()
 const message = useMessage()
 
-// sessionExpired routes a lapsed admin session to reauth: clear the auth
-// state AND navigate — handleSessionExpired alone does not navigate, and
-// route guards don't rerun on a store change, so without the push the
-// protected shell stays visible with dead data.
+// Shared clear-auth-and-navigate handling (see utils/sessionExpiredRedirect).
 function sessionExpired(err: unknown): boolean {
-  if (errorCodeOf(err) !== ACCOUNT_SESSION_INVALID) return false
-  useAuthStore().handleSessionExpired()
-  void router.push('/login')
-  return true
+  return redirectIfSessionExpired(err, router)
 }
 
 // Load through the shared store action (lastFetchId race-guarded) rather than

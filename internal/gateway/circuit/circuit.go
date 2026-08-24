@@ -171,6 +171,38 @@ func (b *Breaker) StillAllowed(providerID uint, generation uint64) bool {
 	return s.generation == generation
 }
 
+// IsOpen reports whether the provider's breaker is refusing traffic right
+// now, WITHOUT any of Allow's side effects: no open→half-open transition, no
+// generation handed out, no half-open probe slot consumed. Callers that are
+// about to dispatch must still go through Allow — this read exists for
+// decisions that only need the health snapshot, such as picking which
+// provider a sticky binding should target.
+//
+// An open breaker whose open window has already elapsed reports false: the
+// provider deserves recovery traffic at that point, and the dispatches that
+// traffic produces are what transition it through half-open via the normal
+// Allow path. Half-open and closed also report false — half-open is already
+// letting probes through, so it is not "refusing traffic" in any sense a
+// binding decision should act on.
+//
+// destination is the provider's current destination version. A record made
+// against a different destination describes a backend that no longer exists
+// — Allow resets it on first contact — and reporting it open here would
+// demote a freshly repaired provider for the remainder of a stale window.
+// The snapshot stays read-only: the reset itself remains Allow's job.
+func (b *Breaker) IsOpen(providerID uint, destination int) bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s, ok := b.states[providerID]
+	if !ok || s.kind != open || s.destination != destination {
+		return false
+	}
+	return b.now().Sub(s.openedAt) < b.cfg.OpenTimeout
+}
+
 // probeInterval spaces half-open admissions so a healthy provider closes the
 // breaker after roughly one more open window, while an unhealthy or
 // verdict-less stream of admissions costs at most one probe per interval.

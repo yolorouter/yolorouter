@@ -62,3 +62,20 @@ export function usernameFormatRule(t: (key: string) => string): FormItemRule {
     trigger: ['blur', 'input'],
   }
 }
+
+/**
+ * Optional-email format rule for the console's create-user form. Unlike
+ * usernameFormatRule/passwordStrengthRule this is NOT a character-for-
+ * character mirror of the backend: Gin's built-in `email` tag uses the
+ * go-playground regex family, which has no practical line-for-line JS
+ * twin. This rule catches ordinary typos client-side; the backend remains
+ * the authority and its 400 is the final word on edge shapes.
+ */
+export function emailFormatRule(t: (key: string) => string): FormItemRule {
+  return {
+    required: false,
+    validator: (_rule, value: string) => value === '' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+    message: t('auth.emailRuleMessage'),
+    trigger: ['blur', 'input'],
+  }
+}

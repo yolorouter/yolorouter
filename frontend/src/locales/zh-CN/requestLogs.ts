@@ -175,7 +175,6 @@ export default {
   bodyNotRecorded: '未记录',
   copyBody: '复制',
   copyBodySuccess: '已复制内容',
-  copyBodyFailed: '复制失败，请手动选择复制',
   bodyRawHint: '内容不是 JSON，已按原文展示。',
   bodyTooLargeHint: '内容较大，已使用原文模式展示。',
   sseTruncatedHint: 'SSE 片段较多，仅展示前 {shown} / {total} 条。',

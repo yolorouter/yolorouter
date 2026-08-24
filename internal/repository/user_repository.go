@@ -11,14 +11,16 @@ import (
 	"github.com/yolorouter/yolorouter/internal/model"
 )
 
-// CountLocalUsers reports how many local (password-login) accounts exist
-// — 0 or 1 by schema (partial unique index on is_local), used to decide
-// whether first-run setup is still available. Counting all users would
-// be wrong here: externally-provisioned accounts must not make setup
-// look "already done" on an instance whose local admin was never created.
-func CountLocalUsers(db *gorm.DB) (int64, error) {
+// CountBootstrapUsers reports how many bootstrap accounts exist — 0 or 1
+// by schema (partial unique index on is_bootstrap), used to decide whether
+// first-run setup is still available and to settle the concurrent-setup
+// race. Counting local accounts instead would be wrong once admins can
+// provision local members: those don't make setup "already done" on an
+// instance whose bootstrap admin was somehow never created, and the setup
+// race must stay keyed to the flag the unique index actually guards.
+func CountBootstrapUsers(db *gorm.DB) (int64, error) {
 	var count int64
-	err := db.Model(&model.User{}).Where("is_local = ?", true).Count(&count).Error
+	err := db.Model(&model.User{}).Where("is_bootstrap = ?", true).Count(&count).Error
 	return count, err
 }
 
@@ -29,7 +31,7 @@ func CreateUser(db *gorm.DB, user *model.User) error {
 
 // FindLocalUserByUsername returns the local (password-login) account with
 // that username, or gorm.ErrRecordNotFound. Password login deliberately
-// only ever matches the local account: externally-provisioned users have
+// only ever matches a local account: externally-provisioned users have
 // an empty password hash and must never be reachable through the
 // password form, even by username collision. Callers must not
 // distinguish not-found from a wrong password: never reveal whether an

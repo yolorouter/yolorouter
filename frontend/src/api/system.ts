@@ -1,10 +1,11 @@
 // frontend/src/api/system.ts
 //
-// API client for the system version + update endpoints. The version
-// response carries the build/runtime metadata shown on the About page and
-// the resolved update status that drives the sidebar indicator. Mirrors the
-// Go structs assembled in internal/handler/system_handler.go — when those
-// change, update these interfaces in the same commit.
+// API client for the system endpoints: version (build/runtime metadata for
+// the About page plus the update status behind the sidebar indicator),
+// gateway endpoint (the address API clients should point at), and the
+// one-click update trigger. Mirrors the Go handlers in
+// internal/handler/system_handler.go — when those change, update these
+// interfaces in the same commit.
 
 import { apiFetch } from './client'
 
@@ -28,6 +29,19 @@ export interface SystemVersion {
 // its result cache so a release published minutes ago is actually seen.
 export function getSystemVersion(force = false): Promise<SystemVersion> {
   return apiFetch(force ? '/api/admin/system/version?force=1' : '/api/admin/system/version')
+}
+
+export interface SystemEndpoint {
+  // The base URL API clients should point at (before any protocol path
+  // such as /v1). Resolved server-side: configured server.external_url
+  // wins, request-derived otherwise.
+  endpoint: string
+}
+
+// Separate from getSystemVersion because this one is readable by any
+// signed-in account, not just admins.
+export function getSystemEndpoint(): Promise<SystemEndpoint> {
+  return apiFetch('/api/admin/system/endpoint')
 }
 
 export interface SystemUpdateResult {

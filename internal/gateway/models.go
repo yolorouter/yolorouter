@@ -14,6 +14,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -169,12 +170,25 @@ func ListModels(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-// RetrieveModel is the GET /v1/models/:model handler. A model disabled by
+// RetrieveModel is the GET /v1/models/*model handler. A model disabled by
 // an admin reports as "does not exist" (no existence leak), and a model
 // outside the key's allowlist is rejected with 403 — both matching the
 // relay's call-time enforcement so list and call never disagree.
 func RetrieveModel(db *gorm.DB) gin.HandlerFunc {
+	list := ListModels(db)
 	return func(c *gin.Context) {
+		// The route's catch-all param arrives with a leading "/" (and may
+		// itself contain slashes — model ids like deepseek-ai/DeepSeek-V4
+		// are one path's worth of name, not nested segments). Surrounding
+		// slashes are ignored to keep the trailing-slash tolerance the old
+		// single-segment route got from gin's redirect, and an all-slash
+		// (empty) name falls back to the listing for the same reason —
+		// "/v1/models/" used to redirect to "/v1/models".
+		name := strings.Trim(c.Param("model"), "/")
+		if name == "" {
+			list(c)
+			return
+		}
 		proto := IngressProtocolForContext(c)
 		rid := requestIDFor(c)
 		apiKey, ok := gatewayAPIKeyFromContext(c)
@@ -185,7 +199,7 @@ func RetrieveModel(db *gorm.DB) gin.HandlerFunc {
 		if rejectInvalidKey(c, proto, apiKey, rid) {
 			return
 		}
-		m, err := repository.FindModelByName(db, c.Param("model"))
+		m, err := repository.FindModelByName(db, name)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				WriteIngressError(c, proto, http.StatusNotFound, errTypeNotFound, "model does not exist", rid)

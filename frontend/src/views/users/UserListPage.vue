@@ -3,12 +3,20 @@
      small — no pagination, filters run client-side), showing where each
      account came from (local password vs. login providers), its role and
      status, and the usage aggregates (key count, lifetime spend). Actions:
-     enable/disable and promote/demote. There is deliberately no delete —
-     accounts anchor keys and request history, so removal would orphan or
-     falsify both; disabling is the terminal state. -->
+     provision a local password member, enable/disable and promote/demote.
+     There is deliberately no delete — accounts anchor keys and request
+     history, so removal would orphan or falsify both; disabling is the
+     terminal state. -->
 <template>
   <div class="common-page">
-    <PageHeader :eyebrow="t('users.eyebrow')" :title="t('users.pageTitle')" :description="t('users.pageDescription')" />
+    <PageHeader :eyebrow="t('users.eyebrow')" :title="t('users.pageTitle')" :description="t('users.pageDescription')">
+      <template #actions>
+        <n-button type="primary" @click="showCreate = true">
+          <template #icon><Plus :size="16" /></template>
+          {{ t('users.createButton') }}
+        </n-button>
+      </template>
+    </PageHeader>
 
     <div class="filter-panel">
       <div class="filter-grid">
@@ -50,20 +58,35 @@
         :row-key="(row: UserSummary) => row.id"
       >
         <template #empty>
-          <EmptyState :icon="UsersRound" :title="t('users.listEmpty')" />
+          <EmptyState :icon="UsersRound" :title="t('users.listEmpty')">
+            <template #action>
+              <n-button type="primary" @click="showCreate = true">{{ t('users.createButton') }}</n-button>
+            </template>
+          </EmptyState>
         </template>
       </ResponsiveDataTable>
     </div>
+
+    <CreateUserModal v-model:show="showCreate" @created="reload" />
+
+    <ResetPasswordModal
+      v-model:show="showReset"
+      :user-id="resetTarget?.id ?? 0"
+      :username="resetTarget?.username ?? ''"
+      @reset="reload"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NInput, NTag, useDialog, useMessage, type DataTableColumns, type DropdownOption, type SelectOption } from 'naive-ui'
-import { Search, MoreHorizontal, UsersRound } from '@lucide/vue'
+import { NButton, NTag, useDialog, useMessage, type DataTableColumns, type DropdownOption, type SelectOption } from 'naive-ui'
+import { Search, MoreHorizontal, Plus, UsersRound } from '@lucide/vue'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
+import CreateUserModal from '../../components/users/CreateUserModal.vue'
+import ResetPasswordModal from '../../components/users/ResetPasswordModal.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
@@ -125,18 +148,28 @@ onMounted(() => {
   void reload()
 })
 
+const showCreate = ref(false)
+
 // Rows without actions: the acting admin's own account (the backend
-// refuses self-operations) and the local recovery account (it can never
-// be disabled or demoted — it is the OAuth-failure escape hatch — and it
-// is already an admin, so no action remains). Offering the entries would
-// only produce a guaranteed error toast.
+// refuses self-operations) and the bootstrap account (the first-run setup
+// anchor — it can never be disabled or demoted, and it is already an
+// admin, so no action remains). Offering the entries would only produce a
+// guaranteed error toast. Console-created local members are NOT covered:
+// they are ordinary accounts with the full action set.
 function hasNoActions(row: UserSummary): boolean {
-  return row.username === authStore.username || row.is_local
+  return row.username === authStore.username || row.is_bootstrap
 }
 
 function rowActions(row: UserSummary): DropdownOption[] {
   const enabled = row.status === USER_STATUS_ENABLED
-  return [
+  const items: DropdownOption[] = []
+  // Password resets are the bootstrap administrator's alone (the backend
+  // refuses everyone else), and only local accounts have a password.
+  if (row.is_local && authStore.isBootstrap) {
+    items.push({ label: t('users.resetPassword'), key: 'reset' })
+    items.push({ type: 'divider', key: 'd0' })
+  }
+  items.push(
     row.role === 'admin'
       ? { label: t('users.demote'), key: 'demote' }
       : { label: t('users.promote'), key: 'promote' },
@@ -144,10 +177,24 @@ function rowActions(row: UserSummary): DropdownOption[] {
     enabled
       ? { label: t('users.disable'), key: 'disable', props: { style: 'color: var(--color-danger)' } }
       : { label: t('users.enable'), key: 'enable' },
-  ]
+  )
+  return items
 }
 
+// The reset target for the reset-password modal; null keeps it closed.
+const resetTarget = ref<{ id: number; username: string } | null>(null)
+const showReset = computed({
+  get: () => resetTarget.value !== null,
+  set: (v) => {
+    if (!v) resetTarget.value = null
+  },
+})
+
 function onAction(row: UserSummary, key: string) {
+  if (key === 'reset') {
+    resetTarget.value = { id: row.id, username: row.username }
+    return
+  }
   const confirmMap: Record<string, { title: string; content: string; run: () => Promise<null> }> = {
     disable: {
       title: t('users.disableConfirmTitle'),
@@ -191,7 +238,12 @@ function onAction(row: UserSummary, key: string) {
 
 function sourceCell(row: UserSummary) {
   if (row.is_local) {
-    return h(NTag, { size: 'small', bordered: false }, { default: () => t('users.sourceLocal') })
+    const tags = [h(NTag, { size: 'small', bordered: false }, { default: () => t('users.sourceLocal') })]
+    if (row.is_bootstrap) {
+      tags.push(h(NTag, { size: 'small', bordered: false, type: 'warning' },
+        { default: () => t('users.sourceBootstrap') }))
+    }
+    return h('div', { style: 'display:flex; gap:4px; flex-wrap:wrap' }, tags)
   }
   if (!row.providers.length) {
     return '—'

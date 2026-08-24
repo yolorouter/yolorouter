@@ -9,8 +9,10 @@ interface AuthStoreState {
   username: string | null
   /** Account role ('admin' | 'member') as reported by the backend; null while logged out. */
   role: string | null
-  /** Whether the account is the password-backed local one; false for OAuth accounts, null while logged out. */
+  /** Whether the account is a password-backed local one; false for OAuth accounts, null while logged out. */
   isLocal: boolean | null
+  /** Whether this is the first-run setup account — the only one that may reset other local accounts' passwords. */
+  isBootstrap: boolean | null
   /**
    * Set whenever handleSessionExpired fires (a genuinely mid-use session
    * expiry, caught by withSessionInvalidHandling on some later
@@ -31,6 +33,7 @@ export const useAuthStore = defineStore('auth', {
     username: null,
     role: null,
     isLocal: null,
+    isBootstrap: null,
     sessionExpiredNotice: false,
   }),
   getters: {
@@ -76,6 +79,7 @@ export const useAuthStore = defineStore('auth', {
           this.username = me.username
           this.role = me.role
           this.isLocal = me.is_local
+          this.isBootstrap = me.is_bootstrap
         } catch (err) {
           if (err instanceof APIError && err.code === ACCOUNT_SESSION_INVALID) {
             this.clearIdentity()
@@ -91,12 +95,14 @@ export const useAuthStore = defineStore('auth', {
       this.username = admin.username
       this.role = admin.role
       this.isLocal = admin.is_local
+      this.isBootstrap = admin.is_bootstrap
     },
     async login(username: string, password: string) {
       const admin = await authApi.login(username, password)
       this.username = admin.username
       this.role = admin.role
       this.isLocal = admin.is_local
+      this.isBootstrap = admin.is_bootstrap
     },
     async logout() {
       await authApi.logout()
@@ -118,6 +124,7 @@ export const useAuthStore = defineStore('auth', {
       this.username = null
       this.role = null
       this.isLocal = null
+      this.isBootstrap = null
     },
     /** Reads and clears the pending notice in one step, so it's shown at most once per expiry. */
     consumeSessionExpiredNotice(): boolean {

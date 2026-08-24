@@ -107,7 +107,7 @@
         <template #label>
           <HelpLabel :tip="t('models.statusEnabled_tip')">{{ t('models.statusEnabled') }}</HelpLabel>
         </template>
-        <n-switch v-model:value="form.enabled" />
+        <n-switch v-model:value="form.enabled" @update:value="statusTouched = true" />
       </n-form-item>
     </n-form>
 
@@ -190,7 +190,7 @@
     </template>
   </ModalDrawer>
 
-  <NewProviderModal v-model:show="showNewProviderModal" />
+  <NewProviderModal v-model:show="showNewProviderModal" @created="onProviderCreated" />
 </template>
 
 <script setup lang="ts">
@@ -210,6 +210,7 @@ import {
 } from 'naive-ui'
 import { useModelsStore } from '../../store/models'
 import { useProvidersStore } from '../../store/providers'
+import type { Provider } from '../../api/providers'
 import { displayMessage } from '../../api/client'
 import { providerModelNameRule, nonNegativePriceRule } from '../../utils/modelValidators'
 import { capabilityState } from '../../utils/modelStatusDisplay'
@@ -221,9 +222,7 @@ import FilterSelectField from '../common/FilterSelectField.vue'
 import NewProviderModal from '../providers/NewProviderModal.vue'
 import type { CandidateTestReport, ModelCandidate, ProbeReport, SuggestedPrice } from '../../api/models'
 import { suggestCandidatePrice } from '../../api/models'
-
-const CANDIDATE_STATUS_ENABLED = 1
-const CANDIDATE_STATUS_DISABLED = 2
+import { CANDIDATE_STATUS_DISABLED, CANDIDATE_STATUS_ENABLED } from '../../api/candidateStatus'
 
 const props = defineProps<{
   show: boolean
@@ -276,7 +275,6 @@ let priceFillSeq = 0
 let pendingPriceFill: Promise<void> | null = null
 
 const showNewProviderModal = ref(false)
-let providerIdBeforeCreate = 0
 
 // The numeric fields are `number | null` because that is what NInputNumber
 // itself uses for "empty" — it emits null when the box is cleared. Typing them
@@ -704,6 +702,7 @@ watch(
       form.cacheReadPrice = props.editingCandidate.cache_read_price
       form.maxOutput = props.editingCandidate.max_output
       form.enabled = props.editingCandidate.management_status === CANDIDATE_STATUS_ENABLED
+      statusTouched.value = false
       // The stored prices already describe this pair, so opening the dialog is
       // not a reason to re-price it. Only a change from here is.
       pricedPairKey = pairKey(form.providerId, effectiveProviderModelName.value)
@@ -731,23 +730,36 @@ function onUpdateShow(value: boolean) {
 }
 
 function openNewProviderModal() {
-  // NewProviderModal.vue only emits 'update:show' (an unused 'created'
-  // emit was removed) — so instead of listening for a
-  // creation event, capture the highest existing provider id, then diff
-  // against the refetched list once the modal closes.
-  providerIdBeforeCreate = providersStore.list.reduce((max, p) => Math.max(max, p.id), 0)
   showNewProviderModal.value = true
 }
 
-watch(showNewProviderModal, async (visible) => {
+// The exact created provider comes from the modal's own event — inferring it
+// by diffing ids around the close would pick up a provider some OTHER admin
+// created concurrently, and a later save would silently bind the mapping (and
+// its probes) to the wrong upstream. Selecting before the list refresh keeps
+// the precise id even when that refresh fails.
+function onProviderCreated(created: Provider) {
+  form.providerId = created.id
+  void providersStore.fetchList()
+}
+
+// Closing without creating (cancel) only refreshes the options; the current
+// selection is not second-guessed.
+watch(showNewProviderModal, (visible) => {
   if (visible) return
-  await providersStore.fetchList()
-  const created = providersStore.list.find((p) => p.id > providerIdBeforeCreate)
-  if (created) form.providerId = created.id
+  void providersStore.fetchList()
 })
 
+// True once the operator actually flips the enable switch this opening; a
+// pristine switch stays out of the edit payload entirely. The server treats a
+// PRESENT disabled value as an explicit instruction — it advances the probe
+// token and revokes the auto-enable promise — so a price-only save on an
+// imported, still-queued candidate must not carry one, and a stale form must
+// not overwrite an enable that landed after the dialog opened.
+const statusTouched = ref(false)
+
 function candidatePayload() {
-  return {
+  const base = {
     provider_model_name: form.providerModelName,
     // The required fields are validated non-null before this runs; the ?? is
     // what keeps the payload's types honest rather than a second default.
@@ -758,8 +770,9 @@ function candidatePayload() {
     cache_write_price: form.cacheWritePrice ?? undefined,
     cache_read_price: form.cacheReadPrice ?? undefined,
     max_output: form.maxOutput ?? 0,
-    management_status: form.enabled ? CANDIDATE_STATUS_ENABLED : CANDIDATE_STATUS_DISABLED,
   }
+  if (props.editingCandidate && !statusTouched.value) return base
+  return { ...base, management_status: form.enabled ? CANDIDATE_STATUS_ENABLED : CANDIDATE_STATUS_DISABLED }
 }
 
 // A run whose every probe came back affirmative needs no acknowledgement — the
@@ -774,9 +787,26 @@ function reportIsAllClear(r: CandidateTestReport | null): boolean {
 // toast; anything less keeps it open so the verdicts are actually read, but the
 // row is already saved, so persisted flips and the footer becomes a single
 // close action rather than a save that would collide with itself.
-function finishSave(enabled: boolean, r: CandidateTestReport | null, editingId: number | null) {
+//
+// enabled is the PERSISTED row's state, not the form's request: the service
+// can honor the save and the verdict while forfeiting the enable to a
+// concurrent admin action, and announcing the requested state would claim
+// "saved and enabled" over a row that is off.
+function finishSave(enabled: boolean, r: CandidateTestReport | null, reportApplied: boolean, editingId: number | null) {
   persisted.value = true
   emit('saved')
+  // A probe that lost the commit race to a concurrent run produced verdicts
+  // the row does not hold — showing them (or claiming "saved and enabled")
+  // would contradict the list. The fields did save; say so and defer to the
+  // list for the probe state, same wording as a superseded retest. Gated on
+  // the basic probe having RUN: a probe that never started (no usable key
+  // yet) also comes back not-applied, but there was no race — the modal's
+  // own "not tested" explanation is the honest story for that row.
+  if (r !== null && r.basic.ran && !reportApplied) {
+    onUpdateShow(false)
+    message.info(t('providers.retestSuperseded'))
+    return
+  }
   if (!reportIsAllClear(r)) return
   onUpdateShow(false)
   // A null report means the edit could not have invalidated the stored verdicts
@@ -854,8 +884,12 @@ async function onSave() {
       if (seq !== saveSeq) return
       report.value = result.report
       // The edit always persists — a probe result only decides enablement — so
-      // this counts as saved regardless of how the probes turned out.
-      finishSave(enabled, result.report, editingId)
+      // this counts as saved regardless of how the probes turned out. The
+      // feedback reads the row as the server returned it, not as the form
+      // requested it: a concurrent admin action can leave a passing save
+      // disabled, and that is what the operator must be told.
+      finishSave(result.candidate.management_status === CANDIDATE_STATUS_ENABLED,
+        result.report, result.report_applied, editingId)
       return
     }
     const result = await store.testAndCreateCandidate(props.modelId, {
@@ -864,7 +898,14 @@ async function onSave() {
     })
     if (seq !== saveSeq) return
     report.value = result.report
-    if (result.created) finishSave(enabled, result.report, null)
+    // Test-and-create's probe wrote the freshly inserted row — nothing can
+    // have raced it, so its report is always the row's own.
+    if (result.created) {
+      finishSave(
+        result.candidate !== null ? result.candidate.management_status === CANDIDATE_STATUS_ENABLED : enabled,
+        result.report, true, null,
+      )
+    }
   } catch (err) {
     if (seq !== saveSeq) return
     message.error(displayMessage(err, t))

@@ -15,7 +15,7 @@ import (
 func seedUser(t *testing.T, db *gorm.DB, username string) *model.User {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
-	user := newLocalAdmin(username, now)
+	user := newBootstrapAdmin(username, now)
 	if err := CreateUser(db, user); err != nil {
 		t.Fatalf("seedUser CreateUser failed: %v", err)
 	}

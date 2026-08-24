@@ -12,11 +12,13 @@ export interface AdminInfo {
   /** Account role: 'admin' | 'member'. Drives which navigation the frontend renders. */
   role: string
   /**
-   * Whether this is the password-backed local account. Externally-
+   * Whether this is a password-backed local account. Externally-
    * provisioned (OAuth) accounts have no password, so the change-password
    * entry is hidden for them.
    */
   is_local: boolean
+  /** Whether this is the first-run setup account — the only one that may reset other local accounts' passwords. */
+  is_bootstrap: boolean
 }
 
 export interface LoginLockedData {

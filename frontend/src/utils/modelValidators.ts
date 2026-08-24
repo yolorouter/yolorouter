@@ -9,7 +9,7 @@ import type { FormItemRule } from 'naive-ui'
 // without re-hardcoding the pattern. async-validator skips a non-required
 // pattern rule on empty input.
 export function modelNameFormatRule(t: (key: string) => string): FormItemRule {
-  return { max: 100, pattern: /^[a-zA-Z0-9._-]+$/, message: t('models.nameInvalid'), trigger: ['blur', 'input'] }
+  return { max: 100, pattern: /^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)*$/, message: t('models.nameInvalid'), trigger: ['blur', 'input'] }
 }
 
 export function modelNameRule(t: (key: string) => string): FormItemRule[] {

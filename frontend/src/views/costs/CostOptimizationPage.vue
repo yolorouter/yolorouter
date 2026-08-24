@@ -9,11 +9,15 @@
      Uses the same reloadSeq stale-guard as AnalyticsPage so rapid filter
      changes never leave stale financial data on screen. The settings-enabled
      GETs run in parallel on mount and gate the CTA banner so it never flashes
-     a false "off" state before the real values arrive. -->
+     a false "off" state before the real values arrive.
+
+     Savings render as two group cards, one per optimization switch: the
+     measured input-compression roll-up on the left, and the projected
+     concise-output unit rate (per 1M output tokens) on the right. -->
 <template>
   <div class="common-page">
     <PageHeader
-      class="new-line" 
+      class="new-line"
       :eyebrow="t('costOptimization.eyebrow')"
       :title="t('costOptimization.title')"
       :description="t('costOptimization.pageDescription')"
@@ -37,14 +41,14 @@
       <div v-else class="cta-banner__main">
         <div class="cta-banner__lead">
           <Sparkles :size="20" class="cta-banner__icon" />
-          <span>{{ t('costOptimization.ctaNotAllOn', { n: offCount }) }}</span>
+          <span>{{ ctaLead }}</span>
         </div>
         <div class="cta-banner__pills">
-          <span class="status-pill" :class="cspEnabled ? 'status-pill--on' : 'status-pill--off'">
-            {{ t('costOptimization.cspSubTitle') }} · {{ cspEnabled ? t('costOptimization.statusOn') : t('costOptimization.statusOff') }}
+          <span class="status-pill" :class="concisePill.cls">
+            {{ t('costOptimization.cspSubTitle') }} · {{ concisePill.label }}
           </span>
-          <span class="status-pill" :class="icEnabled ? 'status-pill--on' : 'status-pill--off'">
-            {{ t('costOptimization.inputCompression.title') }} · {{ icEnabled ? t('costOptimization.statusOn') : t('costOptimization.statusOff') }}
+          <span class="status-pill" :class="compressPill.cls">
+            {{ t('costOptimization.inputCompression.title') }} · {{ compressPill.label }}
           </span>
         </div>
         <NButton type="primary" size="small" @click="settingsShow = true">
@@ -52,37 +56,86 @@
         </NButton>
       </div>
     </div>
-    <!-- KPI metric tiles. All cost figures are ESTIMATED (see tips). -->
-    <div class="metric-row">
-      <div class="metric">
-        <div class="metric__label">
-          <HelpLabel :tip="t('costOptimization.metricTokensSaved_tip')">{{ t('costOptimization.metricTokensSaved') }}</HelpLabel>
+    <!-- Two savings groups, one per optimization switch: the measured
+         compression roll-up on the left, the projected concise-output unit
+         rate on the right. The banner above stays a pure switch CTA. -->
+    <div class="savings-groups">
+      <div class="section-card">
+        <div class="section-card__head group-head">
+          <HelpLabel :tip="t('costOptimization.inputCompression.titleTip')">
+            {{ t('costOptimization.groupCompress') }}
+          </HelpLabel>
+          <span class="status-pill" :class="compressPill.cls">{{ compressPill.label }}</span>
         </div>
-        <div class="metric__value">{{ formatNumber(totals.tokens_saved) }}</div>
+        <div class="group-metrics">
+          <div class="metric-cell">
+            <div class="metric__label">
+              <HelpLabel :tip="t('costOptimization.metricTokensSaved_tip')">{{ t('costOptimization.metricTokensSaved') }}</HelpLabel>
+            </div>
+            <div class="metric__value">{{ formatNumber(totals.tokens_saved) }}</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric__label">
+              <HelpLabel :tip="t('costOptimization.metricCostSaved_tip')">{{ t('costOptimization.metricCostSaved') }}</HelpLabel>
+            </div>
+            <div class="metric__value">¥{{ formatMicros(totals.cost_saved_micros, 2) }}</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric__label">
+              <HelpLabel :tip="t('costOptimization.metricCompressRate_tip')">{{ t('costOptimization.metricCompressRate') }}</HelpLabel>
+            </div>
+            <div class="metric__value">{{ formatRate(compressRate) }}</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric__label">
+              <HelpLabel :tip="t('costOptimization.metricCompressedCalls_tip')">{{ t('costOptimization.metricCompressedCalls') }}</HelpLabel>
+            </div>
+            <div class="metric__value">{{ formatNumber(totals.compressed_calls) }}</div>
+          </div>
+        </div>
       </div>
-      <div class="metric">
-        <div class="metric__label">
-          <HelpLabel :tip="t('costOptimization.metricCostSaved_tip')">{{ t('costOptimization.metricCostSaved') }}</HelpLabel>
+
+      <div class="section-card">
+        <div class="section-card__head group-head">
+          <HelpLabel :tip="t('costOptimization.groupConcise_tip')">{{ t('costOptimization.groupConcise') }}</HelpLabel>
+          <span class="status-pill" :class="concisePill.cls">{{ concisePill.label }}</span>
         </div>
-        <div class="metric__value">¥{{ formatMicros(totals.cost_saved_micros,2) }}</div>
-      </div>
-      <div class="metric">
-        <div class="metric__label">
-          <HelpLabel :tip="t('costOptimization.metricCompressRate_tip')">{{ t('costOptimization.metricCompressRate') }}</HelpLabel>
+        <div class="group-metrics">
+          <div class="metric-cell">
+            <div class="metric__label">
+              <HelpLabel :tip="t('costOptimization.concisePerMillion_tip')">{{ t('costOptimization.concisePerMillion') }}</HelpLabel>
+            </div>
+            <div class="metric__value">{{ projectionValue }}</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric__label">
+              <HelpLabel :tip="t('costOptimization.conciseCoefficient_tip')">{{ t('costOptimization.conciseCoefficient') }}</HelpLabel>
+            </div>
+            <div class="metric__value">{{ projection ? formatRate(projection.coefficient) : '—' }}</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric__label">
+              <HelpLabel :tip="t('costOptimization.concisePricedTokens_tip')">{{ t('costOptimization.concisePricedTokens') }}</HelpLabel>
+            </div>
+            <div class="metric__value">{{ projection ? formatNumber(projection.priced_output_tokens) : '—' }}</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric__label">
+              <HelpLabel :tip="t('costOptimization.conciseCoverage_tip')">{{ t('costOptimization.conciseCoverage') }}</HelpLabel>
+            </div>
+            <div class="metric__value">{{ coverageRate }}</div>
+          </div>
         </div>
-        <div class="metric__value">{{ formatRate(compressRate) }}</div>
-      </div>
-      <div class="metric">
-        <div class="metric__label">
-          <HelpLabel :tip="t('costOptimization.metricCompressedCalls_tip')">{{ t('costOptimization.metricCompressedCalls') }}</HelpLabel>
+        <!-- Footnote always carries the benchmark link (language-matched
+             doc URL from i18n); the basis note joins it when a figure
+             exists. -->
+        <div class="group-footnote">
+          <span v-if="projectionNote">{{ projectionNote }} · </span>
+          <a :href="benchmarkDocUrl(locale)" target="_blank" rel="noopener" class="group-footnote__link">
+            {{ t('costOptimization.projectionBenchmarkLink') }}
+            <ExternalLink :size="12" />
+          </a>
         </div>
-        <div class="metric__value">{{ formatNumber(totals.compressed_calls) }}</div>
-      </div>
-      <div class="metric">
-        <div class="metric__label">
-          <HelpLabel :tip="t('costOptimization.metricAvgSaved_tip')">{{ t('costOptimization.metricAvgSaved') }}</HelpLabel>
-        </div>
-        <div class="metric__value">{{ formatNumber(avgSaved) }}</div>
       </div>
     </div>
 
@@ -184,7 +237,7 @@
 import { computed, h, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NDataTable, useMessage, type DataTableColumns } from 'naive-ui'
-import { BarChart3, CheckCircle2, Settings, Sparkles } from '@lucide/vue'
+import { BarChart3, CheckCircle2, ExternalLink, Settings, Sparkles } from '@lucide/vue'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import HelpLabel from '../../components/HelpLabel.vue'
@@ -197,18 +250,21 @@ import OptimizationSettingsModal from '../../components/costs/OptimizationSettin
 import CompressLineChart from '../../components/costs/CompressLineChart.vue'
 import { SKIP_REASON_KEYS } from '../../utils/compressSkipReason'
 import { getCustomSystemPrompt, getInputCompression } from '../../api/systemSettings'
+import { benchmarkDocUrl, coverageRatio, projectionDisplay } from '../../utils/conciseProjection'
 import { useAuthStore } from '../../store/auth'
 import { useUserFilter } from '../../composables/useUserFilter'
 import UserFilterSelect from '../../components/common/UserFilterSelect.vue'
 import {
   getCompressStats,
+  getConciseOutputProjection,
   type AnalyticsFilter,
   type CompressSkipReasonRow,
   type CompressStatsResult,
   type CompressorHitRow,
+  type ConciseOutputProjection,
 } from '../../api/analytics'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const message = useMessage()
 const authStore = useAuthStore()
 
@@ -221,30 +277,84 @@ const { selectedUserId, userOptions, loadUserOptions, onUserChange } = useUserFi
 // === Settings modal visibility ============================================
 const settingsShow = ref(false)
 
-// === Settings-enabled state (drives the CTA banner) =======================
-// Both default to false; settingsLoaded stays false until both GETs resolve
-// so the CTA banner doesn't flash a false "not all on" before the real
-// values arrive. On error we still flip settingsLoaded so the CTA shows —
-// the safe fallback is to prompt the user to check settings.
-const cspEnabled = ref(false)
-const icEnabled = ref(false)
+// === Settings-enabled state ===============================================
+// Each switch is a THREE-state value — on / off / unknown — and every reader
+// on this page (CTA banner and both savings card headers) uses the same one.
+// Unknown is not folded into "off": a pill next to a savings figure, and a
+// banner counting how many optimizations to go turn on, are both claims about
+// the instance, and "we could not read it" is not the same claim as "it is
+// disabled". settingsLoaded gates the banner so it never renders any of the
+// three before the first read settles.
+type SwitchState = 'on' | 'off' | 'unknown'
+const cspState = ref<SwitchState>('unknown')
+const icState = ref<SwitchState>('unknown')
 const settingsLoaded = ref(false)
 
+// settingsSeq is a latest-wins token like reload()'s. A save triggers a
+// refresh while the mount's read may still be in flight; without it the older
+// response could land last and show pre-save state as current.
+let settingsSeq = 0
+
 async function loadSettingsEnabled() {
-  try {
-    const [csp, ic] = await Promise.all([getCustomSystemPrompt(), getInputCompression()])
-    cspEnabled.value = csp.enabled
-    icEnabled.value = ic.enabled
-  } catch {
-    // Leave defaults (both false). The CTA will prompt the user to open
-    // settings, which is the safest fallback when we can't read state.
-  } finally {
-    settingsLoaded.value = true
-  }
+  const mySeq = ++settingsSeq
+  // Back to unknown before re-reading. A save is the usual trigger, and the
+  // value on screen is the one it just replaced — holding it there while the
+  // re-read is in flight would present a stale answer as the current one.
+  // settingsSeq stops an older response from landing; it cannot stop an older
+  // VALUE from staying on screen.
+  cspState.value = 'unknown'
+  icState.value = 'unknown'
+  // Each GET commits on its own — one hanging must not hold back the other's
+  // answer — and a failed read of the LATEST request resets that switch to
+  // unknown rather than leaving a stale value on screen as if it were fresh.
+  const commit = <T,>(p: Promise<T>, read: (v: T) => boolean, state: typeof cspState) =>
+    p.then(
+      (v) => {
+        if (mySeq === settingsSeq) state.value = read(v) ? 'on' : 'off'
+      },
+      () => {
+        if (mySeq === settingsSeq) state.value = 'unknown'
+      },
+    ).finally(() => {
+      // Revealed by whichever request settles FIRST, not by both: gating on
+      // the pair would hide the whole banner behind one slow endpoint until
+      // it timed out, even though the other switch already has an answer.
+      // The one still in flight renders as unknown, which is what it is.
+      if (mySeq === settingsSeq) settingsLoaded.value = true
+    })
+  await Promise.all([
+    commit(getCustomSystemPrompt(), (v) => v.enabled, cspState),
+    commit(getInputCompression(), (v) => v.enabled, icState),
+  ])
 }
 
-const allOn = computed(() => cspEnabled.value && icEnabled.value)
-const offCount = computed(() => Number(!cspEnabled.value) + Number(!icEnabled.value))
+// Pill rendering for one switch, shared by the banner and both card headers
+// so they can never disagree about what is known.
+function switchPill(state: SwitchState) {
+  if (state === 'unknown') {
+    return { label: t('costOptimization.statusUnknown'), cls: 'status-pill--unknown' }
+  }
+  return state === 'on'
+    ? { label: t('costOptimization.statusOn'), cls: 'status-pill--on' }
+    : { label: t('costOptimization.statusOff'), cls: 'status-pill--off' }
+}
+const compressPill = computed(() => switchPill(icState.value))
+const concisePill = computed(() => switchPill(cspState.value))
+
+const allOn = computed(() => cspState.value === 'on' && icState.value === 'on')
+// Only switches read as off are counted — an unread one is not something the
+// user can be told to go enable.
+const offCount = computed(
+  () => Number(cspState.value === 'off') + Number(icState.value === 'off'),
+)
+// The banner's headline. It only reaches the unknown wording when nothing is
+// confirmed off yet something is unconfirmed — at that point the only honest
+// thing left to say is that the state could not be read.
+const ctaLead = computed(() =>
+  offCount.value > 0
+    ? t('costOptimization.ctaNotAllOn', { n: offCount.value })
+    : t('costOptimization.ctaUnknown'),
+)
 
 // === Time range state =====================================================
 // Default window = last 7 days, shared with the other dashboards via
@@ -254,6 +364,10 @@ const timeRange = ref<TimeRange>(initialLast7DaysRange())
 
 // === Stats state ==========================================================
 const stats = ref<CompressStatsResult | null>(null)
+// Concise-output projection for the right-hand savings card — same filter,
+// same stale-guard, fetched alongside the stats in one reload so the two
+// cards can never disagree on the window they cover.
+const projection = ref<ConciseOutputProjection | null>(null)
 const loading = ref(false)
 
 // Totals accessor: returns zeros when stats hasn't loaded yet so the metric
@@ -282,11 +396,45 @@ const compressRate = computed(() => {
   return rate
 })
 
-// avgSaved = mean tokens saved per compressed request.
-const avgSaved = computed(() => {
-  const calls = totals.value.compressed_calls
-  if (!calls) return 0
-  return Math.round(totals.value.tokens_saved / calls)
+// === Concise-output projection card =======================================
+// Display decisions live in utils/conciseProjection (missing / empty /
+// all-unpriced / amount) so the state machine is unit-tested without
+// mounting the page. The figure is a per-1M-output-token unit rate
+// (traffic-weighted output price x coefficient), so it stays meaningful on
+// a lightly-used instance instead of reading as cents per month. No
+// traffic / all-unpriced windows render an em-dash plus an explanatory
+// note rather than a ¥0.00 figure.
+const projectionState = computed(() => projectionDisplay(projection.value))
+
+const projectionValue = computed(() => {
+  const d = projectionState.value
+  return d.kind === 'amount' ? `¥${formatMicros(d.micros, 2)}` : '—'
+})
+
+// coverageRate = priced requests / requests with output traffic in the
+// window; '—' until the projection lands or when there is nothing to cover.
+const coverageRate = computed(() => {
+  const ratio = coverageRatio(projection.value)
+  return ratio === null ? '—' : formatRate(ratio)
+})
+
+// Card footnote: the pricing basis once a figure exists, the empty /
+// all-unpriced explanation when it does not.
+const projectionNote = computed(() => {
+  switch (projectionState.value.kind) {
+    case 'missing':
+      return ''
+    case 'empty':
+      return t('costOptimization.projectionEmpty')
+    case 'unpriced-all':
+      return t('costOptimization.projectionUnpricedAll')
+    default: {
+      let note = t('costOptimization.projectionFootnote')
+      const p = projection.value
+      if (p && p.priced_rows < p.output_rows) note += ` · ${t('costOptimization.projectionUnpriced')}`
+      return note
+    }
+  }
 })
 
 // Dimension card data. Each card consumes one breakdown array from the
@@ -328,20 +476,39 @@ async function reload() {
   // financial data on screen. The user sees a brief loading state rather
   // than the previous filter's numbers; on error the results stay cleared.
   stats.value = null
-  try {
-    const filter: AnalyticsFilter = { start: timeRange.value.start, end: timeRange.value.end, user_id: selectedUserId.value }
-    const result = await getCompressStats(filter)
-    if (mySeq !== reloadSeq) return // a newer reload started; discard this one
-    stats.value = result
-  } catch (err) {
-    if (mySeq !== reloadSeq) return
+  projection.value = null
+  const filter: AnalyticsFilter = { start: timeRange.value.start, end: timeRange.value.end, user_id: selectedUserId.value }
+  // The two requests commit independently rather than as a pair. Awaiting
+  // both together would let the optional projection hold the dashboard back:
+  // a rejection would discard an already-successful compress-stats response,
+  // and a slow one would keep the charts and tables in their loading state
+  // until it timed out. The projection's absence is already a rendered state
+  // (em-dashes), so nothing waits on it.
+  //
+  // Every commit re-checks mySeq: without it a slower earlier reload could
+  // still land after a newer one and overwrite it with stale data.
+  let notified = false
+  const onFailure = (err: unknown) => {
+    // One toast per reload even if both halves fail — two stacked errors for
+    // one filter change is noise, and the first is the one to act on.
+    if (mySeq !== reloadSeq || notified) return
+    notified = true
     message.error(displayMessage(err, t))
-    // stats stays null — no stale data under the new filter.
-  } finally {
-    // Only clear loading when the latest reload finishes — otherwise a stale
-    // finally could flip it to false while the newer reload is still in flight.
-    if (mySeq === reloadSeq) loading.value = false
   }
+  const statsDone = getCompressStats(filter)
+    .then((result) => {
+      if (mySeq === reloadSeq) stats.value = result
+    }, onFailure)
+    .finally(() => {
+      // loading gates the compress-stats tables only, so it clears with them.
+      if (mySeq === reloadSeq) loading.value = false
+    })
+  const projectionDone = getConciseOutputProjection(filter).then((result) => {
+    if (mySeq === reloadSeq) projection.value = result
+  }, onFailure)
+  // Both rejections are already handled above, so this never rejects; it
+  // exists so awaiting reload() means the whole page has settled.
+  await Promise.all([statsDone, projectionDone])
 }
 
 // Settings-enabled GETs run on mount to drive the CTA banner. Stats are
@@ -430,17 +597,43 @@ const skipReasonColumns = computed<DataTableColumns<CompressSkipReasonRow>>(() =
 </script>
 
 <style scoped lang="less">
-/* Metric row: 5 KPI tiles. The base .metric-row/.metric/.metric__*
-   classes live in global.less; each page only sets its own column count. */
-.metric-row {
-  grid-template-columns: repeat(5, 1fr);
-}
-
 /* CTA banner — a flat card sitting right under the header. */
 .cta-banner {
   display: flex;
   align-items: center;
   padding: var(--space-4) var(--space-5);
+}
+
+/* Two savings groups (measured compression / projected concise output):
+   one section-card per optimization switch, each holding a 2x2 metric
+   grid that reuses the global .metric__label / .metric__value atoms. */
+.savings-groups {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-6);
+}
+
+.group-head {
+  justify-content: space-between;
+}
+
+.group-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4) var(--space-5);
+}
+
+.group-footnote {
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+.group-footnote__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--color-accent);
 }
 
 .cta-banner__quiet {
@@ -502,6 +695,13 @@ const skipReasonColumns = computed<DataTableColumns<CompressSkipReasonRow>>(() =
   color: var(--color-danger, #d03050);
 }
 
+/* Neutral, for a switch whose state could not be read — never styled as
+   "off", which would read as a fact about the instance. */
+.status-pill--unknown {
+  background: var(--color-fill-2, rgba(0, 0, 0, 0.05));
+  color: var(--color-text-secondary);
+}
+
 /* Section heading inside a section-card (for the breakdown tables + chart cards). */
 .section-card__head {
   display: flex;
@@ -534,8 +734,8 @@ const skipReasonColumns = computed<DataTableColumns<CompressSkipReasonRow>>(() =
 }
 
 @media (max-width: 1100px) {
-  .metric-row {
-    grid-template-columns: repeat(2, 1fr);
+  .savings-groups {
+    grid-template-columns: 1fr;
   }
   .chart-grid {
     grid-template-columns: 1fr;

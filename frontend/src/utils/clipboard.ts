@@ -1,8 +1,9 @@
 // frontend/src/utils/clipboard.ts
 //
-// Single source of truth for writing text to the clipboard. Used by the
-// API-key list page (copy a revealed key) and the create-key modal (copy the
-// one-time plaintext) so the fallback recipe lives in one place.
+// Single source of truth for writing text to the clipboard: every copy
+// button in the console routes through here, directly or via the
+// useCopyFeedback composable, so the fallback recipe lives in one place.
+// No consumer may call navigator.clipboard itself.
 //
 // navigator.clipboard is undefined in a non-secure context (plain HTTP — the
 // default 127.0.0.1:8084 deploy) and can also reject on permission denial. In

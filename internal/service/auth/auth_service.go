@@ -31,33 +31,35 @@ type LockedError struct {
 func (e *LockedError) Error() string { return errcode.ErrorMessages[errcode.AccountLoginLocked] }
 
 // CheckState reports whether first-run setup has already been completed.
-// "Completed" means the local password account exists — accounts
-// provisioned through external identity providers don't count, because
-// an instance without its local admin still needs the setup page.
+// "Completed" means the bootstrap account exists — accounts provisioned
+// through external identity providers or created by admins don't count,
+// because an instance without its bootstrap admin still needs the setup
+// page.
 func CheckState(db *gorm.DB) (bool, error) {
-	count, err := repository.CountLocalUsers(db)
+	count, err := repository.CountBootstrapUsers(db)
 	if err != nil {
 		return false, err
 	}
 	return count > 0, nil
 }
 
-// Setup creates the local admin account and immediately signs
-// them in — creation success lands on the empty-state
-// overview. Returns the new user and a freshly issued session id.
+// Setup creates the bootstrap admin account (the one password account the
+// schema's partial unique index pins to is_bootstrap) and immediately
+// signs them in — creation success lands on the empty-state overview.
+// Returns the new user and a freshly issued session id.
 //
-// The CountLocalUsers check below is only a fast-path optimization (skip
-// hashing/inserting when setup is obviously already done) — it does NOT by
-// itself prevent two concurrent first-run requests from both observing
-// count==0 and both attempting to insert. The real guarantee is the
-// partial unique index on users.is_local (migration
-// 00023_users_multi_account.sql): at most one of any concurrent
-// CreateUser(is_local=true) calls can ever succeed, and user creation +
-// session issuance run in one transaction so a losing/failed attempt
+// The CountBootstrapUsers check below is only a fast-path optimization
+// (skip hashing/inserting when setup is obviously already done) — it does
+// NOT by itself prevent two concurrent first-run requests from both
+// observing count==0 and both attempting to insert. The real guarantee is
+// the partial unique index on users.is_bootstrap (migration
+// 00032_users_bootstrap_account.sql): at most one of any concurrent
+// CreateUser(is_bootstrap=true) calls can ever succeed, and user creation
+// + session issuance run in one transaction so a losing/failed attempt
 // never leaves a half-initialized state (a user row with no session, or
 // vice versa).
 func Setup(db *gorm.DB, username, password string, now time.Time) (*model.User, string, error) {
-	count, err := repository.CountLocalUsers(db)
+	count, err := repository.CountBootstrapUsers(db)
 	if err != nil {
 		return nil, "", err
 	}
@@ -76,6 +78,7 @@ func Setup(db *gorm.DB, username, password string, now time.Time) (*model.User, 
 		Role:         model.RoleAdmin,
 		Status:       model.UserStatusEnabled,
 		IsLocal:      true,
+		IsBootstrap:  true,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -89,11 +92,11 @@ func Setup(db *gorm.DB, username, password string, now time.Time) (*model.User, 
 		return sessErr
 	})
 	if txErr != nil {
-		// A concurrent request may have already won the single-local-user
-		// race — if a local account now exists, report the same
+		// A concurrent request may have already won the single-bootstrap-user
+		// race — if a bootstrap account now exists, report the same
 		// AccountSetupAlreadyDone a sequential retry would see, rather
 		// than leaking the raw constraint-violation error.
-		if recount, recountErr := repository.CountLocalUsers(db); recountErr == nil && recount > 0 {
+		if recount, recountErr := repository.CountBootstrapUsers(db); recountErr == nil && recount > 0 {
 			return nil, "", errcode.ErrAccountSetupAlreadyDone
 		}
 		return nil, "", txErr
@@ -113,7 +116,7 @@ func Setup(db *gorm.DB, username, password string, now time.Time) (*model.User, 
 // dominant one.
 const dummyPasswordHashForTiming = "$2a$10$vpIoHknMZAeHODNlCkCaIOQl4f3oxTgUd1mR3rKuDld2LOwsXakbu"
 
-// Login verifies username+password against the local account, applies
+// Login verifies username+password against a local account, applies
 // the lockout state machine, and on success issues a new session. A
 // wrong password, an unknown username, and a non-local username all
 // return the exact same errcode.ErrAccountInvalidCredentials — never
@@ -193,7 +196,7 @@ func Me(db *gorm.DB, userID uint) (*model.User, error) {
 // caller's own — changing the password invalidates the
 // current login and returns to the login page.
 //
-// Only the local account can ever pass the current-password check:
+// Only a local account can ever pass the current-password check:
 // externally-provisioned accounts have an empty stored hash, which
 // CheckPassword rejects for any input, so they fall out as
 // invalid-credentials without needing an explicit is_local branch.

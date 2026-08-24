@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -109,17 +108,7 @@ func PostOAuthState(svc *oauth.OAuthLoginService, limiter *middleware.Semaphore,
 // already stops a victim from completing an attacker-minted flow — the
 // configured origin closes the remaining replay-by-attacker path.
 func callbackURL(c *gin.Context, slug, externalURL string) string {
-	callbackPath := "/oauth/callback/" + url.PathEscape(slug)
-	if externalURL != "" {
-		return strings.TrimRight(externalURL, "/") + callbackPath
-	}
-	scheme := "http"
-	if proto := c.GetHeader("X-Forwarded-Proto"); proto == "https" {
-		scheme = "https"
-	} else if c.Request.TLS != nil {
-		scheme = "https"
-	}
-	return scheme + "://" + c.Request.Host + callbackPath
+	return publicBaseURL(c, externalURL) + "/oauth/callback/" + url.PathEscape(slug)
 }
 
 // GetOAuthCallback handles GET /oauth/callback/:slug — the browser

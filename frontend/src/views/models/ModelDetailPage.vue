@@ -1,7 +1,7 @@
 <!-- frontend/src/views/models/ModelDetailPage.vue -->
 <template>
   <div class="common-page" v-if="modelData">
-    <PageHeader class="actions-placeholder" :eyebrow="t('models.eyebrow')" :title="modelData.name" :description="`${t('models.runningStatusColumn')}: ${t(`models.running${runningStatusKey}`)}`">
+    <PageHeader class="actions-placeholder" :eyebrow="t('models.eyebrow')" :title="modelData.name" :description="headerDescription">
       <template #actions>
         <template v-if="!isMobile">
           <n-button size="small" @click="showEditModel = true">{{ t('models.editModel') }}</n-button>
@@ -81,7 +81,9 @@ import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
 import { modelDisableCopy, modelImpactOverview } from '../../utils/impactSummary'
-import { candidateTestResultText, capabilityState, modelRunningStatusDisplay, routableMark } from '../../utils/modelStatusDisplay'
+import { candidateTestResultText, capabilityState, modelHeaderDescription, routableMark } from '../../utils/modelStatusDisplay'
+import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
+import { isBalancedModel } from '../../utils/schedulingMode'
 import { isTestSuccess } from '../../utils/testOutcomeDisplay'
 import { modelCostDetailLocation } from '../../utils/modelCostLocation'
 import { getModelImpact, type Model, type ModelCandidate, type ModelImpact } from '../../api/models'
@@ -124,7 +126,15 @@ const editingCandidate = ref<ModelCandidate | null>(null)
 const testingCandidateId = ref<number | null>(null)
 const reorderAction = useSingleRowAction()
 
-const runningStatusKey = computed(() => modelRunningStatusDisplay(modelData.value?.running_status ?? 'not_configured').i18nKey)
+// Balanced scheduling changes what this page's two scheduling-specific pieces
+// mean: the binding-count column exists only for it, and the reorder column's
+// hint must not say "priority" when order no longer decides who takes the
+// traffic.
+const isBalanced = computed(() => (modelData.value ? isBalancedModel(modelData.value) : false))
+
+const headerDescription = computed(() =>
+  modelHeaderDescription(t, modelData.value?.running_status ?? 'not_configured', isBalanced.value),
+)
 
 // On mobile the header buttons collapse into a single ResponsiveDropdown, so the
 // toggle-status row's label follows the model's current management_status.
@@ -177,8 +187,15 @@ function onEditCandidate(candidate: ModelCandidate) {
 async function onRetestCandidate(candidateId: number) {
   testingCandidateId.value = candidateId
   try {
-    const updated = await store.retestCandidate(modelId, candidateId)
+    const { candidate: updated, applied } = await store.retestCandidate(modelId, candidateId)
     await reload()
+    if (!applied) {
+      // A concurrent probe won the commit race, so the row now carries ITS
+      // result; announcing it as this click's could state the opposite of
+      // what this run observed.
+      message.info(t('providers.retestSuperseded'))
+      return
+    }
     // Two-tier feedback so the click is never silent: pass (green) vs. the
     // specific outcome reason (yellow).
     //
@@ -189,6 +206,7 @@ async function onRetestCandidate(candidateId: number) {
     const passed = updated.last_test_result !== null && isTestSuccess(updated.last_test_result)
     message[passed ? 'success' : 'warning'](candidateTestResultText(t, passed, updated.last_test_result))
   } catch (err) {
+    if (redirectIfSessionExpired(err, router)) return
     message.error(displayMessage(err, t))
   } finally {
     testingCandidateId.value = null
@@ -307,102 +325,134 @@ function renderCapability(row: ModelCandidate, flag: boolean | null) {
 
 // Actions column collapses into an NDropdown — a convention established
 // after flat buttons pushed the table into horizontal scroll.
-const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => [
-  { title: columnTitle(t('models.provider'), t('models.provider_tip')), key: 'provider_name', minWidth: 140 },
-  { title: columnTitle(t('models.providerModelName'), t('models.providerModelName_tip')), key: 'provider_model_name', minWidth: 160 },
-  {
-    title: columnTitle(t('models.managementStatusColumn'), t('models.managementStatusColumn_tip')),
-    key: 'management_status',
+const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => {
+  // The binding count is the balanced mode's evenness gauge; a failover
+  // model has no bindings, and a zero column there would read as "balanced
+  // but nobody bound" — a state failover cannot even be in. Also hidden
+  // below two view-routable candidates: with at most one live route the
+  // relay binds nothing, so the column would show a permanent, misleading 0.
+  // View routability is stricter than the relay's own eligibility (it also
+  // requires a usable provider key), so the column can hide while the relay
+  // still balances — erring toward hiding the gauge, never showing a bogus
+  // one.
+  const routableCount = modelData.value?.candidates.filter((c) => c.routable).length ?? 0
+  const showBindingCount = isBalanced.value && routableCount >= 2
+  const bindingCountColumn: DataTableColumns<ModelCandidate>[number] = {
+    title: columnTitle(t('models.bindingCountColumn'), t('models.bindingCountColumn_tip')),
+    key: 'binding_count',
     width: STATUS_COL_WIDTH,
     align: 'center',
-    render: (row) => h(NSwitch, { value: row.management_status === 1, 'onUpdate:value': (v: boolean) => onToggleCandidateStatus(row.id, v) }),
-  },
-  {
-    title: columnTitle(t('models.routableColumn'), t('models.routableColumn_tip')),
-    key: 'routable',
-    width: STATUS_COL_WIDTH,
-    align: 'center',
-    render: (row) => renderRoutable(row),
-  },
-  {
-    title: columnTitle(t('models.supportsStreaming'), t('models.supportsStreaming_tip')),
-    key: 'supports_streaming',
-    width: STATUS_COL_WIDTH,
-    align: 'center',
-    render: (row) => renderCapability(row, row.supports_streaming),
-  },
-  {
-    title: columnTitle(t('models.supportsFunctionCalling'), t('models.supportsFunctionCalling_tip')),
-    key: 'supports_function_calling',
-    width: STATUS_COL_WIDTH,
-    align: 'center',
-    render: (row) => renderCapability(row, row.supports_function_calling),
-  },
-  {
-    title: t('models.reorderColumn'),
-    key: 'reorder',
-    width: 70,
-    align: 'center',
-    render: (row, index) => {
-      const count = modelData.value?.candidates.length ?? 0
-      const r = reorderAction.activeId.value
-      const reordering = r !== null
-      const upLoading = r === row.id && reorderAction.direction.value === 'up'
-      const downLoading = r === row.id && reorderAction.direction.value === 'down'
-      return h('div', { style: 'display:inline-flex;align-items:center;gap:2px;justify-content:center' }, [
-        h(
-          NButton,
-          { size: 'small', quaternary: true, circle: true, disabled: reordering || index === 0, loading: upLoading, title: t('models.moveUp'), onClick: () => onReorder(row.id, 'up') },
-          { icon: () => h(ChevronUp, { size: 16 }) },
-        ),
-        h(
-          NButton,
-          { size: 'small', quaternary: true, circle: true, disabled: reordering || index >= count - 1, loading: downLoading, title: t('models.moveDown'), onClick: () => onReorder(row.id, 'down') },
-          { icon: () => h(ChevronDown, { size: 16 }) },
-        ),
-      ])
+    render: (row) => h('span', { style: 'font-variant-numeric: tabular-nums' }, String(row.binding_count)),
+  }
+  return [
+    { title: columnTitle(t('models.provider'), t('models.provider_tip')), key: 'provider_name', minWidth: 140 },
+    { title: columnTitle(t('models.providerModelName'), t('models.providerModelName_tip')), key: 'provider_model_name', minWidth: 160 },
+    {
+      title: columnTitle(t('models.managementStatusColumn'), t('models.managementStatusColumn_tip')),
+      key: 'management_status',
+      width: STATUS_COL_WIDTH,
+      align: 'center',
+      render: (row) => h(NSwitch, { value: row.management_status === 1, 'onUpdate:value': (v: boolean) => onToggleCandidateStatus(row.id, v) }),
     },
-  },
-  {
-    title: t('common.actions'),
-    key: 'actions',
-    width: 60,
-    align: 'center',
-    render: (row) =>
-      h(
-        ResponsiveDropdown,
-        {
-          trigger: 'click',
-          placement: 'bottom-end',
-          triggerText: t('common.actions'),
-          disabled: testingCandidateId.value === row.id,
-          loading: testingCandidateId.value === row.id,
-          height: 200,
-          options: [
-            { label: t('models.editCandidate'), key: 'edit' },
-            // Titled so the dropdown says what a retest actually does — it
-            // reruns all three probes and rewrites the stored verdicts.
-            { label: t('models.retest'), key: 'retest', props: { title: t('models.retest_tip') } },
-            { type: 'divider', key: 'd' },
-            { label: t('models.deleteCandidate'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
-          ],
-          onSelect: (key: string) => {
-            if (key === 'edit') onEditCandidate(row)
-            else if (key === 'retest') onRetestCandidate(row.id)
-            else if (key === 'delete') onDeleteCandidate(row)
-          },
-        },
-        {
-          default: () =>
-            h(
-              NButton,
-              { size: 'small', quaternary: true, circle: true, loading: testingCandidateId.value === row.id, disabled: testingCandidateId.value === row.id },
-              { icon: () => h(MoreHorizontal, { size: 16 }) },
-            ),
-        },
+    ...(showBindingCount ? [bindingCountColumn] : []),
+    {
+      title: columnTitle(t('models.routableColumn'), t('models.routableColumn_tip')),
+      key: 'routable',
+      width: STATUS_COL_WIDTH,
+      align: 'center',
+      render: (row) => renderRoutable(row),
+    },
+    {
+      title: columnTitle(t('models.supportsStreaming'), t('models.supportsStreaming_tip')),
+      key: 'supports_streaming',
+      width: STATUS_COL_WIDTH,
+      align: 'center',
+      render: (row) => renderCapability(row, row.supports_streaming),
+    },
+    {
+      title: columnTitle(t('models.supportsFunctionCalling'), t('models.supportsFunctionCalling_tip')),
+      key: 'supports_function_calling',
+      width: STATUS_COL_WIDTH,
+      align: 'center',
+      render: (row) => renderCapability(row, row.supports_function_calling),
+    },
+    {
+      // The column's meaning follows the model's scheduling mode: under
+      // failover it is the priority list (the head takes all traffic), under
+      // balanced it only fixes the rotation order and the failover path —
+      // the same hint the mode's own tooltip explains, kept here so the
+      // reorder buttons never promise priority they no longer deliver.
+      // Button columns normally take a plain string title; this one
+      // deliberately carries a header tip because its meaning flips with
+      // the mode and the buttons themselves stay generic up/down.
+      title: columnTitle(
+        isBalanced.value ? t('models.reorderColumnBalanced') : t('models.reorderColumn'),
+        isBalanced.value ? t('models.reorderColumnBalanced_tip') : t('models.reorderColumn_tip'),
       ),
-  },
-])
+      key: 'reorder',
+      width: 70,
+      align: 'center',
+      render: (row, index) => {
+        const count = modelData.value?.candidates.length ?? 0
+        const r = reorderAction.activeId.value
+        const reordering = r !== null
+        const upLoading = r === row.id && reorderAction.direction.value === 'up'
+        const downLoading = r === row.id && reorderAction.direction.value === 'down'
+        return h('div', { style: 'display:inline-flex;align-items:center;gap:2px;justify-content:center' }, [
+          h(
+            NButton,
+            { size: 'small', quaternary: true, circle: true, disabled: reordering || index === 0, loading: upLoading, title: t('models.moveUp'), onClick: () => onReorder(row.id, 'up') },
+            { icon: () => h(ChevronUp, { size: 16 }) },
+          ),
+          h(
+            NButton,
+            { size: 'small', quaternary: true, circle: true, disabled: reordering || index >= count - 1, loading: downLoading, title: t('models.moveDown'), onClick: () => onReorder(row.id, 'down') },
+            { icon: () => h(ChevronDown, { size: 16 }) },
+          ),
+        ])
+      },
+    },
+    {
+      title: t('common.actions'),
+      key: 'actions',
+      width: 60,
+      align: 'center',
+      render: (row) =>
+        h(
+          ResponsiveDropdown,
+          {
+            trigger: 'click',
+            placement: 'bottom-end',
+            triggerText: t('common.actions'),
+            disabled: testingCandidateId.value === row.id,
+            loading: testingCandidateId.value === row.id,
+            height: 200,
+            options: [
+              { label: t('models.editCandidate'), key: 'edit' },
+              // Titled so the dropdown says what a retest actually does — it
+              // reruns all three probes and rewrites the stored verdicts.
+              { label: t('models.retest'), key: 'retest', props: { title: t('models.retest_tip') } },
+              { type: 'divider', key: 'd' },
+              { label: t('models.deleteCandidate'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
+            ],
+            onSelect: (key: string) => {
+              if (key === 'edit') onEditCandidate(row)
+              else if (key === 'retest') onRetestCandidate(row.id)
+              else if (key === 'delete') onDeleteCandidate(row)
+            },
+          },
+          {
+            default: () =>
+              h(
+                NButton,
+                { size: 'small', quaternary: true, circle: true, loading: testingCandidateId.value === row.id, disabled: testingCandidateId.value === row.id },
+                { icon: () => h(MoreHorizontal, { size: 16 }) },
+              ),
+          },
+        ),
+    },
+  ]
+})
 </script>
 
 <style scoped>

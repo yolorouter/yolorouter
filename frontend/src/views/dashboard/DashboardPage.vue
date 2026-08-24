@@ -270,6 +270,7 @@ import {
 import PageHeader from '../../components/PageHeader.vue'
 import HelpLabel from '../../components/HelpLabel.vue'
 import EmptyState from '../../components/EmptyState.vue'
+import { copyToClipboard } from '../../utils/clipboard'
 import TimeRangeSelect, { type RangePreset, type TimeRange } from '../../components/analytics/TimeRangeSelect.vue'
 import TrendChart from '../../components/dashboard/TrendChart.vue'
 import { bucketRange, pressable, requestLogLocation, type RequestLogLinkQuery } from '../../utils/requestLogLink'
@@ -423,11 +424,10 @@ function failureStatusClass(code: number): string {
 }
 
 async function onCopy() {
-  try {
-    await navigator.clipboard.writeText(reqUrl)
-    message.success(t('apiKeys.copied'))
-  } catch {
-    message.error(t('apiKeys.copyFailed'))
+  if (await copyToClipboard(reqUrl)) {
+    message.success(t('common.copied'))
+  } else {
+    message.error(t('common.copyFailed'))
   }
 }
 

@@ -30,6 +30,19 @@ func GetUsers(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
+type createUserRequest struct {
+	// Same username/password rules as first-run setup — a console-created
+	// account is just another local password account.
+	Username string `json:"username" binding:"required,min=3,max=32,alnum_dash"`
+	// Optional; empty means the username doubles as the display name in
+	// the UI. Bound to the users.display_name column width.
+	DisplayName string `json:"display_name" binding:"omitempty,max=128"`
+	// Optional, informational only — this build sends no mail. Bound to
+	// the users.email column width.
+	Email    string `json:"email" binding:"omitempty,email,max=255"`
+	Password string `json:"password" binding:"required,min=10,alnum_mixed,bcrypt_len"`
+}
+
 type updateUserStatusRequest struct {
 	// "enabled" | "disabled" on the wire — the numeric status codes are a
 	// storage detail the API does not expose for writes.
@@ -49,12 +62,68 @@ func writeUserServiceError(c *gin.Context, err error) {
 		middleware.WriteAdminError(c, http.StatusConflict, errcode.AccountSelfOperation)
 	case errors.Is(err, errcode.ErrAccountLastAdminProtected):
 		middleware.WriteAdminError(c, http.StatusConflict, errcode.AccountLastAdminProtected)
-	case errors.Is(err, errcode.ErrAccountLocalProtected):
-		middleware.WriteAdminError(c, http.StatusConflict, errcode.AccountLocalProtected)
+	case errors.Is(err, errcode.ErrAccountBootstrapProtected):
+		middleware.WriteAdminError(c, http.StatusConflict, errcode.AccountBootstrapProtected)
+	case errors.Is(err, errcode.ErrAccountUsernameTaken):
+		middleware.WriteAdminError(c, http.StatusConflict, errcode.AccountUsernameTaken)
+	case errors.Is(err, errcode.ErrAccountPasswordResetDenied):
+		// 403 rather than 409: the caller is asking for a power their
+		// account does not hold, not colliding with another writer.
+		middleware.WriteAdminError(c, http.StatusForbidden, errcode.AccountPasswordResetDenied)
 	case errors.Is(err, errcode.ErrAccountUserNotFound):
 		middleware.WriteAdminError(c, http.StatusNotFound, errcode.AccountUserNotFound)
 	default:
 		middleware.WriteAdminError(c, http.StatusInternalServerError, errcode.DatabaseError)
+	}
+}
+
+// PostUser handles POST /api/admin/users — provisioning a local password
+// member from the console. The password travels once, in this request, and
+// only its bcrypt hash is stored; nothing about it is echoed back.
+func PostUser(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req createUserRequest
+		if !bindJSON(c, &req) {
+			return
+		}
+		created, err := user.CreateUser(db, user.CreateUserInput{
+			Username:    req.Username,
+			DisplayName: req.DisplayName,
+			Email:       req.Email,
+			Password:    req.Password,
+		}, time.Now().UTC())
+		if err != nil {
+			writeUserServiceError(c, err)
+			return
+		}
+		response.Success(c, gin.H{"user": user.SummaryView(created)})
+	}
+}
+
+type resetPasswordRequest struct {
+	Password string `json:"password" binding:"required,min=10,alnum_mixed,bcrypt_len"`
+}
+
+// PostUserPasswordReset handles POST /api/admin/users/:id/password — the
+// bootstrap administrator replacing another local account's password. The
+// password travels once, in this request, and only its bcrypt hash is
+// stored; every live session of the target dies with the reset.
+func PostUserPasswordReset(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, ok := parseUintParam(c, "id")
+		if !ok {
+			return
+		}
+		var req resetPasswordRequest
+		if !bindJSON(c, &req) {
+			return
+		}
+		actorID := c.MustGet(middleware.UserIDKey).(uint)
+		if err := user.ResetUserPassword(db, actorID, id, req.Password, time.Now().UTC()); err != nil {
+			writeUserServiceError(c, err)
+			return
+		}
+		response.Success(c, nil)
 	}
 }
 

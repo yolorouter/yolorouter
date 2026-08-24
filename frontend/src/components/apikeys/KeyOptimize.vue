@@ -60,6 +60,7 @@ import { displayMessage, APIError } from '../../api/client'
 import { getAPIKey, type APIKey } from '../../api/apiKeys'
 import { API_KEY_CONFLICT } from '../../api/errcodes'
 import { customSystemPromptRule } from '../../utils/apiKeyValidators'
+import { defaultConcisePrompt } from '../../utils/concisePrompt'
 import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
 
@@ -80,7 +81,7 @@ const showModel = computed({
   set: (v) => emit('update:show', v),
 })
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const message = useMessage()
 const store = useApiKeysStore()
 
@@ -162,7 +163,7 @@ function onCompressModeChange(mode: CompressMode) {
 function fill(key: APIKey) {
   form.custom_system_prompt_enabled_override = key.custom_system_prompt_enabled_override
   form.custom_system_prompt_enabled = key.custom_system_prompt_enabled
-  form.custom_system_prompt = t('costOptimization.exampleConciseText') + t('costOptimization.exampleMinimalCodeText')
+  form.custom_system_prompt = defaultConcisePrompt(t, locale.value)
   form.compress_enabled_override = key.compress_enabled_override
   form.compress_enabled = key.compress_enabled
   expectedUpdatedAt.value = key.updated_at

@@ -9,6 +9,8 @@ import { onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useDialog, useMessage } from 'naive-ui'
 
+import { useGatewayEndpoint } from './useGatewayEndpoint'
+
 // Fallback when the caller cannot supply the real key (keys created before
 // plaintext persistence existed cannot be read back): the import carries a
 // placeholder the user replaces inside CC-Switch.
@@ -32,18 +34,25 @@ export function useCCSwitchImport() {
   const { t } = useI18n()
   const message = useMessage()
   const dialog = useDialog()
+  // The exported profile has to carry the same address the console shows
+  // beside the keys. The console's own origin is not it whenever the
+  // gateway sits behind a proxy or a configured external_url — exporting
+  // that would hand the user a profile that cannot reach the gateway.
+  // Never empty: the composable falls back to the origin itself.
+  const { endpoint: gatewayEndpoint } = useGatewayEndpoint()
 
   let openTimer: ReturnType<typeof setTimeout> | null = null
   let openCleanup: (() => void) | null = null
 
   function buildUrl(p: CCSwitchImportParams): string {
+    const base = gatewayEndpoint.value
     const params = new URLSearchParams({
       resource: 'provider',
       app: 'claude',
       name: p.name,
-      endpoint: location.origin,
+      endpoint: base,
       apiKey: p.apiKey || PLACEHOLDER_API_KEY,
-      homepage: location.origin,
+      homepage: base,
     })
     if (p.model) params.set('model', p.model)
     return `ccswitch://v1/import?${params.toString()}`

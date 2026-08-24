@@ -58,15 +58,21 @@
       </n-tab-pane>
 
       <n-tab-pane name="models" :tab="t('providers.tabModels')">
-        <EmptyState v-if="modelsStore.error" :title="t('common.networkError')" />
-        <EmptyState v-else-if="!modelsStore.loading && linkedModelRows.length === 0" :title="t('providers.modelsEmpty')" />
+        <div v-if="!isMobile" class="models-toolbar">
+          <n-button type="primary" @click="openImportModels">
+            <template #icon><CloudDownload :size="16" /></template>
+            {{ t('models.importModelsButton') }}
+          </n-button>
+        </div>
+        <EmptyState v-if="candidatesError" :title="t('common.networkError')" />
+        <EmptyState v-else-if="!candidatesLoading && candidateRows.length === 0" :title="t('providers.modelsEmpty')" />
         <div v-else class="data-table-wrapper">
           <ResponsiveDataTable
             :columns="modelColumns"
-            :data="linkedModelRows"
-            :loading="modelsStore.loading"
-            :scroll-x="480"
-            :row-key="(row: LinkedModelRow) => row.candidateId"
+            :data="candidateRows"
+            :loading="candidatesLoading"
+            :scroll-x="932"
+            :row-key="(row: ProviderCandidate) => row.candidate_id"
             :pagination="modelsPagination"
           />
         </div>
@@ -91,18 +97,20 @@
       @saved="onKeySaved"
     />
     <ProviderEditModal v-model:show="showEditProvider" :provider="provider" @updated="reload" />
+    <ImportModelsModal v-model:show="showImportModels" :provider-id="provider.id" @imported="onImported" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpace, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { ChevronDown, ChevronUp, MoreHorizontal, Plus, PlayCircle } from '@lucide/vue'
+import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle } from '@lucide/vue'
 import { useProvidersStore } from '../../store/providers'
-import { useModelsStore } from '../../store/models'
-import type { ModelCandidate } from '../../api/models'
+import { listProviderCandidates, retestCandidate, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
+import { candidateIsOwedWork, candidateProgressState, isUnpriced, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress } from '../../utils/importProgress'
+import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
 import { providerDisableCopy } from '../../utils/impactSummary'
@@ -110,10 +118,13 @@ import type { BatchTestResult, Provider, ProviderKey } from '../../api/providers
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import KeyEditModal from '../../components/providers/KeyEditModal.vue'
+import ImportModelsModal from '../../components/models/ImportModelsModal.vue'
 import ProviderEditModal from '../../components/providers/ProviderEditModal.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
+import { candidateTestResultText } from '../../utils/modelStatusDisplay'
+import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
 import { isTestSuccess, testOutcomeI18nKey, testOutcomeLabel, TEST_OUTCOME_MODEL_NOT_FOUND, TEST_OUTCOME_UPSTREAM_ERROR } from '../../utils/testOutcomeDisplay'
 import { hintTag } from '../../utils/hintTag'
 import { verificationDestinationCount } from '../../utils/providerProtocol'
@@ -121,6 +132,7 @@ import { isKeyUsable } from '../../utils/providerStatusDisplay'
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
 import { useClientPagination } from '../../composables/useClientPagination'
 import { useIsMobile } from '../../composables/useIsMobile'
+import { useBackoffPoll } from '../../composables/useBackoffPoll'
 
 const { t, te } = useI18n()
 const route = useRoute()
@@ -129,7 +141,6 @@ const dialog = useDialog()
 const toggleStatusWithConfirm = useConfirmedStatusToggle(dialog)
 const message = useMessage()
 const store = useProvidersStore()
-const modelsStore = useModelsStore()
 const isMobile = useIsMobile()
 
 // Independent client-side pagination for the two tables on this page — both are
@@ -149,6 +160,16 @@ const showAddKey = ref(false)
 const showEditKey = ref(false)
 const editingKey = ref<ProviderKey | null>(null)
 const showEditProvider = ref(false)
+const showImportModels = ref(false)
+
+// Every way of opening the import dialog also lands the page on the Models
+// tab: the mobile header action and the first-setup handoff can fire while
+// the Keys tab is active, and closing the dialog would otherwise drop the
+// user back on Keys instead of the freshly imported rows.
+function openImportModels() {
+  activeTab.value = 'models'
+  showImportModels.value = true
+}
 const testingAll = ref(false)
 // Tracks the single key currently running its own "Test Connection" (distinct from
 // testingAll's batch run) so the actions button can show a spinner instead
@@ -186,6 +207,7 @@ const headerActionOptions = computed(() => [
   { label: t('providers.editProvider'), key: 'edit' },
   { label: t('costs.detail.viewCost'), key: 'viewCost' },
   { label: t('providers.addKey'), key: 'addKey' },
+  { label: t('models.importModelsButton'), key: 'importModels' },
   { label: t('providers.testAllButton'), key: 'testAll', disabled: testingAll.value },
   {
     label: provider.value?.management_status === 1 ? t('providers.statusDisabled') : t('providers.statusEnabled'),
@@ -197,6 +219,7 @@ function onHeaderAction(key: string) {
   if (key === 'edit') showEditProvider.value = true
   else if (key === 'viewCost') router.push(`/costs/providers/${provider.value!.id}`)
   else if (key === 'addKey') showAddKey.value = true
+  else if (key === 'importModels') openImportModels()
   else if (key === 'testAll') void onTestAll()
   else if (key === 'toggleStatus') onToggleProviderStatus()
 }
@@ -250,10 +273,15 @@ onMounted(async () => {
     message.error(displayMessage(err, t))
     return
   }
-  try {
-    await modelsStore.fetchList()
-  } catch (err) {
-    message.error(displayMessage(err, t))
+  await loadCandidates()
+  resumeQueuePollingFromLoadedRows()
+  // First-setup handoff: the create flow parked this provider's id in the
+  // store so the import dialog opens by itself, once. In-memory on purpose —
+  // a refresh must not re-open the dialog, and a URL flag would remount the
+  // page (DefaultLayout keys its router-view by fullPath) and wipe it.
+  if (store.pendingImportProviderId === providerId) {
+    store.pendingImportProviderId = null
+    openImportModels()
   }
 })
 
@@ -261,52 +289,255 @@ async function reload() {
   provider.value = await store.fetchDetail(providerId)
 }
 
-// Models referencing this provider as a candidate (the "model mapping" tab). This
-// tab was previously an EmptyState placeholder; this joins modelsStore.list
-// (every model with its candidates) on candidate.provider_id.
-type LinkedModelRow = { candidateId: number; modelName: string; candidate: ModelCandidate }
+// The mappings this provider serves, with verification state and failure
+// reason — the provider-scoped list endpoint the import progress view also
+// polls.
+const candidateRows = ref<ProviderCandidate[]>([])
+const candidatesLoading = ref(false)
+const candidatesError = ref(false)
+// Race guard token (same pattern as the shared stores): loadCandidates has
+// several triggers (mount, import finished, dialog closed, retest) that can
+// overlap, and a slow stale response must not overwrite a newer one.
+let candidatesFetchId = 0
 
-const linkedModelRows = computed<LinkedModelRow[]>(() => {
-  if (!provider.value) return []
-  const rows: LinkedModelRow[] = []
-  for (const m of modelsStore.list) {
-    for (const c of m.candidates) {
-      if (c.provider_id === providerId) {
-        rows.push({ candidateId: c.id, modelName: m.name, candidate: c })
-      }
-    }
+// silent skips the table's loading spinner and keeps failures quiet —
+// background polls fire every couple of seconds and must neither blink the
+// table nor stack an error toast per tick; the poll retries off the returned
+// outcome instead. 'stale' means a newer fetch superseded this one and nothing
+// was written; 'expired' means the session lapsed and we are on our way to the
+// login page — callers must stop polling, not retry.
+async function loadCandidates(silent = false): Promise<'ok' | 'stale' | 'error' | 'expired'> {
+  const fetchId = ++candidatesFetchId
+  if (!silent) {
+    candidatesLoading.value = true
+    candidatesError.value = false
+  } else {
+    // Taking over from an in-flight visible fetch supersedes it: its finally
+    // is stale-guarded and can no longer clear the spinner, and a silent
+    // refresh is by definition not visibly loading — so clear it here, or the
+    // table spins forever after "import → close dialog immediately".
+    candidatesLoading.value = false
   }
-  return rows
+  try {
+    const { list } = await listProviderCandidates(providerId)
+    if (fetchId !== candidatesFetchId) return 'stale'
+    candidateRows.value = list
+    candidatesError.value = false
+    return 'ok'
+  } catch (err) {
+    // Before the stale guard on purpose: a superseded fetch that hit session
+    // expiry is still a session expiry, and swallowing it as "stale" would
+    // leave the dead session polling forever.
+    if (redirectIfSessionExpired(err, router)) return 'expired'
+    if (fetchId !== candidatesFetchId) return 'stale'
+    if (!silent) {
+      candidatesError.value = true
+      message.error(displayMessage(err, t))
+    }
+    return 'error'
+  } finally {
+    if (fetchId === candidatesFetchId && !silent) candidatesLoading.value = false
+  }
+}
+
+// A finished import created models and mappings this page shows. The ids it
+// stored are kept so the tab can keep refreshing until every one has settled.
+// If the result arrives after the dialog is already gone (it was dismissed or
+// unmounted while the request was in flight), the close watcher has long since
+// run with the OLD ids — so the takeover polling starts here instead.
+function onImported(result: ImportProviderModelsResult) {
+  // Merged, not replaced: a second import can finish while an earlier batch's
+  // probes are still running, and dropping the earlier ids would let polling
+  // declare "done" on the new batch alone — freezing the old rows as pending.
+  // Ids already settled contribute nothing to the done condition, so the
+  // union stays correct.
+  const ids = new Set(importedIds)
+  for (const item of result.items) {
+    if (item.candidate_id) ids.add(item.candidate_id)
+  }
+  importedIds = [...ids]
+  void reload().catch((err) => message.error(displayMessage(err, t)))
+  if (!showImportModels.value && importedIds.length > 0) {
+    pollCandidatesUntilSettled()
+    return
+  }
+  void loadCandidates()
+}
+
+// Mappings a bulk import stored whose probes may still be running — the tab
+// polls these to their terminal states after the dialog closes, because the
+// close-anytime flow promises the probing continues without it.
+let importedIds: number[] = []
+// The shared generation-guarded backoff loop; see useBackoffPoll.
+const candidatesPoll = useBackoffPoll(PROGRESS_POLL_BASE_MS, PROGRESS_POLL_BACKOFF_CAP_MS)
+
+function pollCandidatesUntilSettled() {
+  candidatesPoll.start(async (isCurrent) => {
+    // Row writes are governed by loadCandidates' own fetch token (a newer
+    // fetch supersedes an older one); this guard covers the LOOP's decisions
+    // — a tick that outlived its polling generation must neither declare the
+    // batch done nor adjust the pacing.
+    const outcome = await loadCandidates(true)
+    if (!isCurrent()) return 'stop'
+    if (outcome === 'expired') return 'stop'
+    // Only a FRESH response may declare the batch settled: a failed poll
+    // leaves the rows from before the import in place, and their missing
+    // imported ids would read as "all done" while probes are still running.
+    if (outcome === 'ok') {
+      return summarizeImportProgress(candidateRows.value, importedIds).progress.done ? 'done' : 'again'
+    }
+    // 'stale' means a newer fetch superseded this one — keep the base pace.
+    return outcome === 'error' ? 'error' : 'again'
+  })
+}
+
+// While the import dialog is open it does its own polling; when it closes the
+// tab takes over, refreshing until the imported rows all hold terminal states
+// — closing early must not freeze the tab on "queued" until a manual reload.
+// With nothing imported there is nothing to wait for: one refresh, no loop.
+watch(showImportModels, (open) => {
+  candidatesPoll.stop()
+  if (open) return
+  if (importedIds.length === 0) {
+    void loadCandidates()
+    return
+  }
+  pollCandidatesUntilSettled()
 })
 
-const modelColumns = computed<DataTableColumns<LinkedModelRow>>(() => [
+// A page opened (or refreshed) while the probe queue is already working this
+// provider's mappings must keep refreshing them: the rows render as queued or
+// probing, but the import dialog that started those probes — and its polling
+// handoff — lived in a previous page instance. Adopt the busy rows as the ids
+// to watch and poll them to their terminal states, exactly as the dialog-close
+// handoff would have; otherwise finished probes stay displayed as pending
+// until a manual reload.
+function resumeQueuePollingFromLoadedRows() {
+  if (importedIds.length > 0) return
+  // queue_state is process-local: in a multi-instance deployment the probes
+  // may be running on an instance this request never reached, and every
+  // queue_state comes back empty. The durable signal is the row itself — an
+  // untested, unstamped row still carrying the auto-enable promise is owed a
+  // probe outcome (the server re-enqueues exactly these rows at startup), so
+  // those rows are adopted for polling too. Every such row settles: a
+  // verdict, an abandonment stamp, or a recovery probe ends the wait. Rows
+  // WITHOUT the promise were stored unprobed on purpose (a manual save-as-
+  // disabled) — polling them would wait on a probe nobody owes.
+  const busy = candidateRows.value.filter(candidateIsOwedWork).map((row) => row.candidate_id)
+  if (busy.length === 0) return
+  importedIds = busy
+  candidatesPoll.stop()
+  pollCandidatesUntilSettled()
+}
+
+// Single-flight retest: one mapping at a time, spinner on the clicked row.
+const retestAction = useSingleRowAction()
+
+async function onRetestCandidate(row: ProviderCandidate) {
+  await retestAction.run(row.candidate_id, async () => {
+    try {
+      const { candidate: updated, applied } = await retestCandidate(row.model_id, row.candidate_id)
+      await loadCandidates()
+      if (!applied) {
+        // A concurrent probe won the commit race, so the row now carries ITS
+        // result; announcing it as this click's could state the opposite of
+        // what this run observed.
+        message.info(t('providers.retestSuperseded'))
+        return
+      }
+      // Judged on last_test_result — THIS run's basic-probe outcome — not on
+      // verification_status: an inconclusive run (rate limited, unreachable)
+      // deliberately leaves a previously decisive verdict alone, so reading
+      // the status would replay the old verdict as this run's result. Same
+      // rule and wording as the model detail page's retest.
+      const passed = updated.last_test_result !== null && isTestSuccess(updated.last_test_result)
+      message[passed ? 'success' : 'warning'](candidateTestResultText(t, passed, updated.last_test_result))
+    } catch (err) {
+      if (redirectIfSessionExpired(err, router)) return
+      message.error(displayMessage(err, t))
+    }
+  })
+}
+
+const modelColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
   {
     title: columnTitle(t('models.name'), t('models.name_tip')),
-    key: 'modelName',
-    minWidth: 160,
+    key: 'model_name',
+    minWidth: 180,
+    render: (row) => {
+      const parts = [h('span', row.model_name)]
+      if (isUnpriced(row)) {
+        parts.push(
+          h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('providers.candidateUnpriced') }),
+        )
+      }
+      return h(NSpace, { size: 6, align: 'center', wrapItem: false }, { default: () => parts })
+    },
   },
   {
     title: columnTitle(t('models.providerModelName'), t('models.providerModelName_tip')),
-    key: 'providerModelName',
+    key: 'provider_model_name',
     minWidth: 160,
-    render: (row) => row.candidate.provider_model_name || '-',
+    render: (row) => row.provider_model_name || '-',
   },
   {
-    // Reads row.candidate.management_status (candidate-level), NOT the
-    // model-level status — so the tooltip must describe candidate
-    // semantics ("skips this candidate only"), not model semantics
-    // ("model rejects all requests"). Reusing models.managementStatusColumn
-    // here would mislabel the column.
-    title: columnTitle(t('providers.candidateStatus'), t('providers.candidateStatus_tip')),
-    key: 'management_status',
-    width: 100,
+    title: columnTitle(t('providers.candidatePrice'), t('providers.candidatePrice_tip')),
+    key: 'price',
+    minWidth: 120,
+    // Input/output up front, cache prices as a quiet second line only when the
+    // mapping actually has them — most rows don't, and an always-on line of
+    // dashes would just add noise. What the numbers mean lives in the header
+    // tooltip, keeping the header itself to one word.
+    render: (row) => {
+      const parts = [h('div', `${row.input_price} / ${row.output_price}`)]
+      if (row.cache_write_price !== null || row.cache_read_price !== null) {
+        parts.push(
+          h(
+            'div',
+            { class: 'candidate-cache-price' },
+            t('providers.candidateCachePrice', { write: row.cache_write_price ?? '-', read: row.cache_read_price ?? '-' }),
+          ),
+        )
+      }
+      return h('div', parts)
+    },
+  },
+  {
+    title: columnTitle(t('providers.candidateProbeStatus'), t('providers.candidateProbeStatus_tip')),
+    key: 'probe_state',
+    width: STATUS_COL_WIDTH,
+    render: (row) => renderProbeStateTag(t, row, { labelKey: 'providers.verificationUntested', type: 'default' }),
+  },
+  {
+    title: columnTitle(t('providers.candidateFailReason'), t('providers.candidateFailReason_tip')),
+    key: 'last_test_error',
+    minWidth: 200,
+    render: renderFailReasonCell,
+  },
+  {
+    title: t('common.actions'),
+    key: 'actions',
+    width: 110,
     align: 'center',
-    render: (row) =>
-      h(
-        NTag,
-        { size: 'small', bordered: false, type: row.candidate.management_status === 1 ? 'success' : 'default' },
-        { default: () => (row.candidate.management_status === 1 ? t('providers.statusEnabled') : t('providers.statusDisabled')) },
-      ),
+    render: (row) => {
+      // Retest applies to anything without a passing verdict: failed rows and
+      // the "untested" leftovers of an interrupted probe queue alike. Rows the
+      // queue currently holds get no button: their probe is already coming,
+      // and a manual one on top would only double the upstream traffic.
+      if (candidateProgressState(row) === 'passed') return null
+      if (row.queue_state === 'queued' || row.queue_state === 'probing') return null
+      const busy = retestAction.activeId.value !== null
+      return h(
+        NButton,
+        {
+          size: 'small',
+          loading: retestAction.activeId.value === row.candidate_id,
+          disabled: busy && retestAction.activeId.value !== row.candidate_id,
+          onClick: () => void onRetestCandidate(row),
+        },
+        { default: () => t('models.retest') },
+      )
+    },
   },
 ])
 
@@ -411,10 +642,10 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
     },
   },
   {
-    // Matches the reference project's ApiKeysPage.vue actions-column
-    // convention: a single compact "···" dropdown rather than several
-    // inline text buttons — the inline-button version made this column
-    // wide enough to force the whole table into horizontal scroll.
+    // Actions-column convention: a single compact "···" dropdown rather
+    // than several inline text buttons — the inline-button version made
+    // this column wide enough to force the whole table into horizontal
+    // scroll.
     title: t('common.actions'),
     key: 'actions',
     width: 60,
@@ -604,6 +835,19 @@ async function onTestAll() {
   color: var(--color-text-muted);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
+}
+
+.models-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-4);
+}
+
+/* Header labels stay on one line: a wrapped three-line header (the old price
+   title did this) makes the whole header row triple-height for every column.
+   Long explanations belong in the "?" tooltips, not the header text. */
+:deep(.n-data-table-th) {
+  white-space: nowrap;
 }
 
 .summary {

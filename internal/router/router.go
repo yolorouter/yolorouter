@@ -133,6 +133,11 @@ type Deps struct {
 	// transport, letting a self-hosted operator reach a LAN/localhost model
 	// server.
 	AllowPrivateUpstreams bool
+	// ProbeQueue receives the candidates a bulk import stores, for background
+	// verification. The server owns its lifecycle (start/stop with serve's own
+	// context) and passes it in; a nil queue — router tests that never
+	// exercise imports — simply skips enqueueing.
+	ProbeQueue *modeladmin.ProbeQueue
 	// Gateway carries the relay timeouts and limits, threaded through so the
 	// wiring stays identical to production instead of a zero struct.
 	Gateway config.GatewayConfig
@@ -294,6 +299,9 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	sessionOnly.POST("/auth/logout", handler.PostLogout(db))
 	sessionOnly.GET("/auth/me", handler.GetMe(db))
 	sessionOnly.PUT("/auth/password", handler.PutPassword(db))
+	// The gateway address is readable by any signed-in account, unlike the
+	// admin-only build info above — GetSystemEndpoint owns the rationale.
+	sessionOnly.GET("/system/endpoint", handler.GetSystemEndpoint(externalURL))
 
 	// Ownership-scoped routes: reachable by members, but every query a
 	// non-admin makes through them is pinned to their own rows by
@@ -312,6 +320,8 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected := admin.Group("")
 	protected.Use(middleware.RequireSession(db), middleware.RequireAdmin())
 	protected.GET("/users", handler.GetUsers(db))
+	protected.POST("/users", handler.PostUser(db))
+	protected.POST("/users/:id/password", handler.PostUserPasswordReset(db))
 	protected.PATCH("/users/:id/status", handler.PatchUserStatus(db))
 	protected.PATCH("/users/:id/role", handler.PatchUserRole(db))
 
@@ -346,6 +356,12 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// does not exist yet — there is no :candidateId to scope it to.
 	protected.GET("/models/candidates/suggest-price", handler.GetCandidateSuggestPrice(modelSvc))
 	protected.POST("/models/:id/candidates/test-and-create", handler.PostModelCandidateTestAndCreate(modelSvc))
+	// Bulk import routes live under /providers/:id because their subject is
+	// "this provider's upstream catalog", but they are model-domain operations
+	// (they create models and candidates), hence the model service.
+	protected.POST("/providers/:id/models/import", handler.PostProviderModelsImport(modelSvc, deps.ProbeQueue))
+	protected.POST("/providers/:id/models/suggest-prices", handler.PostProviderSuggestPrices(modelSvc))
+	protected.GET("/providers/:id/candidates", handler.GetProviderCandidates(modelSvc, deps.ProbeQueue))
 	protected.PATCH("/models/:id/candidates/:candidateId", handler.PatchModelCandidate(modelSvc))
 	protected.PATCH("/models/:id/candidates/:candidateId/order", handler.PatchModelCandidateOrder(modelSvc))
 	protected.PATCH("/models/:id/candidates/:candidateId/status", handler.PatchModelCandidateStatus(modelSvc))
@@ -391,6 +407,7 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	scoped.GET("/analytics/report", handler.GetAnalyticsReport(analyticsSvc))
 	scoped.GET("/analytics/export", handler.ExportAnalyticsCSV(analyticsSvc))
 	protected.GET("/analytics/compress-stats", handler.GetCompressStats(analyticsSvc))
+	protected.GET("/analytics/concise-output-projection", handler.GetConciseOutputProjection(analyticsSvc))
 
 	requestLogSvc := requestlog.NewRequestLogService(db)
 	protected.GET("/request-logs", handler.GetRequestLogs(requestLogSvc))
@@ -448,6 +465,11 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// path (gateway.IngressProtocol) to pick the caller's actual wire
 	// protocol.
 	relaySvc := gateway.NewService(db, secrets, allowPrivateUpstreams, settingsSvc, gatewayCfg)
+	// The model detail view shows per-candidate sticky-binding counts for
+	// balanced models; both sides must read the registry the relay actually
+	// routes through, so the gateway's instance is handed over rather than a
+	// second one built here.
+	modelSvc.SetBindingCounter(relaySvc.Bindings())
 	// A retest that PROVES a key works releases the key pool's rate-limit
 	// bench — the only reliable recovery signal, since a merely claimed or
 	// inconclusive retest proves nothing.
@@ -464,7 +486,11 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// They reuse the same APIKeyAuth + body-cap chain the relay POSTs above
 	// use, so a caller presents the same key as for a completion request.
 	v1.GET("/models", gateway.ListModels(db))
-	v1.GET("/models/:model", gateway.RetrieveModel(db))
+	// A catch-all (not ":model") because model ids may be slash-namespaced
+	// (deepseek-ai/DeepSeek-V4): net/http decodes "%2F" in URL.Path before
+	// gin matches, so a single-segment param can never see such a name. The
+	// handler strips the leading "/" gin includes in a catch-all value.
+	v1.GET("/models/*model", gateway.RetrieveModel(db))
 
 	v1beta := gatewayGroup(r, "/v1beta", bodiesDir, db)
 	// :modelaction captures the whole "{model}:{action}" path segment (a

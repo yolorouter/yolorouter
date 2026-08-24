@@ -7,9 +7,8 @@ const localeStore = useLocaleStore()
 const naiveLocale = computed(() => (localeStore.locale === 'en' ? enUS : zhCN))
 const naiveDateLocale = computed(() => (localeStore.locale === 'en' ? dateEnUS : dateZhCN))
 
-// Matches the reference project's accent color exactly
-// (yolorouter-frontend/src/user/App.vue) so this admin UI reads as the
-// same product, not a second, differently-branded tool.
+// The product's one accent color, used verbatim so every surface reads as
+// the same product rather than a second, differently-branded tool.
 const themeOverrides: GlobalThemeOverrides = {
   common: {
     primaryColor: '#6467f2',

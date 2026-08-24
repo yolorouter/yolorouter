@@ -149,17 +149,136 @@ func TestPostgresMigration00023CarriesAdminAndSessionsOverToUsers(t *testing.T) 
 		t.Fatalf("expected 1 local user via boolean predicate, got %d", localCount)
 	}
 
-	// The partial unique index must survive the trip through goose on this
-	// backend too: a second local account is impossible. The error must be
-	// the unique violation itself — asserting a bare non-nil error here
-	// once let a column-type error impersonate the constraint.
-	_, err := db.Exec(`INSERT INTO users (username, password_hash, role, status, is_local, created_at, updated_at)
-		VALUES ('local-two', 'hash', 'admin', 1, true, now(), now())`)
-	if err == nil {
-		t.Fatalf("expected the second local user to violate the partial unique index")
+}
+
+// TestPostgresMigration00032BootstrapUniquenessAndMultipleLocals is the
+// Postgres twin of the SQLite invariant test: after 00032 any number of
+// local (password-login) rows is allowed — admins provision them from the
+// console — while the bootstrap row stays unique. The partial unique index
+// backing the second half has to survive the trip through goose on this
+// backend too.
+func TestPostgresMigration00032BootstrapUniquenessAndMultipleLocals(t *testing.T) {
+	db := newTestPostgresDB(t)
+	if err := RunMigrations(db, "postgres", migrations.PostgresFS, "postgres"); err != nil {
+		t.Fatalf("RunMigrations failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "idx_users_single_local") {
-		t.Fatalf("expected a unique violation on idx_users_single_local, got: %v", err)
+
+	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('setup-admin', 'hash', 'admin', 1, true, true, now(), now())`); err != nil {
+		t.Fatalf("bootstrap insert failed: %v", err)
+	}
+	for _, name := range []string{"local-member-a", "local-member-b"} {
+		if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, status, is_local, is_bootstrap, created_at, updated_at)
+			VALUES ($1, 'hash', 'member', 1, true, false, now(), now())`, name); err != nil {
+			t.Fatalf("local member insert %q should be allowed: %v", name, err)
+		}
+	}
+
+	// The error must be the unique violation itself — asserting a bare
+	// non-nil error here once let a column-type error impersonate the
+	// constraint.
+	_, err := db.Exec(`INSERT INTO users (username, password_hash, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('bootstrap-two', 'hash', 'admin', 1, true, true, now(), now())`)
+	if err == nil {
+		t.Fatalf("expected the second bootstrap user to violate the partial unique index")
+	}
+	if !strings.Contains(err.Error(), "idx_users_single_bootstrap") {
+		t.Fatalf("expected a unique violation on idx_users_single_bootstrap, got: %v", err)
+	}
+
+	// Externally-provisioned rows keep working exactly as before.
+	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('oauth-member', 'member', 1, false, false, now(), now())`); err != nil {
+		t.Fatalf("non-local insert should be allowed: %v", err)
+	}
+}
+
+// TestPostgresMigration00032BackfillsBootstrapFlag is the Postgres twin of
+// the SQLite backfill replay: the local account first-run setup created must
+// come out flagged as the bootstrap one — it inherits the escape-hatch
+// protections — while externally-provisioned accounts stay unflagged. Both
+// the backfill and the restored index in Down are written as bare boolean
+// predicates here rather than "= 1", a shape that only exists on this
+// backend, so it has to run here at least once. Remove the backfill UPDATE
+// from the migration and this goes red.
+func TestPostgresMigration00032BackfillsBootstrapFlag(t *testing.T) {
+	db := newTestPostgresDB(t)
+	if err := RunMigrations(db, "postgres", migrations.PostgresFS, "postgres"); err != nil {
+		t.Fatalf("RunMigrations failed: %v", err)
+	}
+	if err := RollbackTo(db, "postgres", migrations.PostgresFS, "postgres", 31); err != nil {
+		t.Fatalf("RollbackTo(31) failed: %v", err)
+	}
+
+	// Schema at version 31 has no is_bootstrap column — seed the
+	// pre-upgrade world directly: the setup account plus one OAuth member.
+	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, status, is_local, created_at, updated_at)
+		VALUES (5, 'boss', 'hash', 'admin', 1, true, now(), now())`); err != nil {
+		t.Fatalf("seed setup admin: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (id, username, role, status, is_local, created_at, updated_at)
+		VALUES (6, 'ext-user', 'member', 1, false, now(), now())`); err != nil {
+		t.Fatalf("seed external user: %v", err)
+	}
+
+	if err := RunMigrations(db, "postgres", migrations.PostgresFS, "postgres"); err != nil {
+		t.Fatalf("re-running migrations failed: %v", err)
+	}
+
+	var setupFlag, extFlag bool
+	if err := db.QueryRow(`SELECT is_bootstrap FROM users WHERE id = 5`).Scan(&setupFlag); err != nil {
+		t.Fatalf("read setup admin flag: %v", err)
+	}
+	if !setupFlag {
+		t.Fatal("expected the pre-existing local account to be backfilled as the bootstrap account")
+	}
+	if err := db.QueryRow(`SELECT is_bootstrap FROM users WHERE id = 6`).Scan(&extFlag); err != nil {
+		t.Fatalf("read external user flag: %v", err)
+	}
+	if extFlag {
+		t.Fatal("expected the external account to stay unflagged")
+	}
+
+	// Down has to run against real rows, not just the empty tree the
+	// up/down test walks: it restores the partial unique index on is_local,
+	// which is only satisfiable while one local account exists — the case
+	// the migration documents as the reversible one.
+	if err := RollbackTo(db, "postgres", migrations.PostgresFS, "postgres", 31); err != nil {
+		t.Fatalf("RollbackTo(31) with rows present failed: %v", err)
+	}
+	if err := RunMigrations(db, "postgres", migrations.PostgresFS, "postgres"); err != nil {
+		t.Fatalf("re-applying after rollback failed: %v", err)
+	}
+}
+
+// TestPostgresMigration00032DownRefusesWhenExtraLocalsExist is the Postgres
+// twin of the refused-downgrade test: the restored partial unique index has
+// to reject the rollback once more than one local account exists, on this
+// backend too, and leave the accounts untouched when it does.
+func TestPostgresMigration00032DownRefusesWhenExtraLocalsExist(t *testing.T) {
+	db := newTestPostgresDB(t)
+	if err := RunMigrations(db, "postgres", migrations.PostgresFS, "postgres"); err != nil {
+		t.Fatalf("RunMigrations failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('setup-admin', 'admin', 1, true, true, now(), now())`); err != nil {
+		t.Fatalf("seed bootstrap account: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (username, role, status, is_local, is_bootstrap, created_at, updated_at)
+		VALUES ('console-member', 'member', 1, true, false, now(), now())`); err != nil {
+		t.Fatalf("seed console-created local member: %v", err)
+	}
+
+	if err := RollbackTo(db, "postgres", migrations.PostgresFS, "postgres", 31); err == nil {
+		t.Fatal("expected the downgrade to be refused while two local accounts exist")
+	}
+
+	var locals int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE is_local`).Scan(&locals); err != nil {
+		t.Fatalf("count local accounts after the refused downgrade: %v", err)
+	}
+	if locals != 2 {
+		t.Fatalf("expected both local accounts to survive the refused downgrade, got %d", locals)
 	}
 }
 

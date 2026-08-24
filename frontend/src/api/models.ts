@@ -25,13 +25,26 @@ export interface ModelCandidate {
   last_test_result: number | null
   last_test_duration_ms: number | null
   last_tested_at: string | null
+  /**
+   * How many caller API keys the gateway currently has pinned to this
+   * candidate's provider for this model (balanced scheduling only; always 0
+   * for failover). Populated only by the model-detail endpoint — a 0 in any
+   * other response means "not collected", not "nobody bound". A momentary
+   * in-memory snapshot that a restart resets.
+   */
+  binding_count: number
 }
+
+/** How the gateway orders a model's candidate chain: which candidate leads. */
+export type SchedulingMode = 'failover' | 'balanced'
 
 export interface Model {
   id: number
   name: string
   management_status: number
   running_status: string
+  /** Which candidate leads each request; 'failover' for pre-upgrade rows. */
+  scheduling_mode: SchedulingMode
   /**
    * Tri-state image-input declaration: null = undeclared (the gateway leaves
    * images alone), true/false = the admin's statement of whether this model
@@ -90,14 +103,29 @@ export interface TestAndCreateResult {
 export interface UpdateCandidateResult {
   candidate: ModelCandidate
   report: CandidateTestReport | null
+  // False when a concurrent probe won the commit race: the report describes an
+  // outcome the row does not hold, and presenting it as the saved state would
+  // contradict the list.
+  report_applied: boolean
 }
 
 export function listModels(): Promise<{ list: Model[] }> {
   return apiFetch('/api/admin/models')
 }
 
-export function createModel(name: string): Promise<Model> {
-  return apiFetch('/api/admin/models', { method: 'POST', body: JSON.stringify({ name }) })
+// compactBody serialises the given fields, dropping the ones the caller did
+// not submit — an absent optional stays absent on the wire, which the update
+// endpoint's "present switches, absent keeps" contract depends on.
+function compactBody(fields: Record<string, unknown>): string {
+  const body: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) body[key] = value
+  }
+  return JSON.stringify(body)
+}
+
+export function createModel(name: string, schedulingMode?: SchedulingMode): Promise<Model> {
+  return apiFetch('/api/admin/models', { method: 'POST', body: compactBody({ name, scheduling_mode: schedulingMode }) })
 }
 
 export interface BatchSkippedModel {
@@ -110,8 +138,8 @@ export interface BatchCreateModelsResult {
   skipped: BatchSkippedModel[]
 }
 
-export function createModelsBatch(names: string[]): Promise<BatchCreateModelsResult> {
-  return apiFetch('/api/admin/models/batch', { method: 'POST', body: JSON.stringify({ names }) })
+export function createModelsBatch(names: string[], schedulingMode?: SchedulingMode): Promise<BatchCreateModelsResult> {
+  return apiFetch('/api/admin/models/batch', { method: 'POST', body: compactBody({ names, scheduling_mode: schedulingMode }) })
 }
 
 export function getModel(id: number): Promise<Model> {
@@ -121,10 +149,19 @@ export function getModel(id: number): Promise<Model> {
 /** The wire form of the tri-state declaration ("unknown" maps to null). */
 export type ImageInputChoice = 'unknown' | 'yes' | 'no'
 
-export function updateModel(id: number, name: string, imageInput?: ImageInputChoice): Promise<Model> {
-  const body: Record<string, unknown> = { name }
-  if (imageInput !== undefined) body.image_input = imageInput
-  return apiFetch(`/api/admin/models/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+// ModelPatch is one PATCH's submitted fields; optional fields left undefined
+// are omitted from the request and keep their current server-side value.
+export interface ModelPatch {
+  name: string
+  imageInput?: ImageInputChoice
+  schedulingMode?: SchedulingMode
+}
+
+export function updateModel(id: number, patch: ModelPatch): Promise<Model> {
+  return apiFetch(`/api/admin/models/${id}`, {
+    method: 'PATCH',
+    body: compactBody({ name: patch.name, image_input: patch.imageInput, scheduling_mode: patch.schedulingMode }),
+  })
 }
 
 export function setModelStatus(id: number, enabled: boolean): Promise<void> {
@@ -181,12 +218,17 @@ export function testAndCreateCandidate(modelId: number, input: CreateCandidateIn
 
 // May probe: renaming the target, or enabling a candidate that is not verified,
 // re-verifies it server-side.
-export function updateCandidate(modelId: number, candidateId: number, input: UpdateCandidateInput): Promise<UpdateCandidateResult> {
-  return apiFetch(`/api/admin/models/${modelId}/candidates/${candidateId}`, {
+export async function updateCandidate(modelId: number, candidateId: number, input: UpdateCandidateInput): Promise<UpdateCandidateResult> {
+  const data = await apiFetch<UpdateCandidateResult>(`/api/admin/models/${modelId}/candidates/${candidateId}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
     timeoutMs: PROBE_TIMEOUT_MS,
   })
+  // A rolling upgrade can route this call to a server one release behind,
+  // whose response predates report_applied. That server has no superseded
+  // concept — its probe result is always the row's own — so a missing flag
+  // must read as applied, not as losing a race that could not have happened.
+  return { ...data, report_applied: data.report_applied ?? true, report: data.report ?? null }
 }
 
 export function reorderCandidate(modelId: number, candidateId: number, direction: 'up' | 'down'): Promise<void> {
@@ -205,11 +247,25 @@ export function setCandidateStatus(modelId: number, candidateId: number, enabled
 
 // retestCandidate re-probes a stored candidate. One retest covers the basic
 // mapping and both capabilities, so there is no test type to choose.
-export function retestCandidate(modelId: number, candidateId: number): Promise<ModelCandidate> {
-  return apiFetch(`/api/admin/models/${modelId}/candidates/${candidateId}/test`, {
-    method: 'POST',
-    timeoutMs: PROBE_TIMEOUT_MS,
-  })
+// `applied` is false when a concurrent probe won the commit race: the returned
+// candidate then reflects the competitor's result, not this retest's, and the
+// caller must not announce it as this click's outcome.
+export interface RetestCandidateResult {
+  candidate: ModelCandidate
+  applied: boolean
+}
+
+export async function retestCandidate(modelId: number, candidateId: number): Promise<RetestCandidateResult> {
+  const data = await apiFetch<RetestCandidateResult | ModelCandidate>(
+    `/api/admin/models/${modelId}/candidates/${candidateId}/test`,
+    { method: 'POST', timeoutMs: PROBE_TIMEOUT_MS },
+  )
+  // A rolling upgrade can route this call to a server one release behind,
+  // which returns the bare candidate with no `applied` flag. That server has
+  // no superseded concept either, so its response is always this click's
+  // outcome — normalize instead of misreading the missing flag as superseded.
+  if ('candidate' in data && data.candidate !== undefined) return data as RetestCandidateResult
+  return { candidate: data as ModelCandidate, applied: true }
 }
 
 export function deleteCandidate(modelId: number, candidateId: number): Promise<void> {
@@ -245,4 +301,88 @@ export function suggestCandidatePrice(
     provider_model_name: providerModelName,
   })
   return apiFetch(`/api/admin/models/candidates/suggest-price?${q.toString()}`)
+}
+
+// ---- Bulk import (provider-scoped) ----
+
+export interface ImportModelItemInput {
+  provider_model_name: string
+  input_price: number
+  output_price: number
+  cache_write_price: number | null
+  cache_read_price: number | null
+  max_output?: number
+}
+
+export interface ImportItemResult {
+  name: string
+  status: 'created' | 'appended' | 'skipped'
+  reason?: 'exists' | 'invalid'
+  model_id?: number
+  candidate_id?: number
+}
+
+export interface ImportProviderModelsResult {
+  items: ImportItemResult[]
+  created: number
+  appended: number
+  skipped: number
+}
+
+// importProviderModels stores one model + candidate pair per item, skipping
+// what already exists. Imported mappings start disabled and unverified; the
+// server queues a background probe for each and auto-enables the ones that
+// pass, so the dialog polls listProviderCandidates for progress afterwards.
+export function importProviderModels(
+  providerId: number,
+  items: ImportModelItemInput[],
+): Promise<ImportProviderModelsResult> {
+  return apiFetch(`/api/admin/providers/${providerId}/models/import`, {
+    method: 'POST',
+    body: JSON.stringify({ items }),
+  })
+}
+
+// suggestPrices is the batch form of suggestCandidatePrice — one request
+// prices every row of the import dialog. Every requested name has an entry;
+// an empty source means no match and the row stays unpriced.
+export function suggestPrices(
+  providerId: number,
+  names: string[],
+): Promise<{ prices: Record<string, SuggestedPrice> }> {
+  return apiFetch(`/api/admin/providers/${providerId}/models/suggest-prices`, {
+    method: 'POST',
+    body: JSON.stringify({ names }),
+  })
+}
+
+export interface ProviderCandidate {
+  candidate_id: number
+  model_id: number
+  model_name: string
+  provider_model_name: string
+  input_price: number
+  output_price: number
+  cache_write_price: number | null
+  cache_read_price: number | null
+  max_output: number
+  management_status: number
+  verification_status: number
+  last_test_result: number | null
+  last_tested_at: string | null
+  last_test_error: string | null
+  // Live probe-queue position, stamped by the list endpoint: 'queued' while
+  // waiting for a worker, 'probing' while one is on it, '' otherwise.
+  queue_state: '' | 'queued' | 'probing'
+  // True while some instance's probe queue still owes this row a probe
+  // outcome; an untested unstamped row without it was stored unprobed on
+  // purpose and is not pending anything.
+  auto_enable_on_pass: boolean
+}
+
+// listProviderCandidates returns every mapping a provider serves with its
+// verification state — the import dialog's "already added" source, the
+// progress poll target, and the provider detail model tab's data.
+export function listProviderCandidates(providerId: number): Promise<{ list: ProviderCandidate[] }> {
+  return apiFetch(`/api/admin/providers/${providerId}/candidates`)
 }

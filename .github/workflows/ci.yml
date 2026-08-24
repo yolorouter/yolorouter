@@ -93,9 +93,16 @@ jobs:
           cache: true
       # v7+ of the action is required to run golangci-lint v2, which is what
       # our .golangci.yml (version: "2") targets; v6 only supports v1.
+      #
+      # Pinned, not "latest". golangci-lint bundles the gofmt of whatever Go
+      # it was built against, so a floating version silently moves the
+      # formatting rules ahead of the Go this repo targets — and the same
+      # file then fails `gofmt -l` locally or the lint job here, depending on
+      # which side you satisfy. Bump this deliberately, alongside go-version
+      # above and go.mod, so one formatter governs everywhere.
       - uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          version: v2.13.1
 
   build:
     name: Build (embedded binary)

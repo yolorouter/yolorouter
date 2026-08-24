@@ -21,12 +21,14 @@ const (
 	UserStatusDisabled = 2
 )
 
-// User is an account that can sign in to the console. Exactly one user
-// may have IsLocal=true (enforced by a partial unique index): that is
-// the password-login account created by first-run setup, which also
-// serves as the escape hatch when external login is misconfigured. All
-// other accounts are provisioned through external identity providers
-// and carry an empty PasswordHash.
+// User is an account that can sign in to the console. Accounts with
+// IsLocal=true log in with username+password (first-run setup's account
+// plus any local accounts admins provision from the console); all others
+// are provisioned through external identity providers and carry an empty
+// PasswordHash. Exactly one user has IsBootstrap=true (enforced by a
+// partial unique index): the account created by first-run setup, which
+// can never be disabled or demoted — it is the escape hatch that keeps
+// the console reachable when external login is misconfigured.
 //
 // PasswordHash and the lockout-state fields are explicitly json:"-":
 // handlers today only ever expose a hand-picked gin.H{...}, never this
@@ -42,6 +44,7 @@ type User struct {
 	Role             string     `gorm:"column:role" json:"role"`
 	Status           int        `gorm:"column:status" json:"status"`
 	IsLocal          bool       `gorm:"column:is_local" json:"is_local"`
+	IsBootstrap      bool       `gorm:"column:is_bootstrap" json:"is_bootstrap"`
 	FailedLoginCount int        `gorm:"column:failed_login_count" json:"-"`
 	LockedUntil      *time.Time `gorm:"column:locked_until" json:"-"`
 	LastLoginAt      *time.Time `gorm:"column:last_login_at" json:"last_login_at"`

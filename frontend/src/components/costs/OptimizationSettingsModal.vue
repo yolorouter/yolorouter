@@ -86,6 +86,7 @@ import {
   type InputCompressionSetting,
 } from '../../api/systemSettings'
 import { CUSTOM_SYSTEM_PROMPT_CONFLICT, INPUT_COMPRESSION_CONFLICT } from '../../api/errcodes'
+import { defaultConcisePrompt } from '../../utils/concisePrompt'
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{
@@ -100,7 +101,7 @@ const showModel = computed({
   set: (v) => emit('update:show', v),
 })
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const message = useMessage()
 
 // Mirrors internal/service/system_settings_service.go's MaxCustomSystemPromptLen
@@ -133,7 +134,7 @@ async function loadCSP() {
     const s = await getCustomSystemPrompt()
     cspSetting.value = s
     cspForm.enabled = s.enabled
-    cspForm.text = t('costOptimization.exampleConciseText') + t('costOptimization.exampleMinimalCodeText')
+    cspForm.text = defaultConcisePrompt(t, locale.value)
     cspForm.version = s.version
     cspLoad.value = 'loaded'
   } catch (err) {

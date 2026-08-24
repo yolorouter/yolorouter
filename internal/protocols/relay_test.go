@@ -562,8 +562,10 @@ func TestIsBenignPostDoneReadErr_Whitelist(t *testing.T) {
 	}{
 		{context.Canceled, true},
 		{io.ErrUnexpectedEOF, true},
-		{errors.New("http2: response body closed"), true},                              // non-standard HTTP/2 stream close by some upstreams
-		{fmt.Errorf("read body: %w", errors.New("http2: response body closed")), true}, // must still match when wrapped
+		// non-standard HTTP/2 stream close by some upstreams
+		{errors.New("http2: response body closed"), true},
+		// must still match when wrapped
+		{fmt.Errorf("read body: %w", errors.New("http2: response body closed")), true},
 		// gateway.ErrIdleTimeout ("idle timeout between chunks"): some 2xx
 		// upstreams send [DONE] + final usage and then just hold the
 		// connection open instead of closing it — the idle-read timeout that

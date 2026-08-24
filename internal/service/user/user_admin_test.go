@@ -9,19 +9,20 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
+	"github.com/yolorouter/yolorouter/internal/service/auth"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
-// seedLocalAdmin inserts the single password-backed account (always an
-// enabled admin, mirroring first-run setup).
-func seedLocalAdmin(t *testing.T, db *gorm.DB, username string) *model.User {
+// seedBootstrapAdmin inserts the first-run-setup account (the one local
+// admin the escape-hatch guards protect), mirroring auth.Setup's output.
+func seedBootstrapAdmin(t *testing.T, db *gorm.DB, username string) *model.User {
 	t.Helper()
 	now := time.Now().UTC()
 	u := &model.User{Username: username, Role: model.RoleAdmin, Status: model.UserStatusEnabled,
-		IsLocal: true, PasswordHash: "hash", CreatedAt: now, UpdatedAt: now}
+		IsLocal: true, IsBootstrap: true, PasswordHash: "hash", CreatedAt: now, UpdatedAt: now}
 	if err := repository.CreateUser(db, u); err != nil {
-		t.Fatalf("seed local %s: %v", username, err)
+		t.Fatalf("seed bootstrap %s: %v", username, err)
 	}
 	return u
 }
@@ -183,27 +184,172 @@ func TestListUsersCarriesDirectoryAggregates(t *testing.T) {
 	}
 }
 
-// TestLocalAccountCannotBeDisabledOrDemoted: the single password account
-// is the documented OAuth-failure escape hatch — no admin may take it
-// out, even with other enabled admins around.
-func TestLocalAccountCannotBeDisabledOrDemoted(t *testing.T) {
+// TestBootstrapAccountCannotBeDisabledOrDemoted: the first-run setup
+// account is the documented OAuth-failure escape hatch — no admin may
+// take it out, even with other enabled admins around.
+func TestBootstrapAccountCannotBeDisabledOrDemoted(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	local := seedLocalAdmin(t, db, "boss")
+	local := seedBootstrapAdmin(t, db, "boss")
 	other := seedDirectoryUser(t, db, "other", model.RoleAdmin, model.UserStatusEnabled)
 	now := time.Now().UTC()
 
-	if err := SetUserStatus(db, other.ID, local.ID, model.UserStatusDisabled, now); !errors.Is(err, errcode.ErrAccountLocalProtected) {
-		t.Fatalf("disable local account: expected ErrAccountLocalProtected, got %v", err)
+	if err := SetUserStatus(db, other.ID, local.ID, model.UserStatusDisabled, now); !errors.Is(err, errcode.ErrAccountBootstrapProtected) {
+		t.Fatalf("disable bootstrap account: expected ErrAccountBootstrapProtected, got %v", err)
 	}
-	if err := SetUserRole(db, other.ID, local.ID, model.RoleMember, now); !errors.Is(err, errcode.ErrAccountLocalProtected) {
-		t.Fatalf("demote local account: expected ErrAccountLocalProtected, got %v", err)
+	if err := SetUserRole(db, other.ID, local.ID, model.RoleMember, now); !errors.Is(err, errcode.ErrAccountBootstrapProtected) {
+		t.Fatalf("demote bootstrap account: expected ErrAccountBootstrapProtected, got %v", err)
 	}
 	stored, err := repository.FindUserByID(db, local.ID)
 	if err != nil {
-		t.Fatalf("reload local: %v", err)
+		t.Fatalf("reload bootstrap: %v", err)
 	}
 	if stored.Status != model.UserStatusEnabled || stored.Role != model.RoleAdmin {
-		t.Fatalf("local account was mutated: %+v", stored)
+		t.Fatalf("bootstrap account was mutated: %+v", stored)
+	}
+}
+
+// TestCreateUserProvisionsLocalMember: the console-created account is an
+// enabled local member with a working password — the full lifecycle of a
+// password account minus the bootstrap protections.
+func TestCreateUserProvisionsLocalMember(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedBootstrapAdmin(t, db, "boss")
+
+	created, err := CreateUser(db, CreateUserInput{Username: "carol", DisplayName: "Carol from ops", Password: "correct-horse-1"}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	stored, err := repository.FindUserByID(db, created.ID)
+	if err != nil {
+		t.Fatalf("reload created: %v", err)
+	}
+	if stored.Username != "carol" || stored.DisplayName != "Carol from ops" ||
+		stored.Role != model.RoleMember || stored.Status != model.UserStatusEnabled ||
+		!stored.IsLocal || stored.IsBootstrap {
+		t.Fatalf("created account has wrong shape: %+v", stored)
+	}
+	if !auth.CheckPassword(stored.PasswordHash, "correct-horse-1") {
+		t.Fatalf("stored hash must verify against the submitted password")
+	}
+	// The account must actually sign in through the password form.
+	user, _, err := auth.Login(db, "carol", "correct-horse-1", time.Now().UTC())
+	if err != nil || user.ID != stored.ID {
+		t.Fatalf("created account must log in with its password, got user=%v err=%v", user, err)
+	}
+}
+
+// TestCreateUserUsernameTaken: the name-taken error fires for a collision
+// with another console-created account and with an externally-provisioned
+// one alike — usernames are unique across the whole directory.
+func TestCreateUserUsernameTaken(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedBootstrapAdmin(t, db, "boss")
+	seedDirectoryUser(t, db, "carol", model.RoleMember, model.UserStatusEnabled)
+
+	if _, err := CreateUser(db, CreateUserInput{Username: "carol", Password: "correct-horse-1"}, time.Now().UTC()); !errors.Is(err, errcode.ErrAccountUsernameTaken) {
+		t.Fatalf("collision with external account: expected ErrAccountUsernameTaken, got %v", err)
+	}
+	if _, err := CreateUser(db, CreateUserInput{Username: "boss", Password: "correct-horse-1"}, time.Now().UTC()); !errors.Is(err, errcode.ErrAccountUsernameTaken) {
+		t.Fatalf("collision with bootstrap account: expected ErrAccountUsernameTaken, got %v", err)
+	}
+}
+
+// TestCreateUserRecordsEmail: the optional email is stored verbatim for
+// the directory — nothing in this build consumes it beyond display.
+func TestCreateUserRecordsEmail(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedBootstrapAdmin(t, db, "boss")
+
+	created, err := CreateUser(db, CreateUserInput{Username: "carol", Email: "carol@ops.example", Password: "correct-horse-1"}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	stored, err := repository.FindUserByID(db, created.ID)
+	if err != nil {
+		t.Fatalf("reload created: %v", err)
+	}
+	if stored.Email != "carol@ops.example" {
+		t.Fatalf("email not recorded: %q", stored.Email)
+	}
+}
+
+// TestResetUserPasswordByBootstrapAdmin: the bootstrap admin rotates a
+// console-created member's password — the old password stops working, the
+// target's live sessions die, and the new password signs in.
+func TestResetUserPasswordByBootstrapAdmin(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	bootstrap := seedBootstrapAdmin(t, db, "boss")
+	created, err := CreateUser(db, CreateUserInput{Username: "carol", Password: "correct-horse-1"}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := repository.CreateSession(db, "tok-carol-reset", created.ID, now.Add(time.Hour), now); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	if err := ResetUserPassword(db, bootstrap.ID, created.ID, "fresh-horse-2", now); err != nil {
+		t.Fatalf("ResetUserPassword: %v", err)
+	}
+	if _, err := repository.FindUserByValidSession(db, "tok-carol-reset", now); err == nil {
+		t.Fatalf("reset must kill the target's live sessions")
+	}
+	if _, _, err := auth.Login(db, "carol", "correct-horse-1", now); !errors.Is(err, errcode.ErrAccountInvalidCredentials) {
+		t.Fatalf("old password: expected ErrAccountInvalidCredentials, got %v", err)
+	}
+	user, _, err := auth.Login(db, "carol", "fresh-horse-2", now)
+	if err != nil || user.ID != created.ID {
+		t.Fatalf("new password must sign in, got user=%v err=%v", user, err)
+	}
+}
+
+// TestResetUserPasswordDeniedOutsideItsLane: self, a non-bootstrap admin,
+// and an externally-provisioned target all refuse with the same code;
+// an unknown target keeps the not-found answer.
+func TestResetUserPasswordDeniedOutsideItsLane(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	bootstrap := seedBootstrapAdmin(t, db, "boss")
+	promoted := seedDirectoryUser(t, db, "promoted", model.RoleAdmin, model.UserStatusEnabled)
+	oauth := seedDirectoryUser(t, db, "ext", model.RoleMember, model.UserStatusEnabled)
+	now := time.Now().UTC()
+
+	if err := ResetUserPassword(db, bootstrap.ID, bootstrap.ID, "fresh-horse-2", now); !errors.Is(err, errcode.ErrAccountPasswordResetDenied) {
+		t.Fatalf("self-reset: expected ErrAccountPasswordResetDenied, got %v", err)
+	}
+	if err := ResetUserPassword(db, promoted.ID, oauth.ID, "fresh-horse-2", now); !errors.Is(err, errcode.ErrAccountPasswordResetDenied) {
+		t.Fatalf("non-bootstrap actor: expected ErrAccountPasswordResetDenied, got %v", err)
+	}
+	if err := ResetUserPassword(db, bootstrap.ID, oauth.ID, "fresh-horse-2", now); !errors.Is(err, errcode.ErrAccountPasswordResetDenied) {
+		t.Fatalf("non-local target: expected ErrAccountPasswordResetDenied, got %v", err)
+	}
+	if err := ResetUserPassword(db, bootstrap.ID, 99999, "fresh-horse-2", now); !errors.Is(err, errcode.ErrAccountUserNotFound) {
+		t.Fatalf("unknown target: expected ErrAccountUserNotFound, got %v", err)
+	}
+}
+
+// TestLocalMemberIsFullyManageable: escape-hatch protections key on
+// is_bootstrap, not is_local — a console-created local account can be
+// promoted, demoted, and disabled like any externally-provisioned one.
+// Reverting the guards to is_local reddens the demote and the disable;
+// the promote passes either way, since raising someone to admin never
+// reaches a guard that only refuses demotions.
+func TestLocalMemberIsFullyManageable(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedBootstrapAdmin(t, db, "boss")
+	created, err := CreateUser(db, CreateUserInput{Username: "dave", Password: "correct-horse-1"}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	now := time.Now().UTC()
+
+	if err := SetUserRole(db, 1, created.ID, model.RoleAdmin, now); err != nil {
+		t.Fatalf("promote local member: %v", err)
+	}
+	if err := SetUserRole(db, 1, created.ID, model.RoleMember, now); err != nil {
+		t.Fatalf("demote local member: %v", err)
+	}
+	if err := SetUserStatus(db, 1, created.ID, model.UserStatusDisabled, now); err != nil {
+		t.Fatalf("disable local member: %v", err)
 	}
 }
 

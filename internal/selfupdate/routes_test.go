@@ -11,8 +11,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/yolorouter/yolorouter/internal/version"
 )
 
 // shrinkStallWindows makes the watchdog act in test time instead of wall
@@ -129,31 +127,46 @@ func TestDownloadFallsBackToMirrorAndPromotesIt(t *testing.T) {
 	}
 }
 
-// TestExplicitProxyGetsNoFallback: an operator-configured proxy is the whole
-// routing decision — when it fails, the updater must report that failure,
-// not quietly reroute traffic somewhere the operator never approved.
-func TestExplicitProxyGetsNoFallback(t *testing.T) {
-	var hits atomic.Int32
+// TestExplicitProxyFallsBackToDirect: an explicit proxy goes first, but when
+// it fails the walk retries direct GitHub — the recovery that matters when a
+// shared mirror is rate-limited while the deployment's own path to GitHub is
+// healthy. Healthy proxies are unaffected: the direct route only runs after
+// the proxy attempt has already failed.
+func TestExplicitProxyFallsBackToDirect(t *testing.T) {
+	var proxyHits atomic.Int32
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
+		proxyHits.Add(1)
 		http.Error(w, "boom", http.StatusBadGateway)
 	}))
 	t.Cleanup(broken.Close)
 
 	rs := newRouteSet(broken.URL)
-	if len(rs.routes) != 1 {
-		t.Fatalf("explicit proxy must be the only route, got %v", rs.routes)
+	if len(rs.routes) != 2 || rs.routes[0] != broken.URL || rs.routes[1] != "" {
+		t.Fatalf("explicit proxy must be first with direct behind it, got %v", rs.routes)
 	}
-	_, err := rs.download(context.Background(), &http.Client{Timeout: 2 * time.Second},
-		"https://example.invalid/asset")
-	if err == nil {
-		t.Fatal("a failing explicit proxy must surface an error")
+
+	// The asset URL itself is a working origin, so the "" (direct) route
+	// behind the failing proxy must serve the download.
+	const payload = "asset-bytes"
+	asset := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	t.Cleanup(asset.Close)
+
+	data, err := rs.download(context.Background(), &http.Client{Timeout: 2 * time.Second}, asset.URL)
+	if err != nil {
+		t.Fatalf("download must fall back to direct after proxy failure: %v", err)
 	}
-	if hits.Load() != 1 {
-		t.Fatalf("want exactly one attempt against the explicit proxy, got %d", hits.Load())
+	if string(data) != payload {
+		t.Fatalf("fell back but got wrong bytes: %q", string(data))
 	}
-	if strings.Contains(err.Error(), version.DefaultMirror) {
-		t.Fatalf("the error suggests the built-in mirror was tried: %v", err)
+	if proxyHits.Load() != 1 {
+		t.Fatalf("want exactly one attempt against the explicit proxy, got %d", proxyHits.Load())
+	}
+	// The successful direct route is promoted to the front so later
+	// downloads of the same run skip the broken proxy.
+	if rs.routes[0] != "" {
+		t.Fatalf("successful direct route must be promoted to front, got %v", rs.routes)
 	}
 }
 
@@ -520,6 +533,11 @@ func TestNon200ErrorRedactsProxyCredentials(t *testing.T) {
 	authed := "http://alice:supersecret@" + u.Host
 
 	rs := newRouteSet(authed)
+	// Redaction is the whole subject here, so the walk is pinned to the
+	// proxy: the direct route newRouteSet puts behind it would send the
+	// lookup below to the real api.github.com, making a unit test depend on
+	// the network and on what owner/repo happens to return.
+	rs.routes = []string{authed}
 	if _, err := rs.download(context.Background(), &http.Client{Timeout: 2 * time.Second},
 		"https://example.invalid/asset"); err == nil {
 		t.Fatal("a 502 from the explicit proxy must surface an error")

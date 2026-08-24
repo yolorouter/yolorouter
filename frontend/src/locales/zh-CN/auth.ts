@@ -23,6 +23,7 @@ export default {
   oauthButton: '使用 {name} 登录',
   usernameRuleMessage: '3-32 个字符，只能包含字母、数字、短横线和下划线',
   passwordRuleMessage: '至少 10 位，且同时包含字母和数字，最多 72 字节',
+  emailRuleMessage: '邮箱格式不正确',
   fieldRequired: '该字段为必填项',
   confirmPasswordMismatch: '两次输入的密码不一致',
   lockedCountdown: '登录失败次数过多，请在 {seconds} 秒后重试',

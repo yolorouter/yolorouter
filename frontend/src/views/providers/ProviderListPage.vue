@@ -78,9 +78,10 @@
       </div>
     </template>
 
-    <!-- No @created handler needed: store.create() (called inside the
-         modal) already refetches the list itself. -->
-    <NewProviderModal v-model:show="showCreate" />
+    <!-- store.create() (inside the modal) refetches the list itself; @created
+         chains the first-setup flow straight into model import on the new
+         provider's detail page. -->
+    <NewProviderModal v-model:show="showCreate" @created="onProviderCreated" />
     <ProviderEditModal v-model:show="showEditProvider" :provider="editingProvider" @updated="onEdited" />
   </div>
 </template>
@@ -122,6 +123,15 @@ const store = useProvidersStore()
 const modelsStore = useModelsStore()
 const isMobile = useIsMobile()
 const showCreate = ref(false)
+
+// First-setup handoff: a freshly created provider goes straight to its detail
+// page with the import dialog auto-opened, so the admin lands in "pick your
+// models" without hunting for the button. The flag travels through the store
+// (consumed once by the detail page), not the URL — see the field's comment.
+function onProviderCreated(created: Provider) {
+  store.pendingImportProviderId = created.id
+  void router.push(`/providers/${created.id}`)
+}
 // Inline row edit: open the provider edit modal straight from the list so a
 // quick change needs no navigation into the detail page.
 const showEditProvider = ref(false)

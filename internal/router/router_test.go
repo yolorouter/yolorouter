@@ -711,3 +711,20 @@ func assertGeminiEnvelope(t *testing.T, body []byte) {
 		t.Fatalf("must not leak a top-level request_id field, got: %s", body)
 	}
 }
+
+// TestRetrieveModelRouteMatchesSlashNamedModel pins the routing layer for
+// GET /v1/models/{model} accepting slash-namespaced model ids
+// (deepseek-ai/DeepSeek-V4): the route must match the multi-segment path.
+// No API key is set on purpose — a 401 (unauthenticated) proves the request
+// reached the gateway handler chain, while a 404 would mean the route never
+// matched the slashed name at all.
+func TestRetrieveModelRouteMatchesSlashNamedModel(t *testing.T) {
+	r := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/deepseek-ai/DeepSeek-V4", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 (route matched, auth rejected), got %d, body: %s", w.Code, w.Body.String())
+	}
+}

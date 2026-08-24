@@ -248,7 +248,7 @@ onMounted(() => {
 const navItems = computed<NavItem[]>(() => {
   // A member's sidebar carries exactly the self-service surface: overview,
   // usage, costs, their API keys, and language. The change-password entry
-  // additionally requires the password-backed local account — an OAuth
+  // additionally requires a password-backed local account — an OAuth
   // account has no password to change.
   if (!authStore.isAdmin) {
     const items: NavItem[] = [

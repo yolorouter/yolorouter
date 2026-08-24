@@ -86,7 +86,7 @@ func TestCreateModelsBatchCreatesValidAndSkipsExistingAndInvalid(t *testing.T) {
 	// skip(invalid); the repeated "claude-sonnet-5" is created once, the
 	// second occurrence skips(exists).
 	result, err := svc.CreateModelsBatch(
-		[]string{"gpt-5.6", "claude-sonnet-5", "bad name!", "claude-sonnet-5", "deepseek-v4-flash"},
+		modeladmin.CreateModelsBatchInput{Names: []string{"gpt-5.6", "claude-sonnet-5", "bad name!", "claude-sonnet-5", "deepseek-v4-flash"}},
 		now,
 	)
 	if err != nil {
@@ -140,7 +140,7 @@ func TestCreateModelsBatchRollsBackOnMidBatchFailure(t *testing.T) {
 		t.Fatalf("register callback: %v", err)
 	}
 
-	if _, err := svc.CreateModelsBatch([]string{"alpha", "boom", "gamma"}, now); err == nil {
+	if _, err := svc.CreateModelsBatch(modeladmin.CreateModelsBatchInput{Names: []string{"alpha", "boom", "gamma"}}, now); err == nil {
 		t.Fatalf("expected an error from the injected mid-batch failure")
 	}
 
@@ -448,7 +448,7 @@ func TestSetCandidateStatusEnablesAfterPassingTest(t *testing.T) {
 	}
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
-	if _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err != nil {
+	if _, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err != nil {
 		t.Fatalf("TestModelCandidate(basic) failed: %v", err)
 	}
 	if err := svc.SetCandidateStatus(candidate.ID, true, now); err != nil {
@@ -505,7 +505,7 @@ func TestTestModelCandidateBasicRecordsVerificationStatus(t *testing.T) {
 	}
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 8}
-	updated, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	updated, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
 	if err != nil {
 		t.Fatalf("TestModelCandidate(basic) failed: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestRetestModelCandidateRunsAllThreeProbesAndRecordsCapabilities(t *testing
 	}
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
-	updated, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	updated, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
 	if err != nil {
 		t.Fatalf("RetestModelCandidate failed: %v", err)
 	}
@@ -566,6 +566,250 @@ func TestRetestModelCandidateRunsAllThreeProbesAndRecordsCapabilities(t *testing
 	}
 }
 
+// A retest that lands the mapping's FIRST pass must also enable it: imported
+// and failed mappings sit disabled only because no probe had proven them yet,
+// and the one-click retest carries the same promise as the import queue —
+// pass means routable. Without this the operator sees a green "passed" badge
+// on a row that still serves nothing.
+func TestRetestModelCandidateEnablesOnFirstPass(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedCandidateForRetest(t, svc, provider.ID, now) // disabled + untested
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	updated, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if updated.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected verification passed, got %d", updated.VerificationStatus)
+	}
+	if updated.ManagementStatus != model.ModelCandidateStatusEnabled {
+		t.Fatalf("expected the first pass to enable the mapping, got management_status=%d", updated.ManagementStatus)
+	}
+}
+
+// A mapping an admin explicitly switched off after it passed keeps their
+// decision: its verification is already Passed, so a re-confirming retest is
+// not a first pass and must not undo the disable.
+func TestRetestModelCandidateKeepsAdminDisabledMappingDisabled(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now) // passed + enabled
+
+	if err := svc.SetCandidateStatus(candidate.ID, false, now); err != nil {
+		t.Fatalf("SetCandidateStatus(disable) failed: %v", err)
+	}
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	updated, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if updated.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the admin's disable to stand through a re-confirming retest, got management_status=%d", updated.ManagementStatus)
+	}
+}
+
+// The database can apply a commit and then lose the connection before the
+// acknowledgment: the caller sees an error although the row is stamped. The
+// retry's compare-and-set then misses ITS OWN earlier write and would
+// misreport the run as superseded — and skip the auto-enable — so the commit
+// path must recognize an already-applied write as success.
+func TestRetestModelCandidateRecognizesItsOwnWriteWhenAcknowledgmentIsLost(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedCandidateForRetest(t, svc, provider.ID, now)
+
+	// The first UPDATE applies, but its acknowledgment is "lost": the error is
+	// injected AFTER the statement executed.
+	failed := false
+	if err := db.Callback().Update().After("gorm:update").Register("test:lose-ack-once", func(tx *gorm.DB) {
+		if failed || tx.Error != nil {
+			return
+		}
+		failed = true
+		_ = tx.AddError(errors.New("connection dropped after apply"))
+	}); err != nil {
+		t.Fatalf("register fault-injection callback: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Update().Remove("test:lose-ack-once"); err != nil {
+			t.Fatalf("remove fault-injection callback: %v", err)
+		}
+	}()
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	updated, applied, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected the run to recognize its own applied write instead of reporting itself superseded")
+	}
+	if updated.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected verification passed, got %d", updated.VerificationStatus)
+	}
+	if updated.ManagementStatus != model.ModelCandidateStatusEnabled {
+		t.Fatalf("expected the first pass to enable the mapping despite the lost acknowledgment, got %d", updated.ManagementStatus)
+	}
+}
+
+// The own-write readback after a lost acknowledgment is itself a database
+// read, and the same flaky connection that lost the acknowledgment can fail it
+// too. Swallowing that read error would misreport the run as superseded even
+// though its outcome IS stored — the readback must retry like every other
+// probe-persistence operation.
+func TestRetestModelCandidateSurvivesReadbackHiccupAfterLostAcknowledgment(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedCandidateForRetest(t, svc, provider.ID, now)
+
+	// The commit applies but its acknowledgment is lost; the ownership
+	// readback that follows then hits one transient read failure of its own.
+	ackLost := false
+	if err := db.Callback().Update().After("gorm:update").Register("test:lose-ack-once", func(tx *gorm.DB) {
+		if ackLost || tx.Error != nil {
+			return
+		}
+		ackLost = true
+		_ = tx.AddError(errors.New("connection dropped after apply"))
+	}); err != nil {
+		t.Fatalf("register update fault: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Update().Remove("test:lose-ack-once"); err != nil {
+			t.Fatalf("remove update fault: %v", err)
+		}
+	}()
+	readFailed := false
+	if err := db.Callback().Query().Before("gorm:query").Register("test:fail-one-read", func(tx *gorm.DB) {
+		// Armed only once the lost acknowledgment happened: the next read is
+		// the ownership readback.
+		if !ackLost || readFailed {
+			return
+		}
+		readFailed = true
+		_ = tx.AddError(errors.New("transient read blip"))
+	}); err != nil {
+		t.Fatalf("register query fault: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Query().Remove("test:fail-one-read"); err != nil {
+			t.Fatalf("remove query fault: %v", err)
+		}
+	}()
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	updated, applied, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected the retried readback to recognize the run's own stored write")
+	}
+	if updated.ManagementStatus != model.ModelCandidateStatusEnabled {
+		t.Fatalf("expected the first pass enabled, got %d", updated.ManagementStatus)
+	}
+}
+
+// applied must describe what the RETURNED VIEW shows, not just whether this
+// run's commit landed: a competitor probe can commit right after this retest's
+// CAS and before the final reload, in which case the view carries the
+// competitor's outcome. Announcing it as this click's result would report the
+// exact opposite of what this run observed.
+func TestRetestModelCandidateReportsSupersededWhenALaterProbeWinsBeforeReload(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedCandidateForRetest(t, svc, provider.ID, now)
+
+	// Right after this retest's own commit (the first UPDATE), a competitor
+	// probe that read the row post-commit lands a PASS — deliberately stamped
+	// with the SAME timestamp, so any ordering-by-time ownership check would
+	// be fooled; only the run token tells the two runs apart.
+	fired := false
+	if err := db.Callback().Update().After("gorm:update").Register("test:competitor-commit", func(tx *gorm.DB) {
+		if fired || tx.Error != nil {
+			return
+		}
+		fired = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		var row model.ModelCandidate
+		if err := session.First(&row, candidate.ID).Error; err != nil {
+			t.Errorf("competitor read failed: %v", err)
+			return
+		}
+		passed := model.ModelVerificationStatusPassed
+		ok := 0
+		if _, err := repository.CommitModelCandidateProbeResults(session,
+			candidate.ID, "gpt-4o", row.LastProbeRunID, "competitor-run", repository.CandidateProbeCommit{
+				VerificationStatus: &passed, LastTestResult: &ok, WriteLastTestError: true,
+			}, now); err != nil {
+			t.Errorf("competitor commit failed: %v", err)
+		}
+	}); err != nil {
+		t.Fatalf("register competitor callback: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Update().Remove("test:competitor-commit"); err != nil {
+			t.Fatalf("remove competitor callback: %v", err)
+		}
+	}()
+
+	// This retest itself observes a decisive failure.
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound, Detail: "nope"}
+	updated, applied, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if updated.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected the returned view to show the competitor's pass, got %d", updated.VerificationStatus)
+	}
+	if applied {
+		t.Fatal("expected applied=false when the returned view no longer carries this run's outcome")
+	}
+}
+
+// The production client reports a request killed mid-flight as an inconclusive
+// RESULT (unreachable, nil error). If the caller's context died — the admin
+// aborted the request, the server is shutting down — that result is a
+// cancellation artifact, and committing it would stamp the row with an attempt
+// no upstream ever answered.
+func TestRetestModelCandidateDoesNotCommitWhenContextCancelledMidProbe(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedCandidateForRetest(t, svc, provider.ID, now)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestUnreachable, Detail: "context canceled"}
+	client.SideEffect = cancel
+
+	if _, _, err := svc.RetestModelCandidate(ctx, candidate.ID, now); err == nil {
+		t.Fatal("expected the cancelled retest to surface an error instead of a verdict")
+	}
+
+	var c model.ModelCandidate
+	if err := db.First(&c, candidate.ID).Error; err != nil {
+		t.Fatalf("load candidate: %v", err)
+	}
+	if c.LastTestedAt != nil || c.LastTestError != nil || c.LastTestResult != nil {
+		t.Fatalf("a cancelled retest must leave the row untouched, got tested_at=%v error=%v result=%v",
+			c.LastTestedAt, c.LastTestError, c.LastTestResult)
+	}
+}
+
 // A failing basic probe means the credential, address or model name is wrong, so
 // the capability probes cannot say anything useful — they must be skipped rather
 // than spend two more upstream requests and risk recording a misleading verdict.
@@ -578,7 +822,7 @@ func TestRetestModelCandidateSkipsCapabilityProbesWhenBasicFails(t *testing.T) {
 	candidate := seedCandidateForRetest(t, svc, provider.ID, now)
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
-	updated, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	updated, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
 	if err != nil {
 		t.Fatalf("RetestModelCandidate failed: %v", err)
 	}
@@ -613,7 +857,7 @@ func TestRetestModelCandidateKeepsEarnedCapabilityWhenProbeIsUnconfirmed(t *test
 	// "preserved the stored value" apart from "overwrote it with the nil it
 	// already held" — which is exactly how an overwrite bug once hid here.
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
-	seeded, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	seeded, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
 	if err != nil {
 		t.Fatalf("seeding retest failed: %v", err)
 	}
@@ -629,7 +873,7 @@ func TestRetestModelCandidateKeepsEarnedCapabilityWhenProbeIsUnconfirmed(t *test
 		"streaming":        {Result: providerclient.TestResult{Outcome: providerclient.TestRateLimited}},
 		"function_calling": {Result: providerclient.TestResult{Outcome: providerclient.TestUpstreamError}},
 	}
-	updated, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	updated, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
 	if err != nil {
 		t.Fatalf("RetestModelCandidate failed: %v", err)
 	}
@@ -665,7 +909,7 @@ func TestRetestModelCandidateKeepsVerificationWhenBasicProbeIsInconclusive(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			client.PerTestType = nil
 			client.Result = tc.result
-			updated, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+			updated, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
 			if err != nil {
 				t.Fatalf("RetestModelCandidate failed: %v", err)
 			}
@@ -702,7 +946,7 @@ func TestRetestModelCandidateDiscardsVerdictWhenTargetChangedMidProbe(t *testing
 		}
 	}
 
-	updated, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	updated, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
 	if err != nil {
 		t.Fatalf("RetestModelCandidate failed: %v", err)
 	}
@@ -711,6 +955,192 @@ func TestRetestModelCandidateDiscardsVerdictWhenTargetChangedMidProbe(t *testing
 	}
 	if updated.ProviderModelName != "retargeted-by-someone-else" {
 		t.Fatalf("expected the concurrent retarget to stand, got %q", updated.ProviderModelName)
+	}
+}
+
+// The edit flow reads the candidate, renames it, then probes the new target.
+// Another probe can commit between that read and the rename, advancing the run
+// token; the rename keeps the token, so probing with the token from the STALE
+// read would see its guard miss even though it tested the row's current
+// target — leaving the mapping untested and disabled for no reason. The token
+// must be re-read after the rename.
+func TestUpdateModelCandidateProbesWithFreshTokenAfterRetarget(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedCandidateForRetest(t, svc, provider.ID, now)
+
+	// A competitor probe advances the run token in the window between the
+	// edit's initial read and its fresh baseline read — injected just before
+	// the second candidates query (the fresh read; the first is the edit's
+	// initial read). A query hook rather than an update hook: the edit's
+	// field update now runs inside a transaction, and a nested write from
+	// within its update callback would deadlock on the connection pool.
+	queries := 0
+	fired := false
+	if err := db.Callback().Query().Before("gorm:query").Register("test:competitor-around-rename", func(tx *gorm.DB) {
+		if fired || tx.Statement.Schema == nil || tx.Statement.Schema.Table != "model_candidates" {
+			return
+		}
+		queries++
+		if queries != 2 {
+			return
+		}
+		fired = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		if err := session.Model(&model.ModelCandidate{}).Where("id = ?", candidate.ID).
+			Update("last_probe_run_id", "competitor-run").Error; err != nil {
+			t.Errorf("simulate competitor commit: %v", err)
+		}
+	}); err != nil {
+		t.Fatalf("register competitor callback: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Query().Remove("test:competitor-around-rename"); err != nil {
+			t.Fatalf("remove competitor callback: %v", err)
+		}
+	}()
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
+		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ManagementStatus: enableStatus(),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.Candidate.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected the new target's passing probe to land despite the pre-rename competitor, got verification=%d",
+			result.Candidate.VerificationStatus)
+	}
+	// The verdict lands, but the enable is forfeited: a token that moved
+	// between the edit's two reads means someone else acted on the row, and a
+	// bare token advance is indistinguishable from an explicit no-op disable —
+	// which must win. The operator sees the verified-but-disabled row and can
+	// enable it with the toggle.
+	if result.Candidate.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the enable forfeited to the mid-edit token advance, got %d", result.Candidate.ManagementStatus)
+	}
+}
+
+// When the edit-triggered probe loses the commit race to a concurrent probe,
+// the result must SAY so: the report describes an outcome the row does not
+// hold, and a client treating it as the saved state would close with "saved
+// and enabled" over a row that actually carries someone else's verdict.
+func TestUpdateModelCandidateReportsSupersededProbe(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedCandidateForRetest(t, svc, provider.ID, now)
+
+	// While the edit's probe is upstream, a competitor probe commits — a real
+	// probe commit stamps the attempt and lands a verdict along with the token
+	// advance, and that stamp is what tells the edit a FRESHER verdict owns
+	// the row (a bare token bump would read as an admin status write, whose
+	// discard the edit is entitled to recover from by re-committing).
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	fired := false
+	client.SideEffect = func() {
+		if fired {
+			return
+		}
+		fired = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		var row model.ModelCandidate
+		if err := session.First(&row, candidate.ID).Error; err != nil {
+			t.Errorf("competitor read failed: %v", err)
+			return
+		}
+		failed := model.ModelVerificationStatusFailed
+		notFound := 2
+		if _, err := repository.CommitModelCandidateProbeResults(session, candidate.ID, row.ProviderModelName,
+			row.LastProbeRunID, "competitor-run", repository.CandidateProbeCommit{
+				VerificationStatus: &failed, LastTestResult: &notFound, WriteLastTestError: true,
+			}, time.Now().UTC()); err != nil {
+			t.Errorf("competitor commit failed: %v", err)
+		}
+	}
+
+	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
+		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ManagementStatus: enableStatus(),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.Report == nil {
+		t.Fatal("expected a probe report for an enable-with-retarget edit")
+	}
+	if result.ReportApplied {
+		t.Fatal("expected the superseded probe to be reported as not applied")
+	}
+}
+
+// Like the retest path, the edit path must re-check ownership AFTER its final
+// reload: a competitor (a queue worker against a fast upstream) can commit
+// right after the edit-probe's own commit and before the reload, leaving the
+// returned candidate with the competitor's verdict while report_applied still
+// claims the report is the row's state.
+func TestUpdateModelCandidateReportsSupersededWhenALaterProbeWinsBeforeReload(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedCandidateForRetest(t, svc, provider.ID, now)
+
+	// The edit flow's writes: #1 the rename, #2 the probe commit. The
+	// competitor lands right after #2 — reading the fresh token and
+	// overwriting the row with its own failing verdict — before the reload.
+	updates := 0
+	fired := false
+	if err := db.Callback().Update().After("gorm:update").Register("test:competitor-after-commit", func(tx *gorm.DB) {
+		if fired || tx.Error != nil {
+			return
+		}
+		updates++
+		if updates != 2 {
+			return
+		}
+		fired = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		var row model.ModelCandidate
+		if err := session.First(&row, candidate.ID).Error; err != nil {
+			t.Errorf("competitor read failed: %v", err)
+			return
+		}
+		failed := model.ModelVerificationStatusFailed
+		notFound := 2
+		if _, err := repository.CommitModelCandidateProbeResults(session,
+			candidate.ID, "gpt-4o-mini", row.LastProbeRunID, "competitor-run", repository.CandidateProbeCommit{
+				VerificationStatus: &failed, LastTestResult: &notFound, WriteLastTestError: true,
+				DisableOnFail: true,
+			}, now.Add(time.Second)); err != nil {
+			t.Errorf("competitor commit failed: %v", err)
+		}
+	}); err != nil {
+		t.Fatalf("register competitor callback: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Update().Remove("test:competitor-after-commit"); err != nil {
+			t.Fatalf("remove competitor callback: %v", err)
+		}
+	}()
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
+		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ManagementStatus: enableStatus(),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.Candidate.VerificationStatus != model.ModelVerificationStatusFailed {
+		t.Fatalf("expected the returned view to show the competitor's verdict, got %d", result.Candidate.VerificationStatus)
+	}
+	if result.ReportApplied {
+		t.Fatal("expected report_applied=false once the view no longer carries this run's outcome")
 	}
 }
 
@@ -744,6 +1174,637 @@ func TestUpdateModelCandidateDoesNotReEnableAfterConcurrentDisable(t *testing.T)
 	}
 }
 
+// Enabling a verified mapping must not invalidate a retest already in flight:
+// the enable is not new evidence about the mapping, and advancing the probe
+// token would discard the retest's verdict — a decisive failure would vanish
+// and the row would keep routing as Passed+Enabled moments after being proven
+// broken. The verdict must land; the enable stands or falls on its own.
+func TestSetCandidateStatusEnableDoesNotInvalidateInFlightRetest(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
+	// The admin had explicitly disabled the verified mapping.
+	if err := svc.SetCandidateStatus(candidate.ID, false, now); err != nil {
+		t.Fatalf("explicit disable failed: %v", err)
+	}
+
+	// While the retest is upstream, the admin re-enables the mapping.
+	enabled := false
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
+	client.SideEffect = func() {
+		if enabled {
+			return
+		}
+		enabled = true
+		if err := svc.SetCandidateStatus(candidate.ID, true, time.Now().UTC()); err != nil {
+			t.Errorf("enable during retest: %v", err)
+		}
+	}
+
+	view, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if view.VerificationStatus != model.ModelVerificationStatusFailed {
+		t.Fatalf("expected the decisive failure recorded despite the concurrent enable, got verification=%d", view.VerificationStatus)
+	}
+	c := loadCandidate(t, db, candidate.ID)
+	if c.VerificationStatus != model.ModelVerificationStatusFailed {
+		t.Fatalf("expected the stored row to carry the failure, got verification=%d", c.VerificationStatus)
+	}
+	// The decisive failure also demotes the row the concurrent enable turned
+	// on: verification not being Passed already stops routing, but leaving
+	// management enabled would keep the admin list claiming a mapping just
+	// proven broken is serving traffic.
+	if c.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the decisive failure to demote the concurrently enabled row, got management=%d", c.ManagementStatus)
+	}
+}
+
+// A disable that lands between the edit's field update and its probe must
+// stand: the probe reads the row AFTER that disable, and adopting what it
+// finds as the enable's CAS baseline would make "status unchanged since I
+// looked" trivially true — the passing probe would re-enable the mapping the
+// API just acknowledged as off. The baseline must be the edit's own initial
+// read; only the probe token comes from the fresh read.
+func TestUpdateModelCandidateDoesNotReEnableWhenDisableLandsBeforeItsProbe(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
+
+	// After the edit's field update — before its probe reads its baseline —
+	// another request explicitly disables the candidate. Injected just
+	// before the second candidates query (the fresh read); a nested write
+	// from inside the transactional field update's own callback would
+	// deadlock on the connection pool.
+	queries := 0
+	fired := false
+	if err := db.Callback().Query().Before("gorm:query").Register("test:disable-after-field-update", func(tx *gorm.DB) {
+		if fired || tx.Statement.Schema == nil || tx.Statement.Schema.Table != "model_candidates" {
+			return
+		}
+		queries++
+		if queries != 2 {
+			return
+		}
+		fired = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		if err := repository.SetModelCandidateManagementStatusAdvancingProbeToken(session, candidate.ID,
+			model.ModelCandidateStatusDisabled, "competitor-run", time.Now().UTC()); err != nil {
+			t.Errorf("simulate concurrent explicit disable: %v", err)
+		}
+	}); err != nil {
+		t.Fatalf("register competitor callback: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Query().Remove("test:disable-after-field-update"); err != nil {
+			t.Fatalf("remove competitor callback: %v", err)
+		}
+	}()
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
+		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ManagementStatus: enableStatus(),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.Candidate.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the acknowledged disable to stand, got management_status=%d", result.Candidate.ManagementStatus)
+	}
+	if c := loadCandidate(t, db, candidate.ID); c.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the stored row to stay disabled, got management_status=%d", c.ManagementStatus)
+	}
+}
+
+// A decisive retest verdict must survive an explicit disable that lands while
+// the probe is upstream: the disable advances the token, but it says nothing
+// about whether the mapping works — discarding the verdict would leave a stale
+// Passed on the row, and the status toggle (which trusts verification alone)
+// would happily re-enable a mapping just proven broken. The verdict re-commits
+// under the fresh token, without any management transition of its own.
+func TestRetestModelCandidateLandsVerdictDespiteConcurrentDisable(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
+
+	// While the retest is upstream, the admin explicitly disables the mapping.
+	disabled := false
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
+	client.SideEffect = func() {
+		if disabled {
+			return
+		}
+		disabled = true
+		if err := svc.SetCandidateStatus(candidate.ID, false, time.Now().UTC()); err != nil {
+			t.Errorf("explicit disable during retest: %v", err)
+		}
+	}
+
+	view, applied, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if view.VerificationStatus != model.ModelVerificationStatusFailed {
+		t.Fatalf("expected the decisive failure recorded despite the concurrent disable, got verification=%d", view.VerificationStatus)
+	}
+	if !applied {
+		t.Fatal("expected the re-committed verdict to be owned by this retest")
+	}
+	if view.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the explicit disable to stand, got management_status=%d", view.ManagementStatus)
+	}
+	// The stale Passed is gone, so the toggle can no longer re-enable the
+	// broken mapping.
+	if err := svc.SetCandidateStatus(candidate.ID, true, now); !errors.Is(err, errcode.ErrModelCandidateNotVerified) {
+		t.Fatalf("expected re-enable to be rejected on the failed row, got %v", err)
+	}
+}
+
+// An explicit no-op disable landing between the edit's field write and its
+// fresh baseline read advances the token while leaving the status Disabled —
+// the very values the edit then adopts as its probe baseline. Enabling off
+// that baseline would re-enable the row after the LATER disable was already
+// acknowledged. A token that moved between the edit's two reads means someone
+// else acted on the row: the verdict still lands, the enable is forfeited.
+func TestUpdateModelCandidateDoesNotReEnableWhenNoOpDisableLandsBeforeFreshRead(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	id := seedUntestedCandidate(t, svc, db, provider.ID, "some-model")
+
+	// The explicit (value-preserving) disable lands after the edit's field
+	// update, before the fresh baseline read — injected just before the
+	// second candidates query (the fresh read); a nested write from inside
+	// the transactional field update's own callback would deadlock on the
+	// connection pool.
+	queries := 0
+	fired := false
+	if err := db.Callback().Query().Before("gorm:query").Register("test:disable-before-fresh-read", func(tx *gorm.DB) {
+		if fired || tx.Statement.Schema == nil || tx.Statement.Schema.Table != "model_candidates" {
+			return
+		}
+		queries++
+		if queries != 2 {
+			return
+		}
+		fired = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		if err := repository.SetModelCandidateManagementStatusAdvancingProbeToken(session, id,
+			model.ModelCandidateStatusDisabled, "competitor-run", time.Now().UTC()); err != nil {
+			t.Errorf("simulate concurrent explicit disable: %v", err)
+		}
+	}); err != nil {
+		t.Fatalf("register competitor callback: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Query().Remove("test:disable-before-fresh-read"); err != nil {
+			t.Fatalf("remove competitor callback: %v", err)
+		}
+	}()
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	result, err := svc.UpdateModelCandidate(context.Background(), id, modeladmin.UpdateCandidateInput{
+		ProviderModelName: "some-model", InputPrice: 1, OutputPrice: 2,
+		ManagementStatus: enableStatus(),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.Candidate.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the later explicit disable to stand, got management_status=%d", result.Candidate.ManagementStatus)
+	}
+	if result.Candidate.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected the verdict to land despite the forfeited enable, got verification=%d", result.Candidate.VerificationStatus)
+	}
+}
+
+// The same stale-Passed danger exists on the edit path: an enable-edit of a
+// verified-but-disabled row probes WITHOUT renaming, so a concurrent no-op
+// disable that discards the failing verdict leaves the old Passed standing —
+// and the status toggle would re-enable the broken mapping. The edit's probe
+// must re-commit its verdict under the fresh token exactly as the retest does.
+func TestUpdateModelCandidateLandsVerdictDespiteConcurrentDisable(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
+	if err := svc.SetCandidateStatus(candidate.ID, false, now); err != nil {
+		t.Fatalf("explicit disable failed: %v", err)
+	}
+
+	// While the edit's probe is upstream, another admin disables the (already
+	// disabled) mapping — a value-preserving write that still advances the token.
+	disabled := false
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
+	client.SideEffect = func() {
+		if disabled {
+			return
+		}
+		disabled = true
+		if err := svc.SetCandidateStatus(candidate.ID, false, time.Now().UTC()); err != nil {
+			t.Errorf("explicit disable during edit probe: %v", err)
+		}
+	}
+
+	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
+		ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ManagementStatus: enableStatus(),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.Candidate.VerificationStatus != model.ModelVerificationStatusFailed {
+		t.Fatalf("expected the decisive failure recorded despite the concurrent disable, got verification=%d", result.Candidate.VerificationStatus)
+	}
+	if err := svc.SetCandidateStatus(candidate.ID, true, now); !errors.Is(err, errcode.ErrModelCandidateNotVerified) {
+		t.Fatalf("expected re-enable to be rejected on the failed row, got %v", err)
+	}
+}
+
+// Ownership is (token, target): a concurrent PATCH that retargets the row
+// clears the verdict fields but deliberately keeps last_probe_run_id, so a
+// token-only reload check would leave report_applied=true — announcing "saved
+// and verified" over a row that is now a different, untested mapping.
+func TestUpdateModelCandidateReportsSupersededWhenRetargetedBeforeReload(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedCandidateForRetest(t, svc, provider.ID, now)
+
+	// The edit flow's writes: #1 the rename, #2 the probe commit. The
+	// competitor's retarget lands right after #2, before the reload.
+	updates := 0
+	fired := false
+	if err := db.Callback().Update().After("gorm:update").Register("test:retarget-after-commit", func(tx *gorm.DB) {
+		if fired || tx.Error != nil {
+			return
+		}
+		updates++
+		if updates != 2 {
+			return
+		}
+		fired = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		if err := repository.UpdateModelCandidate(session, candidate.ID, "competitor-target", 1, 2,
+			nil, nil, 0, true, false, time.Now().UTC()); err != nil {
+			t.Errorf("competitor retarget failed: %v", err)
+		}
+	}); err != nil {
+		t.Fatalf("register competitor callback: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Update().Remove("test:retarget-after-commit"); err != nil {
+			t.Fatalf("remove competitor callback: %v", err)
+		}
+	}()
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
+		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ManagementStatus: enableStatus(),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.ReportApplied {
+		t.Fatal("expected report_applied=false once the returned row is the competitor's retargeted mapping")
+	}
+}
+
+// Same guarantee on the retest path: a retarget between this retest's commit
+// and its reload keeps the token but replaces the mapping — the verdict must
+// not be announced as the returned row's state.
+func TestRetestModelCandidateReportsSupersededWhenRetargetedBeforeReload(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
+
+	// The retest issues one write (its probe commit); the retarget lands right
+	// after it, before the reload.
+	fired := false
+	if err := db.Callback().Update().After("gorm:update").Register("test:retarget-after-retest", func(tx *gorm.DB) {
+		if fired || tx.Error != nil {
+			return
+		}
+		fired = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		if err := repository.UpdateModelCandidate(session, candidate.ID, "competitor-target", 1, 2,
+			nil, nil, 0, true, false, time.Now().UTC()); err != nil {
+			t.Errorf("competitor retarget failed: %v", err)
+		}
+	}); err != nil {
+		t.Fatalf("register competitor callback: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Update().Remove("test:retarget-after-retest"); err != nil {
+			t.Fatalf("remove competitor callback: %v", err)
+		}
+	}()
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	_, applied, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if applied {
+		t.Fatal("expected applied=false once the returned row is the competitor's retargeted mapping")
+	}
+}
+
+// A manual retest of an ARMED row must go through the armed commit mode: a
+// failing retest bumps the row clock, and without the armed mode's
+// realignment the promise would be left misaligned — the next queue probe
+// that PASSES would then refuse the enable and revoke the promise, stranding
+// the mapping Passed+Disabled because someone once clicked retest.
+func TestRetestModelCandidateKeepsArmedPromiseUsableAfterFailure(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	id := seedUntestedCandidate(t, svc, db, provider.ID, "some-model")
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
+	if _, _, err := svc.RetestModelCandidate(context.Background(), id, now); err != nil {
+		t.Fatalf("failing retest errored: %v", err)
+	}
+
+	// The upstream recovers; a queue probe (a requeued run, a recovery run)
+	// passes — the import's promise must still deliver the enable.
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	if err := svc.ProbeQueuedCandidate(context.Background(), id, time.Now().UTC()); err != nil {
+		t.Fatalf("queue probe errored: %v", err)
+	}
+	c := loadCandidate(t, db, id)
+	if c.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected the recovery pass recorded, got verification=%d", c.VerificationStatus)
+	}
+	if c.ManagementStatus != model.ModelCandidateStatusEnabled {
+		t.Fatalf("expected the armed promise fulfilled after the failed retest, got management=%d", c.ManagementStatus)
+	}
+}
+
+// An explicit disable that lands while an ARMED row's retest is upstream
+// clears the promise flag — but that revocation is NOT a requeue, and must
+// not make the re-commit recovery give up: giving up would leave the row's
+// stale Passed standing, and the status toggle would trust it to re-enable a
+// mapping the retest just proved broken. What separates the two: a requeue
+// re-arms with a fresh armed_at, an explicit disable leaves armed_at alone.
+func TestRetestModelCandidateRelandsFailureWhenDisableClearsArmedFlag(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	id := seedUntestedCandidate(t, svc, db, provider.ID, "some-model")
+	// The armed row earned a pass earlier (stamped, Passed, still disabled by
+	// an admin's later toggle would consume armed — so seed the pass raw,
+	// keeping the armed promise and its alignment intact).
+	landed := time.Now().UTC()
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"verification_status": model.ModelVerificationStatusPassed,
+			"last_tested_at":      landed,
+		}).Error; err != nil {
+		t.Fatalf("seed passed state: %v", err)
+	}
+
+	// While the retest is upstream, an explicit disable clears the armed flag
+	// and advances the token (leaving armed_at untouched).
+	disabled := false
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
+	client.SideEffect = func() {
+		if disabled {
+			return
+		}
+		disabled = true
+		if err := svc.SetCandidateStatus(id, false, time.Now().UTC()); err != nil {
+			t.Errorf("explicit disable during retest: %v", err)
+		}
+	}
+
+	if _, _, err := svc.RetestModelCandidate(context.Background(), id, now); err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	c := loadCandidate(t, db, id)
+	if c.VerificationStatus != model.ModelVerificationStatusFailed {
+		t.Fatalf("expected the decisive failure re-landed despite the armed revocation, got verification=%d", c.VerificationStatus)
+	}
+	// The re-landed commit runs in the armed mode too, so a promise the row
+	// still carried is settled by its misalignment rules rather than left as
+	// a dead flag a later same-name edit could re-align and resurrect.
+	if c.AutoEnableOnPass {
+		t.Fatal("expected the re-landed failure to settle the armed flag, not leave it dangling")
+	}
+	if err := svc.SetCandidateStatus(id, true, now); !errors.Is(err, errcode.ErrModelCandidateNotVerified) {
+		t.Fatalf("expected re-enable rejected on the failed row, got %v", err)
+	}
+}
+
+// The combination that must not fool the re-commit recovery: a same-name
+// price edit re-aligns armed_at (without advancing the token), then an
+// explicit disable advances the token — neither is a requeue, and the
+// retest's decisive failure must still re-land. Requeues are identified by
+// their token namespace, not by armed_at movement.
+func TestRetestModelCandidateRelandsFailureAfterRealignAndDisable(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	id := seedUntestedCandidate(t, svc, db, provider.ID, "some-model")
+	landed := time.Now().UTC()
+	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"verification_status": model.ModelVerificationStatusPassed,
+			"last_tested_at":      landed,
+		}).Error; err != nil {
+		t.Fatalf("seed passed state: %v", err)
+	}
+
+	// While the retest is upstream: a same-name price edit (re-aligns
+	// armed_at), then an explicit disable (advances the token, clears armed).
+	raced := false
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
+	client.SideEffect = func() {
+		if raced {
+			return
+		}
+		raced = true
+		if _, err := svc.UpdateModelCandidate(context.Background(), id, modeladmin.UpdateCandidateInput{
+			ProviderModelName: "some-model", InputPrice: 9, OutputPrice: 9,
+		}, time.Now().UTC()); err != nil {
+			t.Errorf("same-name edit during retest: %v", err)
+		}
+		if err := svc.SetCandidateStatus(id, false, time.Now().UTC()); err != nil {
+			t.Errorf("explicit disable during retest: %v", err)
+		}
+	}
+
+	if _, _, err := svc.RetestModelCandidate(context.Background(), id, now); err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	c := loadCandidate(t, db, id)
+	if c.VerificationStatus != model.ModelVerificationStatusFailed {
+		t.Fatalf("expected the decisive failure re-landed, got verification=%d", c.VerificationStatus)
+	}
+}
+
+// A re-import requeue that lands while a manual retest is upstream advances
+// the token precisely to supersede that retest — its verdict must NOT sneak
+// back in through the re-commit recovery. The requeue leaves the same nil
+// attempt stamp the retest's baseline had, so the stamp alone cannot betray
+// it; the re-armed columns can.
+func TestRetestModelCandidateDoesNotRelandVerdictOverARequeue(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	id := seedUntestedCandidate(t, svc, db, provider.ID, "some-model")
+
+	// While the retest is upstream, a re-import requeues the row (advancing
+	// the token, clearing residue, re-arming with a fresh armed_at).
+	requeued := false
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	client.SideEffect = func() {
+		if requeued {
+			return
+		}
+		requeued = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		if err := repository.ClearCandidatesProbeResidue(session, []uint{id}, "rq-requeue-run", time.Now().UTC().Add(time.Second)); err != nil {
+			t.Errorf("simulate requeue: %v", err)
+		}
+	}
+
+	_, applied, err := svc.RetestModelCandidate(context.Background(), id, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if applied {
+		t.Fatal("expected the superseded retest to report applied=false")
+	}
+	c := loadCandidate(t, db, id)
+	if c.VerificationStatus != model.ModelVerificationStatusUntested {
+		t.Fatalf("expected the row still waiting for the requeued probe, got verification=%d", c.VerificationStatus)
+	}
+}
+
+// The lost-acknowledgment readback must disown the write the same way: the
+// write applied and the token reads back as this run's, but a retarget that
+// landed in between has already replaced the mapping (keeping the token), so
+// token-only recognition would report a verdict the row no longer holds.
+func TestRetestModelCandidateDisownsVerdictWhenRetargetLandsBeforeReadback(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
+
+	// Write #1: the probe commit applies but its acknowledgment is lost.
+	// Write #2: the durable retry whose CAS misses its own effect. The
+	// retarget lands right after #2, before the ownership readback.
+	updates := 0
+	fired := false
+	if err := db.Callback().Update().After("gorm:update").Register("test:retarget-before-readback", func(tx *gorm.DB) {
+		if fired {
+			return
+		}
+		updates++
+		if updates == 1 && tx.Error == nil {
+			_ = tx.AddError(errors.New("connection dropped after apply"))
+			return
+		}
+		if updates != 2 {
+			return
+		}
+		fired = true
+		session := db.Session(&gorm.Session{NewDB: true})
+		if err := repository.UpdateModelCandidate(session, candidate.ID, "competitor-target", 1, 2,
+			nil, nil, 0, true, false, time.Now().UTC()); err != nil {
+			t.Errorf("competitor retarget failed: %v", err)
+		}
+	}); err != nil {
+		t.Fatalf("register competitor callback: %v", err)
+	}
+	defer func() {
+		if err := db.Callback().Update().Remove("test:retarget-before-readback"); err != nil {
+			t.Fatalf("remove competitor callback: %v", err)
+		}
+	}()
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	_, applied, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	if err != nil {
+		t.Fatalf("RetestModelCandidate failed: %v", err)
+	}
+	if applied {
+		t.Fatal("expected the readback to disown the verdict once the mapping was retargeted")
+	}
+}
+
+// A PATCH that says "disabled" is the same instruction as the dedicated status
+// toggle, so it must revoke the standing auto-enable promise and advance the
+// probe token even when the stored status is already Disabled — otherwise a
+// queued probe that passes moments later re-enables the row the API just
+// acknowledged as off.
+func TestUpdateModelCandidateRevokesAutoEnableOnExplicitDisable(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	id := seedUntestedCandidate(t, svc, db, provider.ID, "some-model")
+	staleToken := loadCandidate(t, db, id).LastProbeRunID
+
+	result, err := svc.UpdateModelCandidate(context.Background(), id, modeladmin.UpdateCandidateInput{
+		ProviderModelName: "some-model", InputPrice: 1, OutputPrice: 2,
+		ManagementStatus: disableStatus(),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.Candidate.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the candidate to stay disabled, got %d", result.Candidate.ManagementStatus)
+	}
+
+	row := loadCandidate(t, db, id)
+	if row.AutoEnableOnPass {
+		t.Fatal("an explicit disable must revoke the auto-enable promise")
+	}
+	if row.LastProbeRunID == staleToken {
+		t.Fatal("an explicit disable must advance the probe token so in-flight commits miss")
+	}
+
+	// The probe already queued for this row commits with the token it read
+	// before the disable: its verdict must be discarded, not enable the row.
+	passed := model.ModelVerificationStatusPassed
+	success := int(providerclient.TestSuccess)
+	applied, err := repository.CommitModelCandidateProbeResults(db, id, "some-model", staleToken, "worker-run",
+		repository.CandidateProbeCommit{
+			VerificationStatus: &passed, LastTestResult: &success, WriteLastTestError: true,
+			EnableOnPassWhenArmed: true,
+		}, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("stale probe commit errored: %v", err)
+	}
+	if applied {
+		t.Fatal("a probe holding the pre-disable token must see its commit discarded")
+	}
+	if got := loadCandidate(t, db, id).ManagementStatus; got != model.ModelCandidateStatusDisabled {
+		t.Fatalf("expected the explicit disable to stand, got management_status=%d", got)
+	}
+}
+
 // A decisive failure, by contrast, must both record the failure and stop the
 // admin list claiming the candidate is serving traffic it cannot serve.
 func TestRetestModelCandidateDemotesOnDecisiveBasicFailure(t *testing.T) {
@@ -754,7 +1815,7 @@ func TestRetestModelCandidateDemotesOnDecisiveBasicFailure(t *testing.T) {
 	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
-	updated, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
+	updated, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now)
 	if err != nil {
 		t.Fatalf("RetestModelCandidate failed: %v", err)
 	}
@@ -768,7 +1829,7 @@ func TestRetestModelCandidateDemotesOnDecisiveBasicFailure(t *testing.T) {
 
 func TestTestModelCandidateReturnsNotFoundForUnknownCandidate(t *testing.T) {
 	svc, _, _ := newTestModelService(t)
-	_, err := svc.RetestModelCandidate(context.Background(), 999999, time.Now().UTC())
+	_, _, err := svc.RetestModelCandidate(context.Background(), 999999, time.Now().UTC())
 	if !errors.Is(err, errcode.ErrModelCandidateNotFound) {
 		t.Fatalf("expected ErrModelCandidateNotFound, got %v", err)
 	}
@@ -1350,23 +2411,23 @@ func TestDeleteModelCandidateReturnsNotFoundForUnknownID(t *testing.T) {
 	}
 }
 
-func TestUpdateModelNameStatusRenamesModel(t *testing.T) {
+func TestUpdateModelRenamesModel(t *testing.T) {
 	svc, _, _ := newTestModelService(t)
 	now := time.Now().UTC()
 	modelView, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "smart"}, now)
 	if err != nil {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
-	updated, err := svc.UpdateModelNameStatus(modelView.ID, "smart-v2", false, nil, now)
+	updated, err := svc.UpdateModel(modelView.ID, modeladmin.UpdateModelInput{Name: "smart-v2"}, now)
 	if err != nil {
-		t.Fatalf("UpdateModelNameStatus failed: %v", err)
+		t.Fatalf("UpdateModel failed: %v", err)
 	}
 	if updated.Name != "smart-v2" {
 		t.Fatalf("expected name 'smart-v2', got %q", updated.Name)
 	}
 }
 
-func TestUpdateModelNameStatusRejectsDuplicateName(t *testing.T) {
+func TestUpdateModelRejectsDuplicateName(t *testing.T) {
 	svc, _, _ := newTestModelService(t)
 	now := time.Now().UTC()
 	if _, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "taken"}, now); err != nil {
@@ -1376,15 +2437,15 @@ func TestUpdateModelNameStatusRejectsDuplicateName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateModel(other) failed: %v", err)
 	}
-	_, err = svc.UpdateModelNameStatus(other.ID, "taken", false, nil, now)
+	_, err = svc.UpdateModel(other.ID, modeladmin.UpdateModelInput{Name: "taken"}, now)
 	if !errors.Is(err, errcode.ErrModelNameTaken) {
 		t.Fatalf("expected ErrModelNameTaken, got %v", err)
 	}
 }
 
-func TestUpdateModelNameStatusReturnsNotFoundForUnknownID(t *testing.T) {
+func TestUpdateModelReturnsNotFoundForUnknownID(t *testing.T) {
 	svc, _, _ := newTestModelService(t)
-	_, err := svc.UpdateModelNameStatus(999999, "whatever", false, nil, time.Now().UTC())
+	_, err := svc.UpdateModel(999999, modeladmin.UpdateModelInput{Name: "whatever"}, time.Now().UTC())
 	if !errors.Is(err, errcode.ErrModelNotFound) {
 		t.Fatalf("expected ErrModelNotFound, got %v", err)
 	}
@@ -1669,19 +2730,19 @@ func TestDeleteModelCandidateErrorsWhenDeleteFails(t *testing.T) {
 	}
 }
 
-func TestUpdateModelNameStatusRejectsInvalidCharacters(t *testing.T) {
+func TestUpdateModelRejectsInvalidCharacters(t *testing.T) {
 	svc, _, _ := newTestModelService(t)
 	now := time.Now().UTC()
 	modelView, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "smart"}, now)
 	if err != nil {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
-	if _, err := svc.UpdateModelNameStatus(modelView.ID, "bad name!", false, nil, now); err == nil {
+	if _, err := svc.UpdateModel(modelView.ID, modeladmin.UpdateModelInput{Name: "bad name!"}, now); err == nil {
 		t.Fatalf("expected an error for an invalid model name")
 	}
 }
 
-func TestUpdateModelNameStatusErrorsWhenUpdateFailsForNonUniqueReason(t *testing.T) {
+func TestUpdateModelErrorsWhenUpdateFailsForNonUniqueReason(t *testing.T) {
 	svc, db, _ := newTestModelService(t)
 	now := time.Now().UTC()
 	modelView, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "smart"}, now)
@@ -1689,7 +2750,7 @@ func TestUpdateModelNameStatusErrorsWhenUpdateFailsForNonUniqueReason(t *testing
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	testutil.BlockTableWrites(t, db, "models", "UPDATE")
-	if _, err := svc.UpdateModelNameStatus(modelView.ID, "smart-v2", false, nil, now); err == nil {
+	if _, err := svc.UpdateModel(modelView.ID, modeladmin.UpdateModelInput{Name: "smart-v2"}, now); err == nil {
 		t.Fatalf("expected an error when the UPDATE statement fails")
 	}
 }
@@ -1913,7 +2974,7 @@ func TestTestModelCandidateErrorsWhenProviderLookupFails(t *testing.T) {
 	testutil.DropTable(t, db, "provider_keys")
 	testutil.DropTable(t, db, "providers")
 
-	if _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err == nil {
+	if _, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err == nil {
 		t.Fatalf("expected an error when the providers table is missing")
 	}
 }
@@ -1936,7 +2997,7 @@ func TestTestModelCandidateErrorsWhenCommitFails(t *testing.T) {
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	testutil.BlockTableWrites(t, db, "model_candidates", "UPDATE")
 
-	if _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err == nil {
+	if _, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err == nil {
 		t.Fatalf("expected an error when the UPDATE statement fails")
 	}
 }
@@ -1959,7 +3020,7 @@ func TestTestModelCandidateStreamingErrorsWhenCommitFails(t *testing.T) {
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	testutil.BlockTableWrites(t, db, "model_candidates", "UPDATE")
 
-	if _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err == nil {
+	if _, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err == nil {
 		t.Fatalf("expected an error when the UPDATE statement fails")
 	}
 }
@@ -1980,10 +3041,10 @@ func TestDeleteModelCandidateErrorsWhenLookupFailsForNonNotFoundReason(t *testin
 	}
 }
 
-func TestUpdateModelNameStatusErrorsWhenLookupFailsForNonNotFoundReason(t *testing.T) {
+func TestUpdateModelErrorsWhenLookupFailsForNonNotFoundReason(t *testing.T) {
 	svc, db, _ := newTestModelService(t)
 	testutil.DropTable(t, db, "models")
-	if _, err := svc.UpdateModelNameStatus(1, "smart", false, nil, time.Now().UTC()); err == nil {
+	if _, err := svc.UpdateModel(1, modeladmin.UpdateModelInput{Name: "smart"}, time.Now().UTC()); err == nil {
 		t.Fatalf("expected an error when the models table is missing")
 	}
 }
@@ -2105,7 +3166,7 @@ func TestSetCandidateStatusErrorsWhenCASWriteFails(t *testing.T) {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
-	if _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err != nil {
+	if _, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err != nil {
 		t.Fatalf("TestModelCandidate failed: %v", err)
 	}
 	testutil.BlockTableWrites(t, db, "model_candidates", "UPDATE")
@@ -2118,7 +3179,7 @@ func TestSetCandidateStatusErrorsWhenCASWriteFails(t *testing.T) {
 func TestTestModelCandidateErrorsWhenLookupFailsForNonNotFoundReason(t *testing.T) {
 	svc, db, _ := newTestModelService(t)
 	testutil.DropTable(t, db, "model_candidates")
-	if _, err := svc.RetestModelCandidate(context.Background(), 1, time.Now().UTC()); err == nil {
+	if _, _, err := svc.RetestModelCandidate(context.Background(), 1, time.Now().UTC()); err == nil {
 		t.Fatalf("expected an error when the model_candidates table is missing")
 	}
 }
@@ -2140,7 +3201,7 @@ func TestTestModelCandidateErrorsWhenProviderKeyLookupFails(t *testing.T) {
 	}
 	testutil.DropTable(t, db, "provider_keys")
 
-	if _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err == nil {
+	if _, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); err == nil {
 		t.Fatalf("expected an error when the provider_keys table is missing")
 	}
 }
@@ -2169,7 +3230,7 @@ func TestTestModelCandidateErrorsWhenNoTestableKey(t *testing.T) {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
 
-	if _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); !errors.Is(err, errcode.ErrProviderNoTestableModel) {
+	if _, _, err := svc.RetestModelCandidate(context.Background(), candidate.ID, now); !errors.Is(err, errcode.ErrProviderNoTestableModel) {
 		t.Fatalf("expected ErrProviderNoTestableModel, got %v", err)
 	}
 }
@@ -2511,5 +3572,167 @@ func TestModelImpactUnknownModel(t *testing.T) {
 	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
 	if _, err := svc.GetModelImpact(9999, time.Now().UTC()); !errors.Is(err, errcode.ErrModelNotFound) {
 		t.Fatalf("err = %v, want ErrModelNotFound", err)
+	}
+}
+
+func TestCreateModelSchedulingModeDefaultBalancedAndInvalid(t *testing.T) {
+	_, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+
+	plain, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "plain"}, now)
+	if err != nil {
+		t.Fatalf("CreateModel failed: %v", err)
+	}
+	if plain.SchedulingMode != model.ModelSchedulingModeFailover {
+		t.Fatalf("plain create scheduling mode = %q, want failover default", plain.SchedulingMode)
+	}
+	var stored model.Model
+	if err := db.Where("id = ?", plain.ID).First(&stored).Error; err != nil {
+		t.Fatalf("re-read model row: %v", err)
+	}
+	if stored.SchedulingMode != model.ModelSchedulingModeFailover {
+		t.Fatalf("stored scheduling mode = %q, want failover written explicitly (empty insert would bypass the column default)", stored.SchedulingMode)
+	}
+
+	balanced, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "spread", SchedulingMode: model.ModelSchedulingModeBalanced}, now)
+	if err != nil {
+		t.Fatalf("CreateModel balanced failed: %v", err)
+	}
+	if balanced.SchedulingMode != model.ModelSchedulingModeBalanced {
+		t.Fatalf("balanced create scheduling mode = %q, want balanced", balanced.SchedulingMode)
+	}
+
+	if _, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "broken", SchedulingMode: "round-robin"}, now); !errors.Is(err, errcode.ErrModelSchedulingModeInvalid) {
+		t.Fatalf("invalid mode err = %v, want ErrModelSchedulingModeInvalid", err)
+	}
+}
+
+func TestUpdateModelSchedulingMode(t *testing.T) {
+	_, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	created, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "smart"}, now)
+	if err != nil {
+		t.Fatalf("CreateModel failed: %v", err)
+	}
+
+	balanced := model.ModelSchedulingModeBalanced
+	updated, err := svc.UpdateModel(created.ID, modeladmin.UpdateModelInput{Name: "smart", SchedulingMode: &balanced}, now)
+	if err != nil {
+		t.Fatalf("UpdateModel failed: %v", err)
+	}
+	if updated.SchedulingMode != model.ModelSchedulingModeBalanced {
+		t.Fatalf("scheduling mode = %q, want balanced after patch", updated.SchedulingMode)
+	}
+
+	// An update that does not set the mode must leave it alone.
+	renamed, err := svc.UpdateModel(created.ID, modeladmin.UpdateModelInput{Name: "smart-v2"}, now)
+	if err != nil {
+		t.Fatalf("UpdateModel rename failed: %v", err)
+	}
+	if renamed.SchedulingMode != model.ModelSchedulingModeBalanced {
+		t.Fatalf("scheduling mode = %q after mode-less patch, want balanced preserved", renamed.SchedulingMode)
+	}
+
+	weighted := model.SchedulingMode("weighted")
+	if _, err := svc.UpdateModel(created.ID, modeladmin.UpdateModelInput{Name: "smart-v2", SchedulingMode: &weighted}, now); !errors.Is(err, errcode.ErrModelSchedulingModeInvalid) {
+		t.Fatalf("invalid mode err = %v, want ErrModelSchedulingModeInvalid", err)
+	}
+
+	// A PRESENT empty mode is an invalid value, not "keep" and not "the
+	// default": mapping it onto failover would let a caller that submits
+	// nothing silently reset a balanced model.
+	empty := model.SchedulingMode("")
+	if _, err := svc.UpdateModel(created.ID, modeladmin.UpdateModelInput{Name: "smart-v2", SchedulingMode: &empty}, now); !errors.Is(err, errcode.ErrModelSchedulingModeInvalid) {
+		t.Fatalf("empty mode err = %v, want ErrModelSchedulingModeInvalid", err)
+	}
+	unchanged, err := svc.GetModelDetail(created.ID)
+	if err != nil {
+		t.Fatalf("GetModelDetail failed: %v", err)
+	}
+	if unchanged.SchedulingMode != model.ModelSchedulingModeBalanced {
+		t.Fatalf("scheduling mode = %q after rejected empty patch, want balanced preserved", unchanged.SchedulingMode)
+	}
+}
+
+func TestCreateModelsBatchDefaultsToFailover(t *testing.T) {
+	_, db, client := newTestProviderService(t)
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	result, err := svc.CreateModelsBatch(modeladmin.CreateModelsBatchInput{Names: []string{"one", "two"}}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateModelsBatch failed: %v", err)
+	}
+	if len(result.Created) != 2 {
+		t.Fatalf("created = %d, want 2", len(result.Created))
+	}
+	for _, v := range result.Created {
+		if v.SchedulingMode != model.ModelSchedulingModeFailover {
+			t.Fatalf("batch-created %q scheduling mode = %q, want failover", v.Name, v.SchedulingMode)
+		}
+	}
+}
+
+type fakeBindingCounter struct {
+	counts map[uint]map[uint]int // modelID → providerID → count
+}
+
+func (f fakeBindingCounter) BindingCounts(modelID uint) map[uint]int {
+	return f.counts[modelID]
+}
+
+func TestGetModelDetailExposesBindingCountsForBalancedModels(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	pa := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	pb := seedEnabledProviderForModelTest(t, providerService, "provider-b")
+
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	balanced, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "spread", SchedulingMode: model.ModelSchedulingModeBalanced}, now)
+	if err != nil {
+		t.Fatalf("CreateModel failed: %v", err)
+	}
+	for _, p := range []uint{pa.ID, pb.ID} {
+		if _, err := svc.CreateModelCandidate(context.Background(), balanced.ID, modeladmin.CreateCandidateInput{
+			ProviderID: p, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		}, now); err != nil {
+			t.Fatalf("CreateModelCandidate failed: %v", err)
+		}
+	}
+	legacy, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "legacy"}, now)
+	if err != nil {
+		t.Fatalf("CreateModel failed: %v", err)
+	}
+	if _, err := svc.CreateModelCandidate(context.Background(), legacy.ID, modeladmin.CreateCandidateInput{
+		ProviderID: pa.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+	}, now); err != nil {
+		t.Fatalf("CreateModelCandidate failed: %v", err)
+	}
+
+	svc.SetBindingCounter(fakeBindingCounter{counts: map[uint]map[uint]int{
+		balanced.ID: {pa.ID: 2, pb.ID: 1},
+		legacy.ID:   {pa.ID: 9}, // must never surface: legacy is failover
+	}})
+
+	detail, err := svc.GetModelDetail(balanced.ID)
+	if err != nil {
+		t.Fatalf("GetModelDetail failed: %v", err)
+	}
+	got := map[uint]int{}
+	for _, c := range detail.Candidates {
+		got[c.ProviderID] = c.BindingCount
+	}
+	if got[pa.ID] != 2 || got[pb.ID] != 1 {
+		t.Fatalf("balanced model binding counts = %v, want provider-a:2 provider-b:1", got)
+	}
+
+	legacyDetail, err := svc.GetModelDetail(legacy.ID)
+	if err != nil {
+		t.Fatalf("GetModelDetail failed: %v", err)
+	}
+	for _, c := range legacyDetail.Candidates {
+		if c.BindingCount != 0 {
+			t.Fatalf("failover candidate shows binding count %d; failover models have no bindings", c.BindingCount)
+		}
 	}
 }

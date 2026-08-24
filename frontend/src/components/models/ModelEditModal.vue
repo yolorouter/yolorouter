@@ -29,6 +29,12 @@
         </template>
         <n-select v-model:value="form.imageInput" :options="imageInputOptions" />
       </n-form-item>
+      <n-form-item path="schedulingMode">
+        <template #label>
+          <HelpLabel :tip="t('models.schedulingMode_tip')">{{ t('models.schedulingMode') }}</HelpLabel>
+        </template>
+        <n-select v-model:value="form.schedulingMode" :options="schedulingModeOptions" />
+      </n-form-item>
     </n-form>
   </ModalDrawer>
 </template>
@@ -41,7 +47,8 @@ import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
-import type { ImageInputChoice, Model } from '../../api/models'
+import { useSchedulingModeOptions } from '../../utils/schedulingMode'
+import type { ImageInputChoice, Model, SchedulingMode } from '../../api/models'
 import { modelNameRule } from '../../utils/modelValidators'
 import { modelRenameContent } from '../../utils/impactSummary'
 
@@ -62,7 +69,11 @@ const store = useModelsStore()
 
 const formRef = ref<FormInst | null>(null)
 const submitting = ref(false)
-const form = reactive<{ name: string; imageInput: ImageInputChoice }>({ name: '', imageInput: 'unknown' })
+const form = reactive<{ name: string; imageInput: ImageInputChoice; schedulingMode: SchedulingMode }>({
+  name: '',
+  imageInput: 'unknown',
+  schedulingMode: 'failover',
+})
 const rules: FormRules = { name: modelNameRule(t) }
 
 const imageInputOptions = computed<SelectOption[]>(() => [
@@ -70,6 +81,8 @@ const imageInputOptions = computed<SelectOption[]>(() => [
   { label: t('models.imageInputYes'), value: 'yes' },
   { label: t('models.imageInputNo'), value: 'no' },
 ])
+
+const schedulingModeOptions = useSchedulingModeOptions()
 
 function toImageInputChoice(v: boolean | null): ImageInputChoice {
   return v === null ? 'unknown' : v ? 'yes' : 'no'
@@ -81,6 +94,7 @@ watch(
     if (!visible || !model) return
     form.name = model.name
     form.imageInput = toImageInputChoice(model.supports_image_input)
+    form.schedulingMode = model.scheduling_mode
   },
 )
 
@@ -91,11 +105,13 @@ async function onSubmit() {
   } catch {
     return
   }
-  // An unchanged name is not a rename. If only the image-input declaration
-  // changed, save it directly — the rename confirm (live-traffic warning)
-  // exists for renames alone and must not scare a declaration edit.
+  // An unchanged name is not a rename. If nothing else changed either, close
+  // without a request; the rename confirm (live-traffic warning) exists for
+  // renames alone and must not scare a declaration or scheduling edit.
   if (form.name === props.model.name) {
-    if (form.imageInput !== toImageInputChoice(props.model.supports_image_input)) {
+    const imageChanged = form.imageInput !== toImageInputChoice(props.model.supports_image_input)
+    const modeChanged = form.schedulingMode !== props.model.scheduling_mode
+    if (imageChanged || modeChanged) {
       void doSave()
       return
     }
@@ -134,7 +150,16 @@ async function doSave() {
   if (!props.model) return
   submitting.value = true
   try {
-    await store.update(props.model.id, form.name, form.imageInput)
+    // The scheduling mode rides along only when THIS dialog changed it: the
+    // update endpoint reads an absent field as "keep", so a form opened
+    // before another admin switched the mode cannot switch it back merely by
+    // saving an unrelated edit.
+    const modeChanged = form.schedulingMode !== props.model.scheduling_mode
+    await store.update(props.model.id, {
+      name: form.name,
+      imageInput: form.imageInput,
+      schedulingMode: modeChanged ? form.schedulingMode : undefined,
+    })
     message.success(t('models.saveSuccess'))
     emit('updated')
     showModel.value = false

@@ -1,6 +1,7 @@
-// Package handler exposes the system info endpoint (GET
-// /api/admin/system/version). It reports build/runtime metadata plus the
-// latest-release check result.
+// Package handler exposes the system endpoints: build/runtime metadata plus
+// the latest-release check (GET /api/admin/system/version, admin-only), and
+// the gateway address clients should point at (GET
+// /api/admin/system/endpoint, readable by any signed-in account).
 package handler
 
 import (
@@ -77,5 +78,22 @@ func GetSystemVersion(info SystemInfo, svc VersionChecker) gin.HandlerFunc {
 			"release_url":    upd.ReleaseURL,
 			"check_failed":   upd.CheckFailed,
 		})
+	}
+}
+
+// GetSystemEndpoint handles GET /api/admin/system/endpoint: the base URL API
+// clients should point at, before any protocol path such as /v1.
+//
+// It sits apart from the build info above because it is readable by any
+// signed-in account, not just admins. Members provision and manage their own
+// keys, which makes them precisely the people who need to know where to send
+// traffic; and the address is this deployment's own public origin, which
+// every one of them already typed into a browser to get here.
+//
+// externalURL is the configured server.external_url (may be empty) —
+// publicBaseURL prefers it and derives from the request otherwise.
+func GetSystemEndpoint(externalURL string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		response.Success(c, gin.H{"endpoint": publicBaseURL(c, externalURL)})
 	}
 }

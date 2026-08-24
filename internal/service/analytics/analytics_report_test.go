@@ -109,6 +109,56 @@ func TestReportCSVColumnOrder(t *testing.T) {
 	}
 }
 
+func seedUserReportLog(t *testing.T, svc *AnalyticsService, requestID string, userID *uint) {
+	t.Helper()
+	log := model.RequestLog{RequestID: requestID, ModelName: "m1", StatusCode: 200,
+		UserID: userID, CostMicros: 1, CostKnown: true, CreatedAt: time.Now().UTC()}
+	if err := repository.CreateRequestLog(svc.db, &log); err != nil {
+		t.Fatalf("seed log %s: %v", requestID, err)
+	}
+}
+
+// TestUserReportExcludesUnattributedTraffic: traffic that never reached an
+// account (NULL user_id) is not an account, so it must not occupy a row in
+// the per-account report. The JSON rows and the CSV export run the same
+// aggregate, and both halves are asserted here on purpose — excluding the
+// group anywhere other than the shared query fixes one surface and leaves
+// the other still emitting the row. Removing the HAVING clause in
+// AggregateByUser turns both halves red.
+func TestUserReportExcludesUnattributedTraffic(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewAnalyticsService(db)
+	owner := uint(7)
+	seedUserReportLog(t, svc, "attributed-1", &owner)
+	seedUserReportLog(t, svc, "unattributed-1", nil)
+
+	res, err := svc.GetReport(t.Context(), DimensionUser, "", &repository.RequestLogFilter{}, AnalyticsOptions{}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("GetReport(user): %v", err)
+	}
+	rows, ok := res.Rows.([]repository.UserReportRow)
+	if !ok {
+		t.Fatalf("unexpected row type %T", res.Rows)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected only the attributed account, got %d rows: %+v", len(rows), rows)
+	}
+	if rows[0].UserID == nil || *rows[0].UserID != owner {
+		t.Fatalf("expected the row for user %d, got %+v", owner, rows[0])
+	}
+
+	_, records, err := svc.BuildCSVRecords(t.Context(), DimensionUser, "", &repository.RequestLogFilter{}, AnalyticsOptions{}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("BuildCSVRecords(user): %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one CSV record, got %d: %v", len(records), records)
+	}
+	if records[0][0] != "7" {
+		t.Fatalf("expected the user_id cell to be 7, got %v", records[0])
+	}
+}
+
 // TestEveryValidDimensionReportsAndRendersCSV locks the pairing the two
 // dimension switches can silently lose: every entry in validDimensions must
 // both run a report and render a CSV. runReport and buildCSV are separate

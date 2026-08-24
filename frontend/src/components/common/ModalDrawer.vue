@@ -22,6 +22,7 @@
     :style="{ maxWidth }"
     :mask-closable="maskClosable && dismissable"
     :close-on-esc="closeOnEsc && dismissable"
+    :closable="dismissable"
     @after-leave="emit('after-leave')"
   >
     <slot />

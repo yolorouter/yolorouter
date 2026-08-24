@@ -10,6 +10,17 @@
       </template>
     </PageHeader>
 
+    <!-- Gateway access info: the address API clients should point at, on
+         the same screen as the keys themselves — credentials and endpoint
+         only make sense together, and this page is where users land once
+         configuration is done. -->
+    <div class="section-card endpoint-panel">
+      <span class="endpoint-panel__title">{{ t('apiKeys.endpointTitle') }}</span>
+      <EndpointRow :label="t('apiKeys.endpointOpenAI')" :value="openAIBaseUrl" :pending="endpointPending" />
+      <EndpointRow :label="t('apiKeys.endpointAnthropic')" :value="gatewayEndpoint" :pending="endpointPending" />
+      <EndpointRow :label="t('apiKeys.endpointExample')" :value="curlSample" :pending="endpointPending" wide />
+    </div>
+
     <div class="filter-panel">
       <div class="filter-grid">
         <div class="filter-item filter-item--search">
@@ -92,10 +103,12 @@ import { useAuthStore } from '../../store/auth'
 import { displayMessage, errorCodeOf } from '../../api/client'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { formatMicros } from '../../utils/money'
-import { callerDisplay } from '../../utils/format'
+import { ccsProfileName } from '../../utils/format'
 import { useCCSwitchImport } from '../../composables/useCCSwitchImport'
 import { useUserOptions } from '../../composables/useUserOptions'
 import { copyToClipboard } from '../../utils/clipboard'
+import { useGatewayEndpoint } from '../../composables/useGatewayEndpoint'
+import EndpointRow from '../../components/apikeys/EndpointRow.vue'
 import { listModels, type Model } from '../../api/models'
 import { discoverGatewayModels, ERRCODE_KEY_PLAINTEXT_UNAVAILABLE, type APIKey } from '../../api/apiKeys'
 import PageHeader from '../../components/PageHeader.vue'
@@ -115,6 +128,12 @@ const store = useApiKeysStore()
 const authStore = useAuthStore()
 const { importToCCS } = useCCSwitchImport()
 const showCreate = ref(false)
+
+// Gateway access info panel. The sample request carries a placeholder
+// rather than a key — a real one only ever appears in the create modal's
+// one-time plaintext step.
+const { endpoint: gatewayEndpoint, openAIBaseUrl, curlExample, pending: endpointPending } = useGatewayEndpoint()
+const curlSample = computed(() => curlExample())
 const showEdit = ref(false)
 const editingId = ref<number | null>(null)
 const showCompress = ref(false)
@@ -283,7 +302,7 @@ async function copyPlaintext(row: APIKey) {
     // copyToClipboard handles the non-secure-context (plain HTTP) fallback to
     // execCommand internally; a false return means the write truly failed.
     if (await copyToClipboard(res.plaintext_key)) {
-      message.success(t('apiKeys.copied'))
+      message.success(t('common.copied'))
     } else {
       showPlaintextToCopyByHand(res.plaintext_key)
     }
@@ -306,7 +325,7 @@ async function copyPlaintext(row: APIKey) {
 // click behaves differently.
 function showPlaintextToCopyByHand(plaintext: string) {
   dialog.warning({
-    title: t('apiKeys.copyFailed'),
+    title: t('common.copyFailed'),
     content: () =>
       h(NInput, {
         value: plaintext,
@@ -386,10 +405,12 @@ async function importKeyToCCS(row: APIKey) {
   if (importingId.value !== null) return
   importingId.value = row.id
   try {
-    // Owner + key prefix, so several keys of one account import as
-    // distinguishable CC-Switch profiles instead of identical names.
-    const identity = callerDisplay(row.owner_username, row.key_prefix)
-    const name = `YoloRouter${identity ? ` - ${identity}` : ''}`
+    // Owner + key id, so several keys of one account import as
+    // distinguishable CC-Switch profiles instead of identical names. The id
+    // is unique per key; two distinct keys can share a truncated 16-char
+    // prefix, so it would not.
+    const identity = row.owner_username ? `${row.owner_username} (#${row.id})` : `#${row.id}`
+    const name = ccsProfileName(identity)
     let plaintext: string | undefined
     try {
       plaintext = (await store.fetchPlaintext(row.id)).plaintext_key
@@ -537,6 +558,21 @@ const columns = computed<DataTableColumns<APIKey>>(() => [
 </script>
 
 <style scoped>
+/* The frame comes from .section-card; only the tighter padding this
+   compact panel wants is overridden here, the way the cost detail pages
+   do it. Each row is an EndpointRow. */
+.endpoint-panel {
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.endpoint-panel__title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
 :deep(.prefix-cell) {
   display: flex;
   align-items: center;

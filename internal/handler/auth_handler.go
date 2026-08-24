@@ -219,12 +219,14 @@ func GetMe(db *gorm.DB) gin.HandlerFunc {
 // GetMe. Centralizing it keeps the three "you are now logged in" responses
 // identical. Role drives which navigation the frontend renders; is_local
 // drives whether the change-password entry appears at all — externally-
-// provisioned accounts have no password to change.
+// provisioned accounts have no password to change. is_bootstrap tells the
+// console the one account that may reset other local accounts' passwords.
 func writeMeResponse(c *gin.Context, user *model.User) {
 	response.Success(c, gin.H{
-		"username": user.Username,
-		"role":     user.Role,
-		"is_local": user.IsLocal,
+		"username":     user.Username,
+		"role":         user.Role,
+		"is_local":     user.IsLocal,
+		"is_bootstrap": user.IsBootstrap,
 	})
 }
 

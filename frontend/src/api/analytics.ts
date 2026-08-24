@@ -167,8 +167,10 @@ export interface ProviderReportRow {
 }
 
 // Mirrors repository.UserReportRow (dimension=user): the caller aggregates
-// merged per owning account. user_id null = the unattributed bucket
-// (auth-rejected traffic tied to no account).
+// merged per owning account. Current servers drop the NULL user_id group
+// (auth-rejected traffic tied to no account), but the field stays nullable:
+// the column is, and a rolling upgrade can serve this UI from an older
+// binary that still emits that row.
 export interface UserReportRow {
   user_id: number | null
   username: string
@@ -376,4 +378,50 @@ export function getCompressStats(
   const params = buildAnalyticsQuery(filter)
   if (limit != null && limit > 0) params.set('limit', String(limit))
   return apiFetch(`/api/admin/analytics/compress-stats?${params.toString()}`)
+}
+
+// === Concise-output projection ====================================
+
+// Mirrors internal/service/analytics's ConciseOutputProjection — the priced
+// output-volume roll-up plus projected per-million-token saving behind the
+// cost-optimization page's concise-output card.
+export interface ConciseOutputWindow {
+  start: string
+  end: string
+  days: number
+}
+
+export interface ConciseOutputProjection {
+  window: ConciseOutputWindow
+  // SUM(output_tokens × current output_price) over rows whose
+  // (model_name, provider_id) resolves to a priced candidate, in micros.
+  output_spend_micros: number
+  // Rows with output_tokens > 0.
+  output_rows: number
+  // Output-token total over those rows, priced or not — the coverage
+  // denominator. Tokens rather than requests, because that is the basis the
+  // rate itself is weighted on.
+  output_tokens: number
+  // Rows that actually contributed to output_spend_micros. Lower than
+  // output_rows means some output traffic was unpriced and is excluded
+  // from the figure.
+  priced_rows: number
+  // Output-token total over the priced rows — the denominator behind the
+  // per-million rate.
+  priced_output_tokens: number
+  // spend × coefficient, normalized to 1M output tokens (micros). A unit
+  // rate, deliberately independent of the instance's traffic volume. null
+  // when the backend could not compute one — never 0 standing in for that,
+  // which would read as a real "saves nothing".
+  projected_savings_per_million_tokens_micros: number | null
+  // The factory coefficient behind the figure, echoed so the UI renders
+  // the rate's basis from the backend's single source of truth.
+  coefficient: number
+}
+
+// getConciseOutputProjection fetches the concise-output card's projection
+// for the same filter the rest of the page uses.
+export function getConciseOutputProjection(filter: AnalyticsFilter): Promise<ConciseOutputProjection> {
+  const params = buildAnalyticsQuery(filter)
+  return apiFetch(`/api/admin/analytics/concise-output-projection?${params.toString()}`)
 }
