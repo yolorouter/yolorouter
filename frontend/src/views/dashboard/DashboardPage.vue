@@ -152,6 +152,71 @@
       </div>
     </div>
 
+    <!-- Verified cache economics row (admin only — the stats endpoint covers
+         every account). Every figure is settled per request from upstream
+         cache metering and configured prices; net saving is signed and may
+         legitimately go negative. Providers without cache metering or a
+         cache price are excluded server-side (their per-name disclosure
+         lives on the analytics page). -->
+    <div v-if="authStore.isAdmin" class="kpi-row">
+      <div class="kpi" v-bind="drillScopedPath('/analytics')">
+        <div class="kpi__icon kpi__icon--teal">
+          <Gauge :size="18" />
+        </div>
+        <div class="kpi__body">
+          <div class="kpi__label">
+            <HelpLabel :tip="t('dashboard.cacheHitRateCard_tip')">{{ t('dashboard.cacheHitRateCard') }}</HelpLabel>
+          </div>
+          <div class="kpi__value">{{ cacheHitRate }}</div>
+          <div class="kpi__sub">
+            <HelpLabel v-if="cacheUnsupportedTitle" :tip="cacheUnsupportedTitle">{{ cacheHitRateSub }}</HelpLabel>
+            <template v-else>{{ cacheHitRateSub }}</template>
+          </div>
+        </div>
+      </div>
+
+      <div class="kpi" v-bind="drillScopedPath('/analytics')">
+        <div class="kpi__icon kpi__icon--success">
+          <PiggyBank :size="18" />
+        </div>
+        <div class="kpi__body">
+          <div class="kpi__label">
+            <HelpLabel :tip="t('dashboard.cacheNetSavedCard_tip')">{{ t('dashboard.cacheNetSavedCard') }}</HelpLabel>
+          </div>
+          <div class="kpi__value" :class="{ 'money-negative': cacheFiguresReady && isNegativeMicros(cacheNetSavedMicros, 2) }">
+            {{ cacheMoneyCell(cacheNetSavedMicros) }}
+          </div>
+          <div class="kpi__sub">{{ t('dashboard.cacheNetSavedCard_sub') }}</div>
+        </div>
+      </div>
+
+      <div class="kpi" v-bind="drillScopedPath('/analytics')">
+        <div class="kpi__icon kpi__icon--cyan">
+          <HardDriveDownload :size="18" />
+        </div>
+        <div class="kpi__body">
+          <div class="kpi__label">
+            <HelpLabel :tip="t('dashboard.cacheReadSavedCard_tip')">{{ t('dashboard.cacheReadSavedCard') }}</HelpLabel>
+          </div>
+          <div class="kpi__value">{{ cacheMoneyCell(cacheTotals.cache_read_saved_micros) }}</div>
+          <div class="kpi__sub">{{ t('dashboard.cacheReadSavedCard_sub') }}</div>
+        </div>
+      </div>
+
+      <div class="kpi" v-bind="drillScopedPath('/analytics')">
+        <div class="kpi__icon kpi__icon--orange">
+          <HardDriveUpload :size="18" />
+        </div>
+        <div class="kpi__body">
+          <div class="kpi__label">
+            <HelpLabel :tip="t('dashboard.cacheWriteExtraCard_tip')">{{ t('dashboard.cacheWriteExtraCard') }}</HelpLabel>
+          </div>
+          <div class="kpi__value">{{ cacheMoneyCell(cacheTotals.cache_write_extra_micros) }}</div>
+          <div class="kpi__sub">{{ t('dashboard.cacheWriteExtraCard_sub') }}</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Trend chart -->
     <section class="section-card">
       <header class="section-head">
@@ -260,10 +325,12 @@ import {
   ArrowUpFromLine,
   Boxes,
   Coins,
+  Gauge,
   HardDriveDownload,
   HardDriveUpload,
   Hourglass,
   KeyRound,
+  PiggyBank,
   Server,
   TrendingUp,
 } from '@lucide/vue'
@@ -276,12 +343,13 @@ import TrendChart from '../../components/dashboard/TrendChart.vue'
 import { bucketRange, pressable, requestLogLocation, type RequestLogLinkQuery } from '../../utils/requestLogLink'
 import { clampedRangeStart, DASHBOARD_RANGE_CAP_DAYS } from '../../utils/timeRange'
 import type { RouteLocationRaw } from 'vue-router'
-import { getDashboard, type DashboardData } from '../../api/analytics'
+import { getCacheStats, getDashboard, type CacheStatsResult, type DashboardData } from '../../api/analytics'
 import { useUserFilter } from '../../composables/useUserFilter'
 import UserFilterSelect from '../../components/common/UserFilterSelect.vue'
 import { useAuthStore } from '../../store/auth'
 import { displayMessage } from '../../api/client'
-import { formatMicros } from '../../utils/money'
+import { formatMicros, formatSignedYuan, isNegativeMicros } from '../../utils/money'
+import { cacheHitRateRatio, cacheNetMicros } from '../../utils/cacheEcon'
 import { callerDisplay, formatNumber, formatRate } from '../../utils/format'
 import { formatFailReason } from '../../utils/failReason'
 import { useIsMobile } from '../../composables/useIsMobile'
@@ -292,6 +360,15 @@ const message = useMessage()
 const authStore = useAuthStore()
 
 const data = ref<DashboardData | null>(null)
+// Verified cache economics for the same window (admin only). Fetched beside
+// the dashboard envelope under the same stale-guard; a failure clears it so
+// the cards read zero rather than a stale window's figures.
+const cacheStats = ref<CacheStatsResult | null>(null)
+// True when the LATEST cache-stats fetch failed: the hit-rate card's
+// sub-line then says the stats are unavailable instead of keeping the
+// "verified" wording over em-dashes — a stats-service failure and "no
+// supported traffic" must not look alike.
+const cacheError = ref(false)
 const loading = ref(true)
 
 // Admin-only account scope; see useUserFilter. Members never see the
@@ -366,6 +443,71 @@ const setupStep = computed<SetupStep | null>(() => {
   return null
 })
 
+// === Verified cache KPI cards =============================================
+// Every figure renders '—' until a SUCCESSFUL response is in hand: a failed
+// or in-flight cache-stats call must not dress up as a verified ¥0.00. Once
+// loaded, the shared cacheEcon formulas render the same figures the report
+// tables show — including a true 0% over a zero-hit window with real
+// supported traffic (the backend already filtered the totals to
+// cache-capable providers, so an empty denominator here means "no supported
+// traffic", not "unmetered").
+const cacheTotals = computed(() => ({
+  cache_read_tokens: cacheStats.value?.totals.cache_read_tokens ?? 0,
+  cache_write_tokens: cacheStats.value?.totals.cache_write_tokens ?? 0,
+  uncached_input_tokens: cacheStats.value?.totals.uncached_input_tokens ?? 0,
+  cache_read_saved_micros: cacheStats.value?.totals.cache_read_saved_micros ?? 0,
+  cache_write_extra_micros: cacheStats.value?.totals.cache_write_extra_micros ?? 0,
+}))
+
+// True when the four cards have something real to show: the stats landed AND
+// the window contains supported traffic.
+const cacheFiguresReady = computed(() => {
+  if (cacheStats.value === null) return false
+  const tot = cacheTotals.value
+  return tot.cache_read_tokens + tot.cache_write_tokens + tot.uncached_input_tokens > 0
+})
+
+const cacheHitRate = computed(() => {
+  if (!cacheFiguresReady.value) return '—'
+  const tot = cacheTotals.value
+  const ratio = cacheHitRateRatio(tot.cache_read_tokens, tot.cache_write_tokens, tot.uncached_input_tokens)
+  return ratio === null ? '—' : formatRate(ratio)
+})
+
+const cacheNetSavedMicros = computed(() =>
+  cacheNetMicros(cacheTotals.value.cache_read_saved_micros, cacheTotals.value.cache_write_extra_micros),
+)
+
+// Money cell for the three amount cards: an em-dash while unloaded / failed
+// / empty, a real figure (a legitimate ¥0.00 included) only from a
+// successful response.
+function cacheMoneyCell(micros: number): string {
+  return cacheFiguresReady.value ? formatSignedYuan(micros) : '—'
+}
+
+// The excluded-provider disclosure the totals owe their honesty to: a
+// provider without cache metering or a cache price is left OUT of the sums
+// above, and that must be said, not silently done. The sub-line carries the
+// count; the full name (reason) list rides the HelpLabel tooltip.
+const cacheUnsupported = computed(() => cacheStats.value?.unsupported_providers ?? [])
+const cacheHitRateSub = computed(() => {
+  if (cacheError.value) return t('dashboard.cacheStatsUnavailable')
+  return cacheUnsupported.value.length
+    ? t('dashboard.cacheHitRateCard_subExcluded', { n: cacheUnsupported.value.length })
+    : t('dashboard.cacheHitRateCard_sub')
+})
+const cacheUnsupportedTitle = computed(() =>
+  cacheUnsupported.value
+    .map((r) => {
+      const reason =
+        r.reason === 'no_cache_metering'
+          ? t('dashboard.cacheReasonNoMetering')
+          : t('dashboard.cacheReasonNoCachePrice')
+      return `${r.provider_name || `#${r.provider_id}`} (${reason})`
+    })
+    .join(', '),
+)
+
 // Monotonic reload token: prevents a stale window's response from overwriting
 // a newer one (same pattern the cost-stats and detail pages use).
 let reloadSeq = 0
@@ -373,6 +515,30 @@ let reloadSeq = 0
 async function reload() {
   const mySeq = ++reloadSeq
   loading.value = true
+  // Cache cards commit independently of the dashboard envelope: a failure
+  // clears them (never freezes a previous window's savings), and it must
+  // not blank the whole dashboard. Members are pinned out server-side, so
+  // the fetch is skipped rather than provoking a guaranteed 403.
+  cacheStats.value = null
+  cacheError.value = false
+  if (authStore.isAdmin && timeRange.value.start && timeRange.value.end) {
+    getCacheStats({
+      start: timeRange.value.start,
+      end: timeRange.value.end,
+      user_id: selectedUserId.value,
+    }).then(
+      (r) => {
+        if (mySeq === reloadSeq) cacheStats.value = r
+      },
+      () => {
+        // Values were already cleared to em-dashes above; this flips the
+        // sub-line to "unavailable" so the failure is named, not dressed up
+        // as a verified zero. No second toast — the dashboard envelope's
+        // own error path owns the noisy channel for the window.
+        if (mySeq === reloadSeq) cacheError.value = true
+      },
+    )
+  }
   try {
     const filter = timeRange.value.start && timeRange.value.end
       ? { start: timeRange.value.start, end: timeRange.value.end }

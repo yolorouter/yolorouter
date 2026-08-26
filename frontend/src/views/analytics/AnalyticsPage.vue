@@ -160,7 +160,7 @@
             :data="displayedUserRows"
             :row-props="(r: AttributedUserRow) => drillRowProps({ user_id: r.user_id })"
             :loading="loading"
-            :scroll-x="1330"
+            :scroll-x="1580"
             :row-key="userRowKey"
           >
             <template #empty>
@@ -185,7 +185,7 @@
             :data="displayedModelRows"
             :row-props="(r: ModelReportRow) => drillRowProps(r.model_name ? { model_name: r.model_name } : null)"
             :loading="loading"
-            :scroll-x="1330"
+            :scroll-x="1580"
             :row-key="(r: ModelReportRow) => r.model_name"
           >
             <template #empty>
@@ -210,7 +210,7 @@
             :data="displayedProviderRows"
             :row-props="(r: ProviderReportRow) => drillRowProps(r.provider_id != null ? { provider_id: r.provider_id } : null)"
             :loading="loading"
-            :scroll-x="1030"
+            :scroll-x="1280"
             :row-key="providerRowKey"
           >
             <template #empty>
@@ -224,7 +224,7 @@
             :data="timeRows"
             :row-props="(r: TimeReportRow) => drillRowProps(bucketRange(r.bucket))"
             :loading="loading"
-            :scroll-x="1330"
+            :scroll-x="1580"
             :row-key="(r: TimeReportRow) => r.bucket"
           >
             <template #empty>
@@ -247,7 +247,7 @@
             :data="displayedCallerRows"
             :row-props="(r: CallerReportRow) => drillRowProps(r.api_key_id != null ? { api_key_id: r.api_key_id } : null)"
             :loading="loading"
-            :scroll-x="1330"
+            :scroll-x="1580"
             :row-key="callerRowKey"
           >
             <template #empty>
@@ -286,6 +286,8 @@ import { callerDisplay, formatNumber, formatRate } from '../../utils/format'
 import {
   failoversColumn,
   avgDurationColumn,
+  cacheHitRateColumn,
+  cacheNetSavedColumn,
   callsColumn,
   costColumn,
   successRateColumn,
@@ -670,6 +672,8 @@ const modelColumns = computed<DataTableColumns<ModelReportRow>>(() => [
   tokenColumn<ModelReportRow>(t, 'output_tokens', 'outputTokensColumn'),
   tokenColumn<ModelReportRow>(t, 'cache_write_tokens', 'cacheWriteTokensColumn', 150),
   tokenColumn<ModelReportRow>(t, 'cache_read_tokens', 'cacheReadTokensColumn', 150),
+  cacheHitRateColumn<ModelReportRow>(t),
+  cacheNetSavedColumn<ModelReportRow>(t, { sortable: true }),
   costColumn<ModelReportRow>(t, { sortable: true }),
   unknownCostColumn<ModelReportRow>(t),
 ])
@@ -685,6 +689,8 @@ const providerColumns = computed<DataTableColumns<ProviderReportRow>>(() => [
   successRateColumn<ProviderReportRow>(t),
   failoversColumn<ProviderReportRow>(t),
   avgDurationColumn<ProviderReportRow>(t),
+  cacheHitRateColumn<ProviderReportRow>(t),
+  cacheNetSavedColumn<ProviderReportRow>(t, { sortable: true }),
   costColumn<ProviderReportRow>(t, { sortable: true }),
   unknownCostColumn<ProviderReportRow>(t),
 ])
@@ -705,6 +711,8 @@ const callerColumns = computed<DataTableColumns<CallerReportRow>>(() => [
   tokenColumn<CallerReportRow>(t, 'output_tokens', 'outputTokensColumn'),
   tokenColumn<CallerReportRow>(t, 'cache_write_tokens', 'cacheWriteTokensColumn', 150),
   tokenColumn<CallerReportRow>(t, 'cache_read_tokens', 'cacheReadTokensColumn', 150),
+  cacheHitRateColumn<CallerReportRow>(t),
+  cacheNetSavedColumn<CallerReportRow>(t, { sortable: true }),
   costColumn<CallerReportRow>(t, { sortable: true, defaultDescend: true }),
   unknownCostColumn<CallerReportRow>(t),
 ])
@@ -722,6 +730,8 @@ const userColumns = computed<DataTableColumns<AttributedUserRow>>(() => [
   tokenColumn<AttributedUserRow>(t, 'output_tokens', 'outputTokensColumn'),
   tokenColumn<AttributedUserRow>(t, 'cache_write_tokens', 'cacheWriteTokensColumn', 150),
   tokenColumn<AttributedUserRow>(t, 'cache_read_tokens', 'cacheReadTokensColumn', 150),
+  cacheHitRateColumn<AttributedUserRow>(t),
+  cacheNetSavedColumn<AttributedUserRow>(t, { sortable: true }),
   costColumn<AttributedUserRow>(t, { sortable: true, defaultDescend: true }),
   unknownCostColumn<AttributedUserRow>(t),
 ])
@@ -739,6 +749,8 @@ const timeColumns = computed<DataTableColumns<TimeReportRow>>(() => [
   tokenColumn<TimeReportRow>(t, 'output_tokens', 'outputTokensColumn'),
   tokenColumn<TimeReportRow>(t, 'cache_write_tokens', 'cacheWriteTokensColumn', 150),
   tokenColumn<TimeReportRow>(t, 'cache_read_tokens', 'cacheReadTokensColumn', 150),
+  cacheHitRateColumn<TimeReportRow>(t),
+  cacheNetSavedColumn<TimeReportRow>(t, { sortable: true }),
   costColumn<TimeReportRow>(t),
   unknownCostColumn<TimeReportRow>(t),
 ])

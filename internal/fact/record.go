@@ -298,9 +298,26 @@ type CostComputed struct {
 	CacheReadSavedMicros    int64
 	CacheWriteExtraMicros   int64
 	CompressCostSavedMicros int64
+	// Prices is the snapshot of the four unit prices the pricing ran with —
+	// present exactly when Known is true. It travels on the same record as the
+	// cost because the two must not be able to disagree: a row whose cost and
+	// snapshot came from different attempts could not be re-priced back to its
+	// own cost_micros.
+	Prices *SettledPrices
 }
 
 func (CostComputed) RecordName() string { return "cost_computed" }
+
+// SettledPrices is the four unit prices (per million tokens) a settlement
+// billed with. The cache prices are the effective ones — after the fallback
+// that bills unconfigured cache tokens at the input price — because the
+// snapshot answers "what was billed", not "what was configured".
+type SettledPrices struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheWrite float64 `json:"cache_write"`
+	CacheRead  float64 `json:"cache_read"`
+}
 
 // AttemptsRecorded carries how many upstream attempts ran and their detail.
 //

@@ -901,7 +901,7 @@ func TestExportAnalyticsCSVWritesBOMAndHeadersAndRows(t *testing.T) {
 	if len(records) < 2 {
 		t.Fatalf("expected header + at least 1 row, got %d records", len(records))
 	}
-	wantHeader := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls"}
+	wantHeader := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls", "cache_read_saved_micros", "cache_write_extra_micros"}
 	if len(records[0]) != len(wantHeader) {
 		t.Fatalf("header len = %d, want %d (%v)", len(records[0]), len(wantHeader), records[0])
 	}
@@ -1182,8 +1182,8 @@ func TestGetCompressStatsAggregatesSeededRows(t *testing.T) {
 	// gotest. So diff=2 (c1+c2), gotest=2 (c1+c4), log=0, grep=0.
 	// Zero-hit entries are retained (all four known compressors appear).
 	// Ordered by hits DESC, name ASC: diff(2), gotest(2), grep(0), log(0).
-	if len(data.CompressorHits) != 4 {
-		t.Fatalf("CompressorHits len = %d, want 4 (all known compressors)", len(data.CompressorHits))
+	if len(data.CompressorHits) != 8 {
+		t.Fatalf("CompressorHits len = %d, want 8 (all known compressors)", len(data.CompressorHits))
 	}
 	if data.CompressorHits[0].Name != "diff" || data.CompressorHits[0].Hits != 2 {
 		t.Fatalf("CompressorHits[0] = %+v, want diff/2 (rows c1+c2)", data.CompressorHits[0])
@@ -1259,8 +1259,8 @@ func TestGetCompressStatsEmptyReturnsEmptyArrays(t *testing.T) {
 	// CompressorHits now always returns the four known compressors (zero-hit
 	// entries retained) so the UI can show which compressors exist even when
 	// they haven't fired.
-	if len(data.CompressorHits) != 4 {
-		t.Fatalf("CompressorHits len = %d, want 4 (all known, zero-hit)", len(data.CompressorHits))
+	if len(data.CompressorHits) != 8 {
+		t.Fatalf("CompressorHits len = %d, want 8 (all known, zero-hit)", len(data.CompressorHits))
 	}
 	for _, ch := range data.CompressorHits {
 		if ch.Hits != 0 {
@@ -1314,8 +1314,8 @@ func TestGetCompressStatsRespectsAPIKeyFilter(t *testing.T) {
 	}
 	// CompressorHits returns all four known compressors; only diff has a
 	// non-zero hit count (1 row, alice's c1 which used "diff").
-	if len(data.CompressorHits) != 4 {
-		t.Fatalf("CompressorHits len = %d, want 4 (all known)", len(data.CompressorHits))
+	if len(data.CompressorHits) != 8 {
+		t.Fatalf("CompressorHits len = %d, want 8 (all known)", len(data.CompressorHits))
 	}
 	if data.CompressorHits[0].Name != "diff" || data.CompressorHits[0].Hits != 1 {
 		t.Fatalf("CompressorHits[0] = %+v, want diff/1", data.CompressorHits[0])

@@ -1,0 +1,13 @@
+ RUN  v1.6.0 /home/user/proj
+
+ ✓ src/utils/money.test.ts > formatMicros > rounds to 2 decimals 3ms
+ ✓ src/utils/money.test.ts > formatMicros > keeps the negative sign 1ms
+ ✓ src/utils/format.test.ts > formatRate > renders percentages 2ms
+ ✓ src/utils/format.test.ts > formatRate > clamps above one 1ms
+ ✓ src/api/client.test.ts > apiFetch > unwraps the envelope 9ms
+ ✓ src/api/client.test.ts > apiFetch > surfaces error codes 5ms
+
+ Test Files  3 passed (3)
+      Tests  6 passed (6)
+   Start at  17:12:03
+   Duration  0.84s (transform 320ms, setup 0ms, collect 410ms, tests 21ms)

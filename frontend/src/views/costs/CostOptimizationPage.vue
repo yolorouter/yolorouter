@@ -62,9 +62,17 @@
     <div class="savings-groups">
       <div class="section-card">
         <div class="section-card__head group-head">
-          <HelpLabel :tip="t('costOptimization.inputCompression.titleTip')">
-            {{ t('costOptimization.groupCompress') }}
-          </HelpLabel>
+          <span class="group-title">
+            <HelpLabel :tip="t('costOptimization.inputCompression.titleTip')">
+              {{ t('costOptimization.groupCompress') }}
+            </HelpLabel>
+            <!-- Estimated basis: the compression counterfactual ("what the
+                 uncompressed request would have cost") is this gateway's own
+                 calculation, so its figures are labeled as estimates — in
+                 contrast to the cache card below, whose multipliers all come
+                 from upstream metering. -->
+            <span class="basis-tag basis-tag--estimate">{{ t('costOptimization.estimatedTag') }}</span>
+          </span>
           <span class="status-pill" :class="compressPill.cls">{{ compressPill.label }}</span>
         </div>
         <div class="group-metrics">
@@ -621,6 +629,29 @@ const skipReasonColumns = computed<DataTableColumns<CompressSkipReasonRow>>(() =
 
 .group-head {
   justify-content: space-between;
+}
+
+.group-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The basis tag marks the compress card's figures as estimates (our own
+   counterfactual), in contrast to the bill-backed verified cache figures on
+   the dashboard. Distinct from .status-pill, which reports a switch's on/off
+   state. */
+.basis-tag {
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  padding: 0 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.basis-tag--estimate {
+  color: var(--color-warning, #f0a020);
+  background: color-mix(in srgb, var(--color-warning, #f0a020) 14%, transparent);
 }
 
 .group-metrics {

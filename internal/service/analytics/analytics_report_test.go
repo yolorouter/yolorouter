@@ -69,7 +69,7 @@ func TestReportCSVColumnOrder(t *testing.T) {
 	svc := NewAnalyticsService(db)
 	seedReportLog(t, svc, "ok-1", 200, 10, 5, true)
 
-	tail := "calls,success_rate,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cost_micros,unknown_cost_calls"
+	tail := "calls,success_rate,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cost_micros,unknown_cost_calls,cache_read_saved_micros,cache_write_extra_micros"
 	want := map[string]string{
 		DimensionModel:  "model_name," + tail,
 		DimensionCaller: "api_key_id,username,key_prefix," + tail,
@@ -101,7 +101,7 @@ func TestReportCSVColumnOrder(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("expected one model row, got %d", len(records))
 	}
-	wantRow := []string{"m1", "1", "1.0000", "10", "0", "0", "0", "5", "0"}
+	wantRow := []string{"m1", "1", "1.0000", "10", "0", "0", "0", "5", "0", "0", "0"}
 	for i, cell := range records[0] {
 		if cell != wantRow[i] {
 			t.Fatalf("model CSV cell %q (column %s): want %q, got row %v", cell, headers[i], wantRow[i], records[0])
@@ -216,6 +216,29 @@ func TestErrInvalidDimensionListsEveryValidDimension(t *testing.T) {
 	for _, dim := range validDimensions {
 		if !strings.Contains(msg, dim) {
 			t.Fatalf("ErrInvalidDimension text missing %q: %s", dim, msg)
+		}
+	}
+}
+
+// TestProviderCSVColumnOrderPreservesShippedPrefix: the provider sheet's
+// first eight columns shipped before the cache fields existed and position
+// is the wire contract — new columns must only append.
+func TestProviderCSVColumnOrderPreservesShippedPrefix(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewAnalyticsService(db)
+	seedReportLog(t, svc, "prov-1", 200, 10, 5, true)
+
+	headers, records, err := svc.BuildCSVRecords(t.Context(), DimensionProvider, "", &repository.RequestLogFilter{}, AnalyticsOptions{}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("BuildCSVRecords(provider): %v", err)
+	}
+	want := "provider_id,provider_name,calls,success_rate,failovers,avg_duration_ms,cost_micros,unknown_cost_calls,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cache_read_saved_micros,cache_write_extra_micros"
+	if got := strings.Join(headers, ","); got != want {
+		t.Fatalf("provider header order:\nwant %q\ngot  %q", want, got)
+	}
+	for _, rec := range records {
+		if len(rec) != len(headers) {
+			t.Fatalf("provider record width %d != header width %d", len(rec), len(headers))
 		}
 	}
 }

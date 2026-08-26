@@ -55,6 +55,7 @@ export default {
   ctaAction: '去开启',
   groupCompress: '输入压缩 · 实测节省',
   groupConcise: '输出精简 · 预估节省',
+  estimatedTag: '估算',
   conciseSavedCost: '预计节省费用',
   conciseSavedCost_tip: '所选时间段内的实际输出费用 × 节省比例，估算出省下的金额。',
   conciseRatio: '节省比例',

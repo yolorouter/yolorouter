@@ -1,0 +1,10 @@
+[93mnpm warn[0m [95mdeprecated[0m inflight@1.0.6: This module is not supported, and leaks memory.
+[93mnpm warn[0m [95mdeprecated[0m glob@7.2.3: Glob versions prior to v9 are no longer supported
+[93mnpm warn[0m [95mdeprecated[0m rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+
+added 312 packages, and audited 313 packages in 9s
+
+42 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities

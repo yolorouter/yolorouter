@@ -124,6 +124,9 @@ export default {
   fieldCacheWriteTokens: 'Cache Write Tokens',
   fieldCacheReadTokens: 'Cache Read Tokens',
   fieldCost: 'Final Cost',
+  fieldSettledPrices: 'Settled Prices',
+  settledPriceValues: 'Input {input} / Output {output} / Cache write {write} / Cache read {read} · CNY per million tokens',
+  settledPricesNone: 'No snapshot',
   fieldRequestEndpoint: 'Request Endpoint',
   fieldUpstreamEndpoint: 'Upstream Endpoint',
 

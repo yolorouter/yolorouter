@@ -33,6 +33,19 @@ type RequestLog struct {
 	CacheReadTokens  int    `gorm:"column:cache_read_tokens" json:"cache_read_tokens"`
 	CostMicros       int64  `gorm:"column:cost_micros" json:"cost_micros"`
 	CostKnown        bool   `gorm:"column:cost_known" json:"cost_known"`
+	// Price snapshot: the four unit prices (per million tokens) this row was
+	// actually billed with, copied from the settling candidate at write time so
+	// the row stays re-priceable after the candidate's prices change. The cache
+	// prices are the EFFECTIVE ones — a candidate without a configured cache
+	// price bills cache tokens at the input price, and that fallback value is
+	// what lands here. All four are nil together on rows that predate the
+	// snapshot and on unpriced rows (CostKnown=false); history is never
+	// backfilled, and readers must render the absence as "no snapshot" rather
+	// than zero.
+	SettledInputPrice      *float64 `gorm:"column:settled_input_price" json:"settled_input_price"`
+	SettledOutputPrice     *float64 `gorm:"column:settled_output_price" json:"settled_output_price"`
+	SettledCacheWritePrice *float64 `gorm:"column:settled_cache_write_price" json:"settled_cache_write_price"`
+	SettledCacheReadPrice  *float64 `gorm:"column:settled_cache_read_price" json:"settled_cache_read_price"`
 	// Cache economics, computed at write time against the candidate's prices.
 	// CacheReadSavedMicros is what the cache-read tokens saved versus the input
 	// price; CacheWriteExtraMicros is the premium paid to write the cache. Both

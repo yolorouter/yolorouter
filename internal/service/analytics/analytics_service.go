@@ -171,6 +171,19 @@ type CompressStatsResult struct {
 	DailySeries         []repository.CompressDailySeriesRow `json:"daily_series"`
 }
 
+// === Cache visibility DTO ================================================
+
+// CacheStatsResult is the GET /analytics/cache-stats body: the verified
+// cache economics for the window. Totals cover only the cache-capable
+// providers' rows; UnsupportedProviders discloses whose traffic was excluded
+// and why (never nil — empty [] on the wire). Hit rate is derived by the
+// client as read ÷ (read + write + uncached) from the token sums, which
+// makes the aggregate token-weighted by construction.
+type CacheStatsResult struct {
+	Totals               repository.CacheTotals                   `json:"totals"`
+	UnsupportedProviders []repository.CacheUnsupportedProviderRow `json:"unsupported_providers"`
+}
+
 // === Service =============================================================
 
 // AnalyticsService is the stateless composition layer over
@@ -211,6 +224,36 @@ func (s *AnalyticsService) GetOverview(filter *repository.RequestLogFilter, opts
 		CostMicros:            m.KnownCostMicros,
 		CacheReadSavedMicros:  m.CacheReadSavedMicros,
 		CacheWriteExtraMicros: m.CacheWriteExtraMicros,
+	}, nil
+}
+
+// GetCacheStats aggregates the settled cache columns into the cache
+// visibility DTO. Clamps the filter window on the day-bucket cap so the
+// figures cover the same range as the sibling compress-stats call the page
+// renders beside them.
+// maxCacheStatsRangeDays mirrors the dashboard's custom-range cap — this
+// endpoint feeds the dashboard's cache KPI row, so an explicit range must be
+// honored up to the same year bound the surrounding KPI cards use. Clamping
+// it on the analytics 90-day cap instead silently showed a year-range page
+// four cards that covered only the last quarter.
+const maxCacheStatsRangeDays = 365
+
+func (s *AnalyticsService) GetCacheStats(ctx context.Context, filter *repository.RequestLogFilter, opts AnalyticsOptions, now time.Time) (*CacheStatsResult, error) {
+	if filter.StartTime != nil && filter.EndTime != nil {
+		if filter.EndTime.Sub(*filter.StartTime) > time.Duration(maxCacheStatsRangeDays)*24*time.Hour {
+			start := filter.EndTime.In(opts.location()).AddDate(0, 0, -maxCacheStatsRangeDays)
+			filter.StartTime = &start
+		}
+	} else {
+		resolveEffectiveRange(filter, opts, BucketDay, now)
+	}
+	stats, err := repository.AggregateCacheStats(ctx, s.db, filter)
+	if err != nil {
+		return nil, err
+	}
+	return &CacheStatsResult{
+		Totals:               stats.Totals,
+		UnsupportedProviders: stats.UnsupportedProviders,
 	}, nil
 }
 
@@ -309,8 +352,12 @@ func bucketForDimension(dimension, bucket string) string {
 // every dimension that reports ReportCallStats + ReportTokenCost (model /
 // caller / user / time): the per-dimension branches only prepend their own
 // key columns. Provider keeps its own tail (duration instead of tokens).
+// The first eight entries are the tail's SHIPPED order — position is the
+// wire contract spreadsheets consume by, so the cache-saving columns APPEND
+// after unknown_cost_calls rather than sitting next to their sibling token
+// counts.
 func tokenReportCSVColumns() []string {
-	return []string{"calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls"}
+	return []string{"calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls", "cache_read_saved_micros", "cache_write_extra_micros"}
 }
 
 func tokenReportCSVCells(cs repository.ReportCallStats, tc repository.ReportTokenCost) []string {
@@ -323,6 +370,8 @@ func tokenReportCSVCells(cs repository.ReportCallStats, tc repository.ReportToke
 		strconv.FormatInt(tc.CacheReadTokens, 10),
 		strconv.FormatInt(tc.CostMicros, 10),
 		strconv.FormatInt(tc.UnknownCostCalls, 10),
+		strconv.FormatInt(tc.CacheReadSavedMicros, 10),
+		strconv.FormatInt(tc.CacheWriteExtraMicros, 10),
 	}
 }
 
@@ -347,7 +396,18 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 		if !ok {
 			return nil, nil, errCSVTypeMismatch("ProviderReportRow")
 		}
-		headers := []string{"provider_id", "provider_name", "calls", "success_rate", "failovers", "avg_duration_ms", "cost_micros", "unknown_cost_calls"}
+		// The first eight columns are the sheet's SHIPPED order — position is
+		// the wire contract spreadsheets consume by, so new columns only ever
+		// APPEND. That is also why this branch cannot reuse the shared
+		// tokenReportCSVCells tail: the shared tail interleaves calls /
+		// success_rate / cost with the token sums, and adopting it here would
+		// reorder columns that already shipped.
+		headers := []string{
+			"provider_id", "provider_name", "calls", "success_rate", "failovers", "avg_duration_ms",
+			"cost_micros", "unknown_cost_calls",
+			"input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens",
+			"cache_read_saved_micros", "cache_write_extra_micros",
+		}
 		records := make([][]string, len(typed))
 		for i, r := range typed {
 			records[i] = []string{
@@ -359,6 +419,12 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 				strconv.FormatFloat(r.AvgDurationMs, 'f', 2, 64),
 				strconv.FormatInt(r.CostMicros, 10),
 				strconv.FormatInt(r.UnknownCostCalls, 10),
+				strconv.FormatInt(r.InputTokens, 10),
+				strconv.FormatInt(r.OutputTokens, 10),
+				strconv.FormatInt(r.CacheWriteTokens, 10),
+				strconv.FormatInt(r.CacheReadTokens, 10),
+				strconv.FormatInt(r.CacheReadSavedMicros, 10),
+				strconv.FormatInt(r.CacheWriteExtraMicros, 10),
 			}
 		}
 		return headers, records, nil

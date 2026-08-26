@@ -1,0 +1,32 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.4, pytest-7.4.0, pluggy-1.2.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/user/proj
+collected 12 items
+
+tests/test_api.py::test_create_user PASSED                               [  8%]
+tests/test_api.py::test_delete_user PASSED                               [ 16%]
+tests/test_api.py::test_list_users PASSED                                [ 25%]
+tests/test_api.py::test_update_user FAILED                               [ 33%]
+tests/test_billing.py::test_rounding PASSED                              [ 41%]
+tests/test_billing.py::test_negative_amount SKIPPED (needs stripe key)   [ 50%]
+tests/test_billing.py::test_micros_scale PASSED                          [ 58%]
+tests/test_billing.py::test_free_tier PASSED                             [ 66%]
+tests/test_router.py::test_dispatch[openai] PASSED                       [ 75%]
+tests/test_router.py::test_dispatch[claude] PASSED                       [ 83%]
+tests/test_router.py::test_dispatch[gemini] PASSED                       [ 91%]
+tests/test_router.py::test_failover PASSED                               [100%]
+
+=================================== FAILURES ===================================
+_____________________________ test_update_user _________________________________
+
+    def test_update_user():
+        resp = client.put("/users/1", json={"name": "x"})
+>       assert resp.status_code == 200
+E       assert 404 == 200
+E        +  where 404 = <Response [404]>.status_code
+
+tests/test_api.py:57: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_api.py::test_update_user - assert 404 == 200
+==================== 1 failed, 10 passed, 1 skipped in 2.34s ===================

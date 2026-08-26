@@ -56,6 +56,7 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/system-settings/vision-fallback",
 		"/api/admin/system/version",
 		"/api/admin/analytics/compress-stats",
+		"/api/admin/analytics/cache-stats",
 		"/api/admin/analytics/concise-output-projection",
 		"/api/admin/users",
 	}

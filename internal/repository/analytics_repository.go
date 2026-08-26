@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -96,8 +98,15 @@ type ReportTokenCost struct {
 	OutputTokens     int64 `json:"output_tokens" gorm:"column:output_tokens"`
 	CacheWriteTokens int64 `json:"cache_write_tokens" gorm:"column:cache_write_tokens"`
 	CacheReadTokens  int64 `json:"cache_read_tokens" gorm:"column:cache_read_tokens"`
-	CostMicros       int64 `json:"cost_micros" gorm:"column:cost_micros"`
-	UnknownCostCalls int64 `json:"unknown_cost_calls" gorm:"column:unknown_cost_calls"`
+	// The settled cache economics, summed like the token counts, so the
+	// report tables can show a per-row hit rate (read ÷ (read + write +
+	// input), all three already here) and a signed net saving (read saved −
+	// write extra) without a second call. Sums of write-time columns —
+	// nothing is re-priced at query time.
+	CacheReadSavedMicros  int64 `json:"cache_read_saved_micros" gorm:"column:cache_read_saved_micros"`
+	CacheWriteExtraMicros int64 `json:"cache_write_extra_micros" gorm:"column:cache_write_extra_micros"`
+	CostMicros            int64 `json:"cost_micros" gorm:"column:cost_micros"`
+	UnknownCostCalls      int64 `json:"unknown_cost_calls" gorm:"column:unknown_cost_calls"`
 }
 
 // ModelReportRow is one row of the dimension=model report.
@@ -111,12 +120,15 @@ type ModelReportRow struct {
 // nil = the bucket for rows with NULL provider_id (e.g. requests rejected
 // before routing picked a provider). ProviderName is resolved post-fetch.
 type ProviderReportRow struct {
-	ProviderID       *uint  `json:"provider_id" gorm:"column:provider_id"`
-	ProviderName     string `json:"provider_name" gorm:"-"`
-	ReportCallStats  `gorm:"embedded"`
-	AvgDurationMs    float64 `json:"avg_duration_ms" gorm:"column:avg_duration_ms"`
-	CostMicros       int64   `json:"cost_micros" gorm:"column:cost_micros"`
-	UnknownCostCalls int64   `json:"unknown_cost_calls" gorm:"column:unknown_cost_calls"`
+	ProviderID      *uint  `json:"provider_id" gorm:"column:provider_id"`
+	ProviderName    string `json:"provider_name" gorm:"-"`
+	ReportCallStats `gorm:"embedded"`
+	AvgDurationMs   float64 `json:"avg_duration_ms" gorm:"column:avg_duration_ms"`
+	// The provider TABLE renders duration instead of token volume, but the
+	// row still embeds the full token block: its cache columns divide the
+	// token sums and subtract the settled figures, and sharing the one
+	// struct/const pair keeps a future column from landing in two places.
+	ReportTokenCost `gorm:"embedded"`
 	// Failovers is how many times this provider FAILED a request that a
 	// different provider then picked up — charged to the provider that
 	// failed, not the one that rescued. Computed post-aggregate from the
@@ -182,6 +194,8 @@ const tokenCostSumCols = `
 		COALESCE(SUM(output_tokens), 0) AS output_tokens,
 		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
 		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(cache_read_saved_micros), 0) AS cache_read_saved_micros,
+		COALESCE(SUM(cache_write_extra_micros), 0) AS cache_write_extra_micros,
 		COALESCE(SUM(cost_micros), 0) AS cost_micros,
 		SUM(CASE WHEN cost_known = ? THEN 1 ELSE 0 END) AS unknown_cost_calls`
 
@@ -271,9 +285,7 @@ func AggregateByProvider(ctx context.Context, db *gorm.DB, f *RequestLogFilter) 
 	return runGroupedAggregate(ctx, db, f, groupedQuery[ProviderReportRow]{
 		selectExpr: `
 		provider_id,`[1:] + successEndedCols + `,
-		COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
-		COALESCE(SUM(cost_micros), 0) AS cost_micros,
-		SUM(CASE WHEN cost_known = ? THEN 1 ELSE 0 END) AS unknown_cost_calls
+		COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,` + tokenCostSumCols + `
 	`,
 		selectArgs: []any{false},
 		groupCol:   "provider_id",
@@ -538,6 +550,8 @@ func AggregateByTime(ctx context.Context, db *gorm.DB, f *RequestLogFilter, loc 
 		r.OutputTokens += g.OutputTokens
 		r.CacheWriteTokens += g.CacheWriteTokens
 		r.CacheReadTokens += g.CacheReadTokens
+		r.CacheReadSavedMicros += g.CacheReadSavedMicros
+		r.CacheWriteExtraMicros += g.CacheWriteExtraMicros
 		r.CostMicros += g.CostMicros
 		r.UnknownCostCalls += g.UnknownCostCalls
 	}
@@ -971,15 +985,24 @@ func AggregateCompressDailySeries(ctx context.Context, db *gorm.DB, f *RequestLo
 // compressorsFor: build output -> [gotest, log], git diff -> [diff], search
 // results -> [grep]. No name is a substring of another, so substring LIKE
 // matching is unambiguous.
-var knownCompressorNames = []string{"gotest", "log", "diff", "grep"}
+var knownCompressorNames = []string{"gotest", "pytest", "vitest", "npm", "pnpm", "log", "diff", "grep"}
 
-// compressorHitsSelect is the fixed SUM(CASE WHEN ...) per known compressor.
-// One scan of the filtered set produces all four counts at once.
-var compressorHitsSelect = `
-	SUM(CASE WHEN compressors_applied LIKE '%gotest%' THEN 1 ELSE 0 END) AS gotest_hits,
-	SUM(CASE WHEN compressors_applied LIKE '%log%' THEN 1 ELSE 0 END) AS log_hits,
-	SUM(CASE WHEN compressors_applied LIKE '%diff%' THEN 1 ELSE 0 END) AS diff_hits,
-	SUM(CASE WHEN compressors_applied LIKE '%grep%' THEN 1 ELSE 0 END) AS grep_hits`[1:]
+// compressorHitsSelect builds one SUM(CASE WHEN ...) per known compressor.
+// The column is matched with comma padding — (','||col||',') LIKE '%,name,%'
+// — because the names are not substring-safe against each other ("npm" is a
+// substring of "pnpm") and the column is a comma-joined list. Built from
+// knownCompressorNames so a compressor added to the chain cannot exist
+// without a stats bucket. Names are code constants, never user input, so
+// inlining them into the SQL fragment is safe.
+func compressorHitsSelect() string {
+	parts := make([]string, 0, len(knownCompressorNames))
+	for _, name := range knownCompressorNames {
+		parts = append(parts, fmt.Sprintf(
+			"SUM(CASE WHEN (',' || compressors_applied || ',') LIKE '%%,%s,%%' THEN 1 ELSE 0 END) AS %s_hits",
+			name, name))
+	}
+	return strings.Join(parts, ",\n\t")
+}
 
 // AggregateCompressorHits counts, for each known compressor name, how many
 // filtered ROWS used that compressor. This is a single SQL aggregation over
@@ -997,29 +1020,22 @@ var compressorHitsSelect = `
 // Zero-hit entries are retained so the UI can show the user which compressors
 // exist even when they haven't fired in the filtered window.
 func AggregateCompressorHits(ctx context.Context, db *gorm.DB, f *RequestLogFilter) ([]CompressorHitRow, error) {
-	var agg struct {
-		GotestHits int64 `gorm:"column:gotest_hits"`
-		LogHits    int64 `gorm:"column:log_hits"`
-		DiffHits   int64 `gorm:"column:diff_hits"`
-		GrepHits   int64 `gorm:"column:grep_hits"`
-	}
+	// Scanned into a map keyed by the generated <name>_hits aliases rather
+	// than a fixed struct, so the scan can never silently drop a compressor
+	// the select emits — the row shape and the name registry share one
+	// source.
+	agg := map[string]any{}
 	err := f.applyFilter(db.WithContext(ctx)).
 		Where("compressors_applied != ''").
-		Select(compressorHitsSelect).
-		Scan(&agg).Error
+		Select(compressorHitsSelect()).
+		Find(&agg).Error
 	if err != nil {
 		return nil, err
 	}
 
-	hits := map[string]int64{
-		"gotest": agg.GotestHits,
-		"log":    agg.LogHits,
-		"diff":   agg.DiffHits,
-		"grep":   agg.GrepHits,
-	}
 	out := make([]CompressorHitRow, 0, len(knownCompressorNames))
 	for _, name := range knownCompressorNames {
-		out = append(out, CompressorHitRow{Name: name, Hits: hits[name]})
+		out = append(out, CompressorHitRow{Name: name, Hits: toInt64(agg[name+"_hits"])})
 	}
 	// Sort by hits DESC, name ASC for deterministic output (the CSV export
 	// would otherwise be diff-unstable across runs).
@@ -1030,6 +1046,25 @@ func AggregateCompressorHits(ctx context.Context, db *gorm.DB, f *RequestLogFilt
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+// toInt64 normalizes a map-scanned aggregate cell. The two drivers hand
+// integer sums back differently (SQLite as int64, Postgres numerics
+// sometimes as text/bytes), and a map scan carries no struct type to coerce
+// through.
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case []byte:
+		i, _ := strconv.ParseInt(string(n), 10, 64)
+		return i
+	case string:
+		i, _ := strconv.ParseInt(n, 10, 64)
+		return i
+	default:
+		return 0
+	}
 }
 
 // CompressorHitRow is one compressor name + the count of rows that used it

@@ -43,6 +43,17 @@ export function toMicros(amount: number): number {
   return Math.round(amount * MICROS_PER_UNIT)
 }
 
+/**
+ * Formats a signed micros amount with the currency mark inside the sign
+ * ("-¥0.12", never "¥-0.12"). Uses formatMicros underneath so the rounding
+ * and negative-zero policy stay in one place; pair with isNegativeMicros at
+ * the same precision when styling losses.
+ */
+export function formatSignedYuan(micros: number, precision = 2): string {
+  const s = formatMicros(micros, precision)
+  return s.startsWith('-') ? `-¥${s.slice(1)}` : `¥${s}`
+}
+
 // netCacheSavedMicros = cache-read savings minus cache-write extra (negative
 // only when writes exceed reads). Shared by the cost overview cards.
 export function netCacheSavedMicros(ov: OverviewRow | null | undefined): number {

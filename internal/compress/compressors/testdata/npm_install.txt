@@ -1,0 +1,15 @@
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.
+npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated abab@2.0.6: Use your platform's native atob() and btoa() methods instead
+npm warn deprecated domexception@4.0.0: Use your platform's native DOMException instead
+
+added 1247 packages, and audited 1248 packages in 43s
+
+213 packages are looking for funding
+  run `npm fund` for details
+
+6 moderate severity vulnerabilities
+
+To address issues that do not require attention, run:
+  npm audit fix

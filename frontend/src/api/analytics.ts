@@ -148,6 +148,8 @@ export interface ModelReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
 }
@@ -160,6 +162,14 @@ export interface ProviderReportRow {
   ended_calls: number
   success_rate: number
   avg_duration_ms: number
+  // The full token block (the provider table renders duration instead of
+  // token volume, but its cache columns divide these sums).
+  input_tokens: number
+  output_tokens: number
+  cache_write_tokens: number
+  cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
   /** Provider-to-provider switches charged to the provider that failed. */
@@ -182,6 +192,8 @@ export interface UserReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
 }
@@ -198,6 +210,8 @@ export interface CallerReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
 }
@@ -212,6 +226,8 @@ export interface TimeReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
 }
@@ -378,6 +394,42 @@ export function getCompressStats(
   const params = buildAnalyticsQuery(filter)
   if (limit != null && limit > 0) params.set('limit', String(limit))
   return apiFetch(`/api/admin/analytics/compress-stats?${params.toString()}`)
+}
+
+// === Cache visibility stats =======================================
+
+// Mirrors internal/service/analytics's CacheStatsResult — the verified cache
+// economics behind the dashboard's cache KPI cards. Totals cover only
+// cache-capable providers' rows (upstream reports cache metering AND a cache
+// price is configured); unsupported_providers discloses whose traffic was
+// excluded and why. Per-dimension cache figures ride on the report rows
+// instead.
+export interface CacheTotals {
+  cache_read_tokens: number
+  cache_write_tokens: number
+  // SUM of the persisted NET input counts (cache excluded on every
+  // protocol), so hit rate = read / (read + write + uncached) directly.
+  uncached_input_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
+}
+
+export interface CacheUnsupportedProviderRow {
+  provider_id: number
+  provider_name: string
+  reason: 'no_cache_metering' | 'no_cache_price'
+}
+
+export interface CacheStatsResult {
+  totals: CacheTotals
+  unsupported_providers: CacheUnsupportedProviderRow[]
+}
+
+// getCacheStats fetches the verified cache-savings roll-up. Shares the
+// analytics filter shape; no extra params.
+export function getCacheStats(filter: AnalyticsFilter): Promise<CacheStatsResult> {
+  const params = buildAnalyticsQuery(filter)
+  return apiFetch(`/api/admin/analytics/cache-stats?${params.toString()}`)
 }
 
 // === Concise-output projection ====================================

@@ -1,0 +1,19 @@
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.
+npm error code ERESOLVE
+npm error ERESOLVE unable to resolve dependency tree
+npm error
+npm error While resolving: myapp@1.0.0
+npm error Found: react@17.0.2
+npm error node_modules/react
+npm error   react@"^17.0.0" from the root project
+npm error
+npm error Could not resolve dependency:
+npm error peer react@"^18.0.0" from react-dom@18.2.0
+npm error node_modules/react-dom
+npm error   react-dom@"^18.0.0" from the root project
+npm error
+npm error Fix the upstream dependency conflict, or retry
+npm error this command with --force or --legacy-peer-deps
+npm error
+npm error For a full report see:
+npm error /home/user/.npm/_logs/2026-08-25T09_00_00_000Z-eresolve-report.txt

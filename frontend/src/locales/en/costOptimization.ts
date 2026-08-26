@@ -55,6 +55,7 @@ export default {
   ctaAction: 'Turn on',
   groupCompress: 'Input Compression · Measured savings',
   groupConcise: 'Concise Output · Projected savings',
+  estimatedTag: 'ESTIMATE',
   conciseSavedCost: 'Est. cost saved',
   conciseSavedCost_tip: 'Actual output spend in the selected period × the savings ratio — an estimate of the money saved.',
   conciseRatio: 'Savings ratio',

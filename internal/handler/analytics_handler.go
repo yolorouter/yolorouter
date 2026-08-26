@@ -157,6 +157,26 @@ func GetCompressStats(svc *analytics.AnalyticsService) gin.HandlerFunc {
 	}
 }
 
+// GetCacheStats handles GET /api/admin/analytics/cache-stats — the verified
+// cache economics roll-up behind the dashboard's cache KPI cards (token
+// sums, read saving / write premium, and the unsupported-provider
+// disclosure; per-dimension cache figures ride on /analytics/report
+// instead). Shares the analytics filter shape; no extra params.
+func GetCacheStats(svc *analytics.AnalyticsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		filter, opts, ok := parseAnalyticsFilter(c)
+		if !ok {
+			return
+		}
+		result, err := svc.GetCacheStats(c.Request.Context(), &filter, opts, timeNow())
+		if err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		response.Success(c, result)
+	}
+}
+
 // GetConciseOutputProjection handles GET /api/admin/analytics/
 // concise-output-projection — the priced output-volume roll-up and the
 // window's projected saved cost and saved output tokens behind the

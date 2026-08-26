@@ -219,3 +219,47 @@ func TestTruncateBodyRuneSafeBacksOffPartialRune(t *testing.T) {
 		})
 	}
 }
+
+// TestGetRequestLogDetailCarriesPriceSnapshot: the detail DTO passes the four
+// settled-price columns through untouched — present on a snapshotted row, nil
+// (rendered as "no snapshot") on a row that predates the snapshot columns.
+func TestGetRequestLogDetailCarriesPriceSnapshot(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewRequestLogService(db)
+	now := time.Now().UTC()
+
+	in, out, cw, cr := 3.0, 6.0, 3.75, 0.3
+	testutil.SeedRequestLog(t, db, "req-snapshotted", now, func(r *model.RequestLog) {
+		r.SettledInputPrice = &in
+		r.SettledOutputPrice = &out
+		r.SettledCacheWritePrice = &cw
+		r.SettledCacheReadPrice = &cr
+	})
+	testutil.SeedRequestLog(t, db, "req-pre-snapshot", now, nil)
+
+	detail, err := svc.GetRequestLogDetail("req-snapshotted")
+	if err != nil {
+		t.Fatalf("GetRequestLogDetail: %v", err)
+	}
+	if detail.SettledInputPrice == nil || *detail.SettledInputPrice != in {
+		t.Errorf("SettledInputPrice = %v, want %v", detail.SettledInputPrice, in)
+	}
+	if detail.SettledOutputPrice == nil || *detail.SettledOutputPrice != out {
+		t.Errorf("SettledOutputPrice = %v, want %v", detail.SettledOutputPrice, out)
+	}
+	if detail.SettledCacheWritePrice == nil || *detail.SettledCacheWritePrice != cw {
+		t.Errorf("SettledCacheWritePrice = %v, want %v", detail.SettledCacheWritePrice, cw)
+	}
+	if detail.SettledCacheReadPrice == nil || *detail.SettledCacheReadPrice != cr {
+		t.Errorf("SettledCacheReadPrice = %v, want %v", detail.SettledCacheReadPrice, cr)
+	}
+
+	bare, err := svc.GetRequestLogDetail("req-pre-snapshot")
+	if err != nil {
+		t.Fatalf("GetRequestLogDetail: %v", err)
+	}
+	if bare.SettledInputPrice != nil || bare.SettledOutputPrice != nil ||
+		bare.SettledCacheWritePrice != nil || bare.SettledCacheReadPrice != nil {
+		t.Error("pre-snapshot row must carry nil prices, not fabricated values")
+	}
+}

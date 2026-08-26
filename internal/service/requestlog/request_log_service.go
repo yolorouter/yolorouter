@@ -101,25 +101,32 @@ type RequestLogDetail struct {
 	RequestID string `json:"request_id"`
 	APIKeyID  *uint  `json:"api_key_id"`
 	// Username of the owning account — same resolution as the list rows.
-	Username         string  `json:"username"`
-	ModelName        string  `json:"model_name"`
-	RequestPath      string  `json:"request_path"`
-	Source           string  `json:"source"`
-	ParentRequestID  string  `json:"parent_request_id"`
-	UpstreamURL      string  `json:"upstream_url"`
-	ProviderID       *uint   `json:"provider_id"`
-	ProviderName     string  `json:"provider_name"`
-	IsStream         bool    `json:"is_stream"`
-	StatusCode       int     `json:"status_code"`
-	StatusClass      string  `json:"status_class"`
-	InputTokens      int     `json:"input_tokens"`
-	OutputTokens     int     `json:"output_tokens"`
-	CacheWriteTokens int     `json:"cache_write_tokens"`
-	CacheReadTokens  int     `json:"cache_read_tokens"`
-	CostMicros       int64   `json:"cost_micros"`
-	CostKnown        bool    `json:"cost_known"`
-	FailReason       *string `json:"fail_reason"`
-	Attempts         int     `json:"attempts"`
+	Username         string `json:"username"`
+	ModelName        string `json:"model_name"`
+	RequestPath      string `json:"request_path"`
+	Source           string `json:"source"`
+	ParentRequestID  string `json:"parent_request_id"`
+	UpstreamURL      string `json:"upstream_url"`
+	ProviderID       *uint  `json:"provider_id"`
+	ProviderName     string `json:"provider_name"`
+	IsStream         bool   `json:"is_stream"`
+	StatusCode       int    `json:"status_code"`
+	StatusClass      string `json:"status_class"`
+	InputTokens      int    `json:"input_tokens"`
+	OutputTokens     int    `json:"output_tokens"`
+	CacheWriteTokens int    `json:"cache_write_tokens"`
+	CacheReadTokens  int    `json:"cache_read_tokens"`
+	CostMicros       int64  `json:"cost_micros"`
+	CostKnown        bool   `json:"cost_known"`
+	// Price snapshot passthrough: the four unit prices the row was billed
+	// with, or all nil for rows that predate the snapshot or could not be
+	// priced — the detail page renders that absence as "no snapshot".
+	SettledInputPrice      *float64 `json:"settled_input_price"`
+	SettledOutputPrice     *float64 `json:"settled_output_price"`
+	SettledCacheWritePrice *float64 `json:"settled_cache_write_price"`
+	SettledCacheReadPrice  *float64 `json:"settled_cache_read_price"`
+	FailReason             *string  `json:"fail_reason"`
+	Attempts               int      `json:"attempts"`
 	// Same split the list rows carry — the detail must not narrow the type
 	// contract the shared frontend row shape promises.
 	KeySwitches          int                     `json:"key_switches"`
@@ -342,33 +349,37 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 
 	keySwitches, failovers, finalModel := breakdownFromAttempts(attempts, row.ProviderID)
 	detail := &RequestLogDetail{
-		RequestID:          row.RequestID,
-		APIKeyID:           row.APIKeyID,
-		Username:           ownerUsernameFor(row.APIKeyID, row.UserID, userNames),
-		ModelName:          row.ModelName,
-		RequestPath:        row.RequestPath,
-		Source:             row.Source,
-		ParentRequestID:    row.ParentRequestID,
-		UpstreamURL:        row.UpstreamURL,
-		ProviderID:         row.ProviderID,
-		ProviderName:       lookupName(row.ProviderID, providerNames),
-		IsStream:           row.IsStream,
-		StatusCode:         row.StatusCode,
-		StatusClass:        DeriveStatusClass(row.StatusCode, row.FailReason),
-		InputTokens:        row.InputTokens,
-		OutputTokens:       row.OutputTokens,
-		CacheWriteTokens:   row.CacheWriteTokens,
-		CacheReadTokens:    row.CacheReadTokens,
-		CostMicros:         row.CostMicros,
-		CostKnown:          row.CostKnown,
-		FailReason:         row.FailReason,
-		Attempts:           row.Attempts,
-		KeySwitches:        keySwitches,
-		Failovers:          failovers,
-		FinalProviderModel: finalModel,
-		AttemptsDetail:     attempts,
-		DurationMs:         row.DurationMs,
-		CreatedAt:          row.CreatedAt,
+		RequestID:              row.RequestID,
+		APIKeyID:               row.APIKeyID,
+		Username:               ownerUsernameFor(row.APIKeyID, row.UserID, userNames),
+		ModelName:              row.ModelName,
+		RequestPath:            row.RequestPath,
+		Source:                 row.Source,
+		ParentRequestID:        row.ParentRequestID,
+		UpstreamURL:            row.UpstreamURL,
+		ProviderID:             row.ProviderID,
+		ProviderName:           lookupName(row.ProviderID, providerNames),
+		IsStream:               row.IsStream,
+		StatusCode:             row.StatusCode,
+		StatusClass:            DeriveStatusClass(row.StatusCode, row.FailReason),
+		InputTokens:            row.InputTokens,
+		OutputTokens:           row.OutputTokens,
+		CacheWriteTokens:       row.CacheWriteTokens,
+		CacheReadTokens:        row.CacheReadTokens,
+		CostMicros:             row.CostMicros,
+		CostKnown:              row.CostKnown,
+		SettledInputPrice:      row.SettledInputPrice,
+		SettledOutputPrice:     row.SettledOutputPrice,
+		SettledCacheWritePrice: row.SettledCacheWritePrice,
+		SettledCacheReadPrice:  row.SettledCacheReadPrice,
+		FailReason:             row.FailReason,
+		Attempts:               row.Attempts,
+		KeySwitches:            keySwitches,
+		Failovers:              failovers,
+		FinalProviderModel:     finalModel,
+		AttemptsDetail:         attempts,
+		DurationMs:             row.DurationMs,
+		CreatedAt:              row.CreatedAt,
 		// Compress audit fields from the request_logs row.
 		CompressEstimatedTokensSaved: row.CompressEstimatedTokensSaved,
 		CompressEstimatedCostMicros:  row.CompressEstimatedCostSavedMicros,

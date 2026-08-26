@@ -1,0 +1,20 @@
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Progress: resolved 245, reused 240, downloaded 5, added 0
+Progress: resolved 512, reused 480, downloaded 32, added 0
+Progress: resolved 890, reused 850, downloaded 40, added 0
+Progress: resolved 1100, reused 1040, downloaded 60, added 0
+Packages: +1247
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 1247, reused 1200, downloaded 47, added 1247, done
+ WARN  deprecated inflight@1.0.6: This module is not supported, and leaks memory.
+ WARN  deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+
+dependencies:
++ pinia 3.0.1
++ vue 3.5.13
+
+devDependencies:
++ typescript 5.9.2
++ vite 8.0.1
+
+Done in 12.3s
