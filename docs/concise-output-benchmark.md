@@ -4,10 +4,10 @@
 
 The cost-optimization page estimates what the Concise Output switch saves
 (a global system prompt that asks models to keep replies short). The
-estimate is an amount per 1M output tokens: the weighted output price of
-your priced traffic, times a fixed coefficient of **12.6%**. This file
-records how that 12.6% was measured. The complete raw data is at the
-bottom.
+estimate is a period total for the selected time range: the output spend
+and the output tokens of your priced traffic, each times a fixed
+coefficient of **12.6%**. This file records how that 12.6% was measured.
+The complete raw data is at the bottom.
 
 ## How it was measured
 

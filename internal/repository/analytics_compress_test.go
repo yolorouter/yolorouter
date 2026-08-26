@@ -234,3 +234,48 @@ func TestAggregateCompressTotalsIncludesCacheInVolume(t *testing.T) {
 		t.Errorf("total_estimated_tokens = %d, want 1500 (net input + cache read + cache write)", totals.TotalEstimatedTokens)
 	}
 }
+
+// TestAggregateCompressorHitsCoversAllChainMembersWithCommaBoundaries: every
+// compressor the chain can apply must be attributable in the stats, and the
+// match must respect comma boundaries — a row that used pnpm must not also
+// count as an npm hit (npm is a substring of pnpm).
+func TestAggregateCompressorHitsCoversAllChainMembersWithCommaBoundaries(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	now := time.Now().UTC()
+
+	seed := func(id, applied string) {
+		row := &model.RequestLog{
+			RequestID: id, ModelName: "m", StatusCode: 200,
+			CompressorsApplied: applied, CreatedAt: now,
+		}
+		if err := db.Create(row).Error; err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("c-1", "pytest")
+	seed("c-2", "vitest,log")
+	seed("c-3", "pnpm")
+	seed("c-4", "npm")
+
+	rows, err := AggregateCompressorHits(context.Background(), db, &RequestLogFilter{})
+	if err != nil {
+		t.Fatalf("AggregateCompressorHits: %v", err)
+	}
+	hits := map[string]int64{}
+	for _, r := range rows {
+		hits[r.Name] = r.Hits
+	}
+	for name, want := range map[string]int64{
+		"pytest": 1, "vitest": 1, "log": 1, "pnpm": 1, "npm": 1,
+		"gotest": 0, "diff": 0, "grep": 0,
+	} {
+		got, ok := hits[name]
+		if !ok {
+			t.Errorf("compressor %q missing from the stats entirely", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s hits = %d, want %d", name, got, want)
+		}
+	}
+}

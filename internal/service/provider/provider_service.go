@@ -756,12 +756,14 @@ func classifyTestResult(result providerclient.TestResult) (verificationStatus in
 		// destination must not demote a key that is perfectly good.
 		return 0, false, &outcomeInt
 	case providerclient.TestVerificationUnsupported:
-		// The destination's protocol (gemini/responses) has no real
-		// success-body validator yet, so a 2xx from it never counts as
-		// proof the credential works — verification_status is left
-		// untouched (never overwritten to passed), same "inconclusive"
-		// shape as providerclient.TestModelNotFound/providerclient.TestRateLimited above. last_test_result
-		// is still recorded so the UI can surface "pending/unsupported".
+		// The destination's protocol has no real success-body validator yet
+		// (no current protocol — kept for ones added before their validator
+		// exists), so a 2xx from it never counts as proof the credential
+		// works — verification_status is left untouched (never overwritten
+		// to passed), same "inconclusive" shape as
+		// providerclient.TestModelNotFound/providerclient.TestRateLimited
+		// above. last_test_result is still recorded so the UI can surface
+		// "pending/unsupported".
 		return 0, false, &outcomeInt
 	default:
 		return 0, false, &outcomeInt

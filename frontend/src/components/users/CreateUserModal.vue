@@ -32,13 +32,13 @@
       </n-form-item>
       <n-form-item path="display_name">
         <template #label>
-          <HelpLabel :tip="t('users.createDisplayName_tip')">{{ t('users.createDisplayName') }}</HelpLabel>
+          <HelpLabel :tip="t('users.displayNameField_tip')">{{ t('users.displayNameField') }}</HelpLabel>
         </template>
         <n-input v-model:value="form.display_name" :maxlength="128" />
       </n-form-item>
       <n-form-item path="email">
         <template #label>
-          <HelpLabel :tip="t('users.createEmail_tip')">{{ t('users.createEmail') }}</HelpLabel>
+          <HelpLabel :tip="t('users.emailField_tip')">{{ t('users.emailField') }}</HelpLabel>
         </template>
         <n-input v-model:value="form.email" :maxlength="255" />
       </n-form-item>

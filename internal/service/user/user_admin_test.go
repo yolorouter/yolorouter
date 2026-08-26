@@ -423,3 +423,121 @@ func TestRoleChangeEndsSessions(t *testing.T) {
 		t.Fatalf("role change must end the target's sessions")
 	}
 }
+
+// TestUpdateUserProfileByBootstrapAdmin: the bootstrap admin rewrites a
+// local member's and an external member's directory fields — both account
+// kinds are valid targets, the fields land, and (unlike every other
+// mutation) the target's sessions survive the edit.
+func TestUpdateUserProfileByBootstrapAdmin(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	bootstrap := seedBootstrapAdmin(t, db, "boss")
+	local, err := CreateUser(db, CreateUserInput{Username: "carol", DisplayName: "Old Name", Email: "old@ops.example", Password: "correct-horse-1"}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	external := seedDirectoryUser(t, db, "ext", model.RoleMember, model.UserStatusEnabled)
+	now := time.Now().UTC()
+	if err := repository.CreateSession(db, "tok-carol-edit", local.ID, now.Add(time.Hour), now); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	if err := UpdateUserProfile(db, bootstrap.ID, local.ID, strptr("Carol Ng"), strptr("carol@ops.example"), now); err != nil {
+		t.Fatalf("edit local profile: %v", err)
+	}
+	if err := UpdateUserProfile(db, bootstrap.ID, external.ID, strptr("External One"), strptr("ext@ops.example"), now); err != nil {
+		t.Fatalf("edit external profile: %v", err)
+	}
+	stored, err := repository.FindUserByID(db, local.ID)
+	if err != nil {
+		t.Fatalf("reload local: %v", err)
+	}
+	if stored.DisplayName != "Carol Ng" || stored.Email != "carol@ops.example" {
+		t.Fatalf("local profile not persisted: %+v", stored)
+	}
+	extStored, err := repository.FindUserByID(db, external.ID)
+	if err != nil {
+		t.Fatalf("reload external: %v", err)
+	}
+	if extStored.DisplayName != "External One" || extStored.Email != "ext@ops.example" {
+		t.Fatalf("external profile not persisted: %+v", extStored)
+	}
+	if _, err := repository.FindUserByValidSession(db, "tok-carol-edit", now); err != nil {
+		t.Fatalf("a profile edit must not kill the target's sessions")
+	}
+}
+
+// TestUpdateUserProfileDeniedOutsideItsLane: a non-bootstrap actor, and
+// the bootstrap admin editing themselves, share the dedicated code; an
+// unknown target keeps the not-found answer.
+func TestUpdateUserProfileDeniedOutsideItsLane(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	bootstrap := seedBootstrapAdmin(t, db, "boss")
+	promoted := seedDirectoryUser(t, db, "promoted", model.RoleAdmin, model.UserStatusEnabled)
+	member := seedDirectoryUser(t, db, "ext", model.RoleMember, model.UserStatusEnabled)
+	now := time.Now().UTC()
+
+	if err := UpdateUserProfile(db, promoted.ID, member.ID, strptr("X"), strptr("x@ops.example"), now); !errors.Is(err, errcode.ErrAccountProfileEditDenied) {
+		t.Fatalf("non-bootstrap actor: expected ErrAccountProfileEditDenied, got %v", err)
+	}
+	if err := UpdateUserProfile(db, bootstrap.ID, bootstrap.ID, strptr("X"), strptr("x@ops.example"), now); !errors.Is(err, errcode.ErrAccountProfileEditDenied) {
+		t.Fatalf("self-edit: expected ErrAccountProfileEditDenied, got %v", err)
+	}
+	if err := UpdateUserProfile(db, bootstrap.ID, 99999, strptr("X"), strptr("x@ops.example"), now); !errors.Is(err, errcode.ErrAccountUserNotFound) {
+		t.Fatalf("unknown target: expected ErrAccountUserNotFound, got %v", err)
+	}
+}
+
+// strptr keeps the sparse-patch test call sites honest about which side
+// of the nil/"" boundary each argument sits on.
+func strptr(v string) *string { return &v }
+
+// TestUpdateUserProfileSparsePatchPinsFieldIndependence: a nil field
+// leaves the stored value untouched — a single-field edit must never
+// wipe the other column, and an empty patch is a true no-op.
+func TestUpdateUserProfileSparsePatchPinsFieldIndependence(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	bootstrap := seedBootstrapAdmin(t, db, "boss")
+	created, err := CreateUser(db, CreateUserInput{Username: "carol", DisplayName: "Old Name", Email: "old@ops.example", Password: "correct-horse-1"}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	now := time.Now().UTC()
+
+	// Display-name-only patch: the email column must survive.
+	if err := UpdateUserProfile(db, bootstrap.ID, created.ID, strptr("Carol Ng"), nil, now); err != nil {
+		t.Fatalf("display-name-only patch: %v", err)
+	}
+	stored, err := repository.FindUserByID(db, created.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if stored.DisplayName != "Carol Ng" || stored.Email != "old@ops.example" {
+		t.Fatalf("nil field must keep the stored value, got %q / %q", stored.DisplayName, stored.Email)
+	}
+
+	// Empty patch: nothing changes at all, not even the columns.
+	before := stored.UpdatedAt
+	if err := UpdateUserProfile(db, bootstrap.ID, created.ID, nil, nil, now); err != nil {
+		t.Fatalf("empty patch: %v", err)
+	}
+	stored, err = repository.FindUserByID(db, created.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if stored.DisplayName != "Carol Ng" || stored.Email != "old@ops.example" || !stored.UpdatedAt.Equal(before) {
+		t.Fatalf("empty patch must be a true no-op, got %q / %q / %v", stored.DisplayName, stored.Email, stored.UpdatedAt)
+	}
+
+	// An explicit empty string clears — that is the other side of the
+	// contract the pointer exists to keep distinguishable.
+	if err := UpdateUserProfile(db, bootstrap.ID, created.ID, nil, strptr(""), now); err != nil {
+		t.Fatalf("clear-email patch: %v", err)
+	}
+	stored, err = repository.FindUserByID(db, created.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if stored.Email != "" || stored.DisplayName != "Carol Ng" {
+		t.Fatalf("explicit empty string must clear only its own field, got %q / %q", stored.DisplayName, stored.Email)
+	}
+}

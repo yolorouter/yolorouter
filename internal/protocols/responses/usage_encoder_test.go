@@ -792,8 +792,8 @@ func TestResponsesStatusIsNonServed_SharedByBothDecoders(t *testing.T) {
 		"incomplete": false, "": false, "some_future_state": false,
 	}
 	for status, want := range cases {
-		if got := responsesStatusIsNonServed(status); got != want {
-			t.Errorf("responsesStatusIsNonServed(%q) = %v, want %v", status, got, want)
+		if got := StatusIsNonServed(status); got != want {
+			t.Errorf("StatusIsNonServed(%q) = %v, want %v", status, got, want)
 		}
 	}
 }

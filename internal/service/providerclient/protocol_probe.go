@@ -190,12 +190,13 @@ var claudeProbe = probeSpec{
 }
 
 // gemini/responses bodies are structurally minimal — enough request shape to
-// avoid a spurious 400. Their body validators are deferred: a parseable JSON
-// object carrying no top-level "error" is accepted as success, and their
+// avoid a spurious 400. Their non-streaming success bodies are genuinely
+// validated (a generated candidate / a non-empty output array), but their
 // error bodies are not parsed (a 429 classifies as rate-limited via the
 // status fallback rather than quota-unavailable; model-scoped detection
 // always answers false, which only affects verification_status write rules,
-// never whether the test passed).
+// never whether the test passed), and their streaming/tool-call shapes still
+// use the deferred checks.
 var geminiProbe = probeSpec{
 	encoder: gemini.RequestEncoder{},
 	basicPayload: func(model string) map[string]interface{} {
@@ -226,13 +227,15 @@ var geminiProbe = probeSpec{
 	},
 	parseModelPage: parseGeminiModelPage,
 	modelsPath:     "/models", // resolves under /v1beta via the version-aware joiner
-	// successCertifiable stays false: with only the leniency check for a
-	// success body, a 200 must report "cannot certify yet" rather than
-	// authorize a key against a destination that was never truly verified.
-	successCertifiable: false,
+	// A 200 whose body carries a generated candidate is real proof the
+	// credential works, so the basic test can certify. Without this, any
+	// provider declaring a gemini destination could never have a key pass
+	// verification: the all-destinations aggregate can never reach success
+	// when one destination is permanently inconclusive.
+	successCertifiable: true,
 	validStreamBody:    unverifiedStreamPass,
 	validToolCallBody:  isParseableJSONObjectWithoutError,
-	validSuccessBody:   isParseableJSONObjectWithoutError,
+	validSuccessBody:   isValidGeminiSuccessBody,
 	modelScopedError:   neverModelScoped,
 	quotaError:         neverQuotaError,
 	modelNotFoundError: neverModelNotFound,
@@ -271,10 +274,10 @@ var responsesProbe = probeSpec{
 	},
 	parseModelPage:     parseDataModelPage,
 	modelsPath:         "/v1/models",
-	successCertifiable: false,
+	successCertifiable: true,
 	validStreamBody:    unverifiedStreamPass,
 	validToolCallBody:  isParseableJSONObjectWithoutError,
-	validSuccessBody:   isParseableJSONObjectWithoutError,
+	validSuccessBody:   isValidResponsesSuccessBody,
 	modelScopedError:   neverModelScoped,
 	quotaError:         neverQuotaError,
 	modelNotFoundError: neverModelNotFound,

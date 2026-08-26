@@ -101,7 +101,7 @@ const formRef = ref<FormInst | null>(null)
 const submitting = ref(false)
 // form.schedulingMode applies to everything this submission creates — the
 // manual name and any preset picks alike.
-const form = reactive<{ name: string; schedulingMode: SchedulingMode }>({ name: '', schedulingMode: 'failover' })
+const form = reactive<{ name: string; schedulingMode: SchedulingMode }>({ name: '', schedulingMode: 'balanced' })
 const selected = ref(new Set<string>())
 
 const schedulingModeOptions = useSchedulingModeOptions()
@@ -164,7 +164,7 @@ watch(
   (visible) => {
     if (visible) {
       form.name = ''
-      form.schedulingMode = 'failover'
+      form.schedulingMode = 'balanced'
       selected.value = new Set()
     }
   },

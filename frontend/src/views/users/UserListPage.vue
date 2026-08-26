@@ -75,6 +75,14 @@
       :username="resetTarget?.username ?? ''"
       @reset="reload"
     />
+
+    <EditProfileModal
+      v-model:show="showEdit"
+      :user-id="editTarget?.id ?? 0"
+      :display-name="editTarget?.displayName ?? ''"
+      :email="editTarget?.email ?? ''"
+      @saved="reload"
+    />
   </div>
 </template>
 
@@ -87,6 +95,7 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import CreateUserModal from '../../components/users/CreateUserModal.vue'
 import ResetPasswordModal from '../../components/users/ResetPasswordModal.vue'
+import EditProfileModal from '../../components/users/EditProfileModal.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
@@ -94,6 +103,7 @@ import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { formatMicros } from '../../utils/money'
 import { displayMessage } from '../../api/client'
 import { listUsers, updateUserRole, updateUserStatus, USER_STATUS_ENABLED, type UserSummary } from '../../api/users'
+import { useRowModal } from '../../composables/useRowModal'
 import { useAuthStore } from '../../store/auth'
 
 const { t } = useI18n()
@@ -163,10 +173,14 @@ function hasNoActions(row: UserSummary): boolean {
 function rowActions(row: UserSummary): DropdownOption[] {
   const enabled = row.status === USER_STATUS_ENABLED
   const items: DropdownOption[] = []
-  // Password resets are the bootstrap administrator's alone (the backend
-  // refuses everyone else), and only local accounts have a password.
-  if (row.is_local && authStore.isBootstrap) {
-    items.push({ label: t('users.resetPassword'), key: 'reset' })
+  // Profile edits and password resets are the bootstrap administrator's
+  // alone (the backend refuses everyone else); profile edits apply to
+  // every account kind, resets only where a password exists.
+  if (authStore.isBootstrap) {
+    items.push({ label: t('users.editProfile'), key: 'edit' })
+    if (row.is_local) {
+      items.push({ label: t('users.resetPassword'), key: 'reset' })
+    }
     items.push({ type: 'divider', key: 'd0' })
   }
   items.push(
@@ -181,18 +195,23 @@ function rowActions(row: UserSummary): DropdownOption[] {
   return items
 }
 
-// The reset target for the reset-password modal; null keeps it closed.
-const resetTarget = ref<{ id: number; username: string } | null>(null)
-const showReset = computed({
-  get: () => resetTarget.value !== null,
-  set: (v) => {
-    if (!v) resetTarget.value = null
-  },
-})
+// The rows the two per-row modals act on; null keeps each one closed.
+// Both carry only the fields their modal renders, so a stale row object
+// can't leak fields the modal never asked for.
+const { row: resetTarget, show: showReset } = useRowModal<{ id: number; username: string }>()
+const { row: editTarget, show: showEdit } = useRowModal<{
+  id: number
+  displayName: string
+  email: string
+}>()
 
 function onAction(row: UserSummary, key: string) {
   if (key === 'reset') {
     resetTarget.value = { id: row.id, username: row.username }
+    return
+  }
+  if (key === 'edit') {
+    editTarget.value = { id: row.id, displayName: row.display_name, email: row.email }
     return
   }
   const confirmMap: Record<string, { title: string; content: string; run: () => Promise<null> }> = {

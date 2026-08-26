@@ -32,6 +32,7 @@ const (
 	AccountBootstrapProtected  = 10019 // the bootstrap account is the OAuth-failure escape hatch — it cannot be disabled or demoted
 	AccountUsernameTaken       = 10020 // another account (local or externally provisioned) already uses that username
 	AccountPasswordResetDenied = 10021 // password resets are reserved to the bootstrap administrator, for other local accounts only
+	AccountProfileEditDenied   = 10022 // profile edits (display name, email) are reserved to the bootstrap administrator, for other accounts only
 
 	// === API Key errors (11xxx) — "API Key security model" ===
 	APIKeyNotFound             = 11001
@@ -151,6 +152,7 @@ var ErrorMessages = map[int]string{
 	AccountBootstrapProtected:  "operation refused: the bootstrap account cannot be disabled or demoted",
 	AccountUsernameTaken:       "username already taken",
 	AccountPasswordResetDenied: "operation refused: only the setup administrator may reset other local accounts' passwords",
+	AccountProfileEditDenied:   "operation refused: only the setup administrator may edit other accounts' profiles",
 
 	APIKeyNotFound:             "api key not found",
 	APIKeyInvalid:              "api key invalid",
@@ -233,6 +235,7 @@ var (
 	ErrAccountBootstrapProtected  = errors.New(ErrorMessages[AccountBootstrapProtected])
 	ErrAccountUsernameTaken       = errors.New(ErrorMessages[AccountUsernameTaken])
 	ErrAccountPasswordResetDenied = errors.New(ErrorMessages[AccountPasswordResetDenied])
+	ErrAccountProfileEditDenied   = errors.New(ErrorMessages[AccountProfileEditDenied])
 	ErrAccountSetupAlreadyDone    = errors.New(ErrorMessages[AccountSetupAlreadyDone])
 	ErrOAuthProviderNotFound      = errors.New(ErrorMessages[OAuthProviderNotFound])
 	ErrOAuthStateInvalid          = errors.New(ErrorMessages[OAuthStateInvalid])

@@ -136,7 +136,6 @@ export default {
   probeUnsupported: '不支持',
   probeBasicFailedHint: '基础文字测试未通过，无法启用。请检查供应商模型名、密钥与地址后重试，或先存为停用。',
   probeFailedSavedDisabledHint: '改动已保存，但测试未通过，该映射保持停用。请修正供应商模型名、密钥或地址后重新测试再启用。',
-  probeCannotCertifyHint: '该供应商协议暂无响应校验器，返回内容无法被判定为通过，因此不能自动启用——改任何配置都不会改变这一点。请先存为停用，映射本身很可能是可用的。',
   done: '完成',
   saveAnywayDisabled: '仍然存为停用',
   saveAnywayDisabled_tip: '不再测试，直接保存为停用。验证状态与能力标记留空，之后可在列表里重新测试。',

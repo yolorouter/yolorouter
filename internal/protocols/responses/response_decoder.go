@@ -160,7 +160,7 @@ func (ResponseDecoder) DecodeResponse(body json.RawMessage) (*protocols.IRRespon
 	if wire.Status != nil {
 		status = *wire.Status
 	}
-	if wire.Error != nil || responsesStatusIsNonServed(status) {
+	if wire.Error != nil || StatusIsNonServed(status) {
 		partial := protocols.NewIRResponse(wire.ID, wire.Model)
 		if wire.Usage != nil {
 			partial.Usage = responsesUsageToIR(wire.Usage)
@@ -248,12 +248,14 @@ func (ResponseDecoder) DecodeResponse(body json.RawMessage) (*protocols.IRRespon
 	return resp, nil
 }
 
-// responsesStatusIsNonServed reports whether an EXPLICIT status means the
-// request was not served and must not be settled as a success.
+// StatusIsNonServed reports whether an EXPLICIT status means the request was
+// not served and must not be settled as a success.
 //
 // Shared by the streaming and non-streaming decoders so the two can never give
 // opposite verdicts on the same payload (they briefly did: one listed queued /
-// in_progress, the other did not).
+// in_progress, the other did not). Exported because the provider credential
+// test judges success bodies by the same list — a probe must never certify a
+// status the runtime decoders would refuse to serve.
 //
 // Deliberately only failed | cancelled:
 //   - queued / in_progress are legitimate 200 bodies for `background: true`
@@ -264,7 +266,7 @@ func (ResponseDecoder) DecodeResponse(body json.RawMessage) (*protocols.IRRespon
 //     asymmetric: on the same-protocol passthrough path the client already has
 //     the full body before this runs, so a false rejection is far more expensive
 //     than a false accept.
-func responsesStatusIsNonServed(status string) bool {
+func StatusIsNonServed(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "failed", "cancelled":
 		return true

@@ -1090,54 +1090,128 @@ func TestTestChatCompletionOpenAINonRegression(t *testing.T) {
 	}
 }
 
-// --- Gemini/Responses 2xx must never falsely certify (Finding 2) ---
+// --- Gemini/Responses 200 classification: certify real success bodies, ---
+// --- reject junk ones outright.                                        ---
 
-// TestTestChatCompletionGeminiSuccessBodyIsVerificationUnsupported is the
-// direct regression test for Finding 2: gemini has no real success-body
-// validator yet, so a 200 with a plausible-looking body (even an empty
-// object) must NOT classify as TestSuccess — that would falsely certify a
-// credential/destination pair that was never actually verified.
-func TestTestChatCompletionGeminiSuccessBodyIsVerificationUnsupported(t *testing.T) {
-	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-	})
-	defer srv.Close()
-
-	result, err := c.TestChatCompletion(context.Background(), protocols.ProtocolGemini, srv.URL, "sk-test", "gemini-1.5-flash")
-	if err != nil {
-		t.Fatalf("TestChatCompletion failed: %v", err)
+// TestTestChatCompletionGeminiAndResponses200Classification pins the probe
+// wiring for both protocols: a 200 whose body passes the protocol's success
+// validator certifies as TestSuccess — genuine proof the credential works;
+// without it, a provider declaring one of these destinations could never
+// have a key pass verification, since the all-destinations aggregate can
+// never reach success. A parseable 200 without generated output still must
+// NOT certify (that would authorize a never-verified credential/destination
+// pair) and classifies as an upstream error.
+func TestTestChatCompletionGeminiAndResponses200Classification(t *testing.T) {
+	cases := []struct {
+		name  string
+		proto protocols.ProtocolID
+		model string
+		body  string
+		want  TestOutcome
+	}{
+		{"gemini valid body certifies", protocols.ProtocolGemini, "gemini-1.5-flash",
+			`{"candidates":[{"content":{"role":"model","parts":[{"text":"pong"}]},"finishReason":"STOP"}],"modelVersion":"gemini-1.5-flash"}`, TestSuccess},
+		{"gemini junk body is upstream error", protocols.ProtocolGemini, "gemini-1.5-flash",
+			`{}`, TestUpstreamError},
+		{"responses valid body certifies", protocols.ProtocolResponses, "gpt-4o-mini",
+			`{"id":"resp_123","object":"response","status":"completed","error":null,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"pong"}]}]}`, TestSuccess},
+		{"responses junk body is upstream error", protocols.ProtocolResponses, "gpt-4o-mini",
+			`{"id":"resp_123","object":"response"}`, TestUpstreamError},
 	}
-	if result.Outcome != TestVerificationUnsupported {
-		t.Fatalf("expected TestVerificationUnsupported for a gemini 200, got %v", result.Outcome)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			defer srv.Close()
+
+			result, err := c.TestChatCompletion(context.Background(), tc.proto, srv.URL, "sk-test", tc.model)
+			if err != nil {
+				t.Fatalf("TestChatCompletion failed: %v", err)
+			}
+			if result.Outcome != tc.want {
+				t.Fatalf("expected %v, got %v", tc.want, result.Outcome)
+			}
+		})
 	}
 }
 
-// TestTestChatCompletionResponsesSuccessBodyIsVerificationUnsupported mirrors
-// the gemini case above for the responses protocol, with an unrelated but
-// still-parseable 200 JSON body.
-func TestTestChatCompletionResponsesSuccessBodyIsVerificationUnsupported(t *testing.T) {
-	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"resp_123","object":"response"}`))
-	})
-	defer srv.Close()
-
-	result, err := c.TestChatCompletion(context.Background(), protocols.ProtocolResponses, srv.URL, "sk-test", "gpt-4o-mini")
-	if err != nil {
-		t.Fatalf("TestChatCompletion failed: %v", err)
+// TestIsValidGeminiSuccessBody pins the body-shape judgement itself: only a
+// candidate with non-empty content parts and no top-level error passes.
+func TestIsValidGeminiSuccessBody(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"candidate with text part", `{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`, true},
+		{"candidate with functionCall part", `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"f","args":{}}}]}}]}`, true},
+		// inlineData is deliberately NOT accepted: the runtime response decoder
+		// only delivers text and functionCall parts, so certifying a media-only
+		// body would authorize a destination whose responses relay as empty.
+		{"candidate with inlineData-only part", `{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"aGk="}}]}}]}`, false},
+		{"empty object", `{}`, false},
+		{"empty candidates", `{"candidates":[]}`, false},
+		{"candidate without content", `{"candidates":[{"finishReason":"SAFETY"}]}`, false},
+		{"candidate with empty parts", `{"candidates":[{"content":{"parts":[]}}]}`, false},
+		{"candidate with null part placeholder", `{"candidates":[{"content":{"parts":[null]}}]}`, false},
+		{"candidate with empty-object part", `{"candidates":[{"content":{"parts":[{}]}}]}`, false},
+		{"candidate with empty text part", `{"candidates":[{"content":{"parts":[{"text":""}]}}]}`, false},
+		{"candidate with null functionCall", `{"candidates":[{"content":{"parts":[{"functionCall":null}]}}]}`, false},
+		{"candidate with empty functionCall", `{"candidates":[{"content":{"parts":[{"functionCall":{}}]}}]}`, false},
+		{"candidate with null inlineData", `{"candidates":[{"content":{"parts":[{"inlineData":null}]}}]}`, false},
+		{"candidate with empty inlineData", `{"candidates":[{"content":{"parts":[{"inlineData":{}}]}}]}`, false},
+		{"top-level error", `{"error":{"code":400,"message":"bad"},"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`, false},
+		{"not json", `oops`, false},
 	}
-	if result.Outcome != TestVerificationUnsupported {
-		t.Fatalf("expected TestVerificationUnsupported for a responses 200, got %v", result.Outcome)
+	for _, tc := range cases {
+		if got := isValidGeminiSuccessBody([]byte(tc.body)); got != tc.want {
+			t.Errorf("%s: isValidGeminiSuccessBody = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestIsValidResponsesSuccessBody pins the Responses judgement: non-empty
+// output, no error object, and no failed/cancelled status.
+func TestIsValidResponsesSuccessBody(t *testing.T) {
+	output := `"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]`
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"completed with output", `{"object":"response","status":"completed",` + output + `}`, true},
+		{"null error tolerated", `{"status":"completed","error":null,` + output + `}`, true},
+		{"absent status tolerated", `{` + output + `}`, true},
+		{"reasoning item before message tolerated", `{"status":"completed","output":[{"type":"reasoning","summary":[]},{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}`, true},
+		{"empty output", `{"status":"completed","output":[]}`, false},
+		{"missing output", `{"object":"response","status":"completed"}`, false},
+		{"null output item placeholder", `{"status":"completed","output":[null]}`, false},
+		{"empty-object output item", `{"status":"completed","output":[{}]}`, false},
+		{"reasoning-only output", `{"status":"completed","output":[{"type":"reasoning","summary":[]}]}`, false},
+		{"message without content", `{"status":"completed","output":[{"type":"message","content":[]}]}`, false},
+		{"message with null content part", `{"status":"completed","output":[{"type":"message","content":[null]}]}`, false},
+		{"message with empty-object content part", `{"status":"completed","output":[{"type":"message","content":[{}]}]}`, false},
+		{"message with unknown content type", `{"status":"completed","output":[{"type":"message","content":[{"type":"weird","text":"hi"}]}]}`, false},
+		{"message with empty output_text", `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":""}]}]}`, false},
+		{"message with refusal content", `{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"no"}]}]}`, true},
+		{"failed status", `{"status":"failed",` + output + `}`, false},
+		{"cancelled status", `{"status":"cancelled",` + output + `}`, false},
+		{"error object", `{"status":"completed","error":{"code":"server_error","message":"boom"},` + output + `}`, false},
+		{"not json", `oops`, false},
+	}
+	for _, tc := range cases {
+		if got := isValidResponsesSuccessBody([]byte(tc.body)); got != tc.want {
+			t.Errorf("%s: isValidResponsesSuccessBody = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
 // TestTestChatCompletionGemini401StillAuthFailed proves real error statuses
-// stay meaningful for gemini/responses even though a 2xx can no longer
-// certify success — only the success-body path is affected by Finding 2's
-// fix.
+// stay meaningful for gemini/responses: only the 200 path runs the
+// success-body validator, error statuses classify by status code as before.
 func TestTestChatCompletionGemini401StillAuthFailed(t *testing.T) {
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -1151,16 +1225,6 @@ func TestTestChatCompletionGemini401StillAuthFailed(t *testing.T) {
 	}
 	if result.Outcome != TestAuthFailed {
 		t.Fatalf("expected TestAuthFailed for a gemini 401, got %v", result.Outcome)
-	}
-}
-
-func TestClassifyResponseGeminiAndResponses200NeverTestSuccess(t *testing.T) {
-	for _, proto := range []protocols.ProtocolID{protocols.ProtocolGemini, protocols.ProtocolResponses} {
-		resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}}
-		result := classifyResponse(proto, resp, []byte(`{}`), "some-model", 5)
-		if result.Outcome != TestVerificationUnsupported {
-			t.Fatalf("classifyResponse(%s, 200) = %v, want TestVerificationUnsupported", proto, result.Outcome)
-		}
 	}
 }
 

@@ -200,3 +200,59 @@ func TestCompressSkipReasonTimeout(t *testing.T) {
 }
 
 func mustJSONStr(s string) string { b, _ := jsonMarshal(s); return string(b) }
+
+// TestCompressCanceledContextReportsTimeout: a context that dies mid-pass
+// must surface as the timeout skip, with the body untouched — classifying it
+// as "nothing shrank" hides real deadline pressure from the operator.
+func TestCompressCanceledContextReportsTimeout(t *testing.T) {
+	big := "=== RUN   TestA\n--- PASS: TestA (0.00s)\n" + strings.Repeat("=== RUN   TestX\n--- PASS: TestX (0.00s)\n", 200) + "PASS\nok  \tpkg\t0.1s\n"
+	body := []byte(`{"model":"claude","system":"SYS","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":` + mustJSONStr(big) + `}]}]}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out, res := ByProtocol(protocols.ProtocolClaude, ctx, body, DefaultOptions())
+	if !res.Skipped || res.SkipReason != SkipReasonTimeout {
+		t.Fatalf("skip = %v / %q, want timeout", res.Skipped, res.SkipReason)
+	}
+	if !bytes.Equal(out, body) {
+		t.Fatal("a timed-out pass must return the body untouched")
+	}
+}
+
+// cancelingCompressor cancels the pass from INSIDE a Compress call — the
+// deterministic stand-in for a deadline expiring mid-pass — and returns the
+// context's error like a well-behaved compressor.
+type cancelingCompressor struct{ cancel context.CancelFunc }
+
+func (*cancelingCompressor) Name() string { return "canceling" }
+func (c *cancelingCompressor) Compress(ctx context.Context, _ string) (string, error) {
+	c.cancel()
+	return "", ctx.Err()
+}
+
+// TestCompressMidPassCancelFailsOpenWhole: a cancellation that lands while a
+// LATER block is being compressed must throw away the earlier block's
+// replacement too — the contract is original body + timeout, never a
+// partially-rewritten body reported as success.
+func TestCompressMidPassCancelFailsOpenWhole(t *testing.T) {
+	shrinkable := "=== RUN   TestA\n--- PASS: TestA (0.00s)\n" + strings.Repeat("=== RUN   TestX\n--- PASS: TestX (0.00s)\n", 120) + "PASS\nok  \tpkg\t0.1s\n"
+	other := strings.Repeat("npm warn deprecated pkg@1.0.0: unsupported\n", 120) + "added 3 packages in 1s\n"
+	body := []byte(`{"model":"claude","system":"SYS","messages":[{"role":"user","content":[` +
+		`{"type":"tool_result","tool_use_id":"t1","content":` + mustJSONStr(shrinkable) + `},` +
+		`{"type":"tool_result","tool_use_id":"t2","content":` + mustJSONStr(other) + `}]}]}`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Chain: the real gotest compressor first (block 1 shrinks), then the
+	// canceler (fires on block 2, where gotest declines the npm content).
+	saved := buildCompressors
+	buildCompressors = []compressors.Compressor{&compressors.GoTest{}, &cancelingCompressor{cancel: cancel}}
+	defer func() { buildCompressors = saved }()
+
+	out, res := ByProtocol(protocols.ProtocolClaude, ctx, body, DefaultOptions())
+	if !res.Skipped || res.SkipReason != SkipReasonTimeout {
+		t.Fatalf("skip = %v / %q, want timeout", res.Skipped, res.SkipReason)
+	}
+	if !bytes.Equal(out, body) {
+		t.Fatal("a mid-pass cancel must return the ORIGINAL body — no partial splice")
+	}
+}

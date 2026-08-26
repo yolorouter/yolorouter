@@ -34,3 +34,30 @@ func TestLogPreservesDistinctLines(t *testing.T) {
 		}
 	}
 }
+
+// TestLogPreservesFencedContentVerbatim: the generic log pass is the chain's
+// last resort and sees everything the specialized compressors declined — a
+// quoted example's duplicate lines, blank spacing and escapes are the
+// example, not noise.
+func TestLogPreservesFencedContentVerbatim(t *testing.T) {
+	in := "WARN something happened\n" +
+		"```\n" +
+		"Progress: resolved 1, reused 0, downloaded 0, added 0\n" +
+		"Progress: resolved 1, reused 0, downloaded 0, added 0\n" +
+		"\n\n" +
+		"\x1b[32mkept escape\x1b[0m\n" +
+		"```\n"
+	out, err := (&Log{}).Compress(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFenced := "```\n" +
+		"Progress: resolved 1, reused 0, downloaded 0, added 0\n" +
+		"Progress: resolved 1, reused 0, downloaded 0, added 0\n" +
+		"\n\n" +
+		"\x1b[32mkept escape\x1b[0m\n" +
+		"```"
+	if !strings.Contains(out, wantFenced) {
+		t.Fatalf("fenced span must survive byte-identical; got:\n%q", out)
+	}
+}

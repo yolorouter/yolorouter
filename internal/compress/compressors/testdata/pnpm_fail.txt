@@ -1,0 +1,10 @@
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Progress: resolved 245, reused 240, downloaded 5, added 0
+Progress: resolved 512, reused 480, downloaded 32, added 0
+ ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/@myorg%2Fmissing-pkg: Not Found - 404
+
+This error happened while installing a direct dependency of /home/user/proj
+
+@myorg/missing-pkg is not in the npm registry, or you have no permission to fetch it.
+
+No authorization header was set for the request.

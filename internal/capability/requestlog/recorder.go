@@ -133,6 +133,15 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 		detail := s.attemptsDetail
 		row.AttemptsDetail = &detail // *string so empty stays SQL NULL, not ''
 	}
+	// The four snapshot columns are set together or not at all: a partial
+	// snapshot could not re-price anything and would read as a data bug.
+	if p := s.settledPrices; p != nil {
+		inPrice, outPrice, cwPrice, crPrice := p.Input, p.Output, p.CacheWrite, p.CacheRead
+		row.SettledInputPrice = &inPrice
+		row.SettledOutputPrice = &outPrice
+		row.SettledCacheWritePrice = &cwPrice
+		row.SettledCacheReadPrice = &crPrice
+	}
 
 	if err := repository.CreateRequestLog(r.db.WithContext(ctx), row); err != nil {
 		logger.Error("gateway: write request log failed",
@@ -162,6 +171,7 @@ type summary struct {
 	cacheWriteTokens, cacheReadTokens int
 	costKnown                         bool
 	costMicros                        int64
+	settledPrices                     *fact.SettledPrices
 	cacheReadSavedMicros              int64
 	cacheWriteExtraMicros             int64
 	compressCostSavedMicros           int64
@@ -277,6 +287,7 @@ func summarise(tl fact.Timeline) summary {
 		case fact.CostComputed:
 			s.costKnown = rec.Known
 			s.costMicros = rec.Micros
+			s.settledPrices = rec.Prices
 			s.cacheReadSavedMicros = rec.CacheReadSavedMicros
 			s.cacheWriteExtraMicros = rec.CacheWriteExtraMicros
 			s.compressCostSavedMicros = rec.CompressCostSavedMicros

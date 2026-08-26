@@ -13,7 +13,18 @@ func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
 // Pre-allocated compressor chains. Every compressor is a stateless zero-byte
 // struct, so the chains are reused across requests without allocation.
 var (
-	buildCompressors  = []compressors.Compressor{&compressors.GoTest{}, &compressors.Log{}}
+	// Build-output candidates are ordered most-specific first: each framework
+	// compressor only acts on output it recognizes (returning foreign content
+	// unchanged, which the accept gate rejects), so the first one that
+	// actually shrinks the block wins and the generic log pass stays last.
+	buildCompressors = []compressors.Compressor{
+		&compressors.GoTest{},
+		&compressors.Pytest{},
+		&compressors.Vitest{},
+		&compressors.Npm{},
+		&compressors.Pnpm{},
+		&compressors.Log{},
+	}
 	diffCompressors   = []compressors.Compressor{&compressors.Diff{}}
 	searchCompressors = []compressors.Compressor{&compressors.Grep{}}
 )
@@ -123,6 +134,14 @@ func runCompress(ctx context.Context, body []byte, opts CompressOptions, locate 
 		for _, c := range cs {
 			r, err := c.Compress(ctx, blk.Text)
 			if err != nil {
+				// A dead context is not a candidate failure: continuing
+				// would misreport the ending as "nothing shrank", and in a
+				// multi-block pass could splice the EARLIER blocks'
+				// replacements into a body the deadline already gave up on.
+				// Timeout fails open whole: original body, timeout reason.
+				if ctx.Err() != nil {
+					return body, CompressResult{Skipped: true, SkipReason: SkipReasonTimeout}
+				}
 				continue
 			}
 			if acceptCompressed(blk.Text, r) {
@@ -149,6 +168,11 @@ func runCompress(ctx context.Context, body []byte, opts CompressOptions, locate 
 		saved += estimateTokensSaved(len(blk.Text), len(compressed))
 	}
 
+	// Final deadline check before committing: replacements collected before
+	// a cancellation must not be spliced into a partially-processed body.
+	if ctx.Err() != nil {
+		return body, CompressResult{Skipped: true, SkipReason: SkipReasonTimeout}
+	}
 	if len(reps) == 0 {
 		reason := SkipReasonNoEffectiveReplacement
 		if sawNoCompressor {

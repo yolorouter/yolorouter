@@ -25,6 +25,6 @@ export const MODEL_PRESET_GROUPS: ModelPresetGroup[] = [
   { vendorId: 'deepseek', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
   { vendorId: 'qwen', models: ['qwen-max', 'qwen-plus', 'qwen-flash', 'qwen-vl-max'] },
   { vendorId: 'kimi', models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'] },
-  { vendorId: 'zhipu', models: ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.6'] },
+  { vendorId: 'zhipu', models: ['glm-5.3', 'glm-5-turbo', 'glm-5.2', 'glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.6'] },
   { vendorId: 'minimax', models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2'] },
 ]

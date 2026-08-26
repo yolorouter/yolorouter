@@ -2481,10 +2481,11 @@ func TestClassifyTestResultCoversEveryOutcome(t *testing.T) {
 		// slow upstream would demote a key that is perfectly good.
 		{"timeout", providerclient.TestResult{Outcome: providerclient.TestTimeout}, 0, false, outcomeInt(providerclient.TestTimeout)},
 		{"upstream error", providerclient.TestResult{Outcome: providerclient.TestUpstreamError}, 0, false, outcomeInt(providerclient.TestUpstreamError)},
-		// providerclient.TestVerificationUnsupported (Finding 2): a gemini/responses
-		// destination's 2xx cannot be certified as a genuine pass, so this
-		// must never overwrite verification_status — same "inconclusive"
-		// shape as providerclient.TestModelNotFound/providerclient.TestRateLimited, not providerclient.TestSuccess's.
+		// providerclient.TestVerificationUnsupported: a destination whose
+		// protocol has no success-body validator returns a 2xx that cannot be
+		// certified as a genuine pass, so this must never overwrite
+		// verification_status — same "inconclusive" shape as
+		// providerclient.TestModelNotFound/providerclient.TestRateLimited, not providerclient.TestSuccess's.
 		{"verification unsupported", providerclient.TestResult{Outcome: providerclient.TestVerificationUnsupported}, 0, false, outcomeInt(providerclient.TestVerificationUnsupported)},
 		{"unknown outcome falls to default", providerclient.TestResult{Outcome: providerclient.TestOutcome(999)}, 0, false, outcomeInt(providerclient.TestOutcome(999))},
 	}
@@ -2813,14 +2814,15 @@ func TestVerificationSeverityRanksDecisiveFailuresAboveInconclusive(t *testing.T
 	}
 }
 
-// --- Finding 2: gemini/responses must not falsely certify a key ---
+// --- An uncertifiable destination must not falsely certify a key ---
 
-// TestCreateProviderKeyGeminiDestinationNeverReachesPassed is the direct
-// regression test for Finding 2 at the service layer: a gemini-typed
-// provider's key, whose client-level test returns providerclient.TestVerificationUnsupported
-// (a 200 that can't be certified — see provider_client_test.go for the HTTP
-// level of this), must never be classified as passed/enabled, but its
-// last_test_result must still be recorded for the UI.
+// TestCreateProviderKeyGeminiDestinationNeverReachesPassed pins the service
+// layer's handling of providerclient.TestVerificationUnsupported: a key whose
+// client-level test returns it (a 200 the protocol's probe cannot certify)
+// must never be classified as passed/enabled, but its last_test_result must
+// still be recorded for the UI. The outcome is produced via the fake client —
+// every current protocol now has a real success-body validator, but the
+// service-layer rule must hold for any future protocol that lacks one.
 func TestCreateProviderKeyGeminiDestinationNeverReachesPassed(t *testing.T) {
 	svc, _, client := newTestProviderService(t)
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestVerificationUnsupported, DurationMs: 5}

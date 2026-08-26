@@ -174,6 +174,36 @@ func ResetUserPassword(db *gorm.DB, actorID, targetID uint, newPassword string, 
 	})
 }
 
+// UpdateUserProfile rewrites another account's display name and email —
+// pure directory information with no credential or permission semantics,
+// which is why (unlike every other mutation here) the target's sessions
+// survive the edit. The power sits with the bootstrap administrator
+// alone, mirroring ResetUserPassword: promoted admins manage roles and
+// status, the permanent anchor owns credentials and directory data.
+// Editing one's own profile is refused along with every other actor —
+// the own row renders no action menu to begin with.
+func UpdateUserProfile(db *gorm.DB, actorID, targetID uint, displayName, email *string, now time.Time) error {
+	if actorID == targetID {
+		return errcode.ErrAccountProfileEditDenied
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		actor, err := repository.FindUserByID(tx, actorID)
+		if err != nil {
+			return err
+		}
+		if !actor.IsBootstrap {
+			return errcode.ErrAccountProfileEditDenied
+		}
+		if _, err := repository.FindUserByID(tx, targetID); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errcode.ErrAccountUserNotFound
+			}
+			return err
+		}
+		return repository.UpdateUserProfile(tx, targetID, displayName, email, now)
+	})
+}
+
 // SetUserStatus enables or disables one account, acting on behalf of
 // actorID. Rules, all enforced here rather than in the handler:
 //

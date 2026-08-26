@@ -138,6 +138,24 @@
             <span v-if="detail.cost_known" class="cost-cell">{{ formatMicros(detail.cost_micros) }} {{ t('requestLogs.currencyUnit') }}</span>
             <NTag v-else size="small" :bordered="false" type="default">{{ t('requestLogs.costUnknown') }}</NTag>
           </NDescriptionsItem>
+          <!-- Price snapshot: the four unit prices this row was billed with,
+               captured at settlement. All four are null together on rows that
+               predate the snapshot or could not be priced — shown as an explicit
+               "no snapshot" tag, never as fabricated zeros. -->
+          <NDescriptionsItem :label="t('requestLogs.fieldSettledPrices')" :span="2">
+            <!-- Loose != so a rolling upgrade (older API binary omitting the
+                 settled_* fields entirely -> undefined) renders the honest
+                 "no snapshot" tag instead of "Input undefined". -->
+            <span v-if="detail.settled_input_price != null" class="settled-prices">
+              {{ t('requestLogs.settledPriceValues', {
+                input: detail.settled_input_price,
+                output: detail.settled_output_price,
+                write: detail.settled_cache_write_price,
+                read: detail.settled_cache_read_price,
+              }) }}
+            </span>
+            <NTag v-else size="small" :bordered="false" type="default">{{ t('requestLogs.settledPricesNone') }}</NTag>
+          </NDescriptionsItem>
         </NDescriptions>
       </section>
 

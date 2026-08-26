@@ -12,11 +12,13 @@ export const OUTCOME_I18N_KEYS = [
   'outcomeRateLimited',
   'outcomeUnreachable',
   'outcomeUpstreamError',
-  // The Go enum's ninth entry (TestVerificationUnsupported). Without it, a
-  // gemini/responses probe — which returns this rather than success because
-  // those protocols have no success-body validator yet — fell through the
-  // fallback below and was mislabelled "upstream error", pointing operators at
-  // a network problem that does not exist.
+  // The Go enum's ninth entry (TestVerificationUnsupported): a probe against
+  // a protocol without a success-body validator returns this rather than
+  // success. Every current protocol now has one, but rows persisted before
+  // that (and any future validator-less protocol) still carry this value —
+  // without the entry it fell through the fallback below and was mislabelled
+  // "upstream error", pointing operators at a network problem that does not
+  // exist.
   'outcomeVerificationUnsupported',
   // The Go enum's tenth entry (TestTimeout). It is split out from
   // outcomeUnreachable because the two point an operator in opposite
@@ -36,12 +38,6 @@ export function testOutcomeI18nKey(outcome: number): string {
 // zero value). Compare against this instead of a bare `0` so the success
 // meaning is named in one place, alongside the other outcome mappings.
 export const TEST_OUTCOME_SUCCESS = 0
-
-// TEST_OUTCOME_VERIFICATION_UNSUPPORTED marks a result the backend explicitly
-// declined to certify, because the destination's protocol has no success-body
-// validator yet. No configuration change can turn it into a pass, so any UI
-// offering a retry must say so instead of blaming the model name or credential.
-export const TEST_OUTCOME_VERIFICATION_UNSUPPORTED = 8
 
 export function isTestSuccess(outcome: number): boolean {
   return outcome === TEST_OUTCOME_SUCCESS

@@ -394,3 +394,130 @@ func TestSystemEndpointReadableByMembers(t *testing.T) {
 		t.Fatalf("member reading build info: expected 403, got %d %s", w.Code, w.Body.String())
 	}
 }
+
+// TestUserProfileEditEndpoint walks the bootstrap-only profile edit over
+// real HTTP: the edit lands and the directory reflects it, a promoted
+// admin and the bootstrap admin editing themselves are both refused with
+// the dedicated code, and the target's session survives the edit.
+func TestUserProfileEditEndpoint(t *testing.T) {
+	f := newMemberScopeFixture(t)
+	now := time.Now().UTC()
+
+	// Carol: a console-created local member; alice gets promoted so the
+	// "legitimate admin but not the bootstrap one" lane is reachable.
+	w := f.do(t, http.MethodPost, "/api/admin/users", `{"username":"carol","display_name":"Old Name","email":"old@ops.example","password":"correct-horse-1"}`, f.adminCk)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create carol: %d %s", w.Code, w.Body.String())
+	}
+	var carolID uint
+	if err := f.db.Raw("SELECT id FROM users WHERE username = ?", "carol").Scan(&carolID).Error; err != nil || carolID == 0 {
+		t.Fatalf("load carol id: %v %d", err, carolID)
+	}
+	var bossID uint
+	if err := f.db.Raw("SELECT id FROM users WHERE username = ?", "boss").Scan(&bossID).Error; err != nil || bossID == 0 {
+		t.Fatalf("load boss id: %v %d", err, bossID)
+	}
+	if err := repository.CreateSession(f.db, "tok-carol-edit", carolID, now.Add(time.Hour), now); err != nil {
+		t.Fatalf("seed carol session: %v", err)
+	}
+	w = f.do(t, http.MethodPatch, "/api/admin/users/"+uintToString(f.aliceID)+"/role", `{"role":"admin"}`, f.adminCk)
+	if w.Code != http.StatusOK {
+		t.Fatalf("promote alice: %d %s", w.Code, w.Body.String())
+	}
+	if err := repository.CreateSession(f.db, "tok-alice-edit", f.aliceID, now.Add(time.Hour), now); err != nil {
+		t.Fatalf("relogin alice: %v", err)
+	}
+	aliceCk := &http.Cookie{Name: "session_id", Value: "tok-alice-edit"}
+
+	for _, tc := range []struct {
+		name string
+		path string
+		ck   *http.Cookie
+	}{
+		{"promoted admin", "/api/admin/users/" + uintToString(carolID) + "/profile", aliceCk},
+		{"bootstrap self", "/api/admin/users/" + uintToString(bossID) + "/profile", f.adminCk},
+	} {
+		w = f.do(t, http.MethodPatch, tc.path, `{"display_name":"X"}`, tc.ck)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s: expected 403, got %d %s", tc.name, w.Code, w.Body.String())
+		}
+		var errEnv struct {
+			Code int `json:"code"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &errEnv); err != nil {
+			t.Fatalf("%s: unmarshal: %v", tc.name, err)
+		}
+		if errEnv.Code != errcode.AccountProfileEditDenied {
+			t.Fatalf("%s: expected code %d, got %d", tc.name, errcode.AccountProfileEditDenied, errEnv.Code)
+		}
+	}
+
+	// The bootstrap admin edits carol: fields land, the directory shows
+	// them, and her live session is untouched.
+	w = f.do(t, http.MethodPatch, "/api/admin/users/"+uintToString(carolID)+"/profile",
+		`{"display_name":"Carol Ng","email":"carol@ops.example"}`, f.adminCk)
+	if w.Code != http.StatusOK {
+		t.Fatalf("bootstrap edit carol profile: %d %s", w.Code, w.Body.String())
+	}
+	w = f.do(t, http.MethodGet, "/api/admin/users", "", f.adminCk)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Carol Ng") || !strings.Contains(w.Body.String(), "carol@ops.example") {
+		t.Fatalf("directory must reflect the edited profile: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := repository.FindUserByValidSession(f.db, "tok-carol-edit", now); err != nil {
+		t.Fatalf("a profile edit must not kill the target's sessions")
+	}
+
+	// The same edit over the same route against bob, who arrived through a
+	// login provider rather than the console: externally-provisioned
+	// accounts are editable targets too, not just local password ones.
+	var bobID uint
+	if err := f.db.Raw("SELECT id FROM users WHERE username = ?", "bob").Scan(&bobID).Error; err != nil || bobID == 0 {
+		t.Fatalf("load bob id: %v %d", err, bobID)
+	}
+	w = f.do(t, http.MethodPatch, "/api/admin/users/"+uintToString(bobID)+"/profile",
+		`{"display_name":"Bob External","email":"bob@ops.example"}`, f.adminCk)
+	if w.Code != http.StatusOK {
+		t.Fatalf("bootstrap edit external profile: %d %s", w.Code, w.Body.String())
+	}
+	w = f.do(t, http.MethodGet, "/api/admin/users", "", f.adminCk)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Bob External") || !strings.Contains(w.Body.String(), "bob@ops.example") {
+		t.Fatalf("directory must reflect the edited external profile: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := repository.FindUserByValidSession(f.db, "tok-bob", now); err != nil {
+		t.Fatalf("editing an external account must not kill its sessions")
+	}
+
+	// Sparse patch: a display-name-only request must leave the email
+	// column alone (nil vs empty string are different things on the wire).
+	w = f.do(t, http.MethodPatch, "/api/admin/users/"+uintToString(carolID)+"/profile",
+		`{"display_name":"Carol Sparse"}`, f.adminCk)
+	if w.Code != http.StatusOK {
+		t.Fatalf("sparse patch: %d %s", w.Code, w.Body.String())
+	}
+	w = f.do(t, http.MethodGet, "/api/admin/users", "", f.adminCk)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Carol Sparse") || !strings.Contains(w.Body.String(), "carol@ops.example") {
+		t.Fatalf("sparse patch must keep the untouched field: %d %s", w.Code, w.Body.String())
+	}
+
+	// Malformed email dies in binding.
+	w = f.do(t, http.MethodPatch, "/api/admin/users/"+uintToString(carolID)+"/profile",
+		`{"email":"not-an-email"}`, f.adminCk)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("malformed email: expected 400, got %d %s", w.Code, w.Body.String())
+	}
+
+	// An explicit empty email must pass binding and clear the column — it
+	// is the modal's everyday payload for any account without an email
+	// (the form always sends both fields), not an edge case. A validator
+	// that runs the email check on "" would 400 here and lock those
+	// accounts out of profile edits entirely.
+	w = f.do(t, http.MethodPatch, "/api/admin/users/"+uintToString(carolID)+"/profile",
+		`{"display_name":"Carol NoMail","email":""}`, f.adminCk)
+	if w.Code != http.StatusOK {
+		t.Fatalf("empty email: expected 200, got %d %s", w.Code, w.Body.String())
+	}
+	w = f.do(t, http.MethodGet, "/api/admin/users", "", f.adminCk)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Carol NoMail") || strings.Contains(w.Body.String(), "carol@ops.example") {
+		t.Fatalf("empty email must land and clear the column: %d %s", w.Code, w.Body.String())
+	}
+}

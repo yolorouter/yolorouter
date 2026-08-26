@@ -136,7 +136,6 @@ export default {
   probeUnsupported: 'Not supported',
   probeBasicFailedHint: 'The basic-text probe failed, so this mapping cannot be enabled. Check the provider model name, key and address then retry, or save it as disabled for now.',
   probeFailedSavedDisabledHint: 'Your changes were saved, but the probe failed so the mapping was left disabled. Fix the provider model name, key or address and retest to enable it.',
-  probeCannotCertifyHint: 'This provider protocol has no response validator yet, so a reply cannot be certified as a pass and the mapping cannot be enabled automatically — no configuration change will alter that. Save it as disabled; the mapping itself may well work.',
   done: 'Done',
   saveAnywayDisabled: 'Save as disabled anyway',
   saveAnywayDisabled_tip: 'Save as disabled without probing again. Verification status and capability flags are left empty; you can retest from the list later.',

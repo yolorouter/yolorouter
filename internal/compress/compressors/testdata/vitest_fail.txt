@@ -1,0 +1,26 @@
+ RUN  v1.6.0 /home/user/proj
+
+ ✓ src/utils/money.test.ts > formatMicros > rounds to 2 decimals 3ms
+ ✓ src/utils/money.test.ts > formatMicros > keeps the negative sign 1ms
+ ✓ src/utils/format.test.ts > formatRate > renders percentages 2ms
+ ✓ src/utils/format.test.ts > formatRate > clamps above one 1ms
+ × src/store/auth.test.ts > auth store > refreshes the token on 401 34ms
+   → expected 'expired' to be 'fresh'
+ ✓ src/api/client.test.ts > apiFetch > unwraps the envelope 9ms
+ ✓ src/api/client.test.ts > apiFetch > surfaces error codes 5ms
+
+ FAIL  src/store/auth.test.ts > auth store > refreshes the token on 401
+AssertionError: expected 'expired' to be 'fresh'
+
+- Expected
++ Received
+
+- 'fresh'
++ 'expired'
+
+ ❯ src/store/auth.test.ts:42:5
+
+ Test Files  1 failed | 3 passed (4)
+      Tests  1 failed | 6 passed (7)
+   Start at  17:12:03
+   Duration  1.24s (transform 320ms, setup 0ms, collect 410ms, tests 130ms)

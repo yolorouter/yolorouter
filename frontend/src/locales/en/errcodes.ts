@@ -18,6 +18,7 @@ export const errcodes: Record<number, string> = {
   10019: 'The setup account cannot be disabled or demoted (it is the OAuth-failure escape hatch)',
   10020: 'Username already taken',
   10021: "Only the setup administrator may reset other local accounts' passwords",
+  10022: "Only the setup administrator may edit other accounts' profiles",
   90001: 'Route not found',
   90002: 'Method not allowed',
   90003: 'Request entity too large',

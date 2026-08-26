@@ -18,9 +18,9 @@ var (
 )
 
 // RegisterValidators adds this package's custom `binding` tags
-// ("alnum_dash", "alnum_mixed", "bcrypt_len") to Gin's global validator
-// engine. Must be called exactly once before any route using these tags is
-// registered — internal/router.New calls it.
+// ("alnum_dash", "alnum_mixed", "bcrypt_len", "email_or_empty") to Gin's
+// global validator engine. Must be called exactly once before any route
+// using these tags is registered — internal/router.New calls it.
 func RegisterValidators() error {
 	v, ok := binding.Validator.Engine().(*validator.Validate)
 	if !ok {
@@ -32,7 +32,10 @@ func RegisterValidators() error {
 	if err := v.RegisterValidation("alnum_mixed", validateAlnumMixed); err != nil {
 		return err
 	}
-	return v.RegisterValidation("bcrypt_len", validateBcryptLen)
+	if err := v.RegisterValidation("bcrypt_len", validateBcryptLen); err != nil {
+		return err
+	}
+	return v.RegisterValidation("email_or_empty", emailOrEmpty(v))
 }
 
 // validateAlnumDash implements the admin username charset: 3-32 letters,
@@ -79,6 +82,22 @@ const bcryptMaxBytes = 72
 // characters.
 func validateBcryptLen(fl validator.FieldLevel) bool {
 	return len(fl.Field().String()) <= bcryptMaxBytes
+}
+
+// emailOrEmpty builds a rule accepting a valid email OR the empty string.
+// It exists for *string PATCH fields where "" is a deliberate
+// clear-the-field value: `omitempty` treats any non-nil pointer as
+// present, so the plain `email` tag would run on "" and reject it —
+// locking accounts that have no email out of profile edits, since their
+// edit form round-trips "". nil pointers never reach this check
+// (omitempty skips them), keeping "field absent = unchanged" intact.
+// Non-empty values are judged by the same engine that runs the plain
+// `email` tag, so the two can never disagree on what counts as an email.
+func emailOrEmpty(v *validator.Validate) validator.Func {
+	return func(fl validator.FieldLevel) bool {
+		s := fl.Field().String()
+		return s == "" || v.Var(s, "email") == nil
+	}
 }
 
 // cleanBindValidationError rewrites Gin/validator's raw bind-failure text

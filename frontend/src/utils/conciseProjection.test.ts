@@ -7,8 +7,9 @@ import {
 } from './conciseProjection'
 
 // A minimal valid projection. The default figures are internally consistent
-// — the rate really is spend / priced tokens x coefficient — so a stale
-// number here cannot quietly outlive a benchmark update.
+// — the saved totals really are the spend and the priced tokens each times
+// the coefficient — so a stale number here cannot quietly outlive a
+// benchmark update.
 const COEFFICIENT = 0.126
 const SPEND_MICROS = 700_000
 const PRICED_TOKENS = 700_000
@@ -21,8 +22,8 @@ function projection(over: Partial<ConciseOutputProjection>): ConciseOutputProjec
     output_tokens: 1_000_000,
     priced_rows: 9,
     priced_output_tokens: PRICED_TOKENS,
-    projected_savings_per_million_tokens_micros:
-      Math.round((SPEND_MICROS * COEFFICIENT * 1e6) / PRICED_TOKENS),
+    projected_saved_cost_micros: Math.round(SPEND_MICROS * COEFFICIENT),
+    projected_saved_output_tokens: Math.round(PRICED_TOKENS * COEFFICIENT),
     coefficient: COEFFICIENT,
     ...over,
   }
@@ -42,14 +43,21 @@ describe('projectionDisplay', () => {
     expect(projectionDisplay(projection({ output_rows: 5, priced_rows: 0 }))).toEqual({ kind: 'unpriced-all' })
   })
 
-  it('priced traffic with no computable rate is missing, not a ¥0.00 amount', () => {
-    expect(projectionDisplay(projection({ projected_savings_per_million_tokens_micros: null })))
-      .toEqual({ kind: 'missing' })
+  it('priced traffic yields both period totals', () => {
+    expect(projectionDisplay(projection({ projected_saved_cost_micros: 88_200, projected_saved_output_tokens: 31_500 })))
+      .toEqual({ kind: 'amount', costMicros: 88_200, savedTokens: 31_500 })
   })
 
-  it('priced traffic yields the per-million amount', () => {
-    expect(projectionDisplay(projection({ projected_savings_per_million_tokens_micros: 711_800 })))
-      .toEqual({ kind: 'amount', micros: 711_800 })
+  it('a zero saved total over priced traffic is a real amount, not an explanatory state', () => {
+    expect(projectionDisplay(projection({ projected_saved_cost_micros: 0, projected_saved_output_tokens: 0 })))
+      .toEqual({ kind: 'amount', costMicros: 0, savedTokens: 0 })
+  })
+
+  it('a pre-period-totals backend response (fields absent) is missing, never NaN', () => {
+    const legacy = projection({}) as unknown as Record<string, unknown>
+    delete legacy.projected_saved_cost_micros
+    delete legacy.projected_saved_output_tokens
+    expect(projectionDisplay(legacy as unknown as ConciseOutputProjection)).toEqual({ kind: 'missing' })
   })
 })
 

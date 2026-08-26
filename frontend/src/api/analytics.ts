@@ -128,6 +128,11 @@ export interface OverviewRow {
   unknown_cost_calls: number
   input_tokens: number
   output_tokens: number
+  // Cache token sums for the same window; input_tokens is the uncached
+  // component (the three counts are mutually exclusive), so the
+  // token-weighted hit rate is read ÷ (read + write + input).
+  cache_write_tokens: number
+  cache_read_tokens: number
   cost_micros: number
   // Cache economics for the window. Net cache saving is
   // cache_read_saved_micros − cache_write_extra_micros; both non-negative.
@@ -148,6 +153,8 @@ export interface ModelReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
 }
@@ -160,6 +167,14 @@ export interface ProviderReportRow {
   ended_calls: number
   success_rate: number
   avg_duration_ms: number
+  // The full token block (the provider table renders duration instead of
+  // token volume, but its cache columns divide these sums).
+  input_tokens: number
+  output_tokens: number
+  cache_write_tokens: number
+  cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
   /** Provider-to-provider switches charged to the provider that failed. */
@@ -182,6 +197,8 @@ export interface UserReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
 }
@@ -198,6 +215,8 @@ export interface CallerReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
 }
@@ -212,6 +231,8 @@ export interface TimeReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
   cost_micros: number
   unknown_cost_calls: number
 }
@@ -380,11 +401,47 @@ export function getCompressStats(
   return apiFetch(`/api/admin/analytics/compress-stats?${params.toString()}`)
 }
 
+// === Cache visibility stats =======================================
+
+// Mirrors internal/service/analytics's CacheStatsResult — the verified cache
+// economics behind the dashboard's cache KPI cards. Totals cover only
+// cache-capable providers' rows (upstream reports cache metering AND a cache
+// price is configured); unsupported_providers discloses whose traffic was
+// excluded and why. Per-dimension cache figures ride on the report rows
+// instead.
+export interface CacheTotals {
+  cache_read_tokens: number
+  cache_write_tokens: number
+  // SUM of the persisted NET input counts (cache excluded on every
+  // protocol), so hit rate = read / (read + write + uncached) directly.
+  uncached_input_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
+}
+
+export interface CacheUnsupportedProviderRow {
+  provider_id: number
+  provider_name: string
+  reason: 'no_cache_metering' | 'no_cache_price'
+}
+
+export interface CacheStatsResult {
+  totals: CacheTotals
+  unsupported_providers: CacheUnsupportedProviderRow[]
+}
+
+// getCacheStats fetches the verified cache-savings roll-up. Shares the
+// analytics filter shape; no extra params.
+export function getCacheStats(filter: AnalyticsFilter): Promise<CacheStatsResult> {
+  const params = buildAnalyticsQuery(filter)
+  return apiFetch(`/api/admin/analytics/cache-stats?${params.toString()}`)
+}
+
 // === Concise-output projection ====================================
 
 // Mirrors internal/service/analytics's ConciseOutputProjection — the priced
-// output-volume roll-up plus projected per-million-token saving behind the
-// cost-optimization page's concise-output card.
+// output-volume roll-up plus the window's projected saved cost and saved
+// output tokens behind the cost-optimization page's concise-output card.
 export interface ConciseOutputWindow {
   start: string
   end: string
@@ -404,18 +461,24 @@ export interface ConciseOutputProjection {
   output_tokens: number
   // Rows that actually contributed to output_spend_micros. Lower than
   // output_rows means some output traffic was unpriced and is excluded
-  // from the figure.
+  // from the figures.
   priced_rows: number
-  // Output-token total over the priced rows — the denominator behind the
-  // per-million rate.
+  // Output-token total over the priced rows — the basis of the saved-token
+  // figure.
   priced_output_tokens: number
-  // spend × coefficient, normalized to 1M output tokens (micros). A unit
-  // rate, deliberately independent of the instance's traffic volume. null
-  // when the backend could not compute one — never 0 standing in for that,
-  // which would read as a real "saves nothing".
-  projected_savings_per_million_tokens_micros: number | null
-  // The factory coefficient behind the figure, echoed so the UI renders
-  // the rate's basis from the backend's single source of truth.
+  // The window's priced output spend × coefficient, in micros — the period
+  // total the card's cost cell renders.
+  projected_saved_cost_micros: number
+  // The window's priced output tokens × coefficient — the volume
+  // counterpart of the cost figure, on the same priced-only basis.
+  projected_saved_output_tokens: number
+  // Deprecated: the per-million unit rate this card rendered before the
+  // period totals. The backend still emits it for tabs loaded before an
+  // upgrade; nothing here reads it anymore.
+  projected_savings_per_million_tokens_micros?: number | null
+  // The factory coefficient behind the figures, echoed so the UI renders
+  // their basis from the backend's single source of truth (the console
+  // labels it the savings ratio).
   coefficient: number
 }
 

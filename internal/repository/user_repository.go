@@ -143,6 +143,29 @@ func UpdateUserRole(tx *gorm.DB, id uint, role string, now time.Time) error {
 		Updates(map[string]any{"role": role, "updated_at": now}).Error
 }
 
+// UpdateUserProfile overwrites one account's directory fields (display
+// name, email) — informational only, so unlike the status/role writers it
+// carries no cascade of its own. The service layer owns the guards.
+//
+// Both fields are pointers: nil keeps the stored value untouched (a
+// single-field patch must never wipe the other column), an explicit empty
+// string clears it. When every field is nil this is a true no-op — no
+// write, not even updated_at.
+func UpdateUserProfile(tx *gorm.DB, id uint, displayName, email *string, now time.Time) error {
+	updates := map[string]any{}
+	if displayName != nil {
+		updates["display_name"] = *displayName
+	}
+	if email != nil {
+		updates["email"] = *email
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	updates["updated_at"] = now
+	return tx.Model(&model.User{}).Where("id = ?", id).Updates(updates).Error
+}
+
 // CountEnabledAdminsExcluding counts enabled administrators other than
 // excludeID — the input to the "never leave zero active administrators"
 // guard. Run inside the same transaction as the mutation it protects, so

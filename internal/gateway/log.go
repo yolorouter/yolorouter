@@ -56,6 +56,10 @@ type costBreakdown struct {
 	// sent). Zero when usage/pricing is unknown or no tokens were saved.
 	CompressCostSavedMicros int64
 	Known                   bool
+	// Prices is the snapshot of the four effective unit prices the cost was
+	// computed with — nil exactly when Known is false, so an unpriced row can
+	// never carry a pseudo-snapshot.
+	Prices *fact.SettledPrices
 }
 
 // netPromptTokens returns the billable/loggable net input token count: the
@@ -232,6 +236,15 @@ func computeCost(cand *model.ModelCandidate, usage *protocols.IRUsage, compressT
 		CacheWriteExtraMicros:   int64(cacheWriteExtra*microsPerUnit + 0.5),
 		CompressCostSavedMicros: compressSavedMicros,
 		Known:                   true,
+		// The snapshot is taken HERE, from the same variables the cost lines
+		// above multiplied by, so the persisted prices can never describe a
+		// different pricing than the persisted cost.
+		Prices: &fact.SettledPrices{
+			Input:      cand.InputPrice,
+			Output:     cand.OutputPrice,
+			CacheWrite: cacheWritePrice,
+			CacheRead:  cacheReadPrice,
+		},
 	}
 }
 
@@ -291,6 +304,7 @@ func (s *Service) finalize(rc *Exchange, usage *protocols.IRUsage, statusCode in
 		CacheReadSavedMicros:    cost.CacheReadSavedMicros,
 		CacheWriteExtraMicros:   cost.CacheWriteExtraMicros,
 		CompressCostSavedMicros: cost.CompressCostSavedMicros,
+		Prices:                  cost.Prices,
 	})
 	sink.Note(attemptsRecord(rc))
 

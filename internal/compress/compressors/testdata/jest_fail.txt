@@ -1,0 +1,29 @@
+PASS src/utils/money.test.ts
+  formatMicros
+    ✓ rounds to 2 decimals (3 ms)
+    ✓ keeps the negative sign (1 ms)
+FAIL src/store/auth.test.ts
+  auth store
+    ✓ logs in (5 ms)
+    ✕ refreshes the token on 401 (34 ms)
+
+  ● auth store › refreshes the token on 401
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: "fresh"
+    Received: "expired"
+
+      40 |   it('refreshes the token on 401', async () => {
+      41 |     await store.handle401()
+    > 42 |     expect(state).toBe('fresh')
+         |                   ^
+      43 |   })
+
+      at Object.<anonymous> (src/store/auth.test.ts:42:19)
+
+Test Suites: 1 failed, 1 passed, 2 total
+Tests:       1 failed, 3 passed, 4 total
+Snapshots:   0 total
+Time:        2.145 s
+Ran all test suites.

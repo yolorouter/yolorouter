@@ -6,10 +6,12 @@
 // Each factory takes the component's i18n translator `t` because module
 // scope has no access to a component-local useI18n().
 
+import { h } from 'vue'
 import type { DataTableColumns } from 'naive-ui'
+import { cacheHitRateRatio, cacheNetMicros, hasCacheMetering } from './cacheEcon'
 import { columnTitle, STATUS_COL_WIDTH } from './columnTitle'
 import { formatNumber, formatRate } from './format'
-import { formatMicros } from './money'
+import { formatMicros, formatSignedYuan, isNegativeMicros } from './money'
 
 type Translator = (key: string) => string
 
@@ -92,6 +94,59 @@ export function tokenColumn<T extends MetricRow>(
     width,
     align: 'right',
     render: (r: T) => formatNumber(r[key] as number),
+  }
+}
+
+// CacheEconRow is the field set behind the two cache columns: the three
+// token sums the hit rate divides and the two settled figures the net
+// subtracts. Every dimension report row carries them.
+export type CacheEconRow = {
+  input_tokens: number
+  cache_write_tokens: number
+  cache_read_tokens: number
+  cache_read_saved_micros: number
+  cache_write_extra_micros: number
+}
+
+// cacheHitRateColumn renders the shared token-weighted hit-rate formula from
+// the row's own sums; a row whose traffic carried no cache metering renders
+// an em-dash (the ratio is null), never 0%.
+export function cacheHitRateColumn<T extends CacheEconRow>(t: Translator): DataTableColumns<T>[number] {
+  return {
+    title: columnTitle(t('analytics.cacheHitRateColumn'), t('analytics.cacheHitRateColumn_tip')),
+    key: 'cache_hit_rate',
+    width: 120,
+    align: 'right',
+    render: (r: T) => {
+      // Row-level gate on metering activity: report rows can mix providers
+      // with and without cache support, so a row with zero cache tokens is
+      // "no cache activity recorded here" (em-dash), not a 0% claim.
+      if (!hasCacheMetering(r.cache_read_tokens, r.cache_write_tokens)) return '—'
+      const ratio = cacheHitRateRatio(r.cache_read_tokens, r.cache_write_tokens, r.input_tokens)
+      return ratio === null ? '—' : formatRate(ratio)
+    },
+  }
+}
+
+// cacheNetSavedColumn renders the signed verified saving. The same
+// no-metering gate as the hit-rate column applies: without cache metering
+// there is nothing priced, and an em-dash is the honest cell.
+export function cacheNetSavedColumn<T extends CacheEconRow>(t: Translator, sort?: SortOptions): DataTableColumns<T>[number] {
+  const net = (r: T) => cacheNetMicros(r.cache_read_saved_micros, r.cache_write_extra_micros)
+  return {
+    title: columnTitle(t('analytics.cacheNetSavedColumn'), t('analytics.cacheNetSavedColumn_tip')),
+    key: 'cache_net_saved',
+    width: 130,
+    align: 'right',
+    sorter: sort?.sortable ? (a: T, b: T) => net(a) - net(b) : undefined,
+    render: (r: T) => {
+      if (!hasCacheMetering(r.cache_read_tokens, r.cache_write_tokens)) return '—'
+      return h(
+        'span',
+        { class: isNegativeMicros(net(r), 2) ? 'money-negative' : undefined },
+        formatSignedYuan(net(r)),
+      )
+    },
   }
 }
 

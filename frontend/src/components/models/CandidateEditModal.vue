@@ -214,7 +214,7 @@ import type { Provider } from '../../api/providers'
 import { displayMessage } from '../../api/client'
 import { providerModelNameRule, nonNegativePriceRule } from '../../utils/modelValidators'
 import { capabilityState } from '../../utils/modelStatusDisplay'
-import { testOutcomeI18nKey, TEST_OUTCOME_VERIFICATION_UNSUPPORTED } from '../../utils/testOutcomeDisplay'
+import { testOutcomeI18nKey } from '../../utils/testOutcomeDisplay'
 import { providerRunningStatusDisplay, usableKeyCount } from '../../utils/providerStatusDisplay'
 import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
@@ -380,12 +380,6 @@ const alert = computed<{ type: 'error' | 'warning' | 'info'; text: string } | nu
     return { type: 'warning', text: t('models.probeNotTestedHint') }
   }
   if (basicProbeFailed.value) {
-    // A protocol the backend cannot certify will never pass, however the
-    // mapping is edited, so offering the usual "check the name, key and
-    // address" advice would send the operator in circles.
-    if (r.basic.outcome === TEST_OUTCOME_VERIFICATION_UNSUPPORTED) {
-      return { type: 'warning', text: t('models.probeCannotCertifyHint') }
-    }
     // Two different situations: nothing was stored (create, enable requested),
     // or the edit was stored but could not be left enabled.
     return {

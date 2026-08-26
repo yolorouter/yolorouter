@@ -47,18 +47,6 @@ func seedPricedOutputRowAt(t *testing.T, requestID string, outputTokens int, out
 	return NewAnalyticsService(db)
 }
 
-// rateOf dereferences the nullable per-million rate, failing the test when
-// the backend reported no figure at all — the assertions below all expect a
-// computed one, and a nil slipping through as 0 would hide exactly the
-// confusion the nullable contract exists to prevent.
-func rateOf(t *testing.T, p *ConciseOutputProjection) int64 {
-	t.Helper()
-	if p.ProjectedSavingsPerMillionTokensMicros == nil {
-		t.Fatal("projected rate is absent, want a computed figure")
-	}
-	return *p.ProjectedSavingsPerMillionTokensMicros
-}
-
 // TestConciseOutputCoefficientMatchesPublishedBenchmark is the one place the
 // coefficient is checked against a literal rather than against itself. Every
 // other assertion in this package derives its expected figure FROM the
@@ -76,12 +64,12 @@ func TestConciseOutputCoefficientMatchesPublishedBenchmark(t *testing.T) {
 	}
 }
 
-// TestConciseOutputProjectionPerMillionMath pins the per-million-token
-// formula: projected = spend x coefficient x 1M / priced tokens — i.e. the
-// traffic-weighted output price scaled by the coefficient. A dropped
-// coefficient factor or a wrong divisor here changes the card's figure
-// silently, so the expected value is computed from the formula itself.
-func TestConciseOutputProjectionPerMillionMath(t *testing.T) {
+// TestConciseOutputProjectionPeriodTotals pins the two period-total formulas:
+// saved cost = window spend x coefficient, saved tokens = window priced
+// output tokens x coefficient. A dropped coefficient factor or a swapped
+// basis changes the card's figures silently, so the expected values are
+// computed from the formulas themselves.
+func TestConciseOutputProjectionPeriodTotals(t *testing.T) {
 	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	svc := seedPricedOutputRow(t, "p1", 700_000, at)
 
@@ -104,25 +92,39 @@ func TestConciseOutputProjectionPerMillionMath(t *testing.T) {
 		t.Fatalf("volume: got spend=%d rows=%d priced=%d tokens=%d, want 700000/1/1/700000",
 			p.OutputSpendMicros, p.OutputRows, p.PricedRows, p.PricedOutputTokens)
 	}
-	// 700K tokens at 1 CNY/M = 700000 micros spend; per 1M tokens that is
-	// coefficient x 1e6 micros = the coefficient in CNY per million tokens.
-	want := int64(math.Round(700_000 * ConciseOutputCoefficient * 1e6 / 700_000))
-	if got := rateOf(t, p); got != want {
-		t.Errorf("per-million = %d, want %d (spend x coefficient x 1M / priced tokens)",
-			got, want)
+	// 700K tokens at 1 CNY/M = 700000 micros spend for the whole window.
+	wantCost := int64(math.Round(700_000 * ConciseOutputCoefficient))
+	if p.ProjectedSavedCostMicros != wantCost {
+		t.Errorf("saved cost = %d, want %d (window spend x coefficient)",
+			p.ProjectedSavedCostMicros, wantCost)
+	}
+	wantTokens := int64(math.Round(700_000 * ConciseOutputCoefficient))
+	if p.ProjectedSavedOutputTokens != wantTokens {
+		t.Errorf("saved tokens = %d, want %d (priced output tokens x coefficient)",
+			p.ProjectedSavedOutputTokens, wantTokens)
 	}
 	if p.Coefficient != ConciseOutputCoefficient {
-		t.Errorf("Coefficient echo = %v, want %v (the UI renders the rate's basis from it)",
+		t.Errorf("Coefficient echo = %v, want %v (the UI renders the figures' basis from it)",
 			p.Coefficient, ConciseOutputCoefficient)
+	}
+	// Deprecated per-million rate stays on the wire for pre-upgrade tabs,
+	// with its original formula: spend x coefficient x 1M / priced tokens.
+	wantLegacy := int64(math.Round(700_000 * ConciseOutputCoefficient * 1e6 / 700_000))
+	if p.ProjectedSavingsPerMillionTokensMicros == nil {
+		t.Fatalf("legacy per-million rate absent, want %d (pre-upgrade tabs still read it)", wantLegacy)
+	}
+	if *p.ProjectedSavingsPerMillionTokensMicros != wantLegacy {
+		t.Errorf("legacy per-million rate = %d, want %d",
+			*p.ProjectedSavingsPerMillionTokensMicros, wantLegacy)
 	}
 }
 
 // TestConciseOutputProjectionCarriesCoverageDenominator pins the whole
-// volume roll-up through the service with four values that cannot coincide:
+// volume roll-up through the service with values that cannot coincide:
 // unit price is not 1, and the window mixes priced traffic with heavier
 // unpriced traffic. Total output tokens, priced output tokens and spend are
 // therefore all different, so mapping any of them to the wrong DTO field —
-// the coverage ratio divides two of them — fails here.
+// or scaling the saved-token figure from the unpriced total — fails here.
 func TestConciseOutputProjectionCarriesCoverageDenominator(t *testing.T) {
 	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	svc := seedPricedOutputRowAt(t, "p1", 250_000, 4.0, at)
@@ -153,17 +155,24 @@ func TestConciseOutputProjectionCarriesCoverageDenominator(t *testing.T) {
 	if p.OutputSpendMicros != 1_000_000 {
 		t.Errorf("OutputSpendMicros = %d, want 1000000 (250K x 4 CNY/M)", p.OutputSpendMicros)
 	}
-	want := int64(4 * ConciseOutputCoefficient * 1e6)
-	if got := rateOf(t, p); got != want {
-		t.Errorf("per-million = %d, want %d (4 CNY/M x coefficient)",
-			got, want)
+	wantCost := int64(math.Round(1_000_000 * ConciseOutputCoefficient))
+	if p.ProjectedSavedCostMicros != wantCost {
+		t.Errorf("saved cost = %d, want %d (priced spend x coefficient)",
+			p.ProjectedSavedCostMicros, wantCost)
+	}
+	// Scaled from the 250K PRICED tokens, never the 1.25M total: the unpriced
+	// million must not inflate the saved-token figure.
+	wantTokens := int64(math.Round(250_000 * ConciseOutputCoefficient))
+	if p.ProjectedSavedOutputTokens != wantTokens {
+		t.Errorf("saved tokens = %d, want %d (PRICED output tokens x coefficient)",
+			p.ProjectedSavedOutputTokens, wantTokens)
 	}
 }
 
 // TestConciseOutputProjectionShortWindowFloor pins the sub-day floor: a
 // window shorter than 24h still counts as one day in the echoed window (no
-// divide-by-zero in the echo, and the per-million figure never depended on
-// the day count anyway).
+// divide-by-zero in the echo, and the period totals never depended on the
+// day count anyway).
 func TestConciseOutputProjectionShortWindowFloor(t *testing.T) {
 	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	svc := seedPricedOutputRow(t, "p1", 100, at)
@@ -179,21 +188,26 @@ func TestConciseOutputProjectionShortWindowFloor(t *testing.T) {
 	if p.Window.Days != 1 {
 		t.Errorf("Window.Days = %d, want 1 (sub-day window floors at one day)", p.Window.Days)
 	}
-	want := int64(math.Round(100 * ConciseOutputCoefficient * 1e6 / 100))
-	if got := rateOf(t, p); got != want {
-		t.Errorf("per-million = %d, want %d (unit rate independent of the day count)",
-			got, want)
+	want := int64(math.Round(100 * ConciseOutputCoefficient))
+	if p.ProjectedSavedCostMicros != want {
+		t.Errorf("saved cost = %d, want %d (totals independent of the day count)",
+			p.ProjectedSavedCostMicros, want)
+	}
+	if p.ProjectedSavedOutputTokens != want {
+		t.Errorf("saved tokens = %d, want %d (100 tokens x coefficient)",
+			p.ProjectedSavedOutputTokens, want)
 	}
 }
 
-// TestConciseOutputProjectionTinyWindowKeepsRate pins the traffic-independence
-// contract at the low end: a window whose whole priced spend rounds to zero
-// micros must still report the unit rate. Dividing the ROUNDED spend here
-// would print ¥0.00 over real priced traffic — exactly the "meaningless on a
-// small instance" failure the per-million basis exists to avoid.
-func TestConciseOutputProjectionTinyWindowKeepsRate(t *testing.T) {
+// TestConciseOutputProjectionScalesUnroundedSpend pins the unrounded basis:
+// the saved cost scales the exact spend, not the spend rounded to whole
+// micros. The fixture is chosen so the two roundings land on different
+// integers — one token at 3.9 CNY/M is an exact spend of 3.9 micros
+// (reported rounded as 4), and 3.9 x coefficient rounds to a different
+// figure than 4 x coefficient. Scaling the rounded spend turns this red.
+func TestConciseOutputProjectionScalesUnroundedSpend(t *testing.T) {
 	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	svc := seedPricedOutputRowAt(t, "p1", 1, 0.4, at)
+	svc := seedPricedOutputRowAt(t, "p1", 1, 3.9, at)
 
 	start := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)
@@ -203,24 +217,27 @@ func TestConciseOutputProjectionTinyWindowKeepsRate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConciseOutputProjection: %v", err)
 	}
-	if p.OutputSpendMicros != 0 {
-		t.Fatalf("OutputSpendMicros = %d, want 0 (0.4 micros rounds down)", p.OutputSpendMicros)
+	if p.OutputSpendMicros != 4 {
+		t.Fatalf("OutputSpendMicros = %d, want 4 (3.9 micros exact, rounded on report)", p.OutputSpendMicros)
 	}
-	// The rate is the unit price times the coefficient regardless of volume:
-	// The rate is the unit price times the coefficient: 0.4 CNY/M x 0.126.
-	want := int64(math.Round(0.4 * ConciseOutputCoefficient * 1e6))
-	if got := rateOf(t, p); got != want {
-		t.Errorf("per-million = %d, want %d (rate must not collapse when the spend rounds to zero)",
-			got, want)
+	want := int64(math.Round(3.9 * ConciseOutputCoefficient))
+	fromRounded := int64(math.Round(float64(p.OutputSpendMicros) * ConciseOutputCoefficient))
+	if want == fromRounded {
+		t.Fatal("fixture no longer discriminates exact from rounded spend — pick a new price")
+	}
+	if p.ProjectedSavedCostMicros != want {
+		t.Errorf("saved cost = %d, want %d (must scale the exact spend, not the rounded report)",
+			p.ProjectedSavedCostMicros, want)
 	}
 }
 
-// TestConciseOutputProjectionOutOfRangeRate pins the scaled-figure guard: the
-// repository keeps the spend inside int64, but scaling it to a million tokens
-// multiplies by 1e6, so an absurd unit price can still leave the range — and
-// an out-of-range float64 conversion is undefined in Go. The rate reports 0
-// rather than an arbitrary (possibly negative) amount.
-func TestConciseOutputProjectionOutOfRangeRate(t *testing.T) {
+// TestConciseOutputProjectionAbsurdPriceStaysInRange backs the no-range-guard
+// claim in the implementation: scaling never grows the spend, so even a spend
+// near the top of the repository's range yields a finite, positive figure
+// strictly below it. Reintroducing any amplification step (the kind a
+// per-token normalization would need) pushes this fixture out of int64 and
+// turns the assertion red.
+func TestConciseOutputProjectionAbsurdPriceStaysInRange(t *testing.T) {
 	at := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	svc := seedPricedOutputRowAt(t, "p1", 1, 2e14, at)
 
@@ -232,15 +249,20 @@ func TestConciseOutputProjectionOutOfRangeRate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConciseOutputProjection: %v", err)
 	}
-	// 2e14 micros x the coefficient x 1e6 lands past math.MaxInt64 (~9.22e18).
-	// Absent, not zero: the window HAS priced traffic, so a 0 here would read
-	// as "this saves nothing" beside a full pricing-coverage figure.
-	if p.ProjectedSavingsPerMillionTokensMicros != nil {
-		t.Errorf("per-million = %d, want absent (out-of-range scaled figure is never converted)",
-			*p.ProjectedSavingsPerMillionTokensMicros)
+	want := int64(math.Round(2e14 * ConciseOutputCoefficient))
+	if p.ProjectedSavedCostMicros != want {
+		t.Errorf("saved cost = %d, want %d (spend x coefficient, no amplification)",
+			p.ProjectedSavedCostMicros, want)
 	}
-	if p.PricedRows != 1 {
-		t.Errorf("PricedRows = %d, want 1 (the spend itself is still in range)", p.PricedRows)
+	if p.ProjectedSavedCostMicros <= 0 || p.ProjectedSavedCostMicros >= 2e14 {
+		t.Errorf("saved cost = %d, want a positive figure strictly below the 2e14 spend",
+			p.ProjectedSavedCostMicros)
+	}
+	// The legacy per-million rate's 1e6 scale-up DOES leave int64 here, so
+	// its original absent-not-zero contract must hold for pre-upgrade tabs.
+	if p.ProjectedSavingsPerMillionTokensMicros != nil {
+		t.Errorf("legacy per-million rate = %d, want absent (scaled figure out of int64 range)",
+			*p.ProjectedSavingsPerMillionTokensMicros)
 	}
 }
 
@@ -277,9 +299,13 @@ func TestConciseOutputProjectionEmptyWindow(t *testing.T) {
 		p.OutputTokens != 0 {
 		t.Errorf("empty db: got %+v, want all-zero totals", p)
 	}
-	// No priced tokens to divide by, so there is no rate to report.
+	if p.ProjectedSavedCostMicros != 0 || p.ProjectedSavedOutputTokens != 0 {
+		t.Errorf("saved totals = %d micros / %d tokens, want 0/0 on an empty window",
+			p.ProjectedSavedCostMicros, p.ProjectedSavedOutputTokens)
+	}
+	// No priced tokens to divide by, so the legacy rate has nothing to report.
 	if p.ProjectedSavingsPerMillionTokensMicros != nil {
-		t.Errorf("per-million = %d, want absent on an empty window",
+		t.Errorf("legacy per-million rate = %d, want absent on an empty window",
 			*p.ProjectedSavingsPerMillionTokensMicros)
 	}
 	if p.Window.Days != 7 {

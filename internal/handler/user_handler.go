@@ -53,6 +53,19 @@ type updateUserRoleRequest struct {
 	Role string `json:"role" binding:"required,oneof=admin member"`
 }
 
+type updateUserProfileRequest struct {
+	// Same field rules as account creation — the profile edit only
+	// narrows which actor may send them. Pointers keep the sparse-PATCH
+	// contract honest: nil means "leave the field alone" (never sent),
+	// while an explicit empty string means "clear it". A bare string
+	// would fold the two into the same "" and let a single-field patch
+	// silently wipe the other column. email_or_empty (not `email`)
+	// because `omitempty` treats a non-nil pointer as present and would
+	// run the email rule on the clear-value "".
+	DisplayName *string `json:"display_name" binding:"omitempty,max=128"`
+	Email       *string `json:"email" binding:"omitempty,email_or_empty,max=255"`
+}
+
 // writeUserServiceError maps the user-management service sentinels onto
 // the admin envelope. Every rule violation is a 4xx with its own code so
 // the frontend can show a precise message.
@@ -70,6 +83,8 @@ func writeUserServiceError(c *gin.Context, err error) {
 		// 403 rather than 409: the caller is asking for a power their
 		// account does not hold, not colliding with another writer.
 		middleware.WriteAdminError(c, http.StatusForbidden, errcode.AccountPasswordResetDenied)
+	case errors.Is(err, errcode.ErrAccountProfileEditDenied):
+		middleware.WriteAdminError(c, http.StatusForbidden, errcode.AccountProfileEditDenied)
 	case errors.Is(err, errcode.ErrAccountUserNotFound):
 		middleware.WriteAdminError(c, http.StatusNotFound, errcode.AccountUserNotFound)
 	default:
@@ -120,6 +135,29 @@ func PostUserPasswordReset(db *gorm.DB) gin.HandlerFunc {
 		}
 		actorID := c.MustGet(middleware.UserIDKey).(uint)
 		if err := user.ResetUserPassword(db, actorID, id, req.Password, time.Now().UTC()); err != nil {
+			writeUserServiceError(c, err)
+			return
+		}
+		response.Success(c, nil)
+	}
+}
+
+// PatchUserProfile handles PATCH /api/admin/users/:id/profile — the
+// bootstrap administrator rewriting another account's display name and
+// email. Directory information only: nothing about login or permissions
+// changes, so the target's sessions sail through untouched.
+func PatchUserProfile(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, ok := parseUintParam(c, "id")
+		if !ok {
+			return
+		}
+		var req updateUserProfileRequest
+		if !bindJSON(c, &req) {
+			return
+		}
+		actorID := c.MustGet(middleware.UserIDKey).(uint)
+		if err := user.UpdateUserProfile(db, actorID, id, req.DisplayName, req.Email, time.Now().UTC()); err != nil {
 			writeUserServiceError(c, err)
 			return
 		}

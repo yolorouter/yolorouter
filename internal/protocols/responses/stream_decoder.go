@@ -328,7 +328,7 @@ func responsesDoneStatus(resp *responsesRespMin) string {
 func (d *StreamDecoder) appendTerminal(out []protocols.IRStreamDelta, resp *responsesRespMin) []protocols.IRStreamDelta {
 	status := responsesDoneStatus(resp)
 	switch {
-	case responsesStatusIsNonServed(status):
+	case StatusIsNonServed(status):
 		d.failStream()
 		return out
 	case status == "incomplete":

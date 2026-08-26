@@ -58,6 +58,19 @@ export function resetUserPassword(id: number, password: string): Promise<null> {
   })
 }
 
+// Rewrites another account's display name and email — directory
+// information only. Reserved to the bootstrap administrator (the backend
+// refuses everyone else with 10022); the target's sessions are untouched.
+export function updateUserProfile(
+  id: number,
+  input: { display_name?: string; email?: string },
+): Promise<null> {
+  return apiFetch<null>(`/api/admin/users/${id}/profile`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
 // toUserOptions maps accounts to naive-ui <select> options. Kept here —
 // next to the UserSummary type — so every user <select> (analytics filter,
 // cost page scope) labels accounts the same way and can't drift.

@@ -469,3 +469,10 @@ a {
 .candidate-muted {
   color: var(--color-text-muted);
 }
+
+/* Emitted by the shared net-cache-saving column (utils/analyticsColumns.ts)
+   inside NDataTable cells: a negative net saving is a real loss and must
+   read as one on every page that reuses the column. */
+.money-negative {
+  color: var(--color-error, #d03050);
+}

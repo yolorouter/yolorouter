@@ -40,8 +40,9 @@ const (
 	LastTestResultUpstreamError    = 7
 	// LastTestResultVerificationUnsupported mirrors
 	// providerclient.TestVerificationUnsupported: the destination's protocol
-	// (gemini/responses) has no real success-body validator yet, so a 2xx
-	// response from it cannot be certified as a genuine pass.
+	// has no real success-body validator yet (no current protocol — kept for
+	// ones added before their validator is written), so a 2xx response from
+	// it cannot be certified as a genuine pass.
 	LastTestResultVerificationUnsupported = 8
 	// LastTestResultTimeout mirrors providerclient.TestTimeout: the destination
 	// accepted the connection but did not answer within the test budget.

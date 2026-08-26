@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -102,6 +103,8 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 		r.StatusCode = 200
 		r.InputTokens = 100
 		r.OutputTokens = 50
+		r.CacheWriteTokens = 30
+		r.CacheReadTokens = 40
 		r.CostMicros = 10
 		r.CostKnown = true
 		r.DurationMs = 500
@@ -111,6 +114,7 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 		r.StatusCode = 200
 		r.InputTokens = 200
 		r.OutputTokens = 100
+		r.CacheReadTokens = 60
 		r.CostMicros = 20
 		r.CostKnown = true
 		r.DurationMs = 600
@@ -172,6 +176,18 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 	}
 	if data.UnknownCostCalls != 2 {
 		t.Fatalf("UnknownCostCalls = %d, want 2 (r3 + r4)", data.UnknownCostCalls)
+	}
+	// Cache token sums ride on the overview so clients can derive the
+	// token-weighted hit rate for the same filtered window.
+	if data.CacheWriteTokens != 30 || data.CacheReadTokens != 100 {
+		t.Fatalf("cache tokens = %d/%d, want 30/100", data.CacheWriteTokens, data.CacheReadTokens)
+	}
+	// Pin the wire-level key names too: decoding into the shared Go struct
+	// above stays green even if both json tags were renamed or swapped
+	// together, and the frontend reads these exact keys.
+	body := w.Body.String()
+	if !strings.Contains(body, `"cache_write_tokens":30`) || !strings.Contains(body, `"cache_read_tokens":100`) {
+		t.Fatalf("overview wire keys missing or mismatched, body: %s", body)
 	}
 }
 
@@ -900,7 +916,7 @@ func TestExportAnalyticsCSVWritesBOMAndHeadersAndRows(t *testing.T) {
 	if len(records) < 2 {
 		t.Fatalf("expected header + at least 1 row, got %d records", len(records))
 	}
-	wantHeader := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls"}
+	wantHeader := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls", "cache_read_saved_micros", "cache_write_extra_micros"}
 	if len(records[0]) != len(wantHeader) {
 		t.Fatalf("header len = %d, want %d (%v)", len(records[0]), len(wantHeader), records[0])
 	}
@@ -1181,8 +1197,8 @@ func TestGetCompressStatsAggregatesSeededRows(t *testing.T) {
 	// gotest. So diff=2 (c1+c2), gotest=2 (c1+c4), log=0, grep=0.
 	// Zero-hit entries are retained (all four known compressors appear).
 	// Ordered by hits DESC, name ASC: diff(2), gotest(2), grep(0), log(0).
-	if len(data.CompressorHits) != 4 {
-		t.Fatalf("CompressorHits len = %d, want 4 (all known compressors)", len(data.CompressorHits))
+	if len(data.CompressorHits) != 8 {
+		t.Fatalf("CompressorHits len = %d, want 8 (all known compressors)", len(data.CompressorHits))
 	}
 	if data.CompressorHits[0].Name != "diff" || data.CompressorHits[0].Hits != 2 {
 		t.Fatalf("CompressorHits[0] = %+v, want diff/2 (rows c1+c2)", data.CompressorHits[0])
@@ -1258,8 +1274,8 @@ func TestGetCompressStatsEmptyReturnsEmptyArrays(t *testing.T) {
 	// CompressorHits now always returns the four known compressors (zero-hit
 	// entries retained) so the UI can show which compressors exist even when
 	// they haven't fired.
-	if len(data.CompressorHits) != 4 {
-		t.Fatalf("CompressorHits len = %d, want 4 (all known, zero-hit)", len(data.CompressorHits))
+	if len(data.CompressorHits) != 8 {
+		t.Fatalf("CompressorHits len = %d, want 8 (all known, zero-hit)", len(data.CompressorHits))
 	}
 	for _, ch := range data.CompressorHits {
 		if ch.Hits != 0 {
@@ -1313,8 +1329,8 @@ func TestGetCompressStatsRespectsAPIKeyFilter(t *testing.T) {
 	}
 	// CompressorHits returns all four known compressors; only diff has a
 	// non-zero hit count (1 row, alice's c1 which used "diff").
-	if len(data.CompressorHits) != 4 {
-		t.Fatalf("CompressorHits len = %d, want 4 (all known)", len(data.CompressorHits))
+	if len(data.CompressorHits) != 8 {
+		t.Fatalf("CompressorHits len = %d, want 8 (all known)", len(data.CompressorHits))
 	}
 	if data.CompressorHits[0].Name != "diff" || data.CompressorHits[0].Hits != 1 {
 		t.Fatalf("CompressorHits[0] = %+v, want diff/1", data.CompressorHits[0])
@@ -2104,7 +2120,7 @@ func TestGetAnalyticsReportByUserGroupsAcrossKeys(t *testing.T) {
 
 // === Concise-output projection handler ===================================
 
-// TestGetConciseOutputProjectionReturnsPricedVolumeAndRate drives the new
+// TestGetConciseOutputProjectionReturnsPricedVolumeAndTotals drives the
 // endpoint through the real route table and decodes the JSON envelope by
 // wire field name, so a rename or a mis-wired struct field fails here rather
 // than silently reaching the console as an em-dash.
@@ -2114,7 +2130,7 @@ func TestGetAnalyticsReportByUserGroupsAcrossKeys(t *testing.T) {
 // priced tokens and spend can never coincide. Swapping any two of them —
 // output_tokens for priced_output_tokens in particular, which is what the
 // coverage ratio divides — turns this red.
-func TestGetConciseOutputProjectionReturnsPricedVolumeAndRate(t *testing.T) {
+func TestGetConciseOutputProjectionReturnsPricedVolumeAndTotals(t *testing.T) {
 	r, db, ck := newAnalyticsFixture(t)
 	now := time.Now().UTC()
 	providerID := seedProvider(t, db, "concise-provider")
@@ -2158,9 +2174,11 @@ func TestGetConciseOutputProjectionReturnsPricedVolumeAndRate(t *testing.T) {
 			OutputTokens       int64 `json:"output_tokens"`
 			PricedRows         int64 `json:"priced_rows"`
 			PricedOutputTokens int64 `json:"priced_output_tokens"`
-			// Pointer, so a null on the wire is distinguishable from a
-			// zero saving — the contract the console relies on.
-			PerMillionMicros *int64  `json:"projected_savings_per_million_tokens_micros"`
+			SavedCostMicros    int64 `json:"projected_saved_cost_micros"`
+			SavedOutputTokens  int64 `json:"projected_saved_output_tokens"`
+			// Deprecated wire field pre-upgrade tabs still read; a pointer so
+			// its absent-vs-zero contract stays observable here.
+			LegacyPerMillion *int64  `json:"projected_savings_per_million_tokens_micros"`
 			Coefficient      float64 `json:"coefficient"`
 		} `json:"data"`
 	}
@@ -2180,13 +2198,24 @@ func TestGetConciseOutputProjectionReturnsPricedVolumeAndRate(t *testing.T) {
 	if d.OutputSpendMicros != 1_000_000 {
 		t.Errorf("output_spend_micros = %d, want 1000000 (250K x 4 CNY/M)", d.OutputSpendMicros)
 	}
-	// 4 CNY per million output tokens x the coefficient.
-	want := int64(4 * analytics.ConciseOutputCoefficient * 1e6)
-	if d.PerMillionMicros == nil {
-		t.Fatalf("projected_savings_per_million_tokens_micros is null, want %d", want)
+	// Window spend (1,000,000 micros) and priced tokens (250K), each scaled
+	// by the coefficient.
+	wantCost := int64(math.Round(1_000_000 * analytics.ConciseOutputCoefficient))
+	if d.SavedCostMicros != wantCost {
+		t.Errorf("projected_saved_cost_micros = %d, want %d", d.SavedCostMicros, wantCost)
 	}
-	if *d.PerMillionMicros != want {
-		t.Errorf("projected_savings_per_million_tokens_micros = %d, want %d", *d.PerMillionMicros, want)
+	wantTokens := int64(math.Round(250_000 * analytics.ConciseOutputCoefficient))
+	if d.SavedOutputTokens != wantTokens {
+		t.Errorf("projected_saved_output_tokens = %d, want %d", d.SavedOutputTokens, wantTokens)
+	}
+	// The deprecated per-million rate must still reach pre-upgrade tabs:
+	// 4 CNY per million output tokens x the coefficient.
+	wantLegacy := int64(math.Round(4 * analytics.ConciseOutputCoefficient * 1e6))
+	if d.LegacyPerMillion == nil {
+		t.Fatalf("projected_savings_per_million_tokens_micros absent, want %d", wantLegacy)
+	}
+	if *d.LegacyPerMillion != wantLegacy {
+		t.Errorf("projected_savings_per_million_tokens_micros = %d, want %d", *d.LegacyPerMillion, wantLegacy)
 	}
 	if d.Coefficient != analytics.ConciseOutputCoefficient {
 		t.Errorf("coefficient = %v, want %v", d.Coefficient, analytics.ConciseOutputCoefficient)

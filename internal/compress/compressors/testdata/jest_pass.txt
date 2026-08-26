@@ -1,0 +1,14 @@
+[32mPASS[0m src/utils/money.test.ts
+  formatMicros
+    [32m✓[0m rounds to 2 decimals (3 ms)
+    [32m✓[0m keeps the negative sign (1 ms)
+[32mPASS[0m src/utils/format.test.ts
+  formatRate
+    [32m✓[0m renders percentages (2 ms)
+    [32m✓[0m clamps above one (1 ms)
+
+Test Suites: 2 passed, 2 total
+Tests:       4 passed, 4 total
+Snapshots:   0 total
+Time:        1.204 s
+Ran all test suites.

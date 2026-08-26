@@ -13,7 +13,7 @@
 
      Savings render as two group cards, one per optimization switch: the
      measured input-compression roll-up on the left, and the projected
-     concise-output unit rate (per 1M output tokens) on the right. -->
+     concise-output savings for the selected window on the right. -->
 <template>
   <div class="common-page">
     <PageHeader
@@ -62,9 +62,17 @@
     <div class="savings-groups">
       <div class="section-card">
         <div class="section-card__head group-head">
-          <HelpLabel :tip="t('costOptimization.inputCompression.titleTip')">
-            {{ t('costOptimization.groupCompress') }}
-          </HelpLabel>
+          <span class="group-title">
+            <HelpLabel :tip="t('costOptimization.inputCompression.titleTip')">
+              {{ t('costOptimization.groupCompress') }}
+            </HelpLabel>
+            <!-- Estimated basis: the compression counterfactual ("what the
+                 uncompressed request would have cost") is this gateway's own
+                 calculation, so its figures are labeled as estimates — in
+                 contrast to the cache card below, whose multipliers all come
+                 from upstream metering. -->
+            <span class="basis-tag basis-tag--estimate">{{ t('costOptimization.estimatedTag') }}</span>
+          </span>
           <span class="status-pill" :class="compressPill.cls">{{ compressPill.label }}</span>
         </div>
         <div class="group-metrics">
@@ -100,24 +108,29 @@
           <HelpLabel :tip="t('costOptimization.groupConcise_tip')">{{ t('costOptimization.groupConcise') }}</HelpLabel>
           <span class="status-pill" :class="concisePill.cls">{{ concisePill.label }}</span>
         </div>
+        <!-- The saved-cost / saved-token labels stay neutral in both switch
+             states: per-key overrides can mix enabled and disabled traffic in
+             one window, so neither "saved" nor "would save if enabled" is
+             honest for all of it. The status pill above reports the global
+             switch itself. -->
         <div class="group-metrics">
           <div class="metric-cell">
             <div class="metric__label">
-              <HelpLabel :tip="t('costOptimization.concisePerMillion_tip')">{{ t('costOptimization.concisePerMillion') }}</HelpLabel>
+              <HelpLabel :tip="t('costOptimization.conciseSavedCost_tip')">{{ t('costOptimization.conciseSavedCost') }}</HelpLabel>
             </div>
-            <div class="metric__value">{{ projectionValue }}</div>
+            <div class="metric__value">{{ projectionCost }}</div>
           </div>
           <div class="metric-cell">
             <div class="metric__label">
-              <HelpLabel :tip="t('costOptimization.conciseCoefficient_tip')">{{ t('costOptimization.conciseCoefficient') }}</HelpLabel>
+              <HelpLabel :tip="t('costOptimization.conciseRatio_tip')">{{ t('costOptimization.conciseRatio') }}</HelpLabel>
             </div>
             <div class="metric__value">{{ projection ? formatRate(projection.coefficient) : '—' }}</div>
           </div>
           <div class="metric-cell">
             <div class="metric__label">
-              <HelpLabel :tip="t('costOptimization.concisePricedTokens_tip')">{{ t('costOptimization.concisePricedTokens') }}</HelpLabel>
+              <HelpLabel :tip="t('costOptimization.conciseSavedTokens_tip')">{{ t('costOptimization.conciseSavedTokens') }}</HelpLabel>
             </div>
-            <div class="metric__value">{{ projection ? formatNumber(projection.priced_output_tokens) : '—' }}</div>
+            <div class="metric__value">{{ projectionTokens }}</div>
           </div>
           <div class="metric-cell">
             <div class="metric__label">
@@ -399,27 +412,32 @@ const compressRate = computed(() => {
 // === Concise-output projection card =======================================
 // Display decisions live in utils/conciseProjection (missing / empty /
 // all-unpriced / amount) so the state machine is unit-tested without
-// mounting the page. The figure is a per-1M-output-token unit rate
-// (traffic-weighted output price x coefficient), so it stays meaningful on
-// a lightly-used instance instead of reading as cents per month. No
+// mounting the page. The figures are the window's period totals — priced
+// output spend and priced output tokens, each scaled by the coefficient —
+// so they visibly move with the selected time range and account. No
 // traffic / all-unpriced windows render an em-dash plus an explanatory
 // note rather than a ¥0.00 figure.
 const projectionState = computed(() => projectionDisplay(projection.value))
 
-const projectionValue = computed(() => {
+const projectionCost = computed(() => {
   const d = projectionState.value
-  return d.kind === 'amount' ? `¥${formatMicros(d.micros, 2)}` : '—'
+  return d.kind === 'amount' ? `¥${formatMicros(d.costMicros, 2)}` : '—'
 })
 
-// coverageRate = priced requests / requests with output traffic in the
-// window; '—' until the projection lands or when there is nothing to cover.
+const projectionTokens = computed(() => {
+  const d = projectionState.value
+  return d.kind === 'amount' ? formatNumber(d.savedTokens) : '—'
+})
+
+// coverageRate = priced output tokens / all output tokens in the window;
+// '—' until the projection lands or when there is nothing to cover.
 const coverageRate = computed(() => {
   const ratio = coverageRatio(projection.value)
   return ratio === null ? '—' : formatRate(ratio)
 })
 
-// Card footnote: the pricing basis once a figure exists, the empty /
-// all-unpriced explanation when it does not.
+// Card footnote: the estimate's basis once figures exist, the empty /
+// all-unpriced explanation when they do not.
 const projectionNote = computed(() => {
   switch (projectionState.value.kind) {
     case 'missing':
@@ -428,12 +446,8 @@ const projectionNote = computed(() => {
       return t('costOptimization.projectionEmpty')
     case 'unpriced-all':
       return t('costOptimization.projectionUnpricedAll')
-    default: {
-      let note = t('costOptimization.projectionFootnote')
-      const p = projection.value
-      if (p && p.priced_rows < p.output_rows) note += ` · ${t('costOptimization.projectionUnpriced')}`
-      return note
-    }
+    default:
+      return t('costOptimization.projectionFootnote')
   }
 })
 
@@ -615,6 +629,29 @@ const skipReasonColumns = computed<DataTableColumns<CompressSkipReasonRow>>(() =
 
 .group-head {
   justify-content: space-between;
+}
+
+.group-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The basis tag marks the compress card's figures as estimates (our own
+   counterfactual), in contrast to the bill-backed verified cache figures on
+   the dashboard. Distinct from .status-pill, which reports a switch's on/off
+   state. */
+.basis-tag {
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  padding: 0 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.basis-tag--estimate {
+  color: var(--color-warning, #f0a020);
+  background: color-mix(in srgb, var(--color-warning, #f0a020) 14%, transparent);
 }
 
 .group-metrics {

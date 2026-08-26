@@ -91,6 +91,14 @@ export interface AttemptRecord {
 // lives on disk instead — see has_stream_body / stream_body_path below).
 export interface RequestLogDetail extends RequestLogRow {
   attempts_detail: AttemptRecord[]
+  // Price snapshot: the four unit prices (per million tokens) this row was
+  // actually billed with, captured at settlement. All four are null together
+  // on rows that predate the snapshot or whose cost could not be priced —
+  // rendered as "no snapshot", never as zeros.
+  settled_input_price: number | null
+  settled_output_price: number | null
+  settled_cache_write_price: number | null
+  settled_cache_read_price: number | null
   // upstream_url is the full URL the gateway dispatched to for the final
   // attempt (e.g. https://api.openai.com/v1/chat/completions); '' when not
   // recorded (pre-migration row or a request rejected pre-relay).

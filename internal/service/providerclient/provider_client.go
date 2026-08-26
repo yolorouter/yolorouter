@@ -24,6 +24,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/protocols"
+	"github.com/yolorouter/yolorouter/internal/protocols/responses"
 	"github.com/yolorouter/yolorouter/internal/service/safehttp"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
@@ -44,11 +45,12 @@ const (
 	TestUnreachable
 	TestUpstreamError
 	// TestVerificationUnsupported marks a destination whose protocol has no
-	// real success-body validator yet (gemini/responses — see
-	// isParseableJSONObjectWithoutError's comment): a 2xx response from that
-	// destination cannot be certified as a genuine pass, so this outcome is
-	// returned instead of TestSuccess. classifyTestResult never lets this
-	// outcome mark a key passed/enabled, unlike a real TestSuccess.
+	// real success-body validator yet (probeSpec.successCertifiable false —
+	// no current protocol, kept for protocols added before their validator
+	// is written): a 2xx response from that destination cannot be certified
+	// as a genuine pass, so this outcome is returned instead of TestSuccess.
+	// classifyTestResult never lets this outcome mark a key passed/enabled,
+	// unlike a real TestSuccess.
 	TestVerificationUnsupported
 	// TestTimeout marks a destination that accepted the connection but did
 	// not answer within providerClientTimeout. It is deliberately separate
@@ -234,6 +236,43 @@ type claudeSuccessBody struct {
 	Content []struct {
 		Type string `json:"type"`
 	} `json:"content"`
+}
+
+// geminiSuccessBody and responsesSuccessBody are the minimal shapes the
+// credential test certifies against. They deliberately stay independent of
+// the runtime response decoders, which are lenient by design (they serve
+// partial or error-carrying 200 bodies so billing and passthrough keep
+// working); certification needs the stricter question "did the model
+// actually generate output for this credential" — a placeholder element
+// (null, {}) must not count as generated output, so the elements carry just
+// enough fields to recognize real content. Error is a pointer so an
+// explicit "error": null (which both APIs emit on success) decodes to nil
+// rather than counting as an error.
+type geminiSuccessBody struct {
+	Error      *struct{} `json:"error"`
+	Candidates []struct {
+		Content *struct {
+			Parts []struct {
+				Text         string `json:"text"`
+				FunctionCall *struct {
+					Name string `json:"name"`
+				} `json:"functionCall"`
+			} `json:"parts"`
+		} `json:"content"`
+	} `json:"candidates"`
+}
+
+type responsesSuccessBody struct {
+	Error  *struct{} `json:"error"`
+	Status string    `json:"status"`
+	Output []struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Refusal string `json:"refusal"`
+		} `json:"content"`
+	} `json:"output"`
 }
 
 // providerTestURL builds the connection-test endpoint URL using the exact
@@ -906,13 +945,86 @@ func isValidClaudeSuccessBody(body []byte) bool {
 	return success.Type == "message" && len(success.Content) > 0
 }
 
-// isParseableJSONObjectWithoutError is the basic gemini/responses success
-// check: the body must parse as a JSON object and carry no top-level
-// "error" field. It intentionally does not validate any deeper structure —
-// see isValidSuccessBody's comment. Still used directly by
-// TestFunctionCalling's non-openai 200 path (tool-call body classification
-// for these protocols remains a separate, still-deferred concern from
-// TestChatCompletion's TestVerificationUnsupported classification above).
+// isValidGeminiSuccessBody requires a generateContent success shape: no
+// top-level error, and at least one candidate whose content carries a part
+// the runtime decoder actually delivers (non-empty text, or a functionCall
+// with a name) — proof the model generated something this gateway can relay.
+// Candidates without content (e.g. a safety block reported inside a 200),
+// placeholder parts (null, {}, empty nested objects) and media-only parts
+// (inlineData, which the runtime decoder does not deliver) do not certify.
+func isValidGeminiSuccessBody(body []byte) bool {
+	var parsed geminiSuccessBody
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	if parsed.Error != nil {
+		return false
+	}
+	for _, cand := range parsed.Candidates {
+		if cand.Content == nil {
+			continue
+		}
+		for _, part := range cand.Content.Parts {
+			if part.Text != "" {
+				return true
+			}
+			if part.FunctionCall != nil && part.FunctionCall.Name != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isValidResponsesSuccessBody requires an OpenAI Responses API success
+// shape: no non-null top-level error, a status the runtime decoders would
+// serve (responses.StatusIsNonServed is the single shared blacklist —
+// compatible relays may omit status entirely, and an absent or unknown
+// value must not fail a body that carries real output), and a "message"
+// output item with non-empty content. Reasoning-only, placeholder (null,
+// {}) and empty-message items do not certify. The probe never requests a
+// background run, so requiring a delivered message is safe —
+// queued/in_progress bodies without one do not certify a credential.
+func isValidResponsesSuccessBody(body []byte) bool {
+	var parsed responsesSuccessBody
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	if parsed.Error != nil {
+		return false
+	}
+	if responses.StatusIsNonServed(parsed.Status) {
+		return false
+	}
+	for _, item := range parsed.Output {
+		if item.Type != "message" {
+			continue
+		}
+		// Only the content types the runtime decoder reads count as delivered
+		// output; a placeholder element (null, {}) or an unknown type proves
+		// nothing about the credential.
+		for _, part := range item.Content {
+			switch part.Type {
+			case "output_text":
+				if part.Text != "" {
+					return true
+				}
+			case "refusal":
+				if part.Refusal != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// isParseableJSONObjectWithoutError is the leniency check kept for the
+// probe paths whose body shapes are still unmodelled: the body must parse
+// as a JSON object and carry no top-level "error" field, nothing deeper.
+// Used by the claude/gemini/responses tool-call classification (their
+// tool-call body shapes remain a deferred concern; the basic credential
+// test now has real per-protocol success validators).
 func isParseableJSONObjectWithoutError(body []byte) bool {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(body, &obj); err != nil {

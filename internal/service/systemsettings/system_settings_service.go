@@ -145,6 +145,16 @@ func (s *SystemSettingsService) readCached(
 	}
 	// singleflight collapses concurrent refreshes into one DB query per key.
 	v, err, _ := s.refreshGroup.Do(key, func() (interface{}, error) {
+		// Re-check freshness inside the group. singleflight only collapses
+		// Do calls that overlap in time: a goroutine that saw a cold cache,
+		// was descheduled while another caller's refresh ran to completion,
+		// and reached Do afterwards leads a whole second refresh — correct
+		// result, one redundant query. Leadership is handed to a straggler
+		// only after the previous leader's closure (including its publish)
+		// fully returned, so this check reliably sees that publish.
+		if v, ver, ok := s.cachedEntry(entry); ok {
+			return cacheSnapshot{value: v, version: ver}, nil
+		}
 		return s.refreshEntry(ctx, entry, reader)
 	})
 	if err != nil {

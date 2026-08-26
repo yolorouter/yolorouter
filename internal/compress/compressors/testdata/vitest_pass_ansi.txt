@@ -1,0 +1,9 @@
+ [36mRUN[39m [90mv1.6.0[39m /home/user/proj
+
+ [32m✓[39m src/utils/money.test.ts > formatMicros > rounds to 2 decimals [2m3ms[22m
+ [32m✓[39m src/utils/money.test.ts > formatMicros > keeps the negative sign [2m1ms[22m
+ [32m✓[39m src/api/client.test.ts > apiFetch > unwraps the envelope [2m9ms[22m
+
+ [2mTest Files[22m  [1m[32m2 passed[39m[22m (2)
+      [2mTests[22m  [1m[32m3 passed[39m[22m (3)
+   [2mDuration[22m  0.41s

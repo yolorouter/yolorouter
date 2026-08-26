@@ -124,6 +124,9 @@ export default {
   fieldCacheWriteTokens: '缓存写入 Token',
   fieldCacheReadTokens: '缓存读取 Token',
   fieldCost: '最终成本',
+  fieldSettledPrices: '结算价目',
+  settledPriceValues: '输入 {input} / 输出 {output} / 缓存写 {write} / 缓存读 {read} · 元 / 百万 token',
+  settledPricesNone: '无快照',
   fieldRequestEndpoint: '请求 Endpoint',
   fieldUpstreamEndpoint: '上游 Endpoint',
 

@@ -139,9 +139,9 @@ func TestAggregatePricedOutputVolumeRoundsOnce(t *testing.T) {
 
 // TestAggregatePricedOutputVolumeKeepsExactSpend pins that the unrounded
 // total survives alongside the rounded one: a window holding a few sub-micro
-// tokens rounds to 0 micros, and the per-million rate divides by the token
-// count, so dropping the exact figure would collapse a real unit rate to
-// zero on a lightly-used instance.
+// tokens rounds to 0 micros, and the projected saved cost scales the spend
+// by the savings coefficient, so dropping the exact figure would round real
+// sub-micro spend away before it is scaled.
 func TestAggregatePricedOutputVolumeKeepsExactSpend(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	seedConciseModel(t, db, "m-cheap", 1, 0.4)
