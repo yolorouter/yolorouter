@@ -128,6 +128,11 @@ export interface OverviewRow {
   unknown_cost_calls: number
   input_tokens: number
   output_tokens: number
+  // Cache token sums for the same window; input_tokens is the uncached
+  // component (the three counts are mutually exclusive), so the
+  // token-weighted hit rate is read ÷ (read + write + input).
+  cache_write_tokens: number
+  cache_read_tokens: number
   cost_micros: number
   // Cache economics for the window. Net cache saving is
   // cache_read_saved_micros − cache_write_extra_micros; both non-negative.

@@ -1,7 +1,8 @@
 <!-- frontend/src/components/costs/BreakdownTable.vue
      Dimension breakdown table for the per-entity cost detail pages. Renders
      one row per model / provider / caller bucket with the shared metric
-     columns (calls, success rate, tokens or avg duration, cost, unknown cost).
+     columns (calls, success rate, tokens or avg duration, cache hit rate,
+     cache net saving, cost, unknown cost).
 
      Presentation-only: clicking a dimension row emits `select` with the row's
      entity identity; the PARENT page owns router.push so routing lives in one
@@ -13,7 +14,7 @@
     :columns="columns"
     :data="dataRows"
     :loading="loading"
-    :scroll-x="1200"
+    :scroll-x="1600"
     :row-key="rowKey"
   >
     <template #empty>
@@ -33,6 +34,8 @@ import ResponsiveDataTable from '../common/ResponsiveDataTable.vue'
 import { columnTitle } from '../../utils/columnTitle'
 import {
   avgDurationColumn,
+  cacheHitRateColumn,
+  cacheNetSavedColumn,
   callsColumn,
   costColumn,
   successRateColumn,
@@ -159,17 +162,22 @@ const columns = computed<DataTableColumns<BreakdownRow>>(() => {
   }
 
   // Per-dimension column sets mirror AnalyticsPage:
-  //   provider → [dim, calls, successRate, avgDuration, cost, unknownCost]
+  //   provider → [dim, calls, successRate, avgDuration, cacheHitRate,
+  //               cacheNetSaved, cost, unknownCost]
   //   model/caller → [dim, calls, successRate, input, output, cacheWrite,
-  //                    cacheRead, cost, unknownCost]
-  // Provider rows carry no token fields, so the four token columns are
-  // omitted for that dimension (and avgDuration takes their slot).
+  //                    cacheRead, cacheHitRate, cacheNetSaved, cost,
+  //                    unknownCost]
+  // The four token-count columns are omitted for the provider dimension
+  // (avgDuration takes their slot) to keep that table compact; the two cache
+  // economics columns stay, since provider rows carry the sums they need.
   if (isProvider) {
     return [
       dimCol,
       asBreakdownCol(callsColumn<ProviderReportRow>(t)),
       asBreakdownCol(successRateColumn<ProviderReportRow>(t)),
       asBreakdownCol(avgDurationColumn<ProviderReportRow>(t)),
+      asBreakdownCol(cacheHitRateColumn<ProviderReportRow>(t)),
+      asBreakdownCol(cacheNetSavedColumn<ProviderReportRow>(t)),
       asBreakdownCol(costColumn<ProviderReportRow>(t)),
       asBreakdownCol(unknownCostColumn<ProviderReportRow>(t)),
     ]
@@ -182,6 +190,8 @@ const columns = computed<DataTableColumns<BreakdownRow>>(() => {
     asBreakdownCol(tokenColumn<ModelReportRow>(t, 'output_tokens', 'outputTokensColumn')),
     asBreakdownCol(tokenColumn<ModelReportRow>(t, 'cache_write_tokens', 'cacheWriteTokensColumn', 150)),
     asBreakdownCol(tokenColumn<ModelReportRow>(t, 'cache_read_tokens', 'cacheReadTokensColumn', 150)),
+    asBreakdownCol(cacheHitRateColumn<ModelReportRow>(t)),
+    asBreakdownCol(cacheNetSavedColumn<ModelReportRow>(t)),
     asBreakdownCol(costColumn<ModelReportRow>(t)),
     asBreakdownCol(unknownCostColumn<ModelReportRow>(t)),
   ]

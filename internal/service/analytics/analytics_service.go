@@ -133,7 +133,13 @@ type OverviewRow struct {
 	UnknownCostCalls int64   `json:"unknown_cost_calls"`
 	InputTokens      int64   `json:"input_tokens"`
 	OutputTokens     int64   `json:"output_tokens"`
-	CostMicros       int64   `json:"cost_micros"`
+	// Cache token sums for the same window, so clients can derive the
+	// token-weighted hit rate — read ÷ (read + write + input) — without a
+	// second aggregate call. input_tokens is the uncached component here:
+	// the recorder stores the three token counts mutually exclusively.
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CostMicros       int64 `json:"cost_micros"`
 	// Cache economics for the filtered window. Net saving is
 	// CacheReadSavedMicros − CacheWriteExtraMicros; both are sent so the client
 	// can show the read saving and the write premium as separate line items.
@@ -221,6 +227,8 @@ func (s *AnalyticsService) GetOverview(filter *repository.RequestLogFilter, opts
 		UnknownCostCalls:      m.UnknownCostCalls,
 		InputTokens:           m.InputTokens,
 		OutputTokens:          m.OutputTokens,
+		CacheWriteTokens:      m.CacheWriteTokens,
+		CacheReadTokens:       m.CacheReadTokens,
 		CostMicros:            m.KnownCostMicros,
 		CacheReadSavedMicros:  m.CacheReadSavedMicros,
 		CacheWriteExtraMicros: m.CacheWriteExtraMicros,

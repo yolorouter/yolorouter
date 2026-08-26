@@ -11,6 +11,7 @@
 // "major unit <-> micros".
 
 import type { OverviewRow } from '../api/analytics'
+import { cacheNetMicros } from './cacheEcon'
 
 // One major unit = 1e6 micro-units, i.e. 6 decimal places of precision.
 export const MICROS_PER_UNIT = 1_000_000
@@ -54,8 +55,9 @@ export function formatSignedYuan(micros: number, precision = 2): string {
   return s.startsWith('-') ? `-¥${s.slice(1)}` : `¥${s}`
 }
 
-// netCacheSavedMicros = cache-read savings minus cache-write extra (negative
-// only when writes exceed reads). Shared by the cost overview cards.
+// netCacheSavedMicros is the OverviewRow-shaped convenience over the shared
+// net-saving formula (cacheNetMicros) — one formula, two entry points, so the
+// card surfaces and the report columns cannot drift.
 export function netCacheSavedMicros(ov: OverviewRow | null | undefined): number {
-  return (ov?.cache_read_saved_micros ?? 0) - (ov?.cache_write_extra_micros ?? 0)
+  return cacheNetMicros(ov?.cache_read_saved_micros ?? 0, ov?.cache_write_extra_micros ?? 0)
 }

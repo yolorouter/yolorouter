@@ -103,6 +103,8 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 		r.StatusCode = 200
 		r.InputTokens = 100
 		r.OutputTokens = 50
+		r.CacheWriteTokens = 30
+		r.CacheReadTokens = 40
 		r.CostMicros = 10
 		r.CostKnown = true
 		r.DurationMs = 500
@@ -112,6 +114,7 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 		r.StatusCode = 200
 		r.InputTokens = 200
 		r.OutputTokens = 100
+		r.CacheReadTokens = 60
 		r.CostMicros = 20
 		r.CostKnown = true
 		r.DurationMs = 600
@@ -173,6 +176,18 @@ func TestGetAnalyticsOverviewAggregatesSeededRows(t *testing.T) {
 	}
 	if data.UnknownCostCalls != 2 {
 		t.Fatalf("UnknownCostCalls = %d, want 2 (r3 + r4)", data.UnknownCostCalls)
+	}
+	// Cache token sums ride on the overview so clients can derive the
+	// token-weighted hit rate for the same filtered window.
+	if data.CacheWriteTokens != 30 || data.CacheReadTokens != 100 {
+		t.Fatalf("cache tokens = %d/%d, want 30/100", data.CacheWriteTokens, data.CacheReadTokens)
+	}
+	// Pin the wire-level key names too: decoding into the shared Go struct
+	// above stays green even if both json tags were renamed or swapped
+	// together, and the frontend reads these exact keys.
+	body := w.Body.String()
+	if !strings.Contains(body, `"cache_write_tokens":30`) || !strings.Contains(body, `"cache_read_tokens":100`) {
+		t.Fatalf("overview wire keys missing or mismatched, body: %s", body)
 	}
 }
 
