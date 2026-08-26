@@ -129,7 +129,13 @@ func InjectCustomSystemPromptOnly(body []byte, customPrompt string) []byte {
 	if JSONHasTrailingContent(dec) {
 		return body
 	}
-	injectCustomSystemPromptClaude(m, customPrompt)
+	// A skipped injection (malformed system field) must return the ORIGINAL
+	// bytes: re-encoding would shuffle key order and whitespace on a body this
+	// call chose to preserve, and a caller comparing bytes would read that
+	// cosmetic rewrite as an injection that never happened.
+	if !injectCustomSystemPromptClaude(m, customPrompt) {
+		return body
+	}
 	result, err := json.Marshal(m)
 	if err != nil {
 		return body
@@ -409,20 +415,26 @@ func countCacheControls(m map[string]interface{}) int {
 }
 
 // injectCustomSystemPromptClaude appends the custom system prompt to the body's
-// system field.
+// system field, and reports whether it actually did.
 // Must be called before injectCacheControl (within the same parse/marshal pass,
 // see OptimizeBody/InjectCacheControl) so that the appended text can participate
 // in deciding which is "the current last system block" for cache_control.
 // Always converges to array form and drops the plain-string branch, so callers
 // don't depend on injectCacheControl's implicit string-to-array normalization.
-func injectCustomSystemPromptClaude(m map[string]interface{}, customPrompt string) {
+//
+// The return value matters to a caller whose only job is the injection: when a
+// malformed system field makes it skip, re-encoding the body anyway would
+// rewrite key order and whitespace on a request this function decided to
+// preserve — a cosmetic rewrite that reads as a change to anything comparing
+// bytes.
+func injectCustomSystemPromptClaude(m map[string]interface{}, customPrompt string) bool {
 	block := map[string]interface{}{"type": "text", "text": customPrompt}
 
 	sysVal, exists := m["system"]
 	if !exists {
 		// system field is entirely absent (a Claude request may omit it): create it.
 		m["system"] = []interface{}{block}
-		return
+		return true
 	}
 	switch s := sysVal.(type) {
 	case string:
@@ -437,8 +449,10 @@ func injectCustomSystemPromptClaude(m map[string]interface{}, customPrompt strin
 				block,
 			}
 		}
+		return true
 	case []interface{}:
 		m["system"] = append(s, block)
+		return true
 	default:
 		// system is present but has an unexpected type (object/number/bool/null,
 		// typically a malformed request): don't overwrite the client's original
@@ -446,5 +460,6 @@ func injectCustomSystemPromptClaude(m map[string]interface{}, customPrompt strin
 		// preserve semantics of the chat/responses/gemini branches on the relay
 		// side. injectCacheControl also only handles system in string/array form,
 		// so it won't touch this malformed value either.
+		return false
 	}
 }
