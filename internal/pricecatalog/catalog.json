@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-08-24",
+  "updated_at": "2026-08-25",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
@@ -488,6 +488,12 @@
       }
     },
     "dashscope.aliyuncs.com": {
+      "qwen3.8-max-prime": {
+        "input": 24,
+        "output": 72,
+        "cacheWrite": null,
+        "cacheRead": null
+      },
       "qwen3.8-max": {
         "input": 12,
         "output": 36,
