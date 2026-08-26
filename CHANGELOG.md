@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-26
+
 ### Added
+
+- Request logs capture the exact prices each request was settled at
+  (input / output / cache read / cache write, migration 00033), and the
+  log detail page shows the snapshot — historical costs stay auditable
+  after catalog price changes.
+
+- The dashboard gains an admin-only verified cache economics row for the
+  selected window: hit rate, net saving, read saving and write premium,
+  computed only over providers whose traffic and pricing actually support
+  caching, with a disclosure of the providers excluded for missing cache
+  metering or prices (new `/api/analytics/cache-stats`; partial indexes in
+  migration 00034, created concurrently on PostgreSQL).
+
+- Cache hit rate and net cache saving appear as columns in every analytics
+  report dimension and in the cost drilldown tables; CSV exports append the
+  two settled amounts after the existing columns. A shared net-saving card
+  joins the analytics overview row and the cost pages' overview rows, and
+  every cache figure renders an em-dash — never a fabricated 0% or ¥0.00 —
+  until the window has actually recorded cache metering.
+
+- Terminal output compression covers more runners: pytest, vitest / jest
+  and npm / pnpm install logs fold their passing checks and noise lines
+  into count markers while failures, errors and summaries stay verbatim,
+  and the go test / pytest fold markers now carry the slowest folded
+  duration.
 
 - The setup administrator can edit any other account's display name and
   email from the Users page (both were write-once: set at creation or
@@ -16,11 +43,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The cost optimization page's Concise Output card now reports the
+  period's total saved cost and output tokens for the selected window
+  (previously a per-million-token projection).
 - The New Model dialog now defaults the scheduling mode to Balanced
   (spread by caller key) each time it opens. Failover is still selectable,
   and the API default for requests that omit the field stays `failover`.
 - The Zhipu GLM preset group in the New Model dialog now lists `glm-5.3`
   and `glm-5-turbo` first; all previously listed models remain selectable.
+
+### Fixed
+
+- Provider key tests over the Gemini and Responses protocols now certify
+  a key only against a real success body: an upstream answering 200 with
+  a placeholder or empty response no longer marks the key as verified.
+  Results recorded before this change may show a prompt to re-test.
 
 ## [0.1.8] - 2026-08-25
 
@@ -485,7 +522,8 @@ failover, and observe usage and cost.
 - Single binary with the web console embedded via `go:embed`; SQLite or PostgreSQL storage; upstream keys encrypted at rest (AES-256).
 - Self-update via the `update` command and update-check API.
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/yolorouter/yolorouter/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/yolorouter/yolorouter/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/yolorouter/yolorouter/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/yolorouter/yolorouter/compare/v0.1.5...v0.1.6
