@@ -85,6 +85,7 @@
       :base-url="provider.base_url"
       :provider-type="provider.provider_type"
       :destination-count="destinationCount"
+      :protocol-endpoints="provider.protocol_endpoints"
       @saved="reload"
     />
     <KeyEditModal
@@ -93,6 +94,7 @@
       :base-url="provider.base_url"
       :provider-type="provider.provider_type"
       :destination-count="destinationCount"
+      :protocol-endpoints="provider.protocol_endpoints"
       :editing-key="editingKey"
       @saved="onKeySaved"
     />
@@ -114,12 +116,13 @@ import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStat
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
 import { providerDisableCopy } from '../../utils/impactSummary'
-import type { BatchTestResult, Provider, ProviderKey } from '../../api/providers'
+import type { BatchTestResult, KeyTestTarget, Provider, ProviderKey } from '../../api/providers'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import KeyEditModal from '../../components/providers/KeyEditModal.vue'
 import ImportModelsModal from '../../components/models/ImportModelsModal.vue'
 import ProviderEditModal from '../../components/providers/ProviderEditModal.vue'
+import KeyTestTargetsTag from '../../components/providers/KeyTestTargetsTag.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
@@ -127,6 +130,7 @@ import { candidateTestResultText } from '../../utils/modelStatusDisplay'
 import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
 import { isTestSuccess, testOutcomeI18nKey, testOutcomeLabel, TEST_OUTCOME_MODEL_NOT_FOUND, TEST_OUTCOME_UPSTREAM_ERROR } from '../../utils/testOutcomeDisplay'
 import { hintTag } from '../../utils/hintTag'
+import { hasKeyTestBreakdown, passedBreakdownVisible } from '../../utils/keyTestTargets'
 import { verificationDestinationCount } from '../../utils/providerProtocol'
 import { isKeyUsable } from '../../utils/providerStatusDisplay'
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
@@ -239,31 +243,59 @@ function batchResultTagType(result: BatchTestResult): 'success' | 'warning' | 'e
 }
 
 // Some category hints are written for the test-connection dialog and direct
-// the operator at controls that only exist there (an expandable raw-error
-// panel, a "Fetch models" button); those categories get row-specific copy
-// instead. Keyed by outcome int, not by derived i18n key — the key lookup
-// falls back for unknown values and would silently extend an override to
-// categories it was never written for.
-const ROW_HINT_OVERRIDES: Record<number, string> = {
+// the operator at controls that only exist there; those categories get
+// row-specific copy instead. Both maps are keyed by outcome int, not by
+// derived i18n key — the key lookup falls back for unknown values and would
+// silently extend an override to categories it was never written for. They
+// are split by WHY the dialog copy fails on a row, because the reasons stop
+// applying under different conditions:
+//
+// The dialog hint points at the dialog's expandable raw-error panel. A row
+// whose breakdown is one click away has the equivalent, so the override is
+// only needed when the row carries no breakdown.
+const NO_PANEL_HINT_OVERRIDES: Record<number, string> = {
   [TEST_OUTCOME_UPSTREAM_ERROR]: 'providers.outcomeUpstreamError_rowHint',
+}
+// The dialog hint points at a control that exists only in the key dialog
+// (the "Fetch models" button). No amount of breakdown gives the row that
+// control, so the override always applies.
+const MISSING_CONTROL_HINT_OVERRIDES: Record<number, string> = {
   [TEST_OUTCOME_MODEL_NOT_FOUND]: 'providers.outcomeModelNotFound_rowHint',
+}
+
+// Shorthand for the disclosure-tag component so the render sites below stay
+// one call wide. The component owns the open/closed state (aria-expanded) and
+// the lazily built rows.
+function testTargetsTag(
+  text: string,
+  type: 'success' | 'warning' | 'error',
+  hint: string,
+  targets: KeyTestTarget[] | null | undefined,
+) {
+  return h(KeyTestTargetsTag, { text, type, hint, targets: targets ?? null })
 }
 
 // The stored outcome category of the key's last test, rendered so the
 // specific failure ("rate limited" vs "unreachable" vs "quota unavailable")
-// survives a page reload instead of living only in a transient toast. A
-// successful last test adds nothing the Passed verification tag doesn't
-// already say, so only non-success categories get a tag. A needs_reentry key
-// shows nothing either: its stored result was authorized against a
-// superseded destination and presenting it as current would mislead.
+// survives a page reload instead of living only in a transient toast. Only
+// non-success categories get a tag here — a passed run surfaces its
+// breakdown on the verification tag itself (passedVerificationTag above). A
+// needs_reentry key shows nothing either: its stored result was authorized
+// against a superseded destination and presenting it as current would
+// mislead.
 function lastTestResultTag(row: ProviderKey) {
   if (row.last_test_result === null || isTestSuccess(row.last_test_result) || row.needs_reentry) return null
   const label = testOutcomeLabel(t, row.last_test_result)
-  const hintKey = ROW_HINT_OVERRIDES[row.last_test_result] ?? `providers.${testOutcomeI18nKey(row.last_test_result)}_hint`
+  const hasBreakdown = hasKeyTestBreakdown(row.last_test_targets)
+  const baseHintKey = `providers.${testOutcomeI18nKey(row.last_test_result)}_hint`
+  const hintKey =
+    MISSING_CONTROL_HINT_OVERRIDES[row.last_test_result] ??
+    (hasBreakdown ? baseHintKey : NO_PANEL_HINT_OVERRIDES[row.last_test_result] ?? baseHintKey)
   // Gated on te(): a future category without a hint must degrade to the bare
   // label, not read its raw message key to a screen reader.
   const hint = te(hintKey) ? t(hintKey) : ''
-  return hintTag({ text: label, type: 'warning', hint })
+  if (!hasBreakdown) return hintTag({ text: label, type: 'warning', hint })
+  return testTargetsTag(label, 'warning', hint, row.last_test_targets)
 }
 
 onMounted(async () => {
@@ -553,8 +585,19 @@ function verificationTagType(status: number): 'success' | 'error' | 'default' {
   return 'default'
 }
 
-// A real NDataTable with defined columns (matching the reference
-// project's ApiKeysPage.vue convention) rather than a hand-rolled list of
+// A passed key's breakdown entry. Failures carry their own clickable result
+// tag, but a key whose last run passed shows only the verification tag — so
+// that tag itself opens the per-protocol panel when the run recorded one,
+// letting an operator see that every configured destination passed, not just
+// the aggregate. Returns null when the stored run no longer speaks for the
+// key (see passedBreakdownVisible), and the caller keeps the plain tag.
+function passedVerificationTag(row: ProviderKey) {
+  if (!passedBreakdownVisible(row)) return null
+  // Type is fixed at 'success': the predicate requires verification passed.
+  return testTargetsTag(verificationLabel(row.verification_status), 'success', '', row.last_test_targets)
+}
+
+// A real NDataTable with defined columns rather than a hand-rolled list of
 // flex rows — kept as a computed so the columns re-render when the active
 // locale or batchResultByKeyId changes.
 const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
@@ -576,11 +619,12 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
     minWidth: 220,
     render: (row) => {
       const tags = [
-        h(
-          NTag,
-          { size: 'small', bordered: false, type: verificationTagType(row.verification_status) },
-          { default: () => verificationLabel(row.verification_status) },
-        ),
+        passedVerificationTag(row) ??
+          h(
+            NTag,
+            { size: 'small', bordered: false, type: verificationTagType(row.verification_status) },
+            { default: () => verificationLabel(row.verification_status) },
+          ),
       ]
       if (row.needs_reentry) {
         tags.push(
@@ -594,12 +638,21 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
         const stored = lastTestResultTag(row)
         if (stored) tags.push(stored)
       } else {
+        const tagType = batchResultTagType(batchResult)
         tags.push(
-          h(
-            NTag,
-            { type: batchResultTagType(batchResult), size: 'small', bordered: false },
-            { default: () => batchResultLabel(batchResult) },
-          ),
+          // The breakdown is read off the batch response rather than the
+          // reloaded key row: a probe whose write lost a CAS race still
+          // reported what each destination said, while the row it failed to
+          // update still describes an older run. Entries that probed nothing
+          // (needs_reentry, not_run) carry no targets and fail this check on
+          // their own.
+          hasKeyTestBreakdown(batchResult.last_test_targets)
+            ? testTargetsTag(batchResultLabel(batchResult), tagType, '', batchResult.last_test_targets)
+            : h(
+                NTag,
+                { type: tagType, size: 'small', bordered: false },
+                { default: () => batchResultLabel(batchResult) },
+              ),
         )
       }
       return h(NSpace, { size: 4 }, { default: () => tags })

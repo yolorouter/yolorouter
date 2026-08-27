@@ -18,7 +18,19 @@
     @after-leave="reset"
   >
     <template v-if="phase === 'select'">
-      <EmptyState v-if="loadError" :icon="AlertTriangle" :title="t('models.importFetchFailed')" />
+      <!-- Two different failures with two different fixes: no key to
+           authenticate with (enable one), or an upstream that refused (its own
+           words are shown verbatim below the category). -->
+      <EmptyState
+        v-if="loadFailure.kind !== 'none'"
+        :icon="AlertTriangle"
+        :title="loadFailure.title"
+        :description="loadFailure.description"
+      >
+        <template v-if="loadFailure.detail" #detail>
+          <pre class="upstream-detail">{{ loadFailure.detail }}</pre>
+        </template>
+      </EmptyState>
       <EmptyState v-else-if="!loading && rows.length === 0" :icon="Inbox" :title="t('models.importCatalogEmpty')" />
       <template v-else>
         <p class="import-hint">{{ t('models.importHint') }}</p>
@@ -73,6 +85,7 @@ import { listModelsForProvider } from '../../api/providers'
 import { importProviderModels, listProviderCandidates, suggestPrices, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
 import { displayMessage } from '../../api/client'
 import { buildImportRows, chunkByCap, IMPORT_BATCH_CAP, normalizeCatalogNames, toImportItems, type ImportRow } from '../../utils/importRows'
+import { catalogueFailure, NO_CATALOGUE_FAILURE, type CatalogueFailure } from '../../utils/catalogueFailure'
 import { candidateIsOwedWork, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress, type ImportProgress } from '../../utils/importProgress'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
 import ModalDrawer from '../common/ModalDrawer.vue'
@@ -97,7 +110,7 @@ const showModel = computed({
 })
 
 const loading = ref(false)
-const loadError = ref(false)
+const loadFailure = ref<CatalogueFailure>(NO_CATALOGUE_FAILURE)
 const importing = ref(false)
 const rows = ref<ImportRow[]>([])
 const checkedKeys = ref<Array<string | number>>([])
@@ -139,7 +152,7 @@ let loadGeneration = 0
 async function load() {
   const generation = ++loadGeneration
   loading.value = true
-  loadError.value = false
+  loadFailure.value = NO_CATALOGUE_FAILURE
   rows.value = []
   checkedKeys.value = []
   try {
@@ -148,8 +161,9 @@ async function load() {
       listProviderCandidates(props.providerId),
     ])
     if (generation !== loadGeneration) return
-    if (catalog.outcome !== 0) {
-      loadError.value = true
+    const failure = catalogueFailure(t, catalog)
+    if (failure.kind !== 'none') {
+      loadFailure.value = failure
       return
     }
     // Ids that could never be imported (blank, or over the public model-name
@@ -179,7 +193,8 @@ async function load() {
     // expiry is still a session expiry.
     if (redirectIfSessionExpired(err, router)) return
     if (generation !== loadGeneration) return
-    loadError.value = true
+    // The request itself failed, so there is no response to classify.
+    loadFailure.value = catalogueFailure(t, null)
     message.error(displayMessage(err, t))
   } finally {
     if (generation === loadGeneration) loading.value = false
@@ -198,7 +213,7 @@ function reset() {
   loadGeneration++
   rows.value = []
   checkedKeys.value = []
-  loadError.value = false
+  loadFailure.value = NO_CATALOGUE_FAILURE
   phase.value = 'select'
   importedIds.value = []
   progressRows.value = []

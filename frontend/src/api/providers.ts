@@ -3,6 +3,25 @@ import type { ModelImpactKey } from './models'
 import { BATCH_TEST_BUDGET_MS, SINGLE_PROBE_BUDGET_MS, keyTestBudgetMs } from './probeBudget'
 import { verificationDestinationCount } from '../utils/providerProtocol'
 
+// One protocol destination of a key verification run: verifying a key walks
+// the provider's primary protocol plus every additional protocol_endpoints
+// entry, and this is what each of those probes returned on its own. The
+// aggregate columns (last_test_result and friends) keep the worst of them, so
+// only the per-target rows can say WHICH protocol failed.
+export interface KeyTestTarget {
+  // Protocol id (openai / anthropic / gemini / responses). Typed as a plain
+  // string, not the ProtocolId union: it is stored upstream data, and a
+  // protocol added server-side must render as its raw id rather than break
+  // the parse.
+  proto: string
+  // Backend TestOutcome enum, same values as ProviderKey.last_test_result.
+  outcome: number
+  duration_ms: number
+  // Raw upstream diagnostic (HTTP status + the upstream's own message),
+  // truncated server-side. Empty when the probe passed or said nothing.
+  detail: string
+}
+
 export interface ProviderKey {
   id: number
   label: string
@@ -16,6 +35,11 @@ export interface ProviderKey {
   last_test_model: string
   last_test_duration_ms: number | null
   last_tested_at: string | null
+  // Per-destination results of the run behind last_test_result. Null for keys
+  // last tested before per-target results were recorded (and absent from a
+  // server that predates the field), which the UI degrades to the aggregate
+  // tag alone.
+  last_test_targets?: KeyTestTarget[] | null
 }
 
 export interface Provider {
@@ -41,6 +65,11 @@ export interface BatchTestResult {
   not_run: boolean
   outcome: number | null
   duration_ms: number
+  // This run's own per-destination results, in the key view's shape. Null for
+  // an entry that probed nothing (awaiting re-entry, or never reached), so it
+  // is the run's breakdown even when the verdict lost its write to a
+  // concurrent edit — unlike the key row, which such a run never updated.
+  last_test_targets?: KeyTestTarget[] | null
 }
 
 export interface CreateProviderInput {
@@ -78,18 +107,37 @@ export interface UpdateKeyInput {
 }
 
 export interface TestKeyResult {
+  // outcome/duration_ms/detail describe the WORST destination the preview
+  // probed, which for a single-destination candidate is simply that one.
   outcome: number
   duration_ms: number
-  // detail is a concise, admin-facing diagnostic string for a failed test
-  // (HTTP status + the upstream's own error message when present). Empty on
-  // success. Shown expandable in the setup UI to help tell a bad key from a
-  // wrong model from a blocked address.
+  // detail is the aggregate's own diagnostic (HTTP status + the upstream's
+  // error message when present; empty on success). The UI reads diagnostics
+  // from last_test_targets — the aggregate is always one of those rows — so
+  // this field is kept for API consumers, not rendered separately.
   detail: string
+  // Per-destination results of this preview, named as the key view names
+  // them so one projection reads both. Optional purely for type safety
+  // against an absent field; the bundled server always sends it.
+  last_test_targets?: KeyTestTarget[] | null
 }
 
-export interface ListModelsResult {
+// ModelCatalogueResult is what both catalogue endpoints answer with — the
+// stateless preview (by credential) and the by-id read for a stored provider.
+// outcome is null only alongside no_usable_key: the provider had no enabled,
+// current key, so nothing was ever asked of the upstream and there is no
+// verdict to report — not even the enum's zero value, which names success. A
+// preview always carries a credential, so it always reports an outcome.
+export interface ModelCatalogueResult {
   models: string[]
-  outcome: number
+  outcome: number | null
+  // detail is the upstream's own refusal text (HTTP status + message) when the
+  // catalogue could not be fetched, shown verbatim so an operator can tell a
+  // rejected credential from an endpoint the upstream does not serve. Empty on
+  // success, and optional so a response from a server that predates it reads
+  // as "no detail" rather than undefined.
+  detail?: string
+  no_usable_key?: boolean
 }
 
 export function listProviders(): Promise<{ list: Provider[] }> {
@@ -140,16 +188,29 @@ export function getProviderImpact(id: number): Promise<ProviderImpact> {
   return apiFetch(`/api/admin/providers/${id}/impact`)
 }
 
-// testKeyPreview checks a key against a single protocol — the selected
-// primary (providerType) — before the provider exists. It does NOT cover
-// any additional protocol_endpoints the create form may also configure;
-// the authoritative multi-endpoint verification happens on actual create
-// via each destination's own server-side test (verifyKeyAllDestinations).
-export function testKeyPreview(baseUrl: string, apiKey: string, model: string, providerType: string): Promise<TestKeyResult> {
+// testKeyPreview checks a key against every destination the candidate
+// provider declares — its primary protocol plus each additional
+// protocolEndpoints entry — before the provider exists, so a pass here means
+// the create that follows verifies the same destinations and passes too.
+// Passing no protocolEndpoints probes the primary protocol alone.
+//
+// The budget is sized off that same destination count, like createProvider's:
+// the server walks them one after another, and a browser waiting only for one
+// would abort a two-endpoint preview halfway through.
+export function testKeyPreview(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  providerType: string,
+  protocolEndpoints = '',
+): Promise<TestKeyResult> {
   return apiFetch('/api/admin/providers/test-key', {
     method: 'POST',
-    body: JSON.stringify({ base_url: baseUrl, api_key: apiKey, model, provider_type: providerType }),
-    timeoutMs: SINGLE_PROBE_BUDGET_MS,
+    body: JSON.stringify({
+      base_url: baseUrl, api_key: apiKey, model,
+      provider_type: providerType, protocol_endpoints: protocolEndpoints,
+    }),
+    timeoutMs: keyTestBudgetMs(verificationDestinationCount(providerType, protocolEndpoints)),
   })
 }
 
@@ -159,7 +220,11 @@ export function testKeyPreview(baseUrl: string, apiKey: string, model: string, p
 // (with an optional detail) means the catalogue could not be retrieved (bad
 // key, unreachable, or the upstream simply doesn't expose /v1/models), in
 // which case the caller falls back to manual model entry.
-export function listModelsPreview(baseUrl: string, apiKey: string, providerType: string): Promise<ListModelsResult> {
+export function listModelsPreview(
+  baseUrl: string,
+  apiKey: string,
+  providerType: string,
+): Promise<ModelCatalogueResult> {
   return apiFetch('/api/admin/providers/list-models', {
     method: 'POST',
     body: JSON.stringify({ base_url: baseUrl, api_key: apiKey, provider_type: providerType }),
@@ -170,9 +235,9 @@ export function listModelsPreview(baseUrl: string, apiKey: string, providerType:
 // listModelsForProvider fetches the upstream model catalogue for an already-
 // stored provider, using one of its server-side keys — the by-id counterpart
 // to listModelsPreview (which needs a plaintext key the candidate UI doesn't
-// hold). A non-success outcome (including "no usable key") returns an empty
-// list; the caller falls back to manual model entry.
-export function listModelsForProvider(id: number): Promise<ListModelsResult> {
+// hold). Any failure returns an empty list plus why it failed; the caller
+// names the reason and falls back to manual model entry.
+export function listModelsForProvider(id: number): Promise<ModelCatalogueResult> {
   return apiFetch(`/api/admin/providers/${id}/models`, { timeoutMs: SINGLE_PROBE_BUDGET_MS })
 }
 

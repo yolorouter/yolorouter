@@ -2222,7 +2222,7 @@ func TestTestKeyPreviewNeverPersists(t *testing.T) {
 	svc, db, client := newTestProviderService(t)
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 
-	result, err := svc.TestKeyPreview(context.Background(), "https://a.example.com", "sk-preview-only", "gpt-4o-mini", "")
+	result, _, err := svc.TestKeyPreview(context.Background(), "https://a.example.com", "sk-preview-only", "gpt-4o-mini", "", "")
 	if err != nil {
 		t.Fatalf("TestKeyPreview failed: %v", err)
 	}
@@ -2247,7 +2247,7 @@ func TestTestKeyPreviewThreadsProviderTypeToProtocol(t *testing.T) {
 	svc, _, client := newTestProviderService(t)
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 
-	if _, err := svc.TestKeyPreview(context.Background(), "https://api.anthropic.com", "sk-ant-preview", "claude-3-5-sonnet", "anthropic"); err != nil {
+	if _, _, err := svc.TestKeyPreview(context.Background(), "https://api.anthropic.com", "sk-ant-preview", "claude-3-5-sonnet", "anthropic", ""); err != nil {
 		t.Fatalf("TestKeyPreview failed: %v", err)
 	}
 	if client.LastProto != protocols.ProtocolClaude {
@@ -2929,12 +2929,17 @@ func TestVerifyKeyAllDestinationsPropagatesClientError(t *testing.T) {
 	}
 	client.Err = fmt.Errorf("too many concurrent provider test calls in flight")
 
-	result, err := svc.verifyKeyAllDestinations(context.Background(), provider, "sk-abcdefghijklmnopqrstuvwxyz1234", "gpt-4o-mini")
+	result, perTarget, err := svc.verifyKeyAllDestinations(context.Background(), provider, "sk-abcdefghijklmnopqrstuvwxyz1234", "gpt-4o-mini")
 	if err == nil {
 		t.Fatalf("expected the client's error to propagate")
 	}
 	if result != (providerclient.TestResult{}) {
 		t.Fatalf("expected a zero-value providerclient.TestResult on error, got %+v", result)
+	}
+	// An aborted run judged nothing, so it must not hand back a partial
+	// breakdown that would later be stored as if it described the whole run.
+	if perTarget != nil {
+		t.Fatalf("expected no per-destination breakdown on error, got %+v", perTarget)
 	}
 }
 
@@ -3009,7 +3014,7 @@ func TestListModelsForProviderReturnsCatalogueForUsableKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModelsForProvider failed: %v", err)
 	}
-	if res.Outcome != providerclient.TestSuccess {
+	if res.Outcome == nil || *res.Outcome != providerclient.TestSuccess {
 		t.Fatalf("expected providerclient.TestSuccess, got %v", res.Outcome)
 	}
 	if len(res.Models) != 2 {
@@ -3038,8 +3043,20 @@ func TestListModelsForProviderFallsBackWhenNoUsableKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModelsForProvider failed: %v", err)
 	}
-	if res.Outcome != providerclient.TestAuthFailed {
-		t.Fatalf("expected providerclient.TestAuthFailed, got %v", res.Outcome)
+	if !res.NoUsableKey {
+		t.Fatalf("expected NoUsableKey when the provider's only key is disabled")
+	}
+	// No request left the process, so there is no upstream verdict to report —
+	// not even the zero value, which names success. Answering with a
+	// credential-test category (this used to be providerclient.TestAuthFailed,
+	// and before the outcome became a pointer, an embedded zero-value result
+	// reported a pass) blames the key and the address for a fetch that was
+	// never attempted.
+	if res.Outcome != nil {
+		t.Fatalf("expected no upstream verdict, got outcome %v", *res.Outcome)
+	}
+	if res.Detail != "" {
+		t.Fatalf("expected no upstream detail, got %q", res.Detail)
 	}
 	if len(res.Models) != 0 {
 		t.Fatalf("expected no models on fallback, got %v", res.Models)

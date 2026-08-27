@@ -206,6 +206,12 @@ type ProviderKeyView struct {
 	LastTestModel      string     `json:"last_test_model"`
 	LastTestDurationMs *int64     `json:"last_test_duration_ms"`
 	LastTestedAt       *time.Time `json:"last_tested_at"`
+	// LastTestTargets breaks the summarized result above down by
+	// destination, one entry per protocol the last run probed. null when the
+	// key has no breakdown recorded — never tested, or last tested by a build
+	// that predates it — which the UI renders exactly as it did before this
+	// field existed.
+	LastTestTargets []KeyTestTargetResult `json:"last_test_targets"`
 }
 
 type ProviderView struct {
@@ -230,6 +236,7 @@ func toKeyView(k model.ProviderKey, destinationVersion int) ProviderKeyView {
 		LastTestModel:      k.LastTestModel,
 		LastTestDurationMs: k.LastTestDurationMs,
 		LastTestedAt:       k.LastTestedAt,
+		LastTestTargets:    decodeKeyTestTargets(k.LastTestTargets),
 	}
 }
 
@@ -645,7 +652,18 @@ func verificationSeverity(r providerclient.TestResult) int {
 	return 1
 }
 
-// verifyKeyAllDestinations tests the plaintext credential against EVERY
+// verifyKeyAllDestinations tests a STORED provider's credential against every
+// destination that provider routes to. It is one of two entry points into
+// verifyTargets — the other, TestKeyPreview, resolves the same destinations
+// from an unsaved candidate's own configuration — and both resolve them the
+// same way, so what a preview probes is exactly what creating the provider
+// will verify.
+func (s *ProviderService) verifyKeyAllDestinations(ctx context.Context, provider *model.Provider, plaintext, testModel string) (providerclient.TestResult, []KeyTestTargetResult, error) {
+	targets := providerproto.VerificationTargets(provider.ProviderType, provider.ProtocolEndpoints, provider.BaseURL)
+	return s.verifyTargets(ctx, targets, plaintext, testModel)
+}
+
+// verifyTargets tests the plaintext credential against EVERY
 // routable destination (VerificationTargets) and returns an aggregate: the
 // MOST SEVERE per-destination result (ties broken by target order, primary
 // first). providerclient.TestSuccess only if every destination passed. A transport-level
@@ -655,6 +673,11 @@ func verificationSeverity(r providerclient.TestResult) int {
 // credential-destination isolation: a key is authorized only after proving it
 // works everywhere negotiation can route it.
 //
+// The second return is every destination's OWN result, in target order —
+// the material the aggregate throws away. It exists purely so the admin can
+// see which destination decided the verdict and what that upstream
+// answered; nothing about the gate reads it.
+//
 // Severity-ranked, NOT first-encountered-wins: on a RETEST of an
 // already-Passed key, a decisive failure at a SECONDARY destination (its
 // credential just got rejected) must not be masked by a weaker, inconclusive
@@ -662,16 +685,21 @@ func verificationSeverity(r providerclient.TestResult) int {
 // non-overwriting result and leave the key wrongly Passed/Enabled/routable to
 // the rejected destination. Picking the most severe result guarantees any
 // decisive failure anywhere demotes the key to Failed.
-func (s *ProviderService) verifyKeyAllDestinations(ctx context.Context, provider *model.Provider, plaintext, testModel string) (providerclient.TestResult, error) {
-	targets := providerproto.VerificationTargets(provider.ProviderType, provider.ProtocolEndpoints, provider.BaseURL)
-
+func (s *ProviderService) verifyTargets(ctx context.Context, targets []providerproto.VerificationTarget, plaintext, testModel string) (providerclient.TestResult, []KeyTestTargetResult, error) {
 	var chosen providerclient.TestResult
+	perTarget := make([]KeyTestTargetResult, 0, len(targets))
 	chosenSeverity := -1
 	for _, tgt := range targets {
 		result, err := s.client.TestChatCompletion(ctx, tgt.Proto, tgt.URL, plaintext, testModel)
 		if err != nil {
-			return providerclient.TestResult{}, err
+			return providerclient.TestResult{}, nil, err
 		}
+		perTarget = append(perTarget, KeyTestTargetResult{
+			Proto:      string(tgt.Proto),
+			Outcome:    int(result.Outcome),
+			DurationMs: result.DurationMs,
+			Detail:     result.Detail,
+		})
 		// Strictly greater keeps the FIRST result at each severity level
 		// (target order, primary first) and preserves its
 		// DurationMs/IsModelScoped. The single-target success case therefore
@@ -682,7 +710,7 @@ func (s *ProviderService) verifyKeyAllDestinations(ctx context.Context, provider
 			chosen = result
 		}
 	}
-	return chosen, nil
+	return chosen, perTarget, nil
 }
 
 // runNewPlaintextTestAndCommit is the shared "test first, then open the transaction" flow for any
@@ -703,14 +731,12 @@ func (s *ProviderService) verifyKeyAllDestinations(ctx context.Context, provider
 // CreateProviderKeyPendingTest/SwapProviderKeyPlaintext already forced
 // (untested, disabled) until a later attempt actually runs.
 func (s *ProviderService) runNewPlaintextTestAndCommit(ctx context.Context, provider *model.Provider, keyID uint, configVersion, testGeneration, snapshotVersion int, plaintext, testModel string, requestEnable bool, now time.Time) {
-	result, err := s.verifyKeyAllDestinations(ctx, provider, plaintext, testModel)
+	result, perTarget, err := s.verifyKeyAllDestinations(ctx, provider, plaintext, testModel)
 	if err != nil {
 		return
 	}
-	verificationStatus, overwrite, lastTestResult := classifyTestResult(result)
-
 	applied, commitErr := repository.CommitProviderKeyPlaintextTestResult(s.db, keyID, configVersion, testGeneration, snapshotVersion,
-		overwrite, verificationStatus, lastTestResult, testModel, result.DurationMs, now)
+		keyTestRecord(result, testModel, perTarget), now)
 	if commitErr != nil || !applied {
 		return // race or transient DB error — a later manual retest recovers; nothing more to do here.
 	}
@@ -730,6 +756,22 @@ func (s *ProviderService) runNewPlaintextTestAndCommit(ctx context.Context, prov
 	// no-op-with-CAS-miss outcome either way.
 	if result.Outcome == providerclient.TestSuccess && requestEnable {
 		_, _ = repository.CASProviderKeyManagementStatus(s.db, keyID, model.ProviderKeyStatusDisabled, model.ProviderKeyStatusEnabled, now)
+	}
+}
+
+// keyTestRecord turns one finished verification run into the write-back both
+// CAS commits take: the classification decision plus the measurements the run
+// itself produced. Every path that commits a run builds it here, so a new
+// path cannot record a run's aggregate while forgetting its breakdown.
+func keyTestRecord(result providerclient.TestResult, testModel string, perTarget []KeyTestTargetResult) repository.KeyTestRecord {
+	verificationStatus, overwrite, lastTestResult := classifyTestResult(result)
+	return repository.KeyTestRecord{
+		OverwriteVerification: overwrite,
+		VerificationStatus:    verificationStatus,
+		LastTestResult:        lastTestResult,
+		LastTestModel:         testModel,
+		LastTestDurationMs:    result.DurationMs,
+		LastTestTargets:       encodeKeyTestTargets(perTarget),
 	}
 }
 
@@ -997,16 +1039,83 @@ func (s *ProviderService) ReorderProviderKey(providerID, keyID uint, direction s
 // intended provider_type (e.g. "anthropic"); an empty value defaults to
 // openai, letting existing callers that don't supply one yet keep working
 // unchanged.
-func (s *ProviderService) TestKeyPreview(ctx context.Context, baseURL, apiKey, model, providerType string) (providerclient.TestResult, error) {
-	return s.client.TestChatCompletion(ctx, providerproto.TypeOf(providerType), baseURL, apiKey, model)
+//
+// protocolEndpoints is the candidate's protocol_endpoints configuration, in
+// the same JSON text the create request carries. It is what makes the preview
+// answer the question an admin actually asks of it: creating the provider
+// verifies the credential at the primary protocol AND at every extra endpoint,
+// and a preview that probed only the primary reported a pass for a
+// configuration whose very next step — the create — failed at an endpoint the
+// upstream does not serve. Resolving the destinations here through the same
+// VerificationTargets call the stored path uses closes that gap. An empty
+// value means no extra protocols, so a caller that supplies none probes the
+// primary alone, exactly as before.
+//
+// Validated, not parsed leniently: a provider_type or an endpoints value the
+// create would reject must fail here too. Degrading either to its read-path
+// meaning (an unsupported provider_type normalizes to openai, a malformed
+// endpoints value to "no extra endpoints" — both correct for a row validated
+// once at write time) would probe a different, smaller set of destinations
+// than the create is about to, reintroducing the same false pass from the
+// other direction.
+func (s *ProviderService) TestKeyPreview(ctx context.Context, baseURL, apiKey, model, providerType, protocolEndpoints string) (providerclient.TestResult, []KeyTestTargetResult, error) {
+	validatedType, err := validateProviderType(providerType)
+	if err != nil {
+		return providerclient.TestResult{}, nil, fmt.Errorf("%w: %v", errcode.ErrProviderProtocolInvalid, err)
+	}
+	if _, err := providerproto.ValidateEndpoints(protocolEndpoints); err != nil {
+		return providerclient.TestResult{}, nil, fmt.Errorf("%w: %v", errcode.ErrProviderProtocolInvalid, err)
+	}
+	// The raw endpoints text, not ValidateEndpoints' normalized return: the two
+	// differ only in key order, and VerificationTargets decodes into a map and
+	// sorts the extra protocols itself, so both resolve to the same
+	// destinations in the same order.
+	targets := providerproto.VerificationTargets(validatedType, protocolEndpoints, baseURL)
+	return s.verifyTargets(ctx, targets, apiKey, model)
 }
 
 // ListModelsPreview fetches the upstream model catalogue for a candidate
 // credential (POST .../providers/list-models) so the admin UI can offer a
 // picker instead of a free-text model field. Like TestKeyPreview it is
 // stateless — nothing is persisted and no later request trusts the result.
-func (s *ProviderService) ListModelsPreview(ctx context.Context, baseURL, apiKey, providerType string) (providerclient.ListModelsResult, error) {
-	return s.client.ListModels(ctx, providerproto.TypeOf(providerType), baseURL, apiKey)
+// A candidate always carries its own plaintext, so the fetch always runs:
+// NoUsableKey is never set here and Outcome is never nil.
+func (s *ProviderService) ListModelsPreview(ctx context.Context, baseURL, apiKey, providerType string) (ProviderCatalogueResult, error) {
+	res, err := s.client.ListModels(ctx, providerproto.TypeOf(providerType), baseURL, apiKey)
+	if err != nil {
+		return ProviderCatalogueResult{}, err
+	}
+	return catalogueFetched(res), nil
+}
+
+// ProviderCatalogueResult is what both model-catalogue calls answer with: the
+// upstream's list plus how the fetch itself went. Outcome is a pointer because
+// one case has no verdict to report at all — the stored provider has no
+// enabled, current key to authenticate with, so nothing was ever asked of the
+// upstream, reported as NoUsableKey with a nil Outcome.
+//
+// That distinction is the whole reason the fetch's result is not embedded
+// here: providerclient.TestSuccess is providerclient.TestOutcome's zero value,
+// so an un-run fetch's zero-value result reads as a pass. Naming a verdict for
+// it — this case used to answer providerclient.TestAuthFailed — sends the
+// admin after the key and the address, which is the wrong place to look when
+// the keys are disabled precisely because they failed their own test.
+type ProviderCatalogueResult struct {
+	Models      []string
+	Outcome     *providerclient.TestOutcome
+	Detail      string
+	NoUsableKey bool
+}
+
+// catalogueFetched carries the result of a fetch that actually ran: the
+// upstream answered, so there is always a verdict, and no-usable-key never
+// applies.
+func catalogueFetched(res providerclient.ListModelsResult) ProviderCatalogueResult {
+	return ProviderCatalogueResult{
+		Models:  res.Models,
+		Outcome: &res.Outcome,
+		Detail:  res.Detail,
+	}
 }
 
 // ListModelsForProvider fetches the upstream model catalogue for an already-
@@ -1014,29 +1123,33 @@ func (s *ProviderService) ListModelsPreview(ctx context.Context, baseURL, apiKey
 // can offer a picker instead of a free-text model field. Unlike the stateless
 // preview, the plaintext lives only server-side: it decrypts one of the
 // provider's stored keys here and queries the provider's primary protocol.
-// When no usable key exists the result carries providerclient.TestAuthFailed (not an error)
-// so the caller falls back to manual entry rather than showing a failure.
-func (s *ProviderService) ListModelsForProvider(ctx context.Context, providerID uint) (providerclient.ListModelsResult, error) {
+// When no usable key exists it reports NoUsableKey (not an error) so the
+// caller can name that reason and fall back to manual entry.
+func (s *ProviderService) ListModelsForProvider(ctx context.Context, providerID uint) (ProviderCatalogueResult, error) {
 	provider, err := repository.FindProviderByID(s.db, providerID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return providerclient.ListModelsResult{}, errcode.ErrProviderNotFound
+			return ProviderCatalogueResult{}, errcode.ErrProviderNotFound
 		}
-		return providerclient.ListModelsResult{}, err
+		return ProviderCatalogueResult{}, err
 	}
 	keys, err := repository.ListProviderKeysByProvider(s.db, providerID)
 	if err != nil {
-		return providerclient.ListModelsResult{}, err
+		return ProviderCatalogueResult{}, err
 	}
 	key := pickKeyForCatalogueFetch(keys, provider.DestinationVersion)
 	if key == nil {
-		return providerclient.ListModelsResult{Outcome: providerclient.TestAuthFailed}, nil
+		return ProviderCatalogueResult{NoUsableKey: true}, nil
 	}
 	plaintext, err := s.secrets.Decrypt(key.EncryptedKey)
 	if err != nil {
-		return providerclient.ListModelsResult{}, fmt.Errorf("decrypt key: %w", err)
+		return ProviderCatalogueResult{}, fmt.Errorf("decrypt key: %w", err)
 	}
-	return s.client.ListModels(ctx, providerproto.TypeOf(provider.ProviderType), provider.BaseURL, plaintext)
+	res, err := s.client.ListModels(ctx, providerproto.TypeOf(provider.ProviderType), provider.BaseURL, plaintext)
+	if err != nil {
+		return ProviderCatalogueResult{}, err
+	}
+	return catalogueFetched(res), nil
 }
 
 // pickKeyForCatalogueFetch chooses the stored key most likely to authenticate
@@ -1106,7 +1219,7 @@ func (s *ProviderService) TestProviderKey(ctx context.Context, providerID, keyID
 	// Stamped before the probe: state recorded while the probe, commit, and
 	// listener run is newer than this proof and must not be overridden by it.
 	probeObserved := time.Now().UTC()
-	result, testErr := s.verifyKeyAllDestinations(ctx, provider, plaintext, key.TestModel)
+	result, perTarget, testErr := s.verifyKeyAllDestinations(ctx, provider, plaintext, key.TestModel)
 	if testErr != nil {
 		// The client itself refused this call (e.g. concurrency cap
 		// exceeded) — not a real test outcome. Since providerclient.TestSuccess is
@@ -1114,13 +1227,12 @@ func (s *ProviderService) TestProviderKey(ctx context.Context, providerID, keyID
 		// zero-value providerclient.TestResult here would incorrectly report success.
 		return nil, fmt.Errorf("provider test call could not be started: %w", testErr)
 	}
-	verificationStatus, overwrite, lastTestResult := classifyTestResult(result)
-	applied, commitErr := repository.CommitProviderKeyRetestResult(s.db, keyID, configVersion, testGeneration,
-		overwrite, verificationStatus, lastTestResult, key.TestModel, result.DurationMs, now)
+	record := keyTestRecord(result, key.TestModel, perTarget)
+	applied, commitErr := repository.CommitProviderKeyRetestResult(s.db, keyID, configVersion, testGeneration, record, now)
 	if commitErr != nil {
 		return nil, fmt.Errorf("record test result: %w", commitErr)
 	}
-	s.noteRetestCommitted(keyID, configVersion, probeObserved, applied, overwrite, verificationStatus)
+	s.noteRetestCommitted(keyID, configVersion, probeObserved, applied, record.OverwriteVerification, record.VerificationStatus)
 	if !applied {
 		// The network test ran, but a concurrent plaintext/config edit bumped
 		// config_version between BeginProviderKeyRetest and this write, so the
@@ -1155,6 +1267,14 @@ type BatchTestResult struct {
 	NotRun     bool  `json:"not_run"`
 	Outcome    *int  `json:"outcome"`
 	DurationMs int64 `json:"duration_ms"`
+	// LastTestTargets breaks Outcome down by destination, one entry per
+	// protocol this key's probe covered — the same shape and field name the
+	// key view carries, so one reader handles both. null when nothing was
+	// probed (needs_reentry, not_run). A probe that ran but lost the
+	// concurrent-edit commit race still reports what each destination
+	// answered: the observations are real even though the stored row now
+	// belongs to a newer credential.
+	LastTestTargets []KeyTestTargetResult `json:"last_test_targets"`
 }
 
 // providerBatchTestBudget caps ONE batch-test request end to end. Without it
@@ -1230,7 +1350,7 @@ func (s *ProviderService) TestAllProviderKeys(ctx context.Context, providerID ui
 
 		// Stamped before the probe, same as the single-key retest above.
 		probeObserved := time.Now().UTC()
-		result, testErr := s.verifyKeyAllDestinations(ctx, provider, plaintext, key.TestModel)
+		result, perTarget, testErr := s.verifyKeyAllDestinations(ctx, provider, plaintext, key.TestModel)
 		if testErr != nil {
 			// The client itself refused this call (e.g. concurrency cap
 			// exceeded) — not a real outcome, nothing to commit
@@ -1248,17 +1368,16 @@ func (s *ProviderService) TestAllProviderKeys(ctx context.Context, providerID ui
 			results = append(results, BatchTestResult{KeyID: key.ID, Label: key.Label, NotRun: true, Skipped: true})
 			continue
 		}
-		verificationStatus, overwrite, lastTestResult := classifyTestResult(result)
-		applied, commitErr := repository.CommitProviderKeyRetestResult(s.db, key.ID, configVersion, testGeneration,
-			overwrite, verificationStatus, lastTestResult, key.TestModel, result.DurationMs, now)
+		record := keyTestRecord(result, key.TestModel, perTarget)
+		applied, commitErr := repository.CommitProviderKeyRetestResult(s.db, key.ID, configVersion, testGeneration, record, now)
 		if commitErr == nil {
-			s.noteRetestCommitted(key.ID, configVersion, probeObserved, applied, overwrite, verificationStatus)
+			s.noteRetestCommitted(key.ID, configVersion, probeObserved, applied, record.OverwriteVerification, record.VerificationStatus)
 		}
 
 		outcomeInt := int(result.Outcome)
 		results = append(results, BatchTestResult{
 			KeyID: key.ID, Label: key.Label, Skipped: commitErr != nil || !applied,
-			Outcome: &outcomeInt, DurationMs: result.DurationMs,
+			Outcome: &outcomeInt, DurationMs: result.DurationMs, LastTestTargets: perTarget,
 		})
 	}
 	return results, nil

@@ -118,6 +118,7 @@ export default {
   outcomeModelNotFound_rowHint: '请确认测试模型名是否正确，可在编辑 Key 时拉取可用模型列表',
   outcomeVerificationUnsupported_hint: '这是旧版本记录的结果：当时该协议的返回内容无法被判定为通过。现已支持校验，请重新测试',
   outcomeTimeout_hint: '服务地址可以连通，但上游在 60 秒内没有返回；可能是上游繁忙或正在逐个尝试其它渠道，稍后重试即可',
+  keyTestTargetsTitle: '各协议端点测试结果',
   confirmDisableProviderTitle: '停用供应商',
   confirmDisableProviderContent: '停用后该供应商将不参与路由。',
   impactModelsNone: '没有模型配置这个供应商的候选。',

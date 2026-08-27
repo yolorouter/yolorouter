@@ -187,6 +187,7 @@ export default {
   importTitle: '导入模型',
   importHint: '已默认勾选有价格建议的主流模型；价格可直接修改，留空按 0 导入。已添加且已有探测结果的模型置灰不可选；已添加但尚未探测完的模型可手动勾选，勾选后导入将补跑探测（通过会自动启用）。',
   importFetchFailed: '拉取上游模型列表失败，请检查供应商密钥与地址后重试',
+  importNoUsableKey: '没有已启用且可用的 Key，请先在「连接与 Key」中测试并启用',
   importCatalogEmpty: '上游未返回模型列表，可在模型页手动添加映射',
   importPriceSuggestion: '价格建议',
   importPriceSuggestion_tip: '价格来源：内置价目表或该供应商的历史价；无建议价的模型默认不勾选，导入时价格按 0 计',

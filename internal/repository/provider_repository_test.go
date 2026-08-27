@@ -447,7 +447,11 @@ func TestCommitProviderKeyPlaintextTestResultAppliesWhenCASMatches(t *testing.T)
 	}
 
 	applied, err := CommitProviderKeyPlaintextTestResult(db, key.ID, configVersion, testGeneration, snapshot,
-		true, model.VerificationStatusPassed, testutil.Ptr(0), "gpt-4o-mini", 123, now)
+		KeyTestRecord{
+			OverwriteVerification: true, VerificationStatus: model.VerificationStatusPassed,
+			LastTestResult: testutil.Ptr(0), LastTestModel: "gpt-4o-mini", LastTestDurationMs: 123,
+			LastTestTargets: testutil.Ptr(`[{"proto":"openai"}]`),
+		}, now)
 	if err != nil {
 		t.Fatalf("CommitProviderKeyPlaintextTestResult failed: %v", err)
 	}
@@ -461,6 +465,11 @@ func TestCommitProviderKeyPlaintextTestResultAppliesWhenCASMatches(t *testing.T)
 	}
 	if reloaded.VerificationStatus != model.VerificationStatusPassed {
 		t.Fatalf("expected verification_status=passed, got %d", reloaded.VerificationStatus)
+	}
+	// The per-destination breakdown rides in this same CAS statement, so an
+	// applied write must have landed it alongside the aggregate columns.
+	if reloaded.LastTestTargets == nil || *reloaded.LastTestTargets != `[{"proto":"openai"}]` {
+		t.Fatalf("expected last_test_targets stored by the same CAS write, got %v", reloaded.LastTestTargets)
 	}
 	if reloaded.AuthorizedDestinationVersion != provider.DestinationVersion {
 		t.Fatalf("expected authorized_destination_version=%d, got %d", provider.DestinationVersion, reloaded.AuthorizedDestinationVersion)
@@ -484,12 +493,26 @@ func TestCommitProviderKeyPlaintextTestResultDiscardsWhenAddressChangedMidTest(t
 	}
 
 	applied, err := CommitProviderKeyPlaintextTestResult(db, key.ID, configVersion, testGeneration, snapshot,
-		true, model.VerificationStatusPassed, testutil.Ptr(0), "gpt-4o-mini", 123, now)
+		KeyTestRecord{
+			OverwriteVerification: true, VerificationStatus: model.VerificationStatusPassed,
+			LastTestResult: testutil.Ptr(0), LastTestModel: "gpt-4o-mini", LastTestDurationMs: 123,
+			LastTestTargets: testutil.Ptr(`[{"proto":"openai"}]`),
+		}, now)
 	if err != nil {
 		t.Fatalf("CommitProviderKeyPlaintextTestResult failed: %v", err)
 	}
 	if applied {
 		t.Fatalf("expected the CAS write to be discarded because destination_version changed mid-test")
+	}
+	// A discarded verdict must not leave its breakdown behind: the two travel
+	// in one statement precisely so the row never describes a run whose
+	// result was thrown away.
+	reloaded, err := FindProviderKeyByID(db, key.ID)
+	if err != nil {
+		t.Fatalf("FindProviderKeyByID failed: %v", err)
+	}
+	if reloaded.LastTestTargets != nil {
+		t.Fatalf("expected last_test_targets untouched by the discarded write, got %q", *reloaded.LastTestTargets)
 	}
 }
 
@@ -503,12 +526,16 @@ func TestCommitProviderKeyPlaintextTestResultPreservesVerificationWhenNotOverwri
 	if err != nil {
 		t.Fatalf("SwapProviderKeyPlaintext failed: %v", err)
 	}
-	// overwriteVerification=false simulates a TestModelNotFound/TestRateLimited
+	// OverwriteVerification=false simulates a TestModelNotFound/TestRateLimited
 	// outcome on a BRAND NEW plaintext — verification_status must stay at the
 	// "untested" value SwapProviderKeyPlaintext already forced, not
-	// whatever verificationStatus value is passed here.
+	// whatever VerificationStatus value is passed here.
 	applied, err := CommitProviderKeyPlaintextTestResult(db, key.ID, configVersion, testGeneration, snapshot,
-		false, model.VerificationStatusPassed, testutil.Ptr(3), "gpt-4o-mini", 50, now)
+		KeyTestRecord{
+			OverwriteVerification: false, VerificationStatus: model.VerificationStatusPassed,
+			LastTestResult: testutil.Ptr(3), LastTestModel: "gpt-4o-mini", LastTestDurationMs: 50,
+			LastTestTargets: testutil.Ptr(`[{"proto":"openai","outcome":3}]`),
+		}, now)
 	if err != nil {
 		t.Fatalf("CommitProviderKeyPlaintextTestResult failed: %v", err)
 	}
@@ -525,6 +552,12 @@ func TestCommitProviderKeyPlaintextTestResultPreservesVerificationWhenNotOverwri
 	}
 	if reloaded.LastTestModel != "gpt-4o-mini" {
 		t.Fatalf("expected last_test_model still recorded even when verification_status is preserved, got %q", reloaded.LastTestModel)
+	}
+	// An inconclusive run is exactly the case an admin most needs the
+	// breakdown for, so it is recorded here too — same rule last_test_result
+	// follows.
+	if reloaded.LastTestTargets == nil || *reloaded.LastTestTargets != `[{"proto":"openai","outcome":3}]` {
+		t.Fatalf("expected last_test_targets recorded even when verification_status is preserved, got %v", reloaded.LastTestTargets)
 	}
 }
 
@@ -543,12 +576,23 @@ func TestCommitProviderKeyRetestResultDiscardsWhenGenerationStale(t *testing.T) 
 	}
 
 	applied, err := CommitProviderKeyRetestResult(db, key.ID, configVersion, testGeneration,
-		true, model.VerificationStatusPassed, testutil.Ptr(0), "gpt-4o-mini", 100, now)
+		KeyTestRecord{
+			OverwriteVerification: true, VerificationStatus: model.VerificationStatusPassed,
+			LastTestResult: testutil.Ptr(0), LastTestModel: "gpt-4o-mini", LastTestDurationMs: 100,
+			LastTestTargets: testutil.Ptr(`[{"proto":"openai"}]`),
+		}, now)
 	if err != nil {
 		t.Fatalf("CommitProviderKeyRetestResult failed: %v", err)
 	}
 	if applied {
 		t.Fatalf("expected the stale-generation write to be discarded")
+	}
+	reloaded, err := FindProviderKeyByID(db, key.ID)
+	if err != nil {
+		t.Fatalf("FindProviderKeyByID failed: %v", err)
+	}
+	if reloaded.LastTestTargets != nil {
+		t.Fatalf("expected last_test_targets untouched by the discarded write, got %q", *reloaded.LastTestTargets)
 	}
 }
 
@@ -563,7 +607,11 @@ func TestCommitProviderKeyRetestResultAppliesWhenCASMatches(t *testing.T) {
 	}
 
 	applied, err := CommitProviderKeyRetestResult(db, key.ID, configVersion, testGeneration,
-		true, model.VerificationStatusFailed, testutil.Ptr(1), "gpt-4o-mini", 200, now)
+		KeyTestRecord{
+			OverwriteVerification: true, VerificationStatus: model.VerificationStatusFailed,
+			LastTestResult: testutil.Ptr(1), LastTestModel: "gpt-4o-mini", LastTestDurationMs: 200,
+			LastTestTargets: testutil.Ptr(`[{"proto":"anthropic","outcome":1}]`),
+		}, now)
 	if err != nil {
 		t.Fatalf("CommitProviderKeyRetestResult failed: %v", err)
 	}
@@ -576,6 +624,9 @@ func TestCommitProviderKeyRetestResultAppliesWhenCASMatches(t *testing.T) {
 	}
 	if reloaded.VerificationStatus != model.VerificationStatusFailed {
 		t.Fatalf("expected verification_status=failed, got %d", reloaded.VerificationStatus)
+	}
+	if reloaded.LastTestTargets == nil || *reloaded.LastTestTargets != `[{"proto":"anthropic","outcome":1}]` {
+		t.Fatalf("expected last_test_targets stored by the same CAS write, got %v", reloaded.LastTestTargets)
 	}
 }
 
@@ -1049,7 +1100,10 @@ func TestCommitProviderKeyPlaintextTestResultReturnsErrorWhenDBUnavailable(t *te
 	now := time.Now().UTC().Truncate(time.Second)
 	testutil.CloseDB(t, db)
 
-	_, err := CommitProviderKeyPlaintextTestResult(db, key.ID, 1, 1, 1, true, model.VerificationStatusPassed, testutil.Ptr(0), "gpt-4o-mini", 1, now)
+	_, err := CommitProviderKeyPlaintextTestResult(db, key.ID, 1, 1, 1, KeyTestRecord{
+		OverwriteVerification: true, VerificationStatus: model.VerificationStatusPassed,
+		LastTestResult: testutil.Ptr(0), LastTestModel: "gpt-4o-mini", LastTestDurationMs: 1,
+	}, now)
 	if err == nil {
 		t.Fatalf("expected an error once the underlying connection is closed")
 	}
@@ -1061,7 +1115,10 @@ func TestCommitProviderKeyRetestResultReturnsErrorWhenDBUnavailable(t *testing.T
 	now := time.Now().UTC().Truncate(time.Second)
 	testutil.CloseDB(t, db)
 
-	_, err := CommitProviderKeyRetestResult(db, key.ID, 1, 1, true, model.VerificationStatusPassed, testutil.Ptr(0), "gpt-4o-mini", 1, now)
+	_, err := CommitProviderKeyRetestResult(db, key.ID, 1, 1, KeyTestRecord{
+		OverwriteVerification: true, VerificationStatus: model.VerificationStatusPassed,
+		LastTestResult: testutil.Ptr(0), LastTestModel: "gpt-4o-mini", LastTestDurationMs: 1,
+	}, now)
 	if err == nil {
 		t.Fatalf("expected an error once the underlying connection is closed")
 	}

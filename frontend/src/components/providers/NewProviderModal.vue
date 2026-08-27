@@ -88,6 +88,7 @@
         :base-url="form.baseUrl"
         :api-key="form.plaintext"
         :provider-type="form.protocol.providerType"
+        :protocol-endpoints="protocolEndpoints"
       />
       <n-form-item path="note">
         <template #label>
@@ -164,6 +165,13 @@ const form = reactive({
   plaintext: '',
   testModel: '',
 })
+
+// The extra endpoints the form currently declares, serialized exactly as the
+// create request will carry them, so the test button probes the destination
+// set this form is about to be verified against — the whole point of testing
+// before saving. Recomputed as the protocol fields change, which also
+// invalidates a result that covered a different set.
+const protocolEndpoints = computed(() => serializeProtocolConfig(form.protocol).protocol_endpoints)
 
 // Rule factories live in utils/providerValidators.ts. testModel's own rule is
 // applied inside ProviderModelTester's form-item; the rest bind here.

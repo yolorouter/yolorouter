@@ -116,6 +116,7 @@ export default {
   outcomeModelNotFound_rowHint: 'Check the test model name — edit the key to fetch the available model list',
   outcomeVerificationUnsupported_hint: 'Recorded by an earlier version that could not certify replies for this protocol. Response validation is supported now — run the test again',
   outcomeTimeout_hint: 'The base URL is reachable but the upstream did not answer within 60s — it may be busy or working through its own fallback chain. Retry shortly',
+  keyTestTargetsTitle: 'Result per protocol endpoint',
   confirmDisableProviderTitle: 'Disable Provider',
   confirmDisableProviderContent: 'Disabling this provider removes it from routing.',
   impactModelsNone: 'No model has a candidate configured on this provider.',

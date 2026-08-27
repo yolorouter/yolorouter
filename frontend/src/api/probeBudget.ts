@@ -21,8 +21,10 @@ export const SERVER_PROBE_BUDGET_MS = 60_000
 // failure on work that actually succeeded.
 const CLIENT_MARGIN_MS = 15_000
 
-// SINGLE_PROBE_BUDGET_MS is for the stateless preview endpoints, which probe
-// exactly one destination and persist nothing.
+// SINGLE_PROBE_BUDGET_MS is for stateless preview calls that probe exactly
+// one destination and persist nothing (the model-catalogue previews; the
+// key-test preview probes every configured destination and sizes itself with
+// keyTestBudgetMs below instead).
 export const SINGLE_PROBE_BUDGET_MS = SERVER_PROBE_BUDGET_MS + CLIENT_MARGIN_MS
 
 // keyTestBudgetMs sizes a single key's test. verifyKeyAllDestinations walks
