@@ -30,6 +30,14 @@ function isProtocolId(value: string): value is ProtocolId {
   return (ALL_PROTOCOLS as readonly string[]).includes(value)
 }
 
+// Names a protocol the way the rest of the provider UI names it, falling back
+// to the raw id: a protocol the server supports before this build has a label
+// is better shown as "grok" than as a missing-message key. Lives beside
+// ALL_PROTOCOLS because that list is what decides whether a label exists.
+export function protocolLabel(t: (key: string) => string, proto: string): string {
+  return isProtocolId(proto) ? t(`providers.protocol_${proto}`) : proto
+}
+
 function normalizeProviderType(providerType: string): ProtocolId {
   return isProtocolId(providerType) ? providerType : 'openai'
 }

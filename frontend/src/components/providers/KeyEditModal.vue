@@ -40,6 +40,7 @@
         :base-url="baseUrl"
         :api-key="form.plaintext"
         :provider-type="providerType"
+        :protocol-endpoints="protocolEndpoints"
       />
       <n-form-item>
         <template #label>
@@ -71,6 +72,11 @@ const props = defineProps<{
   // How many destinations the server verifies a new plaintext against. Saving
   // waits for that whole walk, so the request budget scales with it.
   destinationCount: number
+  // The provider's extra protocol endpoints, as stored. Saving a new
+  // plaintext verifies it at every one of them, so the test button covers
+  // them too — otherwise it could pass on the primary protocol and the save
+  // it precedes still leave the key disabled.
+  protocolEndpoints: string
   editingKey?: ProviderKey | null
 }>()
 // saved carries whether the save re-tested the credential: the server runs a

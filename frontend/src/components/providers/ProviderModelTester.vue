@@ -66,12 +66,17 @@
     <n-alert v-if="testOutcome !== null" :type="testOk ? 'success' : 'error'" :bordered="false" class="result">
       <div class="result-title">{{ resultTitle }}</div>
       <div v-if="!testOk && resultHint" class="result-hint">{{ resultHint }}</div>
-      <div v-if="testDetail" class="detail-toggle">
-        <n-button text size="tiny" @click="showDetail = !showDetail">
-          {{ showDetail ? t('providers.errorDetailHide') : t('providers.errorDetailShow') }}
-        </n-button>
-        <pre v-if="showDetail" class="detail-text">{{ testDetail }}</pre>
-      </div>
+
+      <!-- One line per destination the test actually probed, so a candidate
+           with extra protocol endpoints says WHICH of them answered what
+           instead of collapsing to the worst one's category. -->
+      <KeyTestTargetList v-if="hasBreakdown" class="targets" :rows="targetRows" :expanded="showDetail">
+        <template #header-extra>
+          <n-button v-if="targetsHaveDetail" text size="tiny" @click="showDetail = !showDetail">
+            {{ detailToggleLabel }}
+          </n-button>
+        </template>
+      </KeyTestTargetList>
     </n-alert>
   </div>
 </template>
@@ -83,8 +88,12 @@ import { NSelect, useMessage, type FormItemRule } from 'naive-ui'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
 import { testOutcomeI18nKey, testOutcomeLabel, isTestSuccess } from '../../utils/testOutcomeDisplay'
+import { hasKeyTestBreakdown, keyTestTargetRows } from '../../utils/keyTestTargets'
+import { catalogueFailure } from '../../utils/catalogueFailure'
+import type { KeyTestTarget } from '../../api/providers'
 import { testModelRule } from '../../utils/providerValidators'
 import HelpLabel from '../HelpLabel.vue'
+import KeyTestTargetList from './KeyTestTargetList.vue'
 import FilterSelectField from '../common/FilterSelectField.vue'
 import { useIsMobile } from '../../composables/useIsMobile'
 
@@ -93,6 +102,11 @@ const props = defineProps<{
   baseUrl: string
   apiKey: string
   providerType: string
+  // The candidate's additional protocol endpoints, in the wire format the
+  // create request carries. Supplying it makes the test cover every
+  // destination the provider will be verified against, so a pass here holds
+  // after saving. Omitted by parents that configure no extra endpoints.
+  protocolEndpoints?: string
 }>()
 const emit = defineEmits<{ 'update:value': [string] }>()
 
@@ -108,11 +122,13 @@ const fetchedModels = ref<string[]>([])
 const fetching = ref(false)
 const testing = ref(false)
 // testOutcome holds the last test's outcome int (backend TestOutcome enum),
-// null until a test runs; testDetail is the raw upstream error, shown on
-// demand under the categorized result.
+// null until a test runs.
 const testOutcome = ref<number | null>(null)
-const testDetail = ref('')
 const showDetail = ref(false)
+// testTargets is what each destination of the last test answered; empty until
+// a test runs. Every diagnostic lives here — the aggregate detail is always
+// one of these rows' details, so there is no separate aggregate-only view.
+const testTargets = ref<KeyTestTarget[]>([])
 
 // The full testModel rule set (required + max-length), mirroring the create
 // request's binding. n-form-item's :rule accepts an array, so both apply.
@@ -146,24 +162,58 @@ const resultHint = computed(() => {
   return te(key) ? t(key) : ''
 })
 
+// The per-destination lines under the headline, and the one toggle that
+// reveals what those destinations said. A run whose breakdown would only
+// restate the headline (one destination, nothing quoted) shows no lines at
+// all — every diagnostic lives in the rows, so there is nothing else to
+// fall back to (see hasKeyTestBreakdown).
+const hasBreakdown = computed(() => hasKeyTestBreakdown(testTargets.value))
+const targetRows = computed(() => keyTestTargetRows(t, testTargets.value))
+// With no row carrying any text the toggle would expand to nothing, promising
+// an explanation that does not exist.
+const targetsHaveDetail = computed(() => targetRows.value.some((row) => row.detail !== ''))
+const detailToggleLabel = computed(() =>
+  showDetail.value ? t('providers.errorDetailHide') : t('providers.errorDetailShow'),
+)
+
 function clearResult() {
   testOutcome.value = null
-  testDetail.value = ''
+  testTargets.value = []
   showDetail.value = false
 }
 
-// credentialSnapshot captures the destination + credential a fetch/test was
-// issued against, so a response that resolves after those inputs have changed
-// can detect it is stale and drop itself instead of overwriting current state.
-// (A test additionally snapshots the model, checked separately.) Comparing the
-// values themselves — rather than a counter — is intentional: if an input is
-// edited away and back to the same value mid-flight, the response IS valid for
-// the current inputs, so accepting it is correct.
-function credentialSnapshot() {
-  return { baseUrl: props.baseUrl, apiKey: props.apiKey, providerType: props.providerType }
+// catalogueSnapshot captures the inputs a catalogue fetch was issued against,
+// so a response that resolves after those inputs have changed can detect it
+// is stale and drop itself instead of overwriting current state. Comparing
+// the values themselves — rather than a counter — is intentional: if an input
+// is edited away and back to the same value mid-flight, the response IS valid
+// for the current inputs, so accepting it is correct. The catalogue is
+// fetched from the primary destination only, so the extra endpoint set is
+// deliberately NOT part of this snapshot — editing endpoints while a fetch
+// is in flight must not discard a catalogue that never depended on them.
+function catalogueSnapshot() {
+  return {
+    baseUrl: props.baseUrl,
+    apiKey: props.apiKey,
+    providerType: props.providerType,
+  }
 }
-function credentialMatches(snap: ReturnType<typeof credentialSnapshot>): boolean {
-  return snap.baseUrl === props.baseUrl && snap.apiKey === props.apiKey && snap.providerType === props.providerType
+// credentialSnapshot additionally captures the endpoint set: it decides WHICH
+// destinations a test probed, so a test result from before it changed
+// describes destinations that are no longer the ones a save would verify.
+// (A test additionally snapshots the model, checked separately.)
+function credentialSnapshot() {
+  return {
+    ...catalogueSnapshot(),
+    protocolEndpoints: props.protocolEndpoints ?? '',
+  }
+}
+// Field-by-field against a freshly captured snapshot of the same shape, so
+// the fields that make a result stale are listed once — in the snapshot
+// constructors — instead of again here, where a newly captured input could
+// be left uncompared.
+function snapshotMatches<T extends Record<string, string>>(snap: T, current: T): boolean {
+  return Object.keys(snap).every((key) => snap[key] === current[key])
 }
 
 // A credential/destination change invalidates the shown result AND the fetched
@@ -173,28 +223,36 @@ watch([() => props.baseUrl, () => props.apiKey, () => props.providerType], () =>
   fetchedModels.value = []
   clearResult()
 })
-// Changing the selected model only invalidates the shown test result; the
-// catalogue is credential-scoped, not model-scoped, so it stays.
-watch(() => props.value, clearResult)
+// The extra endpoints and the selected model each invalidate the shown test
+// result alone. The catalogue survives both: it is fetched from the primary
+// destination with the same credential, and it is credential-scoped rather
+// than model-scoped. The result does not — it covered a destination set, and
+// a model, that no longer match what saving would verify.
+watch([() => props.protocolEndpoints, () => props.value], clearResult)
 
 function onModelChange(v: string | null) {
   emit('update:value', v ?? '')
 }
 
 async function onFetchModels() {
-  const snap = credentialSnapshot()
+  const snap = catalogueSnapshot()
   // A catalogue is credential-scoped; it is stale if the destination or
   // credential changed while the request was in flight. Checked on both the
   // success and error paths, so a late response never overwrites current state.
-  const stale = () => !credentialMatches(snap)
+  const stale = () => !snapshotMatches(snap, catalogueSnapshot())
   fetching.value = true
   try {
     const result = await store.listModelsPreview(snap.baseUrl, snap.apiKey, snap.providerType)
     if (stale()) return
-    if (!isTestSuccess(result.outcome)) {
+    const failure = catalogueFailure(t, result)
+    if (failure.kind !== 'none') {
       // The catalogue call itself failed (bad key / unreachable / no list) —
-      // surface the category and let the admin fall back to typing a model.
-      message.error(`${t('providers.fetchModelsFailed')}: ${testOutcomeLabel(t, result.outcome)}`)
+      // surface the category AND what the upstream said, since "not found"
+      // from the address and "not found" from the credential need opposite
+      // fixes. The admin can still fall back to typing a model.
+      const headline = t('providers.fetchModelsFailed')
+      const category = failure.description ? `${headline}: ${failure.description}` : headline
+      message.error(failure.detail ? `${category} — ${failure.detail}` : category)
       return
     }
     fetchedModels.value = result.models
@@ -216,14 +274,14 @@ async function onTest() {
   const model = props.value
   // A test result describes one credential+model pair; it is stale if either
   // changed mid-flight. Checked on both success and error paths.
-  const stale = () => !credentialMatches(snap) || model !== props.value
+  const stale = () => !snapshotMatches(snap, credentialSnapshot()) || model !== props.value
   testing.value = true
   clearResult()
   try {
-    const result = await store.testKeyPreview(snap.baseUrl, snap.apiKey, model, snap.providerType)
+    const result = await store.testKeyPreview(snap.baseUrl, snap.apiKey, model, snap.providerType, snap.protocolEndpoints)
     if (stale()) return
     testOutcome.value = result.outcome
-    testDetail.value = result.detail
+    testTargets.value = result.last_test_targets ?? []
   } catch (err) {
     if (stale()) return
     message.error(displayMessage(err, t))
@@ -271,16 +329,9 @@ async function onTest() {
   font-size: 13px;
   opacity: 0.75;
 }
-.detail-toggle {
+/* The breakdown panel brings its own shell and header; only the spacing
+   against the alert body above is local. */
+.targets {
   margin-top: 8px;
-}
-.detail-text {
-  margin: 6px 0 0;
-  padding: 8px;
-  border-radius: 4px;
-  background: var(--color-bg-soft);
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 </style>

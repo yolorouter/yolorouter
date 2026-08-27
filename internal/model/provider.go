@@ -106,6 +106,13 @@ type ProviderKey struct {
 	LastTestModel      string     `gorm:"column:last_test_model" json:"last_test_model"`
 	LastTestDurationMs *int64     `gorm:"column:last_test_duration_ms" json:"last_test_duration_ms"`
 	LastTestedAt       *time.Time `gorm:"column:last_tested_at" json:"last_tested_at"`
+	// LastTestTargets is the per-protocol breakdown of the run the three
+	// columns above summarize: a JSON array with one entry per destination
+	// probed. Nil means no breakdown was recorded — never tested, or last
+	// tested by a build that predates the column. It is json:"-" because the
+	// raw column text is not the API shape: responses carry the decoded
+	// array instead (see the provider service's key view).
+	LastTestTargets *string `gorm:"column:last_test_targets" json:"-"`
 
 	ConfigVersion  int `gorm:"column:config_version" json:"-"`
 	TestGeneration int `gorm:"column:test_generation" json:"-"`

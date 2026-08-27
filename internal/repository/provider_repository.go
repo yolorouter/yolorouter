@@ -303,11 +303,29 @@ func BeginProviderKeyRetest(db *gorm.DB, keyID uint) (configVersion, testGenerat
 	return result.ConfigVersion, result.TestGeneration, result.EncryptedKey, err
 }
 
+// KeyTestRecord is everything one verification run has to say about a key —
+// the payload both CAS write-backs below persist, identically. The two differ
+// only in which columns they guard, never in what a run records, so the run's
+// own findings travel as one value instead of the same seven positional
+// arguments repeated at every call site.
+//
+// OverwriteVerification is the service layer's classification decision, not a
+// column: when false, VerificationStatus is left out of the SET clause
+// entirely (see CommitProviderKeyPlaintextTestResult below for why that is
+// correct). Every other field names the last_test_* column it writes.
+type KeyTestRecord struct {
+	OverwriteVerification bool
+	VerificationStatus    int
+	LastTestResult        *int
+	LastTestModel         string
+	LastTestDurationMs    int64
+	LastTestTargets       *string
+}
+
 // CommitProviderKeyPlaintextTestResult writes back a test result for a key
 // that just received brand-new plaintext (creation, edit-with-new-key, or
-// re-entry) — the new-plaintext CAS. overwriteVerification is
-// the service layer's classification decision: when false,
-// verification_status is left OUT of the SET clause entirely (it was
+// re-entry) — the new-plaintext CAS. When record.OverwriteVerification is
+// false, verification_status is left OUT of the SET clause entirely (it was
 // already forced to untested by CreateProviderKeyPendingTest's insert or
 // BeginProviderKeyPlaintextSwap, so "leave untouched" correctly means
 // "still untested", never a stale value from a prior credential).
@@ -316,19 +334,23 @@ func BeginProviderKeyRetest(db *gorm.DB, keyID uint) (configVersion, testGenerat
 // stale, that's the whole point of this flow). Returns applied=false if any
 // CAS condition didn't match (result discarded, a race was detected) —
 // callers must not treat that as an error.
+//
+// LastTestTargets (the run's per-protocol breakdown) rides in this same
+// statement rather than a follow-up UPDATE: a second write would carry no
+// CAS of its own, so a race that correctly discarded the aggregate could
+// still land a breakdown describing a run whose verdict was thrown away.
 func CommitProviderKeyPlaintextTestResult(
 	db *gorm.DB, keyID uint, configVersion, testGeneration, snapshotVersion int,
-	overwriteVerification bool, verificationStatus int,
-	lastTestResult *int, lastTestModel string, lastTestDurationMs int64, now time.Time,
+	record KeyTestRecord, now time.Time,
 ) (bool, error) {
-	setClause, args := verificationSetClause(overwriteVerification, verificationStatus)
-	args = append(args, lastTestResult, snapshotVersion, lastTestModel, lastTestDurationMs, now, now,
+	setClause, args := verificationSetClause(record.OverwriteVerification, record.VerificationStatus)
+	args = append(args, record.LastTestResult, snapshotVersion, record.LastTestModel, record.LastTestDurationMs, record.LastTestTargets, now, now,
 		keyID, configVersion, testGeneration, snapshotVersion)
 
 	query := `
 		UPDATE provider_keys
 		SET ` + setClause + `last_test_result = ?, authorized_destination_version = ?,
-		    last_test_model = ?, last_test_duration_ms = ?, last_tested_at = ?, updated_at = ?
+		    last_test_model = ?, last_test_duration_ms = ?, last_test_targets = ?, last_tested_at = ?, updated_at = ?
 		WHERE id = ?
 		  AND config_version = ?
 		  AND test_generation = ?
@@ -516,20 +538,21 @@ func GetProviderKeyFingerprint(db *gorm.DB) (*model.ProviderKeyFingerprint, erro
 // concurrent plaintext edit happened), test_generation (no later-claimed
 // retest raced ahead), and a DIRECT comparison of
 // authorized_destination_version against the current destination_version
-// (not a snapshot — a retest has no "new" version to snapshot).
+// (not a snapshot — a retest has no "new" version to snapshot). Writes the
+// run's per-protocol breakdown in the same statement, for the reason given
+// on CommitProviderKeyPlaintextTestResult.
 func CommitProviderKeyRetestResult(
 	db *gorm.DB, keyID uint, configVersion, testGeneration int,
-	overwriteVerification bool, verificationStatus int,
-	lastTestResult *int, lastTestModel string, lastTestDurationMs int64, now time.Time,
+	record KeyTestRecord, now time.Time,
 ) (bool, error) {
-	setClause, args := verificationSetClause(overwriteVerification, verificationStatus)
-	args = append(args, lastTestResult, lastTestModel, lastTestDurationMs, now, now,
+	setClause, args := verificationSetClause(record.OverwriteVerification, record.VerificationStatus)
+	args = append(args, record.LastTestResult, record.LastTestModel, record.LastTestDurationMs, record.LastTestTargets, now, now,
 		keyID, configVersion, testGeneration)
 
 	query := `
 		UPDATE provider_keys
 		SET ` + setClause + `last_test_result = ?, last_test_model = ?,
-		    last_test_duration_ms = ?, last_tested_at = ?, updated_at = ?
+		    last_test_duration_ms = ?, last_test_targets = ?, last_tested_at = ?, updated_at = ?
 		WHERE id = ?
 		  AND config_version = ?
 		  AND test_generation = ?

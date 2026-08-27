@@ -66,24 +66,3 @@ export function bucketRange(bucket: string): { start: string; end: string } | nu
   }
   return null
 }
-
-// pressable is the attribute/listener bundle that makes a non-interactive
-// element (a KPI card, a ranking row) behave as a real control: pointer
-// affordance, button semantics, and keyboard activation. Spread with v-bind.
-export function pressable(activate: () => void): Record<string, unknown> {
-  return {
-    role: 'button',
-    tabindex: 0,
-    style: 'cursor: pointer',
-    onClick: activate,
-    onKeydown: (e: KeyboardEvent) => {
-      // Only the element itself: a focusable child (a help icon) bubbles its
-      // own Enter/Space up here, and click.stop does not stop keydown.
-      if (e.target !== e.currentTarget) return
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        activate()
-      }
-    },
-  }
-}

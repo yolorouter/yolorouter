@@ -36,6 +36,7 @@ export const errcodes: Record<number, string> = {
   12012: 'The provider address changed — please resubmit the key plaintext',
   12013: 'Key plaintext is too short',
   12014: 'Test result not saved (key modified concurrently), please retry',
+  12015: 'Invalid provider type or protocol endpoint configuration — check each protocol endpoint URL',
   12101: 'Model not found',
   12102: 'Model name already taken',
   12103: 'Model candidate not found',

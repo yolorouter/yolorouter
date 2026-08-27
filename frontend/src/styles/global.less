@@ -233,6 +233,16 @@ a {
   font-size: var(--text-sm);
 }
 
+// Supporting text under the description (a quoted upstream error). The block
+// itself owns the left alignment: the rest of the empty state is centred, and
+// a wrapped diagnostic is unreadable that way.
+.empty-state__detail {
+  width: 100%;
+  max-width: 420px;
+  margin-top: var(--space-3);
+  text-align: left;
+}
+
 .empty-state__action {
   margin-top: var(--space-5);
 }
@@ -458,6 +468,72 @@ a {
 .candidate-fail-reason {
   color: var(--color-danger);
   font-size: var(--text-xs);
+  word-break: break-all;
+}
+
+/* A tag that opens a panel on click (utils/hintTag.ts's disclosureTag): the
+   chevron sits tight against the label, and the whole tag reads as clickable. */
+.disclosure-tag {
+  cursor: pointer;
+  gap: 2px;
+}
+
+/* The per-protocol breakdown behind a key's test-result tag on the provider
+   detail page. Global rather than scoped because the popover body is rendered
+   through a teleport, outside the page's own DOM subtree. */
+
+.key-targets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 420px;
+}
+
+.key-targets__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.key-targets__title {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.key-target__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.key-target__proto {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.key-target__duration {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.key-target__detail {
+  margin-top: 4px;
+}
+
+/* Text quoted verbatim from an upstream — a destination's refusal in the key
+   test breakdown, the raw error under a connection test, the reason the model
+   catalogue could not be read. One presentation for all of them: monospace,
+   wrapped, never truncated, so the same upstream reply looks the same
+   wherever an operator meets it. */
+.upstream-detail {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--color-bg-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
   word-break: break-all;
 }
 

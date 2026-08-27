@@ -7,7 +7,7 @@ import type {
   CreateKeyInput,
   UpdateKeyInput,
   TestKeyResult,
-  ListModelsResult,
+  ModelCatalogueResult,
 } from '../api/providers'
 
 interface ProvidersState {
@@ -89,13 +89,19 @@ export const useProvidersStore = defineStore('providers', {
     async testAll(providerId: number) {
       return providersApi.testAllProviderKeys(providerId)
     },
-    async testKeyPreview(baseUrl: string, apiKey: string, model: string, providerType: string): Promise<TestKeyResult> {
-      return providersApi.testKeyPreview(baseUrl, apiKey, model, providerType)
+    async testKeyPreview(
+      baseUrl: string,
+      apiKey: string,
+      model: string,
+      providerType: string,
+      protocolEndpoints = '',
+    ): Promise<TestKeyResult> {
+      return providersApi.testKeyPreview(baseUrl, apiKey, model, providerType, protocolEndpoints)
     },
-    async listModelsPreview(baseUrl: string, apiKey: string, providerType: string): Promise<ListModelsResult> {
+    async listModelsPreview(baseUrl: string, apiKey: string, providerType: string): Promise<ModelCatalogueResult> {
       return providersApi.listModelsPreview(baseUrl, apiKey, providerType)
     },
-    async listModelsForProvider(id: number): Promise<ListModelsResult> {
+    async listModelsForProvider(id: number): Promise<ModelCatalogueResult> {
       return providersApi.listModelsForProvider(id)
     },
   },

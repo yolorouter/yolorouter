@@ -9,7 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter/internal/service/provider"
-	"github.com/yolorouter/yolorouter/internal/service/providerclient"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -66,6 +65,14 @@ type testKeyRequest struct {
 	// provider row exists to validate against. It lets an admin test an
 	// anthropic (or other non-openai) key before creating the provider.
 	ProviderType string `json:"provider_type"`
+	// ProtocolEndpoints carries the candidate's extra protocol endpoints in
+	// createProviderRequest's own wire shape, so the preview probes the same
+	// destinations the create is about to verify instead of the primary
+	// protocol alone. Untagged for the same reason as that field's: the
+	// service layer validates it, and a bad value comes back as a clean 400
+	// naming the offending entry. Omitting it means "no extra protocols",
+	// which is what every caller written before this field sends.
+	ProtocolEndpoints string `json:"protocol_endpoints"`
 }
 
 // listModelsRequest mirrors testKeyRequest minus the model: a catalogue
@@ -225,8 +232,16 @@ func PostProviderTestKey(svc *provider.ProviderService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		result, err := svc.TestKeyPreview(c.Request.Context(), req.BaseURL, req.APIKey, req.Model, req.ProviderType)
+		result, targets, err := svc.TestKeyPreview(c.Request.Context(), req.BaseURL, req.APIKey, req.Model, req.ProviderType, req.ProtocolEndpoints)
 		if err != nil {
+			// A rejected protocol_endpoints value is the admin's own input,
+			// not a failed probe: answer the way the create endpoint answers
+			// the identical value, naming what is wrong with it, rather than
+			// reporting a test that never ran.
+			if errors.Is(err, errcode.ErrProviderProtocolInvalid) {
+				writeServiceError(c, err)
+				return
+			}
 			// Same fix as writeServiceError's default branch:
 			// this call site was
 			// missed, still leaking the raw client-call error (e.g. "too
@@ -234,7 +249,15 @@ func PostProviderTestKey(svc *provider.ProviderService) gin.HandlerFunc {
 			response.Error(c, errcode.ProviderTestFailed, errcode.GetMessage(errcode.ProviderTestFailed))
 			return
 		}
-		response.Success(c, gin.H{"outcome": int(result.Outcome), "duration_ms": result.DurationMs, "detail": result.Detail})
+		// outcome/duration_ms/detail stay the aggregate — the worst
+		// destination — so a caller that reads only them behaves exactly as
+		// before; last_test_targets is the added breakdown naming each
+		// destination, under the same field name a stored key's view and a
+		// batch run's row carry it, so one reader handles all three.
+		response.Success(c, gin.H{
+			"outcome": int(result.Outcome), "duration_ms": result.DurationMs, "detail": result.Detail,
+			"last_test_targets": targets,
+		})
 	}
 }
 
@@ -252,31 +275,50 @@ func PostProviderListModels(svc *provider.ProviderService) gin.HandlerFunc {
 			response.Error(c, errcode.ProviderTestFailed, errcode.GetMessage(errcode.ProviderTestFailed))
 			return
 		}
-		respondModelCatalogue(c, result)
+		response.Success(c, modelCatalogueBody(result))
 	}
 }
 
-// respondModelCatalogue writes the JSON body shared by both model-catalogue
-// endpoints: a nil slice is normalized to [] so the body is always a list
-// (the frontend iterates it unconditionally), and only models + outcome are
-// surfaced — the picker shows the categorized outcome, not the per-fetch
-// detail/duration a credential test carries.
-func respondModelCatalogue(c *gin.Context, result providerclient.ListModelsResult) {
+// modelCatalogueBody builds the JSON body both model-catalogue endpoints
+// answer with, field for field, so one frontend reader handles either: a nil
+// slice is normalized to [] so the body is always a list (the frontend
+// iterates it unconditionally), and a failed fetch carries the upstream's own
+// refusal text alongside the category, so the picker can say what the upstream
+// actually answered instead of one generic "fetch failed" for every cause.
+// detail is empty on success. The per-fetch duration stays out: it informs a
+// credential test, not a catalogue read.
+//
+// outcome is null exactly when no fetch was attempted (no_usable_key), never
+// the enum's zero value, which names success. no_usable_key is present on both
+// endpoints — always false for the stateless preview, which carries its own
+// candidate credential and therefore always fetches — so the reader never has
+// to know which endpoint answered it.
+func modelCatalogueBody(result provider.ProviderCatalogueResult) gin.H {
 	models := result.Models
 	if models == nil {
 		models = []string{}
 	}
-	response.Success(c, gin.H{
-		"models":  models,
-		"outcome": int(result.Outcome),
-	})
+	var outcome any
+	if result.Outcome != nil {
+		outcome = int(*result.Outcome)
+	}
+	return gin.H{
+		"models":        models,
+		"outcome":       outcome,
+		"detail":        result.Detail,
+		"no_usable_key": result.NoUsableKey,
+	}
 }
 
 // GetProviderListModels fetches the model catalogue for an already-stored
 // provider (GET .../providers/:id/models) using one of its server-side keys —
-// the by-id counterpart to the stateless preview above. A non-success outcome
-// (including "no usable key") comes back as 200 with an empty list, letting
-// the picker fall back to manual entry.
+// the by-id counterpart to the stateless preview above. A failure comes back
+// as 200 with an empty list, letting the picker fall back to manual entry,
+// and carries why it failed: no_usable_key when the provider has no enabled,
+// current key, so nothing was ever asked of the upstream. That case reports
+// no outcome at all (null) rather than borrowing a test category, because no
+// test ran — the two answers send an admin to opposite places (enable a key
+// here, fix the credential or the address there).
 func GetProviderListModels(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, ok := parseUintParam(c, "id")
@@ -292,7 +334,7 @@ func GetProviderListModels(svc *provider.ProviderService) gin.HandlerFunc {
 			response.Error(c, errcode.ProviderTestFailed, errcode.GetMessage(errcode.ProviderTestFailed))
 			return
 		}
-		respondModelCatalogue(c, result)
+		response.Success(c, modelCatalogueBody(result))
 	}
 }
 

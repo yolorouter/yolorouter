@@ -187,6 +187,7 @@ export default {
   importTitle: 'Import Models',
   importHint: 'Models with a price suggestion are pre-checked; prices are editable, and blanks import as 0. Added models with a probe verdict are greyed out; added ones still awaiting a verdict can be checked manually — importing them reruns their probes (a pass auto-enables).',
   importFetchFailed: 'Failed to fetch the upstream model list — check the provider key and base URL, then retry',
+  importNoUsableKey: 'No enabled, usable key — test and enable one under "Connection & Keys" first',
   importCatalogEmpty: 'The upstream returned no model list; add mappings manually on the Models page',
   importPriceSuggestion: 'Price Suggestion',
   importPriceSuggestion_tip: 'Where the suggested price came from: the built-in catalog or this provider\'s own history. Unsuggested models are unchecked by default and import at 0',
