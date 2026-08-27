@@ -50,7 +50,7 @@ func compressorsFor(ct ContentType) []compressors.Compressor {
 // locator from the table below. An unrecognized protocol returns the body
 // unchanged with a no-op result (Skipped=true) so an unknown ingress never
 // breaks a caller.
-func ByProtocol(proto protocols.ProtocolID, ctx context.Context, body []byte, opts CompressOptions) (out []byte, res CompressResult) {
+func ByProtocol(ctx context.Context, proto protocols.ProtocolID, body []byte, opts CompressOptions) (out []byte, res CompressResult) {
 	locate, ok := liveZoneLocators[proto]
 	if !ok {
 		return body, CompressResult{Skipped: true, SkipReason: SkipReasonNoLiveZone}

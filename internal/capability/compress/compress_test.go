@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/yolorouter/yolorouter/internal/compress"
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 )
@@ -161,17 +159,6 @@ func TestUnparseableBodyIsPassedThroughUntouched(t *testing.T) {
 	}
 }
 
-// A zero timeout would make context.WithTimeout expire before the engine ran,
-// turning a misconfiguration into a compressor that silently never matches.
-func TestZeroTimeoutIsRaisedToTheFloor(t *testing.T) {
-	opts := compress.DefaultOptions()
-	opts.Timeout = 0
-
-	if got := NewWithOptions(opts).opts.Timeout; got < time.Millisecond {
-		t.Fatalf("timeout = %v, want at least the floor: every request would skip", got)
-	}
-}
-
 // The bytes this capability is handed are the same ones the audit row keeps as
 // the caller's verbatim request — the kernel hands over the live body rather
 // than a copy, because copying one per request would cost more than it
@@ -199,5 +186,16 @@ func TestNeverEditsTheBodyItWasShown(t *testing.T) {
 				t.Error("the returned body aliases the input yet differs from it, which is only possible by editing in place")
 			}
 		})
+	}
+}
+
+// The capability's comments promise that the engine bounds its own pass with
+// opts.Timeout, and New wiring DefaultOptions is the only thing making that
+// budget positive — runCompress arms no deadline at zero. This pins the wire:
+// a constructor that stops passing the defaults goes red here, not silently
+// unbounded in production.
+func TestNewCarriesAPositiveEngineBudget(t *testing.T) {
+	if got := New().opts.Timeout; got <= 0 {
+		t.Fatalf("New().opts.Timeout = %v, want > 0: the engine would run with no deadline", got)
 	}
 }

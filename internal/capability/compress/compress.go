@@ -14,7 +14,6 @@ package compress
 
 import (
 	"context"
-	"time"
 
 	"github.com/yolorouter/yolorouter/internal/compress"
 	"github.com/yolorouter/yolorouter/internal/fact"
@@ -33,27 +32,13 @@ type View interface {
 // Compressor is the capability. It holds no per-request state: everything it
 // needs arrives as the view and the body.
 type Compressor struct {
-	// opts is captured once so a test can shorten the deadline without
-	// reaching into the engine's package defaults.
+	// opts is captured once at construction; the engine bounds its own work
+	// with opts.Timeout, so no second deadline is layered on here.
 	opts compress.CompressOptions
 }
 
 // New builds the capability with the engine's default budget.
 func New() *Compressor { return &Compressor{opts: compress.DefaultOptions()} }
-
-// NewWithOptions builds the capability with an explicit budget. A zero or
-// negative timeout is raised to the floor: context.WithTimeout would read it as
-// a deadline already past and turn every request into a skip, which looks like
-// a compressor that never matches rather than one that was misconfigured.
-func NewWithOptions(opts compress.CompressOptions) *Compressor {
-	if opts.Timeout < timeoutFloor {
-		opts.Timeout = timeoutFloor
-	}
-	return &Compressor{opts: opts}
-}
-
-// timeoutFloor is the smallest budget the engine is ever given.
-const timeoutFloor = time.Millisecond
 
 func (*Compressor) Name() string { return "compress" }
 
@@ -70,14 +55,12 @@ func (*Compressor) Applies(view View) bool {
 
 // RewriteIngress returns the shrunk body, or the caller's own body untouched.
 //
-// The engine is given a deadline of its own rather than the request's: a
-// compressor that overran would otherwise spend the caller's whole budget
-// before the first byte went upstream, and the fallback — send what the caller
-// sent — is always available and always correct.
+// The engine bounds its own pass with opts.Timeout rather than running on the
+// request's whole budget: a compressor that overran would otherwise spend the
+// caller's deadline before the first byte went upstream, and the fallback —
+// send what the caller sent — is always available and always correct.
 func (c *Compressor) RewriteIngress(ctx context.Context, view View, body []byte, sink fact.Sink) ([]byte, error) {
-	cctx, cancel := context.WithTimeout(ctx, c.opts.Timeout)
-	defer cancel()
-	out, res := compress.ByProtocol(view.IngressProtocol(), cctx, body, c.opts)
+	out, res := compress.ByProtocol(ctx, view.IngressProtocol(), body, c.opts)
 
 	if res.Skipped {
 		sink.Note(fact.CompressionSkipped{Reason: string(res.SkipReason)})
