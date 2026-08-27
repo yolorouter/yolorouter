@@ -2,9 +2,10 @@ package claude
 
 import (
 	"encoding/json"
+	"testing"
+
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/protocols/chat"
-	"testing"
 )
 
 // --- Claude Request Encoder ---
@@ -697,3 +698,72 @@ func TestCrossProtocolNoCacheNoSynthesize(t *testing.T) {
 }
 
 func float64Ptr(v float64) *float64 { return &v }
+
+// TestClaudeEncodeRequest_ThinkingDroppedWhenCapCannotFitBudget: legacy
+// thinking needs budget_tokens >= 1024 AND max_tokens > budget_tokens, so
+// with max_tokens at or under 1024 no legal budget exists. The encoder must
+// drop thinking and leave the caller's sampling parameters alone. Adaptive
+// models carry no budget constraint and keep thinking in adaptive form.
+func TestClaudeEncodeRequest_ThinkingDroppedWhenCapCannotFitBudget(t *testing.T) {
+	budget := 2048
+	temp := 0.5
+	topP := 0.9
+	encode := func(model string, maxTok int) map[string]interface{} {
+		t.Helper()
+		irReq := &protocols.IRRequest{
+			Model: model,
+			Messages: []protocols.IRMessage{
+				{Role: protocols.RoleUser, Content: []protocols.IRContentBlock{protocols.BlockText{Text: "Think"}}},
+			},
+			Generation: protocols.IRGenerationConfig{MaxTokens: &maxTok, Temperature: &temp, TopP: &topP},
+			Reasoning:  protocols.IRReasoningConfig{Enabled: true, BudgetTokens: &budget},
+		}
+		data, err := (RequestEncoder{}).EncodeRequest(irReq)
+		if err != nil {
+			t.Fatalf("EncodeRequest: %v", err)
+		}
+		var req map[string]interface{}
+		if err := json.Unmarshal(data, &req); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		return req
+	}
+
+	for _, maxTok := range []int{512, 1024} {
+		req := encode("claude-3-5-sonnet-20241022", maxTok)
+		if _, has := req["thinking"]; has {
+			t.Fatalf("max_tokens=%d: thinking = %v, want it dropped — no legal budget fits under this cap", maxTok, req["thinking"])
+		}
+		if got, _ := req["temperature"].(float64); got != 0.5 {
+			t.Fatalf("max_tokens=%d: temperature = %v, the caller's sampling must stay untouched when thinking is dropped", maxTok, req["temperature"])
+		}
+		if got, _ := req["top_p"].(float64); got != 0.9 {
+			t.Fatalf("max_tokens=%d: top_p = %v, the caller's sampling must stay untouched when thinking is dropped", maxTok, req["top_p"])
+		}
+	}
+
+	// One past the boundary: the floored minimum budget fits.
+	req := encode("claude-3-5-sonnet-20241022", 1025)
+	thinking, ok := req["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatal("max_tokens=1025: thinking should be set")
+	}
+	if got, _ := thinking["budget_tokens"].(float64); int(got) != 1024 {
+		t.Fatalf("max_tokens=1025: budget = %v, want the 1024 floor", thinking["budget_tokens"])
+	}
+
+	// Adaptive models have no budget constraint: thinking survives a small
+	// max_tokens in adaptive form, which carries no budget_tokens at all.
+	req = encode("claude-opus-4-8", 512)
+	thinking, ok = req["thinking"].(map[string]interface{})
+	if !ok || thinking["type"] != "adaptive" {
+		t.Fatalf("adaptive model: thinking = %v, want the adaptive form", req["thinking"])
+	}
+	if bt, has := thinking["budget_tokens"]; has {
+		t.Fatalf("adaptive model: budget_tokens = %v, adaptive thinking takes no budget", bt)
+	}
+	oc, _ := req["output_config"].(map[string]interface{})
+	if oc["effort"] != "max" {
+		t.Fatalf("adaptive model: output_config = %v, want the default max effort", req["output_config"])
+	}
+}

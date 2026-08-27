@@ -40,6 +40,39 @@ func isAdaptiveModel(model string) bool {
 	return false
 }
 
+// legacyThinkingMinBudget is Anthropic's minimum budget_tokens for legacy
+// ("enabled") thinking. max_tokens must strictly exceed the budget, so no
+// legal budget exists when max_tokens is at or under this floor.
+const legacyThinkingMinBudget = 1024
+
+// clampLegacyThinkingBudget floors the budget at Anthropic's minimum, then
+// clamps it under max_tokens so the caller's output cap is never raised.
+// Callers must have ruled out max_tokens <= legacyThinkingMinBudget first:
+// inside that range the floor and the clamp contradict each other and no
+// legal value exists.
+func clampLegacyThinkingBudget(budget, maxTokens int) int {
+	if budget < legacyThinkingMinBudget {
+		budget = legacyThinkingMinBudget
+	}
+	if upper := maxTokens - 1; budget > upper {
+		budget = upper
+	}
+	return budget
+}
+
+// applyAdaptiveThinking writes the adaptive thinking block and merges the
+// mapped effort into output_config, preserving any other output_config fields
+// already present in the body. Adaptive thinking takes no budget_tokens.
+func applyAdaptiveThinking(m map[string]interface{}, effort string) {
+	m["thinking"] = map[string]interface{}{"type": "adaptive"}
+	oc, ok := m["output_config"].(map[string]interface{})
+	if !ok {
+		oc = map[string]interface{}{}
+	}
+	oc["effort"] = adaptiveEffort(effort)
+	m["output_config"] = oc
+}
+
 // OptimizeBody applies three transformations to an already-encoded Claude request
 // body in a single parse/marshal pass:
 //  1. Thinking type upgrade (only when irReq.Reasoning.Enabled == true)
@@ -225,9 +258,10 @@ func upgradeThinking(m map[string]interface{}, irReq *protocols.IRRequest) bool 
 	maxTokens := jsonInt(m, "max_tokens", 4096)
 	adaptive := isAdaptiveModel(irReq.Model)
 
-	if !adaptive && maxTokens <= 1024 {
-		// Legacy thinking requires budget_tokens >= 1024 < max_tokens; adaptive has no
-		// such constraint, so it skips this guard.
+	if !adaptive && maxTokens <= legacyThinkingMinBudget {
+		// Legacy thinking requires budget_tokens >= legacyThinkingMinBudget and
+		// max_tokens > budget_tokens; adaptive has no such constraint, so it
+		// skips this guard.
 		// Restore the sampling parameters encoder.go forced when it wrote thinking.
 		delete(m, "thinking")
 		if irReq.Generation.Temperature != nil {
@@ -242,16 +276,7 @@ func upgradeThinking(m map[string]interface{}, irReq *protocols.IRRequest) bool 
 	}
 
 	if adaptive {
-		m["thinking"] = map[string]interface{}{"type": "adaptive"}
-		effort := adaptiveEffort(irReq.Reasoning.Effort)
-		// merge rather than a full replace, to preserve any other output_config
-		// fields already present in the body
-		oc, ok := m["output_config"].(map[string]interface{})
-		if !ok {
-			oc = map[string]interface{}{}
-		}
-		oc["effort"] = effort
-		m["output_config"] = oc
+		applyAdaptiveThinking(m, irReq.Reasoning.Effort)
 		// Anthropic requires temperature=1 and top_p unset for every thinking mode
 		// (including adaptive). encoder.go already enforces this when
 		// Reasoning.Enabled==true, so the optimizer doesn't need to repeat it.
@@ -267,15 +292,9 @@ func upgradeThinking(m map[string]interface{}, irReq *protocols.IRRequest) bool 
 				budget = bt
 			}
 		}
-		if budget < 1024 {
-			budget = 1024
-		}
-		if upper := maxTokens - 1; budget > upper {
-			budget = upper
-		}
 		m["thinking"] = map[string]interface{}{
 			"type":          "enabled",
-			"budget_tokens": budget,
+			"budget_tokens": clampLegacyThinkingBudget(budget, maxTokens),
 		}
 	}
 	return true

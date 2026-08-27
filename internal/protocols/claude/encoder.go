@@ -64,34 +64,37 @@ func (RequestEncoder) EncodeRequest(irReq *protocols.IRRequest) (json.RawMessage
 
 	// Thinking
 	if irReq.Reasoning.Enabled {
-		budget := 4096
-		if irReq.Reasoning.BudgetTokens != nil {
-			budget = *irReq.Reasoning.BudgetTokens
-		}
-		// Anthropic requires max_tokens > thinking.budget_tokens. OptimizeBody
-		// applies the same rule (a post-encode pass not wired into dispatch in
-		// this version) by clamping the thinking budget under max_tokens rather
-		// than raising the caller's requested output ceiling. Mirror it: floor
-		// the budget at 1024 (Anthropic's minimum for a
-		// usable thinking budget), then clamp it to max_tokens - 1 so the
-		// caller's max_tokens cap is always respected.
 		maxTokens := 4096
 		if v, ok := req["max_tokens"].(int); ok {
 			maxTokens = v
 		}
-		if budget < 1024 {
-			budget = 1024
+		switch {
+		case isAdaptiveModel(irReq.Model):
+			applyAdaptiveThinking(req, irReq.Reasoning.Effort)
+			// Anthropic requires temperature=1 and top_p unset for every
+			// thinking mode, including adaptive.
+			req["temperature"] = 1.0
+			delete(req, "top_p")
+		case maxTokens <= legacyThinkingMinBudget:
+			// Anthropic's legacy thinking needs budget_tokens >=
+			// legacyThinkingMinBudget AND max_tokens > budget_tokens: with
+			// max_tokens at or under the floor no budget satisfies both.
+			// Respecting the caller's output cap wins: send the request
+			// without thinking and leave the caller's sampling parameters
+			// untouched.
+		default:
+			budget := 4096
+			if irReq.Reasoning.BudgetTokens != nil {
+				budget = *irReq.Reasoning.BudgetTokens
+			}
+			req["thinking"] = map[string]interface{}{
+				"type":          "enabled",
+				"budget_tokens": clampLegacyThinkingBudget(budget, maxTokens),
+			}
+			// When thinking is enabled, temperature must be 1 and top_p must be unset
+			req["temperature"] = 1.0
+			delete(req, "top_p")
 		}
-		if upper := maxTokens - 1; budget > upper {
-			budget = upper
-		}
-		req["thinking"] = map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": budget,
-		}
-		// When thinking is enabled, temperature must be 1 and top_p must be unset
-		req["temperature"] = 1.0
-		delete(req, "top_p")
 	}
 
 	// Tools
