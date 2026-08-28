@@ -401,6 +401,52 @@ func SetProviderKeyManagementStatus(db *gorm.DB, keyID uint, status int, now tim
 		Updates(map[string]interface{}{"management_status": status, "updated_at": now}).Error
 }
 
+// CountProviderKeysByProvider reports the size of a provider's credential
+// pool without loading the rows (the encrypted plaintexts have no business
+// in an impact summary).
+func CountProviderKeysByProvider(db *gorm.DB, providerID uint) (int64, error) {
+	var n int64
+	err := db.Model(&model.ProviderKey{}).Where("provider_id = ?", providerID).Count(&n).Error
+	return n, err
+}
+
+// DeleteProviderCascade removes a provider together with its dependent
+// configuration rows — the credential pool and the model mappings, whose
+// foreign keys would otherwise reject the provider DELETE outright.
+// Request logs are deliberately left alone: they are history, keep their
+// provider_id for per-provider aggregation, and render with an empty
+// provider name once this row is gone (the attempts_detail snapshot still
+// names the provider on the detail view). Returns whether a provider row
+// actually matched; the whole cascade rolls back on any error.
+func DeleteProviderCascade(db *gorm.DB, id uint) (bool, error) {
+	deleted := false
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("provider_id = ?", id).Delete(&model.ProviderKey{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("provider_id = ?", id).Delete(&model.ModelCandidate{}).Error; err != nil {
+			return err
+		}
+		res := tx.Where("id = ?", id).Delete(&model.Provider{})
+		if res.Error != nil {
+			return res.Error
+		}
+		deleted = res.RowsAffected > 0
+		return nil
+	})
+	return deleted, err
+}
+
+// DeleteProviderKey removes one key row, scoped to its provider in the same
+// statement so a keyID belonging to a different provider is a no-op rather
+// than a cross-provider delete. Returns whether a row was actually removed;
+// the caller translates false into not-found, identically for a missing and
+// a cross-provider key.
+func DeleteProviderKey(db *gorm.DB, providerID, keyID uint) (bool, error) {
+	res := db.Where("provider_id = ? AND id = ?", providerID, keyID).Delete(&model.ProviderKey{})
+	return res.RowsAffected > 0, res.Error
+}
+
 // UpdateProviderKeyLabelAndStatusIfVerified is UpdateProviderKeyLabelAndStatus's
 // CAS-guarded counterpart for the one transition that matters: writing
 // management_status=Enabled. The

@@ -83,6 +83,12 @@ export const useProvidersStore = defineStore('providers', {
     async setKeyStatus(providerId: number, keyId: number, enabled: boolean) {
       await providersApi.setProviderKeyStatus(providerId, keyId, enabled)
     },
+    async deleteKey(providerId: number, keyId: number) {
+      await providersApi.deleteProviderKey(providerId, keyId)
+    },
+    async deleteProvider(id: number) {
+      await providersApi.deleteProvider(id)
+    },
     async testKey(providerId: number, keyId: number, destinationCount: number) {
       return providersApi.testProviderKey(providerId, keyId, destinationCount)
     },

@@ -182,6 +182,10 @@ export interface ProviderImpact {
   affected_keys: ModelImpactKey[]
   /** Callable allow-all keys, counted only when something is stranded. */
   allow_all_key_count: number
+  /** What a delete cascade removes with the provider: its keys... */
+  key_count: number
+  /** ...and its model candidates. The disable dialog ignores both. */
+  candidate_count: number
 }
 
 export function getProviderImpact(id: number): Promise<ProviderImpact> {
@@ -275,6 +279,18 @@ export function reorderProviderKey(providerId: number, keyId: number, direction:
   return apiFetch(`/api/admin/providers/${providerId}/keys/${keyId}/order`, {
     method: 'PATCH',
     body: JSON.stringify({ direction }),
+  })
+}
+
+export function deleteProvider(id: number): Promise<void> {
+  return apiFetch(`/api/admin/providers/${id}`, {
+    method: 'DELETE',
+  })
+}
+
+export function deleteProviderKey(providerId: number, keyId: number): Promise<void> {
+  return apiFetch(`/api/admin/providers/${providerId}/keys/${keyId}`, {
+    method: 'DELETE',
   })
 }
 

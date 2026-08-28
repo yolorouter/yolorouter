@@ -82,7 +82,8 @@
          chains the first-setup flow straight into model import on the new
          provider's detail page. -->
     <NewProviderModal v-model:show="showCreate" @created="onProviderCreated" />
-    <ProviderEditModal v-model:show="showEditProvider" :provider="editingProvider" @updated="onEdited" />
+    <ProviderEditModal v-model:show="showEditProvider" :provider="editingProvider" @updated="refreshAfterProviderMutation" />
+    <DeleteProviderModal v-model:show="showDeleteProvider" :provider="deletingProvider" @deleted="refreshAfterProviderMutation" />
   </div>
 </template>
 
@@ -103,6 +104,8 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import NewProviderModal from '../../components/providers/NewProviderModal.vue'
 import ProviderEditModal from '../../components/providers/ProviderEditModal.vue'
+import DeleteProviderModal from '../../components/providers/DeleteProviderModal.vue'
+import { useRowModal } from '../../composables/useRowModal'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
@@ -132,15 +135,11 @@ function onProviderCreated(created: Provider) {
   store.pendingImportProviderId = created.id
   void router.push(`/providers/${created.id}`)
 }
-// Inline row edit: open the provider edit modal straight from the list so a
-// quick change needs no navigation into the detail page.
-const showEditProvider = ref(false)
-const editingProvider = ref<Provider | null>(null)
-
-function openEditProvider(row: Provider) {
-  editingProvider.value = row
-  showEditProvider.value = true
-}
+// Inline row edit / row delete: both modals open straight from the list so
+// a quick change needs no navigation into the detail page. useRowModal keeps
+// each modal's visibility tied to the row it acts on.
+const { row: editingProvider, show: showEditProvider } = useRowModal<Provider>()
+const { row: deletingProvider, show: showDeleteProvider } = useRowModal<Provider>()
 
 // The expand panels derive their mapping rows and ✓/✗ marks from the models
 // list, so any provider mutation that can change routability (status toggle,
@@ -150,9 +149,13 @@ function refreshModels() {
   void modelsStore.fetchList().catch((err) => message.error(displayMessage(err, t)))
 }
 
-function onEdited() {
-  void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
+// One refresh policy for every provider mutation reached from this page —
+// edit, status toggle, delete — since each can change routability and
+// leaves the providers list and the models list's marks stale. Returns the
+// list refetch so a confirm-dialog caller can await it.
+function refreshAfterProviderMutation() {
   refreshModels()
+  return store.fetchList().catch((err) => message.error(displayMessage(err, t)))
 }
 
 // In-page filters over the fully-fetched list. `filter` is the live draft the
@@ -308,8 +311,7 @@ function onToggleStatus(row: Provider, enable: boolean) {
   const proceed = async () => {
     try {
       await store.setStatus(row.id, enable)
-      await store.fetchList()
-      refreshModels()
+      await refreshAfterProviderMutation()
     } catch (err) {
       message.error(displayMessage(err, t))
     }
@@ -412,14 +414,17 @@ const sharedColumns = computed<DataTableColumns<Provider>>(() => [
               trigger: 'click',
               placement: 'bottom-end',
               triggerText: t('common.actions'),
-              height: 150,
+              height: 210,
               options: [
                 { label: t('providers.editProvider'), key: 'edit' },
                 { label: t('costs.detail.viewCost'), key: 'viewCost' },
+                { type: 'divider', key: 'd' },
+                { label: t('providers.deleteProvider'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
               ],
               onSelect: (key: string) => {
-                if (key === 'edit') openEditProvider(row)
+                if (key === 'edit') editingProvider.value = row
                 else if (key === 'viewCost') router.push(`/costs/providers/${row.id}`)
+                else if (key === 'delete') deletingProvider.value = row
               },
             },
             {

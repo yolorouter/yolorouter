@@ -437,3 +437,56 @@ func assertInsertableByAnOlderBinary(t *testing.T, db *sql.DB) {
 		t.Fatal("expected the default to stamp a current price clock, not a sentinel")
 	}
 }
+
+// Postgres twin of the SQLite provider-deletion contract: after 00036,
+// deleting a provider referenced only by request_logs succeeds and leaves
+// the history rows behind with their provider_id intact, while the
+// provider_keys constraint still rejects deleting a provider that has keys
+// (proving enforcement is live). The downgrade must restore the dropped
+// constraint under its original name — this is also the only test that
+// verifies that name actually matches what 00007 generated.
+func TestPostgresMigration00036DropsRequestLogsProviderFk(t *testing.T) {
+	db := newTestPostgresDB(t)
+	if err := RunMigrations(db, "postgres", migrations.PostgresFS, "postgres"); err != nil {
+		t.Fatalf("RunMigrations failed: %v", err)
+	}
+
+	mustExec(t, db, `INSERT INTO providers (id, name, base_url, created_at, updated_at)
+		VALUES (1, 'keyed-provider', 'https://api.example.com', now(), now()),
+		       (2, 'logged-provider', 'https://api.example.com/2', now(), now())`)
+	mustExec(t, db, `INSERT INTO provider_keys (provider_id, label, encrypted_key, key_prefix, sort_order,
+			test_model, authorized_destination_version, created_at, updated_at)
+		VALUES (1, 'k1', 'enc', 'sk-', 1, 'test-model', 1, now(), now())`)
+	mustExec(t, db, `INSERT INTO request_logs (request_id, model_name, provider_id, status_code, created_at)
+		VALUES ('req-history', 'm', 2, 200, now())`)
+
+	if _, err := db.Exec(`DELETE FROM providers WHERE id = 1`); err == nil {
+		t.Fatal("deleting a provider that still has keys succeeded — the provider_keys constraint is gone")
+	}
+	if _, err := db.Exec(`DELETE FROM providers WHERE id = 2`); err != nil {
+		t.Fatalf("deleting a provider referenced only by request_logs must succeed, got: %v", err)
+	}
+	var gotProviderID int64
+	if err := db.QueryRow(`SELECT provider_id FROM request_logs WHERE request_id = 'req-history'`).Scan(&gotProviderID); err != nil {
+		t.Fatalf("request log row vanished after provider delete: %v", err)
+	}
+	if gotProviderID != 2 {
+		t.Fatalf("request log provider_id changed after provider delete: got %d, want 2", gotProviderID)
+	}
+
+	// The downgrade cannot run over the orphaned row, so re-point it at the
+	// surviving provider first, then verify the restored constraint enforces.
+	if _, err := db.Exec(`UPDATE request_logs SET provider_id = 1 WHERE request_id = 'req-history'`); err != nil {
+		t.Fatalf("re-point request log: %v", err)
+	}
+	if err := RollbackTo(db, "postgres", migrations.PostgresFS, "postgres", 35); err != nil {
+		t.Fatalf("RollbackTo(35) failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO request_logs (request_id, model_name, provider_id, status_code, created_at)
+		VALUES ('req-dangling', 'm', 999, 200, now())`); err == nil {
+		t.Fatal("downgrade did not restore the provider_id foreign key: an insert referencing a missing provider succeeded")
+	}
+	if err := RunMigrations(db, "postgres", migrations.PostgresFS, "postgres"); err != nil {
+		t.Fatalf("re-applying 00036 after downgrade failed: %v", err)
+	}
+}

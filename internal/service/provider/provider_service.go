@@ -1017,6 +1017,43 @@ func (s *ProviderService) SetProviderKeyStatus(providerID, keyID uint, enabled b
 	return nil
 }
 
+// DeleteProvider removes the provider outright, enabled or not: its keys
+// and model mappings go with it in one transaction, request history stays
+// behind under the deleted id. No precondition beyond existence — the
+// gateway reads providers fresh per request, so the commit is the cutover,
+// and in-flight requests finish on the row copy they already hold. In-memory
+// per-id state (key cooldowns, breaker, sticky bindings) is left to expire
+// on its own; entries nothing matches against are harmless.
+func (s *ProviderService) DeleteProvider(id uint) error {
+	deleted, err := repository.DeleteProviderCascade(s.db, id)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return errcode.ErrProviderNotFound
+	}
+	return nil
+}
+
+// DeleteProviderKey removes a key outright, at any time — including a key
+// with request history (log rows reference keys only through their own
+// attempts_detail snapshot, so nothing dangles) and the provider's last key
+// (the provider then simply has nothing to serve until a new key is added,
+// the same operational state as all keys disabled). The scoped single-
+// statement delete needs no prior lookup: zero rows affected covers both
+// the missing and the cross-provider key, reported identically so a caller
+// cannot probe which provider a key ID belongs to.
+func (s *ProviderService) DeleteProviderKey(providerID, keyID uint) error {
+	deleted, err := repository.DeleteProviderKey(s.db, providerID, keyID)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return errcode.ErrProviderKeyNotFound
+	}
+	return nil
+}
+
 // ReorderProviderKey moves a key up/down one position (atomic swap).
 // A no-op at either boundary is not an error.
 func (s *ProviderService) ReorderProviderKey(providerID, keyID uint, direction string, now time.Time) error {
@@ -1410,12 +1447,18 @@ type ProviderImpactView struct {
 	Models           []ProviderImpactModelView       `json:"models"`
 	AffectedKeys     []modeladmin.ModelImpactKeyView `json:"affected_keys"`
 	AllowAllKeyCount int64                           `json:"allow_all_key_count"`
+	// KeyCount and CandidateCount are what a delete cascade removes together
+	// with the provider — its credential pool and its model mappings. The
+	// disable dialog ignores them; the delete confirmation leads with them.
+	KeyCount       int64 `json:"key_count"`
+	CandidateCount int64 `json:"candidate_count"`
 }
 
-// GetProviderImpact answers "what breaks if I disable this provider" for the
-// confirm dialogs. A model counts as still served when at least one candidate
-// on a different provider is routable right now — the same routability rule
-// the candidate list reports, applied with this provider taken out.
+// GetProviderImpact answers "what losing this provider breaks" for both
+// danger dialogs — disable and delete. A model counts as still served when
+// at least one candidate on a different provider is routable right now —
+// the same routability rule the candidate list reports, applied with this
+// provider taken out.
 func (s *ProviderService) GetProviderImpact(id uint, now time.Time) (*ProviderImpactView, error) {
 	if _, err := repository.FindProviderByID(s.db, id); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1428,7 +1471,16 @@ func (s *ProviderService) GetProviderImpact(id uint, now time.Time) (*ProviderIm
 		return nil, err
 	}
 	if len(onThis) == 0 {
-		return &ProviderImpactView{Models: []ProviderImpactModelView{}, AffectedKeys: []modeladmin.ModelImpactKeyView{}}, nil
+		// The only path where the key rows are never loaded; everywhere
+		// else the count falls out of the rows fetched below.
+		keyCount, err := repository.CountProviderKeysByProvider(s.db, id)
+		if err != nil {
+			return nil, err
+		}
+		return &ProviderImpactView{
+			Models: []ProviderImpactModelView{}, AffectedKeys: []modeladmin.ModelImpactKeyView{},
+			KeyCount: keyCount,
+		}, nil
 	}
 	modelIDSet := make(map[uint]struct{}, len(onThis))
 	modelIDs := make([]uint, 0, len(onThis))
@@ -1505,5 +1557,10 @@ func (s *ProviderService) GetProviderImpact(id uint, now time.Time) (*ProviderIm
 			return nil, err
 		}
 	}
-	return &ProviderImpactView{Models: views, AffectedKeys: affectedKeys, AllowAllKeyCount: allowAll}, nil
+	return &ProviderImpactView{
+		Models: views, AffectedKeys: affectedKeys, AllowAllKeyCount: allowAll,
+		// This provider is always in keysByProvider: onThis is non-empty, so
+		// its own candidates put it in the fetched set.
+		KeyCount: int64(len(keysByProvider[id])), CandidateCount: int64(len(onThis)),
+	}, nil
 }

@@ -11,14 +11,17 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
+	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/service/provider"
 	"github.com/yolorouter/yolorouter/internal/service/providerclient"
+	"github.com/yolorouter/yolorouter/internal/service/requestlog"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
@@ -65,6 +68,8 @@ func newProviderTestRouterWithClient(t *testing.T, client providerclient.Provide
 	admin.PATCH("/providers/:id/keys/:keyId", PatchProviderKey(svc))
 	admin.PATCH("/providers/:id/keys/:keyId/order", PatchProviderKeyOrder(svc))
 	admin.PATCH("/providers/:id/keys/:keyId/status", PatchProviderKeyStatus(svc))
+	admin.DELETE("/providers/:id/keys/:keyId", DeleteProviderKey(svc))
+	admin.DELETE("/providers/:id", DeleteProvider(svc))
 	admin.POST("/providers/:id/keys/:keyId/test", PostProviderKeyTest(svc))
 	admin.POST("/providers/:id/keys/test-all", PostProviderKeysTestAll(svc))
 	return r, db
@@ -362,6 +367,10 @@ func TestProviderHandlersRejectNonNumericIDParams(t *testing.T) {
 			map[string]interface{}{"enabled": false}},
 		{"PostProviderKeyTest", http.MethodPost, "/api/admin/providers/1/keys/abc/test", nil},
 		{"PostProviderKeysTestAll", http.MethodPost, "/api/admin/providers/abc/keys/test-all", nil},
+		{"DeleteProviderKey_BadProviderID", http.MethodDelete, "/api/admin/providers/abc/keys/1", nil},
+		{"DeleteProviderKey_BadKeyID", http.MethodDelete,
+			fmt.Sprintf("/api/admin/providers/%d/keys/abc", providerID), nil},
+		{"DeleteProvider_BadProviderID", http.MethodDelete, "/api/admin/providers/abc", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1477,5 +1486,220 @@ func TestPostProviderTestKeyPreviewRejectsProviderTypeTheCreateWouldReject(t *te
 	if createW.Code != w.Code || createEnv.Code != env.Code {
 		t.Fatalf("preview answered %d/%d for the same value the create answered %d/%d with",
 			w.Code, env.Code, createW.Code, createEnv.Code)
+	}
+}
+
+// fetchProviderKeys reloads the provider detail and returns its keys — the
+// external observation every deletion test below asserts against.
+func fetchProviderKeys(t *testing.T, r *gin.Engine, providerID uint) []providerKeyJSON {
+	t.Helper()
+	w, env := doJSON(t, r, http.MethodGet, fmt.Sprintf("/api/admin/providers/%d", providerID), nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reload provider %d: %d, body: %s", providerID, w.Code, w.Body.String())
+	}
+	var view providerViewJSON
+	if err := json.Unmarshal(env.Data, &view); err != nil {
+		t.Fatalf("unmarshal provider view: %v", err)
+	}
+	return view.Keys
+}
+
+func TestDeleteProviderKeyRemovesOnlyThatKey(t *testing.T) {
+	r, _ := newProviderTestRouter(t)
+	providerID, firstKeyID := createProviderForTest(t, r, "key-delete-provider")
+
+	w, env := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/providers/%d/keys", providerID),
+		map[string]interface{}{"label": "second", "plaintext": testProviderKeyPlaintext, "test_model": testProviderTestModel}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("setup: add second key failed: %d, body: %s", w.Code, w.Body.String())
+	}
+	var second providerKeyJSON
+	if err := json.Unmarshal(env.Data, &second); err != nil {
+		t.Fatalf("unmarshal second key: %v", err)
+	}
+
+	w, _ = doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/admin/providers/%d/keys/%d", providerID, second.ID), nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete key: expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	keys := fetchProviderKeys(t, r, providerID)
+	if len(keys) != 1 || keys[0].ID != firstKeyID {
+		t.Fatalf("expected only the first key %d to remain, got %+v", firstKeyID, keys)
+	}
+}
+
+func TestDeleteProviderKeyReturns400WhenKeyUnknownOrCrossProvider(t *testing.T) {
+	r, _ := newProviderTestRouter(t)
+	providerID, keyID := createProviderForTest(t, r, "key-delete-owner")
+	otherID, _ := createProviderForTest(t, r, "key-delete-other")
+
+	for name, path := range map[string]string{
+		"unknown key":        fmt.Sprintf("/api/admin/providers/%d/keys/99999", providerID),
+		"cross-provider key": fmt.Sprintf("/api/admin/providers/%d/keys/%d", otherID, keyID),
+	} {
+		w, env := doJSON(t, r, http.MethodDelete, path, nil, nil)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d, body: %s", name, w.Code, w.Body.String())
+		}
+		if env.Code != errcode.ProviderKeyNotFound {
+			t.Fatalf("%s: expected code %d, got %d", name, errcode.ProviderKeyNotFound, env.Code)
+		}
+	}
+
+	// The cross-provider attempt must not have deleted the key it named.
+	if keys := fetchProviderKeys(t, r, providerID); len(keys) != 1 {
+		t.Fatalf("cross-provider delete attempt removed the key: %+v", keys)
+	}
+}
+
+// Deleting the last key is allowed by design: the provider simply has
+// nothing to serve until a new key is added, exactly like the disabled
+// state, and history rows reference keys only through their own snapshot.
+func TestDeleteProviderKeyAllowsRemovingTheLastKey(t *testing.T) {
+	r, _ := newProviderTestRouter(t)
+	providerID, keyID := createProviderForTest(t, r, "key-delete-last")
+
+	w, _ := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/admin/providers/%d/keys/%d", providerID, keyID), nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete last key: expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if keys := fetchProviderKeys(t, r, providerID); len(keys) != 0 {
+		t.Fatalf("expected zero keys after deleting the last one, got %+v", keys)
+	}
+}
+
+// seedCandidateAndLog gives a provider the two kinds of dependent rows the
+// delete contract distinguishes: a model mapping (config — must die with the
+// provider) and a request log (history — must survive it).
+func seedCandidateAndLog(t *testing.T, db *gorm.DB, providerID uint, modelName, requestID string) {
+	t.Helper()
+	m := model.Model{Name: modelName, ManagementStatus: 1, SchedulingMode: model.ModelSchedulingModeFailover}
+	if err := db.Create(&m).Error; err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	c := model.ModelCandidate{ModelID: m.ID, ProviderID: providerID, ProviderModelName: modelName, SortOrder: 1, ManagementStatus: 1}
+	if err := db.Create(&c).Error; err != nil {
+		t.Fatalf("seed candidate: %v", err)
+	}
+	testutil.SeedRequestLog(t, db, requestID, time.Now().UTC(), func(r *model.RequestLog) {
+		r.ModelName = modelName
+		r.ProviderID = &providerID
+	})
+}
+
+func countWhere(t *testing.T, db *gorm.DB, table, where string, args ...interface{}) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Table(table).Where(where, args...).Count(&n).Error; err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return n
+}
+
+func TestDeleteProviderCascadesConfigAndKeepsHistory(t *testing.T) {
+	r, db := newProviderTestRouter(t)
+	providerID, _ := createProviderForTest(t, r, "provider-to-delete")
+	seedCandidateAndLog(t, db, providerID, "cascade-model", "req-cascade")
+
+	w, _ := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/admin/providers/%d", providerID), nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete provider: expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	if n := countWhere(t, db, "providers", "id = ?", providerID); n != 0 {
+		t.Fatalf("provider row still present after delete")
+	}
+	if n := countWhere(t, db, "provider_keys", "provider_id = ?", providerID); n != 0 {
+		t.Fatalf("expected cascade to remove keys, %d remain", n)
+	}
+	if n := countWhere(t, db, "model_candidates", "provider_id = ?", providerID); n != 0 {
+		t.Fatalf("expected cascade to remove candidates, %d remain", n)
+	}
+	// History must survive with its provider_id intact...
+	if n := countWhere(t, db, "request_logs", "provider_id = ?", providerID); n != 1 {
+		t.Fatalf("expected the request log to survive the delete, found %d", n)
+	}
+	// ...and the name lookup answers with an absent entry, which every list
+	// and report view renders as an empty name rather than an error.
+	names, err := repository.FindProviderNamesByIDs(db, []uint{providerID})
+	if err != nil {
+		t.Fatalf("name lookup after delete: %v", err)
+	}
+	if _, present := names[providerID]; present {
+		t.Fatalf("expected the deleted provider to be absent from the name lookup, got %v", names)
+	}
+
+	// The request-log list view itself must keep the row: same id, empty
+	// provider name, no error — the surface an admin actually reads.
+	items, total, err := requestlog.NewRequestLogService(db).ListRequestLogs(&repository.RequestLogFilter{ProviderID: &providerID})
+	if err != nil {
+		t.Fatalf("request log list after delete: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected the deleted provider's log row to stay listed, got total=%d items=%d", total, len(items))
+	}
+	if items[0].ProviderID == nil || *items[0].ProviderID != providerID {
+		t.Fatalf("listed row lost its provider id: %+v", items[0])
+	}
+	if items[0].ProviderName != "" {
+		t.Fatalf("expected an empty provider name for the deleted provider, got %q", items[0].ProviderName)
+	}
+
+	// The per-provider aggregate report keeps the row too: same id, empty
+	// name, totals untouched — history money must not move on a delete.
+	reportRows, err := repository.AggregateByProvider(context.Background(), db, &repository.RequestLogFilter{})
+	if err != nil {
+		t.Fatalf("aggregate by provider after delete: %v", err)
+	}
+	var reportRow *repository.ProviderReportRow
+	for i := range reportRows {
+		if reportRows[i].ProviderID != nil && *reportRows[i].ProviderID == providerID {
+			reportRow = &reportRows[i]
+		}
+	}
+	if reportRow == nil {
+		t.Fatalf("deleted provider vanished from the aggregate report: %+v", reportRows)
+	}
+	if reportRow.ProviderName != "" {
+		t.Fatalf("expected an empty provider name in the aggregate report, got %q", reportRow.ProviderName)
+	}
+	if reportRow.Calls != 1 || reportRow.InputTokens != 10 || reportRow.OutputTokens != 20 {
+		t.Fatalf("aggregate totals changed after delete: %+v", reportRow)
+	}
+}
+
+func TestDeleteProviderReturns400WhenNotFound(t *testing.T) {
+	r, _ := newProviderTestRouter(t)
+	w, env := doJSON(t, r, http.MethodDelete, "/api/admin/providers/99999", nil, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.ProviderNotFound {
+		t.Fatalf("expected code %d, got %d", errcode.ProviderNotFound, env.Code)
+	}
+}
+
+// Deleting frees the unique name; re-creating under it makes a NEW identity.
+// Old history keeps the old id, so per-provider aggregates never mix the two.
+func TestDeleteProviderFreesNameWithoutAdoptingOldHistory(t *testing.T) {
+	r, db := newProviderTestRouter(t)
+	oldID, _ := createProviderForTest(t, r, "reborn-provider")
+	seedCandidateAndLog(t, db, oldID, "reborn-model", "req-reborn")
+
+	w, _ := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/admin/providers/%d", oldID), nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete provider: expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	newID, _ := createProviderForTest(t, r, "reborn-provider")
+	if newID == oldID {
+		t.Fatalf("recreated provider reused the deleted id %d", oldID)
+	}
+	if n := countWhere(t, db, "request_logs", "provider_id = ?", oldID); n != 1 {
+		t.Fatalf("old history no longer under the old id")
+	}
+	if n := countWhere(t, db, "request_logs", "provider_id = ?", newID); n != 0 {
+		t.Fatalf("old history was adopted by the recreated provider")
 	}
 }
