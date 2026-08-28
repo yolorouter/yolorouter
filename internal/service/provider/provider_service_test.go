@@ -3313,3 +3313,57 @@ func TestProviderImpactNamesKeysOnlyThroughStrandedModels(t *testing.T) {
 		t.Fatalf("provider-b strands nothing, yet keys reported: %+v allowAll=%d", impactB.AffectedKeys, impactB.AllowAllKeyCount)
 	}
 }
+
+// The delete confirmation states what the cascade removes, so the impact
+// answer must carry the provider's own key and candidate counts — including
+// for a provider nothing references, whose early empty-models answer still
+// has keys to name.
+func TestProviderImpactCountsKeysAndCandidates(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	providerA := seedEnabledProviderForModelTest(t, providerService, "counted-provider")
+	providerIdle := seedEnabledProviderForModelTest(t, providerService, "counted-idle")
+
+	if _, err := providerService.CreateProviderKey(context.Background(), providerA.ID, CreateKeyInput{
+		Label: "k2", Plaintext: "sk-abcdefghijklmnopqrstuvwxyz9999", TestModel: "gpt-4o-mini",
+	}, now); err != nil {
+		t.Fatalf("CreateProviderKey failed: %v", err)
+	}
+
+	modelSvc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	for _, name := range []string{"counted-m1", "counted-m2"} {
+		m, err := modelSvc.CreateModel(modeladmin.CreateModelInput{Name: name}, now)
+		if err != nil {
+			t.Fatalf("CreateModel failed: %v", err)
+		}
+		if _, err := modelSvc.CreateModelCandidate(context.Background(), m.ID, modeladmin.CreateCandidateInput{
+			ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+			ManagementStatus: model.ModelCandidateStatusEnabled,
+		}, now); err != nil {
+			t.Fatalf("CreateModelCandidate failed: %v", err)
+		}
+	}
+
+	impact, err := providerService.GetProviderImpact(providerA.ID, now)
+	if err != nil {
+		t.Fatalf("GetProviderImpact failed: %v", err)
+	}
+	if impact.KeyCount != 2 {
+		t.Errorf("KeyCount = %d, want 2", impact.KeyCount)
+	}
+	if impact.CandidateCount != 2 {
+		t.Errorf("CandidateCount = %d, want 2", impact.CandidateCount)
+	}
+
+	idleImpact, err := providerService.GetProviderImpact(providerIdle.ID, now)
+	if err != nil {
+		t.Fatalf("GetProviderImpact failed: %v", err)
+	}
+	if idleImpact.KeyCount != 1 {
+		t.Errorf("idle KeyCount = %d, want 1 (the empty-models early answer must still count keys)", idleImpact.KeyCount)
+	}
+	if idleImpact.CandidateCount != 0 {
+		t.Errorf("idle CandidateCount = %d, want 0", idleImpact.CandidateCount)
+	}
+}

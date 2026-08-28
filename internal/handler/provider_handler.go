@@ -416,6 +416,34 @@ func PatchProviderKeyStatus(svc *provider.ProviderService) gin.HandlerFunc {
 	}
 }
 
+func DeleteProvider(svc *provider.ProviderService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		providerID, ok := parseUintParam(c, "id")
+		if !ok {
+			return
+		}
+		if err := svc.DeleteProvider(providerID); err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		response.Success(c, nil)
+	}
+}
+
+func DeleteProviderKey(svc *provider.ProviderService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		providerID, keyID, ok := parseProviderAndKeyIDs(c)
+		if !ok {
+			return
+		}
+		if err := svc.DeleteProviderKey(providerID, keyID); err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		response.Success(c, nil)
+	}
+}
+
 func PostProviderKeyTest(svc *provider.ProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID, keyID, ok := parseProviderAndKeyIDs(c)

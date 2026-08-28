@@ -55,14 +55,16 @@ const (
 	VisionFallbackModelUnknown = 11018 // vision_fallback_model names a model this gateway has no record of
 
 	// === Provider errors (12xxx) ===
-	ProviderNotFound         = 12001
-	ProviderNameTaken        = 12002
-	ProviderDisabled         = 12003
-	ProviderTestFailed       = 12004
-	ProviderHasModels        = 12005 // still has models under it, cannot delete
+	ProviderNotFound   = 12001
+	ProviderNameTaken  = 12002
+	ProviderDisabled   = 12003
+	ProviderTestFailed = 12004
+	// 12005 and 12008 are retired: they guarded a "cannot delete a provider
+	// in use" rule that no longer exists — deletion now cascades to the
+	// provider's keys and model mappings and leaves request history behind.
+	// Do not reuse the numbers.
 	ProviderNoTestableModel  = 12006 // openai/anthropic type connection test requires at least one enabled model
 	ProviderMasterKeyMissing = 12007 // AES-256-GCM master key not configured, cannot encrypt/decrypt the upstream API Key
-	ProviderHasRequestLogs   = 12008 // already has request logs, cannot delete (the FK would reject it; surface a clear error early here)
 	ProviderKeyNotFound      = 12009 // the given Key ID does not exist under this provider
 	ProviderKeyLabelTaken    = 12010 // label is already taken by another Key within the same provider
 	ProviderKeyNotVerified   = 12011 // attempt to enable a Key whose verification_status is not "passed"
@@ -177,10 +179,8 @@ var ErrorMessages = map[int]string{
 	ProviderNameTaken:        "provider name already taken",
 	ProviderDisabled:         "provider is disabled",
 	ProviderTestFailed:       "provider connection test failed",
-	ProviderHasModels:        "provider still has models, remove them first",
 	ProviderNoTestableModel:  "provider has no enabled model to test with",
 	ProviderMasterKeyMissing: "provider master key not configured",
-	ProviderHasRequestLogs:   "provider has existing request logs, cannot be deleted",
 	ProviderKeyNotFound:      "provider key not found",
 	ProviderKeyLabelTaken:    "provider key label already taken",
 	ProviderKeyNotVerified:   "cannot enable a key that has not passed verification",
@@ -268,10 +268,8 @@ var (
 	ErrProviderNameTaken        = errors.New(ErrorMessages[ProviderNameTaken])
 	ErrProviderDisabled         = errors.New(ErrorMessages[ProviderDisabled])
 	ErrProviderTestFailed       = errors.New(ErrorMessages[ProviderTestFailed])
-	ErrProviderHasModels        = errors.New(ErrorMessages[ProviderHasModels])
 	ErrProviderNoTestableModel  = errors.New(ErrorMessages[ProviderNoTestableModel])
 	ErrProviderMasterKeyMissing = errors.New(ErrorMessages[ProviderMasterKeyMissing])
-	ErrProviderHasRequestLogs   = errors.New(ErrorMessages[ProviderHasRequestLogs])
 	ErrProviderKeyNotFound      = errors.New(ErrorMessages[ProviderKeyNotFound])
 	ErrProviderKeyLabelTaken    = errors.New(ErrorMessages[ProviderKeyLabelTaken])
 	ErrProviderKeyNotVerified   = errors.New(ErrorMessages[ProviderKeyNotVerified])

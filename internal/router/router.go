@@ -340,6 +340,8 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.PATCH("/providers/:id/keys/:keyId", handler.PatchProviderKey(providerSvc))
 	protected.PATCH("/providers/:id/keys/:keyId/order", handler.PatchProviderKeyOrder(providerSvc))
 	protected.PATCH("/providers/:id/keys/:keyId/status", handler.PatchProviderKeyStatus(providerSvc))
+	protected.DELETE("/providers/:id/keys/:keyId", handler.DeleteProviderKey(providerSvc))
+	protected.DELETE("/providers/:id", handler.DeleteProvider(providerSvc))
 	protected.POST("/providers/:id/keys/:keyId/test", handler.PostProviderKeyTest(providerSvc))
 	protected.POST("/providers/:id/keys/test-all", handler.PostProviderKeysTestAll(providerSvc))
 

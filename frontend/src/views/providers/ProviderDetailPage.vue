@@ -11,6 +11,9 @@
           <n-button size="small" @click="onToggleProviderStatus">
             {{ provider.management_status === 1 ? t('providers.statusDisabled') : t('providers.statusEnabled') }}
           </n-button>
+          <n-button size="small" type="error" ghost @click="showDeleteProvider = true">
+            {{ t('providers.deleteProvider') }}
+          </n-button>
         </template>
 
         <ResponsiveDropdown
@@ -100,6 +103,7 @@
     />
     <ProviderEditModal v-model:show="showEditProvider" :provider="provider" @updated="reload" />
     <ImportModelsModal v-model:show="showImportModels" :provider-id="provider.id" @imported="onImported" />
+    <DeleteProviderModal v-model:show="showDeleteProvider" :provider="provider" @deleted="onProviderDeleted" />
   </div>
 </template>
 
@@ -122,6 +126,7 @@ import EmptyState from '../../components/EmptyState.vue'
 import KeyEditModal from '../../components/providers/KeyEditModal.vue'
 import ImportModelsModal from '../../components/models/ImportModelsModal.vue'
 import ProviderEditModal from '../../components/providers/ProviderEditModal.vue'
+import DeleteProviderModal from '../../components/providers/DeleteProviderModal.vue'
 import KeyTestTargetsTag from '../../components/providers/KeyTestTargetsTag.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
@@ -132,7 +137,7 @@ import { isTestSuccess, testOutcomeI18nKey, testOutcomeLabel, TEST_OUTCOME_MODEL
 import { hintTag } from '../../utils/hintTag'
 import { hasKeyTestBreakdown, passedBreakdownVisible } from '../../utils/keyTestTargets'
 import { verificationDestinationCount } from '../../utils/providerProtocol'
-import { isKeyUsable } from '../../utils/providerStatusDisplay'
+import { deleteLeavesProviderUnusable, isLastUsableKey } from '../../utils/providerStatusDisplay'
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
 import { useClientPagination } from '../../composables/useClientPagination'
 import { useIsMobile } from '../../composables/useIsMobile'
@@ -165,6 +170,12 @@ const showEditKey = ref(false)
 const editingKey = ref<ProviderKey | null>(null)
 const showEditProvider = ref(false)
 const showImportModels = ref(false)
+const showDeleteProvider = ref(false)
+
+// The page's subject no longer exists after a delete — leave for the list.
+function onProviderDeleted() {
+  void router.push('/providers')
+}
 
 // Every way of opening the import dialog also lands the page on the Models
 // tab: the mobile header action and the first-setup handoff can fire while
@@ -217,6 +228,7 @@ const headerActionOptions = computed(() => [
     label: provider.value?.management_status === 1 ? t('providers.statusDisabled') : t('providers.statusEnabled'),
     key: 'toggleStatus',
   },
+  { label: t('providers.deleteProvider'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
 ])
 
 function onHeaderAction(key: string) {
@@ -226,6 +238,7 @@ function onHeaderAction(key: string) {
   else if (key === 'importModels') openImportModels()
   else if (key === 'testAll') void onTestAll()
   else if (key === 'toggleStatus') onToggleProviderStatus()
+  else if (key === 'delete') showDeleteProvider.value = true
 }
 
 function batchResultLabel(result: BatchTestResult): string {
@@ -712,14 +725,17 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
           triggerText: t('common.actions'),
           disabled: testingKeyId.value === row.id,
           loading: testingKeyId.value === row.id,
-          height: 140,
+          height: 200,
           options: [
             { label: t('providers.editKey'), key: 'edit' },
             { label: t('providers.testConnection'), key: 'test', disabled: row.needs_reentry },
+            { type: 'divider', key: 'd' },
+            { label: t('providers.deleteKey'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
           ],
           onSelect: (key: string) => {
             if (key === 'edit') onEditKey(row)
             else if (key === 'test') onTestOneKey(row.id)
+            else if (key === 'delete') onDeleteKey(row)
           },
         },
         {
@@ -737,6 +753,32 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
 function onEditKey(key: ProviderKey) {
   editingKey.value = key
   showEditKey.value = true
+}
+
+// Deletion is final and needs no server-side precondition — any key can go,
+// history rows keep their own snapshot of it. The dialog only escalates its
+// copy when the provider is left with nothing usable to serve.
+function onDeleteKey(row: ProviderKey) {
+  const leavesUnusable = deleteLeavesProviderUnusable(provider.value?.keys ?? [], row.id)
+  dialog.warning({
+    title: t('providers.deleteKey'),
+    content: leavesUnusable
+      ? t('providers.confirmDeleteKeyLastContent', { label: row.label })
+      : t('providers.confirmDeleteKeyContent', { label: row.label }),
+    positiveText: t('common.delete'),
+    negativeText: t('providers.cancel'),
+    onPositiveClick: async () => {
+      try {
+        await store.deleteKey(providerId, row.id)
+        // The batch panel must not keep showing a verdict for a key that no
+        // longer exists.
+        delete batchResultByKeyId.value[row.id]
+        await reload()
+      } catch (err) {
+        message.error(displayMessage(err, t))
+      }
+    },
+  })
 }
 
 // A key edit re-tests the credential server-side only when a new plaintext
@@ -784,21 +826,12 @@ async function onReorder(keyId: number, direction: 'up' | 'down') {
   }, direction)
 }
 
-// A key actually contributes to routing only when it's enabled AND has
-// passed verification AND doesn't need re-entry (isKeyUsable) — "enabled"
-// alone (management_status === 1) is not the same thing, and the warning
-// below previously used the weaker enabled-count check, so it silently skipped the
-// "you're about to disable the only key actually keeping this provider
-// available" warning whenever another merely-enabled-but-unverified key
-// was also present.
+// isLastUsableKey (not a mere enabled-count check) decides the escalation:
+// a key contributes to routing only when it's enabled AND verified AND
+// needs no re-entry, so disabling the one key satisfying all three deserves
+// the warning even when merely-enabled-but-unverified keys remain.
 function onToggleKeyStatus(keyId: number, enable: boolean) {
-  const targetKey = provider.value?.keys.find((k) => k.id === keyId)
-  const isLastAvailable =
-    !enable &&
-    provider.value !== null &&
-    targetKey !== undefined &&
-    isKeyUsable(targetKey) &&
-    provider.value.keys.filter(isKeyUsable).length === 1
+  const isLastAvailable = !enable && isLastUsableKey(provider.value?.keys ?? [], keyId)
   const proceed = async () => {
     try {
       await store.setKeyStatus(providerId, keyId, enable)

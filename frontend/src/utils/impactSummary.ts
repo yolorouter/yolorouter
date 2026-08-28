@@ -2,7 +2,7 @@
 // Every builder degrades to a generic warning when the impact endpoint fails:
 // a broken preview must never block the action itself.
 import { getModelImpact, type ModelImpact, type ModelImpactKey } from '../api/models'
-import { getProviderImpact } from '../api/providers'
+import { getProviderImpact, type ProviderImpact } from '../api/providers'
 import type { ConfirmDisableCopy } from '../composables/useConfirmedStatusToggle'
 
 type Translate = (key: string, values?: Record<string, unknown>) => string
@@ -84,46 +84,77 @@ async function providerDisableContent(id: number, t: Translate): Promise<string>
   const intro = t('providers.confirmDisableProviderContent')
   try {
     const impact = await getProviderImpact(id)
-    if (impact.models.length === 0) {
-      return [intro, t('providers.impactModelsNone'), t('common.confirmContinue')].join('\n')
-    }
-    const lines = [
-      intro,
-      t('providers.impactModels', {
-        count: impact.models.length,
+    return [intro, ...providerImpactLines(impact, t).lines, t('common.confirmContinue')].join('\n')
+  } catch {
+    return [intro, t('common.confirmContinue')].join('\n')
+  }
+}
+
+// A projected impact answer: display lines plus the stranded-model count
+// that decides whether a dialog escalates its tone.
+export interface ProviderImpactSummary {
+  lines: string[]
+  strandedCount: number
+}
+
+// The routing consequences shared by the provider disable dialog and the
+// provider delete modal: affected models, the ones left with no routable
+// source, and the caller keys that reach them. strandedCount comes from the
+// same pass so the escalation signal can never disagree with the lines.
+function providerImpactLines(impact: ProviderImpact, t: Translate): ProviderImpactSummary {
+  if (impact.models.length === 0) {
+    return { lines: [t('providers.impactModelsNone')], strandedCount: 0 }
+  }
+  const lines = [
+    t('providers.impactModels', {
+      count: impact.models.length,
+      names: joinNames(
+        impact.models.map((m) => m.name),
+        DIALOG_MAX_NAMES,
+      ),
+    }),
+  ]
+  const stranded = impact.models.filter((m) => m.no_other_routable_source)
+  if (stranded.length > 0) {
+    lines.push(
+      t('providers.impactStranded', {
+        count: stranded.length,
         names: joinNames(
-          impact.models.map((m) => m.name),
+          stranded.map((m) => m.name),
           DIALOG_MAX_NAMES,
         ),
       }),
-    ]
-    const stranded = impact.models.filter((m) => m.no_other_routable_source)
-    if (stranded.length > 0) {
+    )
+    if (impact.affected_keys.length > 0) {
       lines.push(
-        t('providers.impactStranded', {
-          count: stranded.length,
-          names: joinNames(
-            stranded.map((m) => m.name),
-            DIALOG_MAX_NAMES,
-          ),
+        t('providers.impactKeys', {
+          count: impact.affected_keys.length,
+          names: joinNames(impact.affected_keys.map(keyDisplayName), DIALOG_MAX_NAMES),
         }),
       )
-      if (impact.affected_keys.length > 0) {
-        lines.push(
-          t('providers.impactKeys', {
-            count: impact.affected_keys.length,
-            names: joinNames(impact.affected_keys.map(keyDisplayName), DIALOG_MAX_NAMES),
-          }),
-        )
-      }
-      if (impact.allow_all_key_count > 0) {
-        lines.push(t('providers.impactAllowAll', { count: impact.allow_all_key_count }))
-      }
     }
-    lines.push(t('common.confirmContinue'))
-    return lines.join('\n')
-  } catch {
-    return [intro, t('common.confirmContinue')].join('\n')
+    if (impact.allow_all_key_count > 0) {
+      lines.push(t('providers.impactAllowAll', { count: impact.allow_all_key_count }))
+    }
+  }
+  return { lines, strandedCount: stranded.length }
+}
+
+// What the delete modal shows for one provider: the cascade counts first,
+// then the routing consequences. strandedCount > 0 is the escalation signal
+// — models left with no routable source at all — which the modal renders as
+// a hard error callout on top of the plain lines.
+export function providerDeleteImpactView(impact: ProviderImpact, t: Translate): ProviderImpactSummary {
+  const { lines, strandedCount } = providerImpactLines(impact, t)
+  return {
+    lines: [
+      t('providers.deleteProviderCascadeCounts', {
+        keys: impact.key_count,
+        candidates: impact.candidate_count,
+      }),
+      ...lines,
+    ],
+    strandedCount,
   }
 }
 

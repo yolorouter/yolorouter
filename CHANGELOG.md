@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Providers and their keys can now be deleted. Deleting a provider removes
+  its keys and model candidates in one transaction while request history is
+  fully retained — reports keep the traffic under the deleted provider's id
+  with an empty name, and log details still show the recorded provider/key
+  names. The confirmation dialog previews the blast radius (keys, candidates,
+  affected models, models left with no routable source) and requires retyping
+  the provider's name. Keys can be deleted at any time, with a warning when
+  removing the provider's last usable key. Migration 00036 lifts the foreign
+  key that request history held on providers; on SQLite this rebuilds the
+  request_logs table, which transiently needs free disk on the order of that
+  table's size.
+
 ## [0.1.9] - 2026-08-26
 
 ### Added

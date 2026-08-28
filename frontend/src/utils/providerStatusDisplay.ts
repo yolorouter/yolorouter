@@ -30,3 +30,32 @@ export function isKeyUsable(k: ProviderKey): boolean {
 export function usableKeyCount(keys: ProviderKey[]): number {
   return keys.filter(isKeyUsable).length
 }
+
+// The key is usable and no other usable key remains — the shared escalation
+// trigger of both key danger flows (disabling it, deleting it), kept next to
+// isKeyUsable so the "usable" rule has exactly one home.
+export function isLastUsableKey(keys: ProviderKey[], keyId: number): boolean {
+  const target = keys.find((k) => k.id === keyId)
+  return target !== undefined && isKeyUsable(target) && usableKeyCount(keys) === 1
+}
+
+// Whether deleting the given key is what MAKES the provider unable to
+// serve: it is the provider's last key at all, or the last usable one while
+// every other key is merely present but not routable. Deleting an unusable
+// key from an already-unusable pool reports false on purpose — the provider
+// serves nothing before and after, so there is no escalation to announce.
+// An id not in the list reports false too: the dialog then shows the plain
+// copy, and the server answers not-found.
+export function deleteLeavesProviderUnusable(keys: ProviderKey[], keyId: number): boolean {
+  const target = keys.find((k) => k.id === keyId)
+  if (!target) return false
+  return keys.length === 1 || isLastUsableKey(keys, keyId)
+}
+
+// Gate for the provider-deletion danger button: the admin must retype the
+// provider's exact name. Strict equality on purpose — no trimming, no case
+// folding — so the gate cannot be satisfied by a near-miss of a similarly
+// named provider.
+export function deleteConfirmUnlocked(input: string, providerName: string): boolean {
+  return providerName !== '' && input === providerName
+}
