@@ -227,3 +227,20 @@ func TestEndsWithVersionSegment(t *testing.T) {
 		}
 	}
 }
+
+// A URL that will not parse must be replaced wholesale, never handed back:
+// the unparsed string is exactly what this function exists to sanitize — a
+// configured base URL with a stray control character fails to parse, fails to
+// build a request, and its error text carrying the raw URL (credentials and
+// all) is what would get persisted. Weaken the branch back to returning the
+// input and this reads the secret straight through.
+func TestRedactURLReplacesAnUnparseableURLWholesale(t *testing.T) {
+	raw := "https://user:secret@example.com/v1?\x7f=x&token=abc"
+	got := protocols.RedactURL(raw)
+	if strings.Contains(got, "secret") || strings.Contains(got, "token=abc") {
+		t.Fatalf("RedactURL(%q) = %q: the unparseable input leaked through", raw, got)
+	}
+	if got == raw {
+		t.Fatalf("RedactURL returned its input unchanged; an unparseable URL must be replaced wholesale")
+	}
+}
