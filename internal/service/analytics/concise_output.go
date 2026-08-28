@@ -32,8 +32,11 @@ import (
 // is wide and real: quartiles [-4.0%, +27.2%], 44 of the 150 pairs negative,
 // and one model/question cell swung from -193% to +46% between rounds. The
 // median is the honest single-number summary of that distribution — a
-// per-request promise it is not. The full methodology and the complete
-// 150-pair raw data are published at
+// per-request promise it is not. A 2026-08-28 three-arm rerun replicated the
+// median (+12.8%) and found a far more aggressive public style prompt gained
+// only 3.6 points of median at much heavier tail risk, so the coefficient
+// stands. The full methodology and the complete raw data for both runs are
+// published at
 // https://github.com/yolorouter/yolorouter/blob/main/docs/concise-output-benchmark.md
 const ConciseOutputCoefficient = 0.126
 
