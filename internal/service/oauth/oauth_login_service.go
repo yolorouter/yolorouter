@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -100,10 +101,32 @@ func (s *OAuthLoginService) BeginLogin(slug, redirectURI string, now time.Time) 
 	q.Set("response_type", "code")
 	q.Set("client_id", provider.ClientID)
 	q.Set("redirect_uri", redirectURI)
-	q.Set("scope", provider.Scopes)
+	// An omitted scope is valid OAuth2; an empty `scope=` is not parsed as
+	// one by every IdP (Feishu presets an empty scope list).
+	if scopes := strings.TrimSpace(provider.Scopes); scopes != "" {
+		q.Set("scope", scopes)
+	}
 	q.Set("state", stateToken)
-	q.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:]))
-	q.Set("code_challenge_method", "S256")
+	// PKCE-less providers (DingTalk's authorize endpoint has no
+	// code_challenge parameter) still mint and store a verifier in the
+	// state row — it is simply never presented.
+	if provider.PkceEnabled {
+		q.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:]))
+		q.Set("code_challenge_method", "S256")
+	}
+	// Provider-specific authorize parameters (DingTalk: prompt=consent).
+	// Write-time validation already rejects reserved keys; the skip here is
+	// defense for rows that reached the database through another path.
+	if extra, err := url.ParseQuery(provider.ExtraAuthorizeParams); err == nil {
+		for k, vs := range extra {
+			if reservedAuthorizeParams[k] {
+				continue
+			}
+			for _, v := range vs {
+				q.Add(k, v)
+			}
+		}
+	}
 
 	sep := "?"
 	if strings.Contains(provider.AuthorizationEndpoint, "?") {
@@ -187,20 +210,33 @@ func (s *OAuthLoginService) findEnabledProvider(slug string) (*model.OAuthProvid
 }
 
 // exchangeCode swaps the authorization code for an access token. The
-// response is accepted as JSON or form-encoded (GitHub answers the latter
-// unless asked otherwise; Accept: application/json asks, the fallback
-// covers providers that ignore it).
+// standard path posts form-encoded and accepts the answer as JSON or
+// form-encoded (GitHub answers the latter unless asked otherwise; Accept:
+// application/json asks, the fallback covers providers that ignore it).
+// Providers whose token endpoint speaks JSON instead (Feishu, DingTalk)
+// take the exchangeCodeJSON path via token_request_style.
 func (s *OAuthLoginService) exchangeCode(ctx context.Context, p *model.OAuthProvider, code, codeVerifier, redirectURI string) (string, error) {
 	secret, err := s.secrets.Decrypt(p.EncryptedClientSecret)
 	if err != nil {
 		return "", fmt.Errorf("%w: decrypt client secret: %v", errcode.ErrOAuthExchangeFailed, err)
+	}
+	// A PKCE-less provider never presents its stored verifier, on either
+	// request path.
+	if !p.PkceEnabled {
+		codeVerifier = ""
+	}
+
+	if p.TokenRequestStyle == model.OAuthTokenRequestStyleJSON {
+		return s.exchangeCodeJSON(ctx, p, secret, code, codeVerifier, redirectURI)
 	}
 
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
 	form.Set("redirect_uri", redirectURI)
-	form.Set("code_verifier", codeVerifier)
+	if codeVerifier != "" {
+		form.Set("code_verifier", codeVerifier)
+	}
 	form.Set("client_id", p.ClientID)
 	if p.AuthStyle != model.OAuthAuthStyleBasic {
 		form.Set("client_secret", secret)
@@ -216,17 +252,9 @@ func (s *OAuthLoginService) exchangeCode(ctx context.Context, p *model.OAuthProv
 		req.SetBasicAuth(url.QueryEscape(p.ClientID), url.QueryEscape(secret))
 	}
 
-	resp, err := s.httpClient.Do(req)
+	body, err := s.doExchange(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", errcode.ErrOAuthExchangeFailed, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", errcode.ErrOAuthExchangeFailed, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%w: status %d", errcode.ErrOAuthExchangeFailed, resp.StatusCode)
+		return "", err
 	}
 
 	var parsed struct {
@@ -243,6 +271,102 @@ func (s *OAuthLoginService) exchangeCode(ctx context.Context, p *model.OAuthProv
 	return "", fmt.Errorf("%w: no access_token in response", errcode.ErrOAuthExchangeFailed)
 }
 
+// doExchange performs a prepared token request and returns the raw response
+// body, mapping transport errors and non-200 statuses onto the exchange
+// failure error. IdPs report failures as an error document (GitHub text,
+// Feishu errcode, DingTalk code/message) — an excerpt names the actual
+// cause instead of a bare status.
+func (s *OAuthLoginService) doExchange(ctx context.Context, req *http.Request) ([]byte, error) {
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errcode.ErrOAuthExchangeFailed, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errcode.ErrOAuthExchangeFailed, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: status %d: %s", errcode.ErrOAuthExchangeFailed, resp.StatusCode, responseExcerpt(body))
+	}
+	return body, nil
+}
+
+// exchangeCodeJSON is the JSON-body exchange for providers whose token
+// endpoints take JSON (Feishu, DingTalk). Field names follow the provider's
+// token_field_style: snake sends the standard set (grant_type, client_id,
+// client_secret, code, redirect_uri, code_verifier), camel sends DingTalk's
+// trimmed set (clientId, clientSecret, code, grantType — no redirect_uri or
+// code_verifier). Client credentials only ever ride the body:
+// auth_style has no meaning in JSON mode.
+func (s *OAuthLoginService) exchangeCodeJSON(ctx context.Context, p *model.OAuthProvider, secret, code, codeVerifier, redirectURI string) (string, error) {
+	var payload map[string]any
+	if p.TokenFieldStyle == model.OAuthTokenFieldStyleCamel {
+		payload = map[string]any{
+			"clientId":     p.ClientID,
+			"clientSecret": secret,
+			"code":         code,
+			"grantType":    "authorization_code",
+		}
+	} else {
+		payload = map[string]any{
+			"grant_type":    "authorization_code",
+			"client_id":     p.ClientID,
+			"client_secret": secret,
+			"code":          code,
+			"redirect_uri":  redirectURI,
+		}
+		if codeVerifier != "" {
+			payload["code_verifier"] = codeVerifier
+		}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errcode.ErrOAuthExchangeFailed, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.TokenEndpoint, bytes.NewReader(raw))
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errcode.ErrOAuthExchangeFailed, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	body, err := s.doExchange(ctx, req)
+	if err != nil {
+		return "", err
+	}
+
+	var parsed struct {
+		AccessToken      string `json:"access_token"` // snake style (Feishu)
+		AccessTokenCamel string `json:"accessToken"`  // camel style (DingTalk)
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("%w: %v", errcode.ErrOAuthExchangeFailed, err)
+	}
+	token := parsed.AccessToken
+	if p.TokenFieldStyle == model.OAuthTokenFieldStyleCamel {
+		token = parsed.AccessTokenCamel
+	}
+	if token == "" {
+		return "", fmt.Errorf("%w: no access token in response: %s", errcode.ErrOAuthExchangeFailed, responseExcerpt(body))
+	}
+	return token, nil
+}
+
+// responseExcerpt bounds an error-response body for an error string —
+// enough of the IdP's own error document to name the cause, never the
+// whole payload.
+func responseExcerpt(body []byte) string {
+	s := strings.TrimSpace(string(body))
+	const max = 200
+	if len([]rune(s)) <= max {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:max]) + "…"
+}
+
 // oauthIdentity is the mapped userinfo the rest of the flow consumes.
 type oauthIdentity struct {
 	ProviderUserID string
@@ -256,7 +380,13 @@ func (s *OAuthLoginService) fetchUserinfo(ctx context.Context, p *model.OAuthPro
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errcode.ErrOAuthUserinfoFailed, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	// Most IdPs take the standard Bearer header; DingTalk takes its own
+	// x-acs-dingtalk-access-token header instead.
+	if p.UserinfoTokenHeader != "" {
+		req.Header.Set(p.UserinfoTokenHeader, accessToken)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := s.httpClient.Do(req)

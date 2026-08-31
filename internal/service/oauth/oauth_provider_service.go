@@ -44,25 +44,28 @@ func NewOAuthProviderService(db *gorm.DB, secrets crypto.SecretBox) *OAuthProvid
 // OAuthProviderView is the admin-facing shape. The client secret is
 // write-only: the view only reports whether one is stored.
 type OAuthProviderView struct {
-	ID                    uint      `json:"id"`
-	Slug                  string    `json:"slug"`
-	Name                  string    `json:"name"`
-	Icon                  string    `json:"icon"`
-	Enabled               bool      `json:"enabled"`
-	ClientID              string    `json:"client_id"`
-	HasClientSecret       bool      `json:"has_client_secret"`
-	AuthorizationEndpoint string    `json:"authorization_endpoint"`
-	TokenEndpoint         string    `json:"token_endpoint"`
-	UserinfoEndpoint      string    `json:"userinfo_endpoint"`
-	Scopes                string    `json:"scopes"`
-	UserIDField           string    `json:"user_id_field"`
-	UsernameField         string    `json:"username_field"`
-	DisplayNameField      string    `json:"display_name_field"`
-	EmailField            string    `json:"email_field"`
-	AuthStyle             string    `json:"auth_style"`
-	IdentityCount         int64     `json:"identity_count"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
+	ID                    uint   `json:"id"`
+	Slug                  string `json:"slug"`
+	Name                  string `json:"name"`
+	Icon                  string `json:"icon"`
+	Enabled               bool   `json:"enabled"`
+	ClientID              string `json:"client_id"`
+	HasClientSecret       bool   `json:"has_client_secret"`
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	UserinfoEndpoint      string `json:"userinfo_endpoint"`
+	Scopes                string `json:"scopes"`
+	UserIDField           string `json:"user_id_field"`
+	UsernameField         string `json:"username_field"`
+	DisplayNameField      string `json:"display_name_field"`
+	EmailField            string `json:"email_field"`
+	AuthStyle             string `json:"auth_style"`
+	// The protocol-style knobs reuse the model's declaration so the two
+	// shapes cannot drift; embedding keeps the JSON keys flat.
+	model.OAuthProtocolStyle
+	IdentityCount int64     `json:"identity_count"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func toOAuthProviderView(p model.OAuthProvider, identityCount int64) OAuthProviderView {
@@ -74,7 +77,8 @@ func toOAuthProviderView(p model.OAuthProvider, identityCount int64) OAuthProvid
 		UserIDField: p.UserIDField, UsernameField: p.UsernameField,
 		DisplayNameField: p.DisplayNameField, EmailField: p.EmailField,
 		AuthStyle: p.AuthStyle, IdentityCount: identityCount,
-		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+		OAuthProtocolStyle: p.OAuthProtocolStyle,
+		CreatedAt:          p.CreatedAt, UpdatedAt: p.UpdatedAt,
 	}
 }
 
@@ -96,6 +100,13 @@ type CreateOAuthProviderInput struct {
 	DisplayNameField      string
 	EmailField            string
 	AuthStyle             string
+	TokenRequestStyle     string
+	TokenFieldStyle       string
+	UserinfoTokenHeader   string
+	// PkceEnabled nil = the default (on): a create request that never
+	// mentions the knob must not silently turn PKCE off.
+	PkceEnabled          *bool
+	ExtraAuthorizeParams string
 }
 
 // fallback returns v, or def when v is blank — the field-mapping and
@@ -112,6 +123,85 @@ func normalizeAuthStyle(v string) string {
 		return model.OAuthAuthStyleBasic
 	}
 	return model.OAuthAuthStylePost
+}
+
+// The protocol-style knobs normalize anything unrecognized to the standard
+// shape — a provider configured before these columns existed (or through a
+// path that skips the API) must keep behaving exactly as before.
+func normalizeTokenRequestStyle(v string) string {
+	if v == model.OAuthTokenRequestStyleJSON {
+		return model.OAuthTokenRequestStyleJSON
+	}
+	return model.OAuthTokenRequestStyleForm
+}
+
+func normalizeTokenFieldStyle(v string) string {
+	if v == model.OAuthTokenFieldStyleCamel {
+		return model.OAuthTokenFieldStyleCamel
+	}
+	return model.OAuthTokenFieldStyleSnake
+}
+
+// reservedAuthorizeParams are assembled by BeginLogin itself, from state
+// the login flow owns; extra authorize parameters colliding with them are
+// rejected at write time and skipped defensively at assemble time.
+var reservedAuthorizeParams = map[string]bool{
+	"response_type": true, "client_id": true, "redirect_uri": true, "scope": true,
+	"state": true, "code_challenge": true, "code_challenge_method": true,
+}
+
+// validateAuthorizeParams requires a URL-query-shaped string whose keys
+// stay clear of the reserved set.
+func validateAuthorizeParams(raw string) error {
+	vals, err := url.ParseQuery(raw)
+	if err != nil {
+		return errcode.ErrOAuthProviderConfigInvalid
+	}
+	for k := range vals {
+		if reservedAuthorizeParams[k] {
+			return errcode.ErrOAuthProviderConfigInvalid
+		}
+	}
+	return nil
+}
+
+// validateProtocolKnobs checks the two free-form protocol knobs every
+// write path shares: a custom userinfo header must be an RFC 7230 token,
+// and extra authorize params a URL query clear of the reserved keys.
+// Empty values pass — they mean the standard behavior.
+func validateProtocolKnobs(header, params string) error {
+	if h := strings.TrimSpace(header); h != "" {
+		if err := validateHeaderName(h); err != nil {
+			return err
+		}
+	}
+	if p := strings.TrimSpace(params); p != "" {
+		if err := validateAuthorizeParams(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// tchars are the RFC 7230 token characters valid in a header name.
+const tchars = "!#$%&'*+-.^_`|~"
+
+// validateHeaderName requires a non-empty RFC 7230 token of at most 128
+// characters — the value becomes the header name on the userinfo request.
+func validateHeaderName(name string) error {
+	if name == "" || len(name) > 128 {
+		return errcode.ErrOAuthProviderConfigInvalid
+	}
+	for _, r := range name {
+		if r >= 0x80 {
+			return errcode.ErrOAuthProviderConfigInvalid
+		}
+		if !strings.ContainsRune(tchars, r) &&
+			!(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') {
+			return errcode.ErrOAuthProviderConfigInvalid
+		}
+	}
+	return nil
 }
 
 // validateEndpointURL requires an absolute http(s) URL with a host. Gin's
@@ -171,6 +261,9 @@ func (s *OAuthProviderService) CreateProvider(in CreateOAuthProviderInput, now t
 			return nil, err
 		}
 	}
+	if err := validateProtocolKnobs(in.UserinfoTokenHeader, in.ExtraAuthorizeParams); err != nil {
+		return nil, err
+	}
 	if _, err := repository.FindOAuthProviderBySlug(s.db, in.Slug); err == nil {
 		return nil, errcode.ErrOAuthProviderSlugTaken
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -192,7 +285,14 @@ func (s *OAuthProviderService) CreateProvider(in CreateOAuthProviderInput, now t
 		DisplayNameField:      fallback(in.DisplayNameField, "name"),
 		EmailField:            fallback(in.EmailField, "email"),
 		AuthStyle:             normalizeAuthStyle(in.AuthStyle),
-		CreatedAt:             now, UpdatedAt: now,
+		OAuthProtocolStyle: model.OAuthProtocolStyle{
+			TokenRequestStyle:    normalizeTokenRequestStyle(in.TokenRequestStyle),
+			TokenFieldStyle:      normalizeTokenFieldStyle(in.TokenFieldStyle),
+			UserinfoTokenHeader:  strings.TrimSpace(in.UserinfoTokenHeader),
+			PkceEnabled:          in.PkceEnabled == nil || *in.PkceEnabled,
+			ExtraAuthorizeParams: strings.TrimSpace(in.ExtraAuthorizeParams),
+		},
+		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := repository.CreateOAuthProvider(s.db, p); err != nil {
 		return nil, err
@@ -219,6 +319,11 @@ type UpdateOAuthProviderInput struct {
 	DisplayNameField      *string
 	EmailField            *string
 	AuthStyle             *string
+	TokenRequestStyle     *string
+	TokenFieldStyle       *string
+	UserinfoTokenHeader   *string
+	PkceEnabled           *bool
+	ExtraAuthorizeParams  *string
 }
 
 func (s *OAuthProviderService) UpdateProvider(id uint, in UpdateOAuthProviderInput, now time.Time) (*OAuthProviderView, error) {
@@ -276,6 +381,35 @@ func (s *OAuthProviderService) UpdateProvider(id uint, in UpdateOAuthProviderInp
 	}
 	if in.AuthStyle != nil {
 		updates["auth_style"] = normalizeAuthStyle(*in.AuthStyle)
+	}
+	if in.TokenRequestStyle != nil {
+		updates["token_request_style"] = normalizeTokenRequestStyle(*in.TokenRequestStyle)
+	}
+	if in.TokenFieldStyle != nil {
+		updates["token_field_style"] = normalizeTokenFieldStyle(*in.TokenFieldStyle)
+	}
+	// The free-form knobs validate once, together; each provided value
+	// then lands in the sparse update map.
+	if in.UserinfoTokenHeader != nil || in.ExtraAuthorizeParams != nil {
+		header, params := "", ""
+		if in.UserinfoTokenHeader != nil {
+			header = *in.UserinfoTokenHeader
+		}
+		if in.ExtraAuthorizeParams != nil {
+			params = *in.ExtraAuthorizeParams
+		}
+		if err := validateProtocolKnobs(header, params); err != nil {
+			return nil, err
+		}
+	}
+	if in.UserinfoTokenHeader != nil {
+		updates["userinfo_token_header"] = strings.TrimSpace(*in.UserinfoTokenHeader)
+	}
+	if in.PkceEnabled != nil {
+		updates["pkce_enabled"] = *in.PkceEnabled
+	}
+	if in.ExtraAuthorizeParams != nil {
+		updates["extra_authorize_params"] = strings.TrimSpace(*in.ExtraAuthorizeParams)
 	}
 	if in.ClientSecret != nil {
 		encrypted, err := s.secrets.Encrypt(*in.ClientSecret)

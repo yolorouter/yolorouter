@@ -63,6 +63,118 @@ func TestCreateOAuthProviderEncryptsSecretAndDefaultsMappings(t *testing.T) {
 	}
 }
 
+// TestOAuthProviderTokenStyleNormalization: the protocol-style columns
+// default to the standard shape on create, persist explicit non-standard
+// values, and normalize on PATCH — a provider that never opted into a
+// JSON style must keep the form-encoded exchange.
+func TestOAuthProviderTokenStyleNormalization(t *testing.T) {
+	svc, _ := newOAuthProviderServiceForTest(t)
+	now := time.Now().UTC()
+
+	view, err := svc.CreateProvider(minimalProviderInput("standard"), now)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if view.TokenRequestStyle != model.OAuthTokenRequestStyleForm || view.TokenFieldStyle != model.OAuthTokenFieldStyleSnake {
+		t.Fatalf("create must default to form/snake, got %s/%s", view.TokenRequestStyle, view.TokenFieldStyle)
+	}
+
+	jsonStyle := model.OAuthTokenRequestStyleJSON
+	camelStyle := model.OAuthTokenFieldStyleCamel
+	view, err = svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{
+		TokenRequestStyle: &jsonStyle, TokenFieldStyle: &camelStyle,
+	}, now)
+	if err != nil {
+		t.Fatalf("patch styles: %v", err)
+	}
+	if view.TokenRequestStyle != model.OAuthTokenRequestStyleJSON || view.TokenFieldStyle != model.OAuthTokenFieldStyleCamel {
+		t.Fatalf("patch should persist json/camel, got %s/%s", view.TokenRequestStyle, view.TokenFieldStyle)
+	}
+
+	// A style-less PATCH leaves the configured values alone (sparse PATCH),
+	// while an explicit write normalizes anything unrecognized back to the
+	// standard shape.
+	view, err = svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{}, now)
+	if err != nil {
+		t.Fatalf("empty patch: %v", err)
+	}
+	if view.TokenRequestStyle != model.OAuthTokenRequestStyleJSON || view.TokenFieldStyle != model.OAuthTokenFieldStyleCamel {
+		t.Fatalf("empty patch must not touch the styles, got %s/%s", view.TokenRequestStyle, view.TokenFieldStyle)
+	}
+	garbage := "xml"
+	view, err = svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{TokenRequestStyle: &garbage}, now)
+	if err != nil {
+		t.Fatalf("garbage patch: %v", err)
+	}
+	if view.TokenRequestStyle != model.OAuthTokenRequestStyleForm {
+		t.Fatalf("unrecognized style must normalize to form, got %s", view.TokenRequestStyle)
+	}
+}
+
+// TestOAuthProviderDingTalkKnobsValidation: the three DingTalk columns
+// default on create (PKCE on, no custom header, no extra params), reject
+// invalid values, and persist through PATCH.
+func TestOAuthProviderDingTalkKnobsValidation(t *testing.T) {
+	svc, _ := newOAuthProviderServiceForTest(t)
+	now := time.Now().UTC()
+
+	view, err := svc.CreateProvider(minimalProviderInput("knobs"), now)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !view.PkceEnabled || view.UserinfoTokenHeader != "" || view.ExtraAuthorizeParams != "" {
+		t.Fatalf("create defaults: pkce on, no header, no params — got %+v", view)
+	}
+
+	// Reserved keys and malformed query strings are rejected at write time.
+	reserved := "prompt=consent&state=evil"
+	if _, err := svc.CreateProvider(withKnobs(minimalProviderInput("reserved"), "x-h", true, reserved), now); !errors.Is(err, errcode.ErrOAuthProviderConfigInvalid) {
+		t.Fatalf("reserved key must be rejected, got %v", err)
+	}
+	if _, err := svc.CreateProvider(withKnobs(minimalProviderInput("broken"), "x-h", true, "%zz"), now); !errors.Is(err, errcode.ErrOAuthProviderConfigInvalid) {
+		t.Fatalf("malformed query must be rejected, got %v", err)
+	}
+	// The header name must be an RFC 7230 token.
+	for _, bad := range []string{"x h", "x:h", "xéh"} {
+		if _, err := svc.CreateProvider(withKnobs(minimalProviderInput("badh"), bad, true, ""), now); !errors.Is(err, errcode.ErrOAuthProviderConfigInvalid) {
+			t.Fatalf("header name %q must be rejected, got %v", bad, err)
+		}
+	}
+
+	// The DingTalk preset shape persists end to end.
+	prompt := "prompt=consent"
+	header := "x-acs-dingtalk-access-token"
+	off := false
+	view, err = svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{
+		UserinfoTokenHeader: &header, PkceEnabled: &off, ExtraAuthorizeParams: &prompt,
+	}, now)
+	if err != nil {
+		t.Fatalf("patch knobs: %v", err)
+	}
+	if view.PkceEnabled || view.UserinfoTokenHeader != header || view.ExtraAuthorizeParams != prompt {
+		t.Fatalf("patched knobs: %+v", view)
+	}
+
+	// PATCH with the same garbage is rejected too.
+	badParams := "scope=openid"
+	if _, err := svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{ExtraAuthorizeParams: &badParams}, now); !errors.Is(err, errcode.ErrOAuthProviderConfigInvalid) {
+		t.Fatalf("patch with reserved key must be rejected, got %v", err)
+	}
+	badHeader := "not a header"
+	if _, err := svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{UserinfoTokenHeader: &badHeader}, now); !errors.Is(err, errcode.ErrOAuthProviderConfigInvalid) {
+		t.Fatalf("patch with bad header must be rejected, got %v", err)
+	}
+}
+
+// withKnobs returns a copy of in with the three DingTalk knobs set, so
+// each invalid-value case starts from an otherwise valid input.
+func withKnobs(in CreateOAuthProviderInput, header string, pkce bool, params string) CreateOAuthProviderInput {
+	in.UserinfoTokenHeader = header
+	in.PkceEnabled = &pkce
+	in.ExtraAuthorizeParams = params
+	return in
+}
+
 func TestCreateOAuthProviderRejectsDuplicateSlug(t *testing.T) {
 	svc, _ := newOAuthProviderServiceForTest(t)
 	now := time.Now().UTC()

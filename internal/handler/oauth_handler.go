@@ -204,6 +204,13 @@ type oauthProviderRequest struct {
 	DisplayNameField      string `json:"display_name_field" binding:"omitempty,max=128"`
 	EmailField            string `json:"email_field" binding:"omitempty,max=128"`
 	AuthStyle             string `json:"auth_style" binding:"omitempty,oneof=basic post"`
+	TokenRequestStyle     string `json:"token_request_style" binding:"omitempty,oneof=form json"`
+	TokenFieldStyle       string `json:"token_field_style" binding:"omitempty,oneof=snake camel"`
+	UserinfoTokenHeader   string `json:"userinfo_token_header" binding:"omitempty,max=128"`
+	// PkceEnabled nil = default (on): a request that never mentions the
+	// knob must not silently turn PKCE off.
+	PkceEnabled          *bool  `json:"pkce_enabled"`
+	ExtraAuthorizeParams string `json:"extra_authorize_params" binding:"omitempty,max=512"`
 }
 
 // GetOAuthProviders handles GET /api/admin/oauth-providers. Besides the
@@ -245,6 +252,11 @@ func PostOAuthProvider(svc *oauth.OAuthProviderService) gin.HandlerFunc {
 			DisplayNameField:      req.DisplayNameField,
 			EmailField:            req.EmailField,
 			AuthStyle:             req.AuthStyle,
+			TokenRequestStyle:     req.TokenRequestStyle,
+			TokenFieldStyle:       req.TokenFieldStyle,
+			UserinfoTokenHeader:   req.UserinfoTokenHeader,
+			PkceEnabled:           req.PkceEnabled,
+			ExtraAuthorizeParams:  req.ExtraAuthorizeParams,
 		}, time.Now().UTC())
 		if errors.Is(err, errcode.ErrOAuthProviderSlugTaken) {
 			middleware.WriteAdminError(c, http.StatusConflict, errcode.OAuthProviderSlugTaken)
@@ -277,6 +289,11 @@ type oauthProviderPatchRequest struct {
 	DisplayNameField      *string `json:"display_name_field" binding:"omitempty,max=128"`
 	EmailField            *string `json:"email_field" binding:"omitempty,max=128"`
 	AuthStyle             *string `json:"auth_style" binding:"omitempty,oneof=basic post"`
+	TokenRequestStyle     *string `json:"token_request_style" binding:"omitempty,oneof=form json"`
+	TokenFieldStyle       *string `json:"token_field_style" binding:"omitempty,oneof=snake camel"`
+	UserinfoTokenHeader   *string `json:"userinfo_token_header" binding:"omitempty,max=128"`
+	PkceEnabled           *bool   `json:"pkce_enabled"`
+	ExtraAuthorizeParams  *string `json:"extra_authorize_params" binding:"omitempty,max=512"`
 }
 
 // PatchOAuthProvider handles PATCH /api/admin/oauth-providers/:id.
@@ -302,6 +319,11 @@ func PatchOAuthProvider(svc *oauth.OAuthProviderService) gin.HandlerFunc {
 			DisplayNameField:      req.DisplayNameField,
 			EmailField:            req.EmailField,
 			AuthStyle:             req.AuthStyle,
+			TokenRequestStyle:     req.TokenRequestStyle,
+			TokenFieldStyle:       req.TokenFieldStyle,
+			UserinfoTokenHeader:   req.UserinfoTokenHeader,
+			PkceEnabled:           req.PkceEnabled,
+			ExtraAuthorizeParams:  req.ExtraAuthorizeParams,
 		}, time.Now().UTC())
 		if errors.Is(err, errcode.ErrOAuthProviderNotFound) {
 			middleware.WriteAdminError(c, http.StatusNotFound, errcode.OAuthProviderNotFound)

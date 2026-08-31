@@ -58,6 +58,7 @@ func newOAuthTestStack(t *testing.T) (*gin.Engine, *gorm.DB, *httptest.Server) {
 		AuthorizationEndpoint: idp.URL + "/authorize",
 		TokenEndpoint:         idp.URL + "/token",
 		UserinfoEndpoint:      idp.URL + "/userinfo",
+		OAuthProtocolStyle:    model.OAuthProtocolStyle{PkceEnabled: true},
 		Scopes:                "openid", UserIDField: "sub", UsernameField: "preferred_username",
 		DisplayNameField: "name", EmailField: "email", AuthStyle: model.OAuthAuthStylePost,
 		CreatedAt: now, UpdatedAt: now,
@@ -244,6 +245,91 @@ func TestPublicOAuthProviderListShape(t *testing.T) {
 	for _, forbidden := range []string{"client_id", "token_endpoint", "client_secret"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("public list leaks %q: %s", forbidden, body)
+		}
+	}
+}
+
+// TestAdminProviderCreateValidatesTokenStyles: the protocol-style columns
+// accept exactly their enumerated values and round-trip through create.
+func TestAdminProviderCreateValidatesTokenStyles(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := testutil.NewSQLiteDB(t)
+	svc := oauth.NewOAuthProviderService(db, crypto.NewSecretBox(oauthTestMasterKey()))
+	r := gin.New()
+	r.POST("/api/admin/oauth-providers", PostOAuthProvider(svc))
+
+	post := func(payload string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/oauth-providers", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	const valid = `{"slug":"feishu","name":"Feishu","client_id":"cid","client_secret":"shh",` +
+		`"authorization_endpoint":"https://open.feishu.cn/a","token_endpoint":"https://open.feishu.cn/t",` +
+		`"userinfo_endpoint":"https://open.feishu.cn/u","token_request_style":"json","token_field_style":"snake"}`
+	w := post(valid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid styles should create: %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"token_request_style":"json"`) {
+		t.Fatalf("created view should carry the style: %s", w.Body.String())
+	}
+	for name, bad := range map[string]string{
+		"request style": strings.Replace(valid, `"token_request_style":"json"`, `"token_request_style":"xml"`, 1),
+		"field style":   strings.Replace(valid, `"token_field_style":"snake"`, `"token_field_style":"kebab"`, 1),
+	} {
+		if w := post(bad); w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid %s must 400, got %d %s", name, w.Code, w.Body.String())
+		}
+	}
+}
+
+// TestAdminProviderPatchValidatesTokenStyles: PATCH carries the same oneof
+// binding as create — an invalid protocol style must 400 before the
+// service sees it — and a valid sparse PATCH round-trips the knobs.
+func TestAdminProviderPatchValidatesTokenStyles(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := testutil.NewSQLiteDB(t)
+	svc := oauth.NewOAuthProviderService(db, crypto.NewSecretBox(oauthTestMasterKey()))
+	created, err := svc.CreateProvider(oauth.CreateOAuthProviderInput{
+		Slug: "patchme", Name: "Patch Me", Enabled: true,
+		ClientID: "cid", ClientSecret: "shh",
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+		UserinfoEndpoint:      "https://idp.example.com/userinfo",
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	r := gin.New()
+	r.PATCH("/api/admin/oauth-providers/:id", PatchOAuthProvider(svc))
+	base := "/api/admin/oauth-providers/" + strconv.FormatUint(uint64(created.ID), 10)
+
+	patch := func(payload string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, base, strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	for name, bad := range map[string]string{
+		"request style": `{"token_request_style":"xml"}`,
+		"field style":   `{"token_field_style":"kebab"}`,
+	} {
+		if w := patch(bad); w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid %s must 400, got %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	w := patch(`{"token_request_style":"json","pkce_enabled":false}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid patch: %d %s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{`"token_request_style":"json"`, `"pkce_enabled":false`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Fatalf("patched view missing %s: %s", want, w.Body.String())
 		}
 	}
 }

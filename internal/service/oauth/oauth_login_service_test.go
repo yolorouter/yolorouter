@@ -29,11 +29,19 @@ type fakeIdP struct {
 	lastCodeVerifier string
 	lastRedirectURI  string
 	lastClientSecret string
+	lastContentType  string
+	lastAuthHeader   string
+	lastJSONBody     map[string]any
 	// configuration
 	accessToken  string
 	userinfo     map[string]any
 	tokenAsForm  bool // answer form-encoded instead of JSON
+	tokenCamel   bool // answer {"accessToken": ...} instead of {"access_token": ...}
 	failExchange bool
+	failBody     string // non-empty: the exact body of the failure response
+	// userinfoHeaderName non-empty: expect the access token under this
+	// header instead of Authorization: Bearer (DingTalk shape).
+	userinfoHeaderName string
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -43,15 +51,40 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 	}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
+		f.lastContentType = r.Header.Get("Content-Type")
+		f.lastAuthHeader = r.Header.Get("Authorization")
+		if strings.HasPrefix(f.lastContentType, "application/json") {
+			// JSON-mode exchange (Feishu/DingTalk shape): capture the decoded
+			// body and pull the shared fields from either naming style.
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "bad json", http.StatusBadRequest)
+				return
+			}
+			f.lastJSONBody = body
+			f.lastCode, _ = body["code"].(string)
+			f.lastRedirectURI, _ = body["redirect_uri"].(string)
+			f.lastCodeVerifier, _ = body["code_verifier"].(string)
+			f.lastClientSecret, _ = body["client_secret"].(string)
+			if v, ok := body["clientSecret"].(string); ok {
+				f.lastClientSecret = v
+			}
+		} else {
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "bad form", http.StatusBadRequest)
+				return
+			}
+			f.lastCode = r.PostForm.Get("code")
+			f.lastCodeVerifier = r.PostForm.Get("code_verifier")
+			f.lastRedirectURI = r.PostForm.Get("redirect_uri")
+			f.lastClientSecret = r.PostForm.Get("client_secret")
 		}
-		f.lastCode = r.PostForm.Get("code")
-		f.lastCodeVerifier = r.PostForm.Get("code_verifier")
-		f.lastRedirectURI = r.PostForm.Get("redirect_uri")
-		f.lastClientSecret = r.PostForm.Get("client_secret")
 		if f.failExchange {
+			if f.failBody != "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(f.failBody))
+				return
+			}
 			http.Error(w, "denied", http.StatusBadRequest)
 			return
 		}
@@ -61,10 +94,19 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if f.tokenCamel {
+			_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": f.accessToken})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": f.accessToken})
 	})
 	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+f.accessToken {
+		if f.userinfoHeaderName != "" {
+			if r.Header.Get(f.userinfoHeaderName) != f.accessToken {
+				http.Error(w, "bad token", http.StatusUnauthorized)
+				return
+			}
+		} else if r.Header.Get("Authorization") != "Bearer "+f.accessToken {
 			http.Error(w, "bad token", http.StatusUnauthorized)
 			return
 		}
@@ -94,7 +136,11 @@ func seedProviderForIdP(t *testing.T, db *gorm.DB, f *fakeIdP, slug string) *mod
 		UserIDField:           "sub", UsernameField: "preferred_username",
 		DisplayNameField: "name", EmailField: "email",
 		AuthStyle: model.OAuthAuthStylePost,
-		CreatedAt: now, UpdatedAt: now,
+		// Struct-literal seeds bypass the API's normalize-to-default path,
+		// where an unmentioned pkce_enabled lands on true — mirror it here
+		// so these rows behave like production ones.
+		OAuthProtocolStyle: model.OAuthProtocolStyle{PkceEnabled: true},
+		CreatedAt:          now, UpdatedAt: now,
 	}
 	if err := repository.CreateOAuthProvider(db, p); err != nil {
 		t.Fatalf("seed provider: %v", err)
@@ -202,6 +248,201 @@ func TestOAuthLoginFullFlowAutoRegistersAndReusesAccount(t *testing.T) {
 	}
 	if userCount != 1 {
 		t.Fatalf("expected exactly 1 account, got %d", userCount)
+	}
+}
+
+// TestOAuthEmptyScopesOmitScopeParam: a provider with no scopes must omit
+// the parameter entirely — not every IdP parses an empty `scope=` as "no
+// scopes" (the Feishu preset ships an empty scope list).
+func TestOAuthEmptyScopesOmitScopeParam(t *testing.T) {
+	svc, db := newOAuthLoginServiceForTest(t)
+	idp := newFakeIdP(t)
+	p := seedProviderForIdP(t, db, idp, "fake")
+	if err := db.Model(&model.OAuthProvider{}).Where("id = ?", p.ID).Update("scopes", "").Error; err != nil {
+		t.Fatalf("clear scopes: %v", err)
+	}
+
+	authorizeURL, _ := beginAndExtractState(t, svc, "fake")
+	u, _ := url.Parse(authorizeURL)
+	if _, ok := u.Query()["scope"]; ok {
+		t.Fatalf("authorize url must omit the scope param for a scope-less provider: %s", authorizeURL)
+	}
+
+	if err := db.Model(&model.OAuthProvider{}).Where("id = ?", p.ID).Update("scopes", "openid").Error; err != nil {
+		t.Fatalf("set scopes: %v", err)
+	}
+	authorizeURL, _ = beginAndExtractState(t, svc, "fake")
+	u, _ = url.Parse(authorizeURL)
+	if got := u.Query().Get("scope"); got != "openid" {
+		t.Fatalf("non-empty scopes must still be sent, got %q", got)
+	}
+}
+
+// setTokenStyles flips a seeded provider onto a JSON token exchange style.
+func setTokenStyles(t *testing.T, db *gorm.DB, p *model.OAuthProvider, requestStyle, fieldStyle string) {
+	t.Helper()
+	if err := db.Model(&model.OAuthProvider{}).Where("id = ?", p.ID).Updates(map[string]any{
+		"token_request_style": requestStyle, "token_field_style": fieldStyle,
+	}).Error; err != nil {
+		t.Fatalf("update token styles: %v", err)
+	}
+}
+
+// TestOAuthJSONTokenExchangeSnakeStyle covers the Feishu shape: a JSON body
+// with the standard snake_case field set, credentials riding the body only,
+// and the usual JSON access_token response.
+func TestOAuthJSONTokenExchangeSnakeStyle(t *testing.T) {
+	svc, db := newOAuthLoginServiceForTest(t)
+	idp := newFakeIdP(t)
+	p := seedProviderForIdP(t, db, idp, "feishu")
+	setTokenStyles(t, db, p, model.OAuthTokenRequestStyleJSON, model.OAuthTokenFieldStyleSnake)
+
+	_, state := beginAndExtractState(t, svc, "feishu")
+	if _, err := svc.HandleCallback(context.Background(), "feishu", state, "code-fs", time.Now().UTC()); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	if idp.lastContentType != "application/json" {
+		t.Fatalf("exchange must be JSON, got Content-Type %q", idp.lastContentType)
+	}
+	if idp.lastAuthHeader != "" {
+		t.Fatalf("JSON mode must not send an Authorization header, got %q", idp.lastAuthHeader)
+	}
+	if got, _ := idp.lastJSONBody["grant_type"].(string); got != "authorization_code" {
+		t.Fatalf("grant_type: got %v", idp.lastJSONBody["grant_type"])
+	}
+	if idp.lastCode != "code-fs" || idp.lastRedirectURI != "http://app.local/oauth/callback/feishu" {
+		t.Fatalf("exchange sent wrong code/redirect: %q %q", idp.lastCode, idp.lastRedirectURI)
+	}
+	if idp.lastCodeVerifier == "" {
+		t.Fatalf("exchange did not send a code_verifier")
+	}
+	if idp.lastClientSecret != "shh-secret" {
+		t.Fatalf("client secret must ride the JSON body, got %q", idp.lastClientSecret)
+	}
+}
+
+// TestOAuthJSONTokenExchangeCamelStyle covers the DingTalk shape: exactly
+// the trimmed camelCase field set (no redirect_uri, no code_verifier) and
+// an accessToken response.
+func TestOAuthJSONTokenExchangeCamelStyle(t *testing.T) {
+	svc, db := newOAuthLoginServiceForTest(t)
+	idp := newFakeIdP(t)
+	idp.tokenCamel = true
+	p := seedProviderForIdP(t, db, idp, "dingtalk")
+	setTokenStyles(t, db, p, model.OAuthTokenRequestStyleJSON, model.OAuthTokenFieldStyleCamel)
+
+	_, state := beginAndExtractState(t, svc, "dingtalk")
+	if _, err := svc.HandleCallback(context.Background(), "dingtalk", state, "code-dt", time.Now().UTC()); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	for _, key := range []string{"clientId", "clientSecret", "code", "grantType"} {
+		if _, ok := idp.lastJSONBody[key]; !ok {
+			t.Fatalf("camel body missing %s: %v", key, idp.lastJSONBody)
+		}
+	}
+	if got, _ := idp.lastJSONBody["grantType"].(string); got != "authorization_code" {
+		t.Fatalf("grantType: got %v", idp.lastJSONBody["grantType"])
+	}
+	if idp.lastClientSecret != "shh-secret" {
+		t.Fatalf("clientSecret must ride the JSON body, got %q", idp.lastClientSecret)
+	}
+	for _, key := range []string{"grant_type", "client_id", "client_secret", "redirect_uri", "code_verifier"} {
+		if _, ok := idp.lastJSONBody[key]; ok {
+			t.Fatalf("camel body must not carry %s: %v", key, idp.lastJSONBody)
+		}
+	}
+}
+
+// TestOAuthJSONTokenExchangeFailureCarriesExcerpt: a non-200 JSON answer
+// must fail the exchange with the IdP's own error document excerpted into
+// the error, so the admin sees the actual cause.
+func TestOAuthJSONTokenExchangeFailureCarriesExcerpt(t *testing.T) {
+	svc, db := newOAuthLoginServiceForTest(t)
+	idp := newFakeIdP(t)
+	idp.failExchange = true
+	idp.failBody = `{"errcode":20070,"msg":"client_secret not allowed in body"}`
+	p := seedProviderForIdP(t, db, idp, "feishu")
+	setTokenStyles(t, db, p, model.OAuthTokenRequestStyleJSON, model.OAuthTokenFieldStyleSnake)
+
+	_, state := beginAndExtractState(t, svc, "feishu")
+	_, err := svc.HandleCallback(context.Background(), "feishu", state, "code-fs", time.Now().UTC())
+	if !errors.Is(err, errcode.ErrOAuthExchangeFailed) {
+		t.Fatalf("expected ErrOAuthExchangeFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "20070") {
+		t.Fatalf("error should carry the IdP's error excerpt: %v", err)
+	}
+}
+
+// TestOAuthPKCEDisabledOmitsAllTraces: with pkce_enabled off, neither the
+// authorize URL nor the token exchange carries any PKCE material (the
+// verifier still exists in the state row and is simply never presented).
+func TestOAuthPKCEDisabledOmitsAllTraces(t *testing.T) {
+	svc, db := newOAuthLoginServiceForTest(t)
+	idp := newFakeIdP(t)
+	p := seedProviderForIdP(t, db, idp, "dingtalk")
+	if err := db.Model(&model.OAuthProvider{}).Where("id = ?", p.ID).Update("pkce_enabled", false).Error; err != nil {
+		t.Fatalf("disable pkce: %v", err)
+	}
+
+	authorizeURL, state := beginAndExtractState(t, svc, "dingtalk")
+	u, _ := url.Parse(authorizeURL)
+	q := u.Query()
+	if _, ok := q["code_challenge"]; ok {
+		t.Fatalf("authorize url must omit code_challenge: %s", authorizeURL)
+	}
+	if _, ok := q["code_challenge_method"]; ok {
+		t.Fatalf("authorize url must omit code_challenge_method: %s", authorizeURL)
+	}
+
+	if _, err := svc.HandleCallback(context.Background(), "dingtalk", state, "c1", time.Now().UTC()); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	if idp.lastCodeVerifier != "" {
+		t.Fatalf("exchange must not send a code_verifier, got %q", idp.lastCodeVerifier)
+	}
+}
+
+// TestOAuthExtraAuthorizeParamsAppended: provider-specific authorize
+// parameters ride the authorize URL; reserved keys are skipped defensively
+// even when a row bypassed write-time validation.
+func TestOAuthExtraAuthorizeParamsAppended(t *testing.T) {
+	svc, db := newOAuthLoginServiceForTest(t)
+	idp := newFakeIdP(t)
+	p := seedProviderForIdP(t, db, idp, "dingtalk")
+	// Written straight to the row, reserved key and all, to exercise the
+	// assemble-time defense (the API path rejects this at save).
+	if err := db.Model(&model.OAuthProvider{}).Where("id = ?", p.ID).
+		Update("extra_authorize_params", "prompt=consent&state=evil").Error; err != nil {
+		t.Fatalf("set extra params: %v", err)
+	}
+
+	authorizeURL, state := beginAndExtractState(t, svc, "dingtalk")
+	u, _ := url.Parse(authorizeURL)
+	q := u.Query()
+	if q.Get("prompt") != "consent" {
+		t.Fatalf("extra param not appended: %s", authorizeURL)
+	}
+	if q.Get("state") != state {
+		t.Fatalf("reserved key overrode the flow's own state: %s", authorizeURL)
+	}
+}
+
+// TestOAuthUserinfoCustomHeader covers the DingTalk shape: the access token
+// rides a provider-named header instead of Authorization: Bearer.
+func TestOAuthUserinfoCustomHeader(t *testing.T) {
+	svc, db := newOAuthLoginServiceForTest(t)
+	idp := newFakeIdP(t)
+	idp.userinfoHeaderName = "x-acs-dingtalk-access-token"
+	p := seedProviderForIdP(t, db, idp, "dingtalk")
+	if err := db.Model(&model.OAuthProvider{}).Where("id = ?", p.ID).
+		Update("userinfo_token_header", "x-acs-dingtalk-access-token").Error; err != nil {
+		t.Fatalf("set userinfo header: %v", err)
+	}
+
+	_, state := beginAndExtractState(t, svc, "dingtalk")
+	if _, err := svc.HandleCallback(context.Background(), "dingtalk", state, "c1", time.Now().UTC()); err != nil {
+		t.Fatalf("callback with custom userinfo header: %v", err)
 	}
 }
 
