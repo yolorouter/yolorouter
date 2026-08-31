@@ -176,6 +176,39 @@
                 </template>
                 <NSelect v-model:value="form.auth_style" :options="authStyleOptions" />
               </NFormItem>
+              <NFormItem>
+                <template #label>
+                  <HelpLabel :tip="t('oauthProviders.tokenRequestStyleLabel_tip')">{{ t('oauthProviders.tokenRequestStyleLabel') }}</HelpLabel>
+                </template>
+                <NSelect v-model:value="form.token_request_style" :options="tokenRequestStyleOptions" />
+              </NFormItem>
+              <NFormItem>
+                <template #label>
+                  <HelpLabel :tip="t('oauthProviders.tokenFieldStyleLabel_tip')">{{ t('oauthProviders.tokenFieldStyleLabel') }}</HelpLabel>
+                </template>
+                <NSelect v-model:value="form.token_field_style" :options="tokenFieldStyleOptions" />
+              </NFormItem>
+            </div>
+
+            <div class="form-grid">
+              <NFormItem>
+                <template #label>
+                  <HelpLabel :tip="t('oauthProviders.userinfoTokenHeaderLabel_tip')">{{ t('oauthProviders.userinfoTokenHeaderLabel') }}</HelpLabel>
+                </template>
+                <NInput v-model:value="form.userinfo_token_header" placeholder="x-acs-dingtalk-access-token" />
+              </NFormItem>
+              <NFormItem>
+                <template #label>
+                  <HelpLabel :tip="t('oauthProviders.pkceEnabledLabel_tip')">{{ t('oauthProviders.pkceEnabledLabel') }}</HelpLabel>
+                </template>
+                <NSwitch v-model:value="form.pkce_enabled" />
+              </NFormItem>
+              <NFormItem>
+                <template #label>
+                  <HelpLabel :tip="t('oauthProviders.extraAuthorizeParamsLabel_tip')">{{ t('oauthProviders.extraAuthorizeParamsLabel') }}</HelpLabel>
+                </template>
+                <NInput v-model:value="form.extra_authorize_params" placeholder="prompt=consent" />
+              </NFormItem>
             </div>
 
             <NDivider class="mapping-divider">{{ t('oauthProviders.mappingDivider') }}</NDivider>
@@ -351,7 +384,7 @@ const columns = computed<DataTableColumns<OAuthProviderView>>(() => [
 
 // === Create / edit modal ==================================================
 
-type ProviderMode = 'github' | 'google' | 'oidc' | 'manual'
+type ProviderMode = 'github' | 'google' | 'dingtalk' | 'feishu' | 'oidc' | 'manual'
 
 const showModal = ref(false)
 const editing = ref<OAuthProviderView | null>(null)
@@ -380,6 +413,10 @@ function emptyForm(): OAuthProviderInput {
     user_id_field: 'sub', username_field: 'preferred_username',
     display_name_field: 'name', email_field: 'email',
     auth_style: 'post',
+    // Protocol knobs mirror the server's defaults: a provider that never
+    // touches the advanced section behaves like a standard OIDC one.
+    token_request_style: 'form', token_field_style: 'snake',
+    userinfo_token_header: '', pkce_enabled: true, extra_authorize_params: '',
   }
 }
 
@@ -414,10 +451,22 @@ const authStyleOptions = computed<SelectOption[]>(() => [
   { label: t('oauthProviders.authStyleBasic'), value: 'basic' },
 ])
 
+const tokenRequestStyleOptions = computed<SelectOption[]>(() => [
+  { label: t('oauthProviders.tokenRequestStyleForm'), value: 'form' },
+  { label: t('oauthProviders.tokenRequestStyleJson'), value: 'json' },
+])
+
+const tokenFieldStyleOptions = computed<SelectOption[]>(() => [
+  { label: t('oauthProviders.tokenFieldStyleSnake'), value: 'snake' },
+  { label: t('oauthProviders.tokenFieldStyleCamel'), value: 'camel' },
+])
+
 const modeOptions = computed<SelectOption[]>(() => [
   { label: t('oauthProviders.presetOIDC'), value: 'oidc' },
   { label: 'GitHub', value: 'github' },
   { label: 'Google', value: 'google' },
+  { label: t('oauthProviders.presetDingtalk'), value: 'dingtalk' },
+  { label: t('oauthProviders.presetFeishu'), value: 'feishu' },
   { label: t('oauthProviders.modeManual'), value: 'manual' },
 ])
 
@@ -470,6 +519,10 @@ function onNameInput(v: string) {
   }
 }
 
+// The modes that prefill the form, kept as a set so the leave-a-preset
+// check in selectMode stays one lookup.
+const PRESET_MODES: ReadonlySet<ProviderMode> = new Set(['github', 'google', 'dingtalk', 'feishu'])
+
 // selectMode prefills what the chosen mode already knows. Popular presets
 // carry their full endpoint + mapping sets; oidc/manual reset to the
 // defaults and rely on discovery / typing. Client credentials and anything
@@ -479,7 +532,7 @@ function onNameInput(v: string) {
 // discovery URL still in the field re-runs discovery, since the endpoints
 // were just reset.
 function selectMode(v: ProviderMode) {
-  const leavingPreset = mode.value === 'github' || mode.value === 'google'
+  const leavingPreset = PRESET_MODES.has(mode.value)
   mode.value = v
   const base = emptyForm()
   base.client_id = form.value.client_id
@@ -507,6 +560,42 @@ function selectMode(v: ProviderMode) {
         token_endpoint: 'https://oauth2.googleapis.com/token',
         userinfo_endpoint: 'https://openidconnect.googleapis.com/v1/userinfo',
         username_field: 'email',
+      })
+      slugTouched.value = false
+      nameTouched.value = false
+      break
+    case 'dingtalk':
+      // DingTalk deviates from OAuth2 on every axis the protocol knobs
+      // cover: JSON + camelCase token exchange, a custom userinfo auth
+      // header, no PKCE, and a required prompt=consent authorize parameter.
+      Object.assign(base, {
+        slug: 'dingtalk', name: t('oauthProviders.presetDingtalk'),
+        authorization_endpoint: 'https://login.dingtalk.com/oauth2/auth',
+        token_endpoint: 'https://api.dingtalk.com/v1.0/oauth2/userAccessToken',
+        userinfo_endpoint: 'https://api.dingtalk.com/v1.0/contact/users/me',
+        scopes: 'openid',
+        user_id_field: 'unionId', username_field: 'nick',
+        display_name_field: 'nick', email_field: 'email',
+        auth_style: 'post',
+        token_request_style: 'json', token_field_style: 'camel',
+        userinfo_token_header: 'x-acs-dingtalk-access-token',
+        pkce_enabled: false,
+        extra_authorize_params: 'prompt=consent',
+      })
+      slugTouched.value = false
+      nameTouched.value = false
+      break
+    case 'feishu':
+      Object.assign(base, {
+        slug: 'feishu', name: t('oauthProviders.presetFeishu'),
+        authorization_endpoint: 'https://accounts.feishu.cn/open-apis/authen/v1/authorize',
+        token_endpoint: 'https://open.feishu.cn/open-apis/authen/v2/oauth/token',
+        userinfo_endpoint: 'https://open.feishu.cn/open-apis/authen/v1/user_info',
+        scopes: '',
+        user_id_field: 'data.union_id', username_field: 'data.name',
+        display_name_field: 'data.name', email_field: 'data.email',
+        auth_style: 'post',
+        token_request_style: 'json', token_field_style: 'snake',
       })
       slugTouched.value = false
       nameTouched.value = false
@@ -625,6 +714,11 @@ function openEdit(row: OAuthProviderView) {
     user_id_field: row.user_id_field, username_field: row.username_field,
     display_name_field: row.display_name_field, email_field: row.email_field,
     auth_style: row.auth_style,
+    token_request_style: row.token_request_style,
+    token_field_style: row.token_field_style,
+    userinfo_token_header: row.userinfo_token_header,
+    pkce_enabled: row.pkce_enabled,
+    extra_authorize_params: row.extra_authorize_params,
   }
   showModal.value = true
 }

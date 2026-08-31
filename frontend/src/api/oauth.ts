@@ -24,9 +24,20 @@ export function beginOAuthLogin(slug: string): Promise<{ authorize_url: string }
 
 // === Admin provider management ============================================
 
+// The five protocol-style knobs every provider carries; the zero shape
+// (form/snake/no header/PKCE on/no extras) is the standard OAuth2 flow.
+// One declaration feeds both interfaces below so they cannot drift.
+export interface OAuthProtocolStyle {
+  token_request_style: 'form' | 'json'
+  token_field_style: 'snake' | 'camel'
+  userinfo_token_header: string
+  pkce_enabled: boolean
+  extra_authorize_params: string
+}
+
 // Mirrors service.OAuthProviderView. The client secret never round-trips:
 // has_client_secret only reports that one is stored.
-export interface OAuthProviderView {
+export interface OAuthProviderView extends OAuthProtocolStyle {
   id: number
   slug: string
   name: string
@@ -48,7 +59,7 @@ export interface OAuthProviderView {
   updated_at: string
 }
 
-export interface OAuthProviderInput {
+export interface OAuthProviderInput extends OAuthProtocolStyle {
   slug: string
   name: string
   icon: string
