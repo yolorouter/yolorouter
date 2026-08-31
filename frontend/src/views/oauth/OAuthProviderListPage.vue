@@ -388,6 +388,9 @@ type ProviderMode = 'github' | 'google' | 'dingtalk' | 'feishu' | 'oidc' | 'manu
 
 const showModal = ref(false)
 const editing = ref<OAuthProviderView | null>(null)
+// The stored pkce_enabled of the row being edited — lets save() send the
+// knob as a truly sparse bool: absent from the PATCH unless it changed.
+let editingPkce: boolean | null = null
 const saving = ref(false)
 const formRef = ref<FormInst | null>(null)
 const wellKnownURL = ref('')
@@ -523,6 +526,57 @@ function onNameInput(v: string) {
 // check in selectMode stays one lookup.
 const PRESET_MODES: ReadonlySet<ProviderMode> = new Set(['github', 'google', 'dingtalk', 'feishu'])
 
+// Each preset's prefill, as one table instead of per-case branches in
+// selectMode. Names are functions so they translate at selection time.
+// Modes absent from the table (oidc/manual) reset to the defaults and rely
+// on discovery / typing.
+const PRESET_FORMS: Partial<Record<ProviderMode, () => Partial<OAuthProviderInput>>> = {
+  github: () => ({
+    slug: 'github', name: 'GitHub',
+    authorization_endpoint: 'https://github.com/login/oauth/authorize',
+    token_endpoint: 'https://github.com/login/oauth/access_token',
+    userinfo_endpoint: 'https://api.github.com/user',
+    scopes: 'read:user user:email',
+    user_id_field: 'id', username_field: 'login',
+    display_name_field: 'name', email_field: 'email',
+  }),
+  google: () => ({
+    slug: 'google', name: 'Google',
+    authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+    token_endpoint: 'https://oauth2.googleapis.com/token',
+    userinfo_endpoint: 'https://openidconnect.googleapis.com/v1/userinfo',
+    username_field: 'email',
+  }),
+  // DingTalk deviates from OAuth2 on every axis the protocol knobs
+  // cover: JSON + camelCase token exchange, a custom userinfo auth
+  // header, no PKCE, and a required prompt=consent authorize parameter.
+  dingtalk: () => ({
+    slug: 'dingtalk', name: t('oauthProviders.presetDingtalk'),
+    authorization_endpoint: 'https://login.dingtalk.com/oauth2/auth',
+    token_endpoint: 'https://api.dingtalk.com/v1.0/oauth2/userAccessToken',
+    userinfo_endpoint: 'https://api.dingtalk.com/v1.0/contact/users/me',
+    scopes: 'openid',
+    user_id_field: 'unionId', username_field: 'nick',
+    display_name_field: 'nick', email_field: 'email',
+    auth_style: 'post',
+    token_request_style: 'json', token_field_style: 'camel',
+    userinfo_token_header: 'x-acs-dingtalk-access-token',
+    pkce_enabled: false,
+    extra_authorize_params: 'prompt=consent',
+  }),
+  feishu: () => ({
+    slug: 'feishu', name: t('oauthProviders.presetFeishu'),
+    authorization_endpoint: 'https://accounts.feishu.cn/oauth/v3/authorize',
+    token_endpoint: 'https://accounts.feishu.cn/oauth/v3/token',
+    userinfo_endpoint: 'https://open.feishu.cn/open-apis/authen/v1/user_info',
+    scopes: '',
+    user_id_field: 'data.union_id', username_field: 'data.name',
+    display_name_field: 'data.name', email_field: 'data.email',
+    auth_style: 'post',
+    token_request_style: 'json', token_field_style: 'snake',
+  }),
+}
+
 // selectMode prefills what the chosen mode already knows. Popular presets
 // carry their full endpoint + mapping sets; oidc/manual reset to the
 // defaults and rely on discovery / typing. Client credentials and anything
@@ -539,74 +593,17 @@ function selectMode(v: ProviderMode) {
   base.client_secret = form.value.client_secret
   discoveryState.value = 'idle'
   lastDiscovered.value = ''
-  switch (v) {
-    case 'github':
-      Object.assign(base, {
-        slug: 'github', name: 'GitHub',
-        authorization_endpoint: 'https://github.com/login/oauth/authorize',
-        token_endpoint: 'https://github.com/login/oauth/access_token',
-        userinfo_endpoint: 'https://api.github.com/user',
-        scopes: 'read:user user:email',
-        user_id_field: 'id', username_field: 'login',
-        display_name_field: 'name', email_field: 'email',
-      })
-      slugTouched.value = false
-      nameTouched.value = false
-      break
-    case 'google':
-      Object.assign(base, {
-        slug: 'google', name: 'Google',
-        authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
-        token_endpoint: 'https://oauth2.googleapis.com/token',
-        userinfo_endpoint: 'https://openidconnect.googleapis.com/v1/userinfo',
-        username_field: 'email',
-      })
-      slugTouched.value = false
-      nameTouched.value = false
-      break
-    case 'dingtalk':
-      // DingTalk deviates from OAuth2 on every axis the protocol knobs
-      // cover: JSON + camelCase token exchange, a custom userinfo auth
-      // header, no PKCE, and a required prompt=consent authorize parameter.
-      Object.assign(base, {
-        slug: 'dingtalk', name: t('oauthProviders.presetDingtalk'),
-        authorization_endpoint: 'https://login.dingtalk.com/oauth2/auth',
-        token_endpoint: 'https://api.dingtalk.com/v1.0/oauth2/userAccessToken',
-        userinfo_endpoint: 'https://api.dingtalk.com/v1.0/contact/users/me',
-        scopes: 'openid',
-        user_id_field: 'unionId', username_field: 'nick',
-        display_name_field: 'nick', email_field: 'email',
-        auth_style: 'post',
-        token_request_style: 'json', token_field_style: 'camel',
-        userinfo_token_header: 'x-acs-dingtalk-access-token',
-        pkce_enabled: false,
-        extra_authorize_params: 'prompt=consent',
-      })
-      slugTouched.value = false
-      nameTouched.value = false
-      break
-    case 'feishu':
-      Object.assign(base, {
-        slug: 'feishu', name: t('oauthProviders.presetFeishu'),
-        authorization_endpoint: 'https://accounts.feishu.cn/oauth/v3/authorize',
-        token_endpoint: 'https://accounts.feishu.cn/oauth/v3/token',
-        userinfo_endpoint: 'https://open.feishu.cn/open-apis/authen/v1/user_info',
-        scopes: '',
-        user_id_field: 'data.union_id', username_field: 'data.name',
-        display_name_field: 'data.name', email_field: 'data.email',
-        auth_style: 'post',
-        token_request_style: 'json', token_field_style: 'snake',
-      })
-      slugTouched.value = false
-      nameTouched.value = false
-      break
-    default:
-      // Each field keeps its own value only if the admin actually typed it
-      // — judged independently, so a hand-edited slug survives leaving a
-      // preset even when the name is still the preset's.
-      if (!(leavingPreset && !nameTouched.value)) base.name = form.value.name
-      if (!(leavingPreset && !slugTouched.value)) base.slug = form.value.slug
-      break
+  const preset = PRESET_FORMS[v]
+  if (preset) {
+    Object.assign(base, preset())
+    slugTouched.value = false
+    nameTouched.value = false
+  } else {
+    // Each field keeps its own value only if the admin actually typed it
+    // — judged independently, so a hand-edited slug survives leaving a
+    // preset even when the name is still the preset's.
+    if (!(leavingPreset && !nameTouched.value)) base.name = form.value.name
+    if (!(leavingPreset && !slugTouched.value)) base.slug = form.value.slug
   }
   form.value = base
   if (v === 'oidc' && wellKnownURL.value.trim()) {
@@ -682,6 +679,7 @@ async function autoDiscover() {
 
 function openCreate() {
   editing.value = null
+  editingPkce = null
   mode.value = 'oidc'
   wellKnownURL.value = ''
   lastDiscovered.value = ''
@@ -696,6 +694,7 @@ function openCreate() {
 
 function openEdit(row: OAuthProviderView) {
   editing.value = row
+  editingPkce = row.pkce_enabled
   mode.value = 'oidc'
   wellKnownURL.value = ''
   lastDiscovered.value = ''
@@ -755,6 +754,7 @@ async function save() {
       const patch: Partial<OAuthProviderInput> = { ...form.value }
       delete patch.slug
       if (!form.value.client_secret) delete patch.client_secret
+      if (form.value.pkce_enabled === editingPkce) delete patch.pkce_enabled
       await updateOAuthProvider(editing.value.id, patch)
     } else {
       await createOAuthProvider(form.value)

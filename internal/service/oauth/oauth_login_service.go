@@ -292,6 +292,31 @@ func (s *OAuthLoginService) doExchange(ctx context.Context, req *http.Request) (
 	return body, nil
 }
 
+// jsonTokenFields is one token field style's spellings for the JSON
+// exchange: how each request field is written and which response field
+// the access token is read from. An empty redirectURI/codeVerifier
+// spelling means the style's request omits the field entirely —
+// DingTalk's camel set trims both.
+type jsonTokenFields struct {
+	grantType, clientID, clientSecret, code string
+	redirectURI, codeVerifier               string
+	accessToken                             string
+}
+
+// jsonTokenFieldSets covers both styles at exactly one site: adding a
+// third style is one table row, not another pair of branches.
+var jsonTokenFieldSets = map[string]jsonTokenFields{
+	model.OAuthTokenFieldStyleSnake: {
+		grantType: "grant_type", clientID: "client_id", clientSecret: "client_secret",
+		code: "code", redirectURI: "redirect_uri", codeVerifier: "code_verifier",
+		accessToken: "access_token",
+	},
+	model.OAuthTokenFieldStyleCamel: {
+		grantType: "grantType", clientID: "clientId", clientSecret: "clientSecret",
+		code: "code", accessToken: "accessToken",
+	},
+}
+
 // exchangeCodeJSON is the JSON-body exchange for providers whose token
 // endpoints take JSON (Feishu, DingTalk). Field names follow the provider's
 // token_field_style: snake sends the standard set (grant_type, client_id,
@@ -300,25 +325,21 @@ func (s *OAuthLoginService) doExchange(ctx context.Context, req *http.Request) (
 // code_verifier). Client credentials only ever ride the body:
 // auth_style has no meaning in JSON mode.
 func (s *OAuthLoginService) exchangeCodeJSON(ctx context.Context, p *model.OAuthProvider, secret, code, codeVerifier, redirectURI string) (string, error) {
-	var payload map[string]any
-	if p.TokenFieldStyle == model.OAuthTokenFieldStyleCamel {
-		payload = map[string]any{
-			"clientId":     p.ClientID,
-			"clientSecret": secret,
-			"code":         code,
-			"grantType":    "authorization_code",
-		}
-	} else {
-		payload = map[string]any{
-			"grant_type":    "authorization_code",
-			"client_id":     p.ClientID,
-			"client_secret": secret,
-			"code":          code,
-			"redirect_uri":  redirectURI,
-		}
-		if codeVerifier != "" {
-			payload["code_verifier"] = codeVerifier
-		}
+	f, ok := jsonTokenFieldSets[p.TokenFieldStyle]
+	if !ok {
+		f = jsonTokenFieldSets[model.OAuthTokenFieldStyleSnake]
+	}
+	payload := map[string]any{
+		f.grantType:    "authorization_code",
+		f.clientID:     p.ClientID,
+		f.clientSecret: secret,
+		f.code:         code,
+	}
+	if f.redirectURI != "" {
+		payload[f.redirectURI] = redirectURI
+	}
+	if codeVerifier != "" && f.codeVerifier != "" {
+		payload[f.codeVerifier] = codeVerifier
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -337,17 +358,11 @@ func (s *OAuthLoginService) exchangeCodeJSON(ctx context.Context, p *model.OAuth
 		return "", err
 	}
 
-	var parsed struct {
-		AccessToken      string `json:"access_token"` // snake style (Feishu)
-		AccessTokenCamel string `json:"accessToken"`  // camel style (DingTalk)
-	}
+	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("%w: %v", errcode.ErrOAuthExchangeFailed, err)
 	}
-	token := parsed.AccessToken
-	if p.TokenFieldStyle == model.OAuthTokenFieldStyleCamel {
-		token = parsed.AccessTokenCamel
-	}
+	token, _ := parsed[f.accessToken].(string)
 	if token == "" {
 		return "", fmt.Errorf("%w: no access token in response: %s", errcode.ErrOAuthExchangeFailed, responseExcerpt(body))
 	}
