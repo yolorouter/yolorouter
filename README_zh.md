@@ -49,7 +49,7 @@
 **管控与成本**
 
 - **按 Key 访问控制** —— 模型白名单、速率与并发限制、累计预算上限、可选过期时间，支持即时吊销。
-- **多用户与 SSO** —— 团队成员通过任意 OAuth2/OIDC 身份源（Zitadel、GitHub、Keycloak 等）登录、首次登录自动建号，也可以由管理员在后台直接创建本地用户名密码账号——两种方式都无需邀请。成员自助管理自己的 API Key，只能看到自己的用量与费用；管理员拥有全局视图，可按账号筛选所有统计，并可对账号做创建、升降角色与禁用。禁用即刻生效：会话立即登出、名下所有 Key 立即失效。
+- **多用户与 SSO** —— 团队成员通过任意 OAuth2/OIDC 身份源（Zitadel、GitHub、Keycloak、钉钉、飞书等，钉钉/飞书接入见[接入指南](docs/dingtalk-feishu-login_zh.md)）登录、首次登录自动建号，也可以由管理员在后台直接创建本地用户名密码账号——两种方式都无需邀请。成员自助管理自己的 API Key，只能看到自己的用量与费用；管理员拥有全局视图，可按账号筛选所有统计，并可对账号做创建、升降角色与禁用。禁用即刻生效：会话立即登出、名下所有 Key 立即失效。
 - **成本优化** —— 可全局或按 Key 注入自定义系统提示词；把体积大的工具输出在发往上游前压缩。后台会显示压缩的实测节省，以及系统提示词按公开基准估算的所选时段「预计节省费用 / Token」。
 - **内置可观测性** —— token / 成本 KPI 仪表盘，按模型 / 供应商 / 时间 / 账号 / 令牌的用量与成本分析，以及含完整逐次尝试路由链的请求日志。任意视图可导出 CSV。
 - **双语后台** —— 简体中文与 English，登录前后随处可切；时区跟随浏览器。
@@ -246,6 +246,7 @@ claude
 | 升级、回滚、卸载 | [升级与卸载](https://yolorouter.com/help?p=self-hosted/updating&utm_source=oss-readme&utm_medium=repo) |
 | 分层结构、协议 IR、存储 | [架构](https://yolorouter.com/help?p=self-hosted/architecture&utm_source=oss-readme&utm_medium=repo) |
 | API 参考与模型列表 | [文档首页](https://yolorouter.com/help?utm_source=oss-readme&utm_medium=repo) |
+| 钉钉 / 飞书登录接入 | [钉钉 / 飞书登录](docs/dingtalk-feishu-login_zh.md) |
 
 自托管需要你自己准备各家上游供应商的 API Key。如果你不想一家家去注册和充值，
 **YoloRouter Cloud** 已经在后台的预置供应商列表里，可以作为其中一个上游选中使用——

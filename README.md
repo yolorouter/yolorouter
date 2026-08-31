@@ -53,7 +53,7 @@ the box; switch to PostgreSQL when you want it.
 **Control & cost**
 
 - **Per-key access control.** Model allowlists, rate and concurrency limits, cumulative budget caps, optional expiry, instant revocation.
-- **Multi-user with SSO.** Team members sign in through any OAuth2/OIDC provider (Zitadel, GitHub, Keycloak, ...) with accounts created on first login, or an admin provisions local username/password accounts straight from the console — no invites either way. Members manage their own API keys and see only their own usage and costs; admins see everything, can filter every statistic by account, and can create, promote, demote, or disable accounts. Disabling an account signs it out and turns off all of its keys instantly.
+- **Multi-user with SSO.** Team members sign in through any OAuth2/OIDC provider (Zitadel, GitHub, Keycloak, DingTalk, Feishu, ... — see the [DingTalk / Feishu setup guide](docs/dingtalk-feishu-login.md)) with accounts created on first login, or an admin provisions local username/password accounts straight from the console — no invites either way. Members manage their own API keys and see only their own usage and costs; admins see everything, can filter every statistic by account, and can create, promote, demote, or disable accounts. Disabling an account signs it out and turns off all of its keys instantly.
 - **Cost optimization.** Inject a custom system prompt globally or per key; compress bulky tool output before it reaches the upstream. The console reports compression's measured savings, and for the system prompt the cost and output tokens it is projected to save over the selected period, backed by a published benchmark.
 - **Built-in observability.** Token and cost KPIs, usage by model / provider / time / account / key, and request logs with the full per-attempt routing chain. Any view exports to CSV.
 - **Bilingual console.** English and 简体中文, switchable anywhere; timezone follows the browser.
@@ -289,6 +289,7 @@ dashboard, so prompt-cache savings are a number you can see rather than a feelin
 | Upgrading, rolling back, uninstalling | [Updating](https://yolorouter.com/help?p=self-hosted/updating&utm_source=oss-readme&utm_medium=repo) |
 | Layering, protocol IR, storage | [Architecture](https://yolorouter.com/help?p=self-hosted/architecture&utm_source=oss-readme&utm_medium=repo) |
 | API reference and model catalogue | [Docs home](https://yolorouter.com/help?utm_source=oss-readme&utm_medium=repo) |
+| DingTalk / Feishu login setup | [DingTalk / Feishu login](docs/dingtalk-feishu-login.md) |
 
 Self-hosting means bringing your own upstream API keys. If you would rather not sign
 up with every provider separately, **YoloRouter Cloud** ships in the console's provider
