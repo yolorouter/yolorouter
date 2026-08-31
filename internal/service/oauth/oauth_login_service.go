@@ -399,7 +399,7 @@ func (s *OAuthLoginService) fetchUserinfo(ctx context.Context, p *model.OAuthPro
 		return nil, fmt.Errorf("%w: %v", errcode.ErrOAuthUserinfoFailed, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: status %d", errcode.ErrOAuthUserinfoFailed, resp.StatusCode)
+		return nil, fmt.Errorf("%w: status %d: %s", errcode.ErrOAuthUserinfoFailed, resp.StatusCode, responseExcerpt(body))
 	}
 
 	var doc any

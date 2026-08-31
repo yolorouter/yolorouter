@@ -94,15 +94,18 @@ type CreateOAuthProviderInput struct {
 	AuthorizationEndpoint string
 	TokenEndpoint         string
 	UserinfoEndpoint      string
-	Scopes                string
-	UserIDField           string
-	UsernameField         string
-	DisplayNameField      string
-	EmailField            string
-	AuthStyle             string
-	TokenRequestStyle     string
-	TokenFieldStyle       string
-	UserinfoTokenHeader   string
+	// Scopes is fully admin-controlled: nil takes the OIDC default, an
+	// explicit value (including empty — Feishu's authorize endpoint takes
+	// no scope names and rejects OIDC-style ones) stores as-is.
+	Scopes              *string
+	UserIDField         string
+	UsernameField       string
+	DisplayNameField    string
+	EmailField          string
+	AuthStyle           string
+	TokenRequestStyle   string
+	TokenFieldStyle     string
+	UserinfoTokenHeader string
 	// PkceEnabled nil = the default (on): a create request that never
 	// mentions the knob must not silently turn PKCE off.
 	PkceEnabled          *bool
@@ -116,6 +119,16 @@ func fallback(v, def string) string {
 		return def
 	}
 	return strings.TrimSpace(v)
+}
+
+// fallbackScopes keeps the OIDC default for requests that never mentioned
+// scopes, while letting an explicit empty through: some IdPs (Feishu) take
+// no scope names at all and reject OIDC-style ones.
+func fallbackScopes(v *string) string {
+	if v == nil {
+		return "openid profile email"
+	}
+	return strings.TrimSpace(*v)
 }
 
 func normalizeAuthStyle(v string) string {
@@ -279,7 +292,7 @@ func (s *OAuthProviderService) CreateProvider(in CreateOAuthProviderInput, now t
 		AuthorizationEndpoint: in.AuthorizationEndpoint,
 		TokenEndpoint:         in.TokenEndpoint,
 		UserinfoEndpoint:      in.UserinfoEndpoint,
-		Scopes:                fallback(in.Scopes, "openid profile email"),
+		Scopes:                fallbackScopes(in.Scopes),
 		UserIDField:           fallback(in.UserIDField, "sub"),
 		UsernameField:         fallback(in.UsernameField, "preferred_username"),
 		DisplayNameField:      fallback(in.DisplayNameField, "name"),
@@ -371,7 +384,14 @@ func (s *OAuthProviderService) UpdateProvider(id uint, in UpdateOAuthProviderInp
 	setStr("authorization_endpoint", in.AuthorizationEndpoint)
 	setStr("token_endpoint", in.TokenEndpoint)
 	setStr("userinfo_endpoint", in.UserinfoEndpoint)
-	setStrOrDefault("scopes", in.Scopes, "openid profile email")
+	// Scopes stores exactly what the PATCH carried, empty included: some
+	// IdPs (Feishu) reject every OIDC-style scope name, and refilling a
+	// default here would make those providers unfixable through the API.
+	// The mapping fields below keep their refill — an empty user-id path
+	// would break every login, an empty scope list is merely deliberate.
+	if in.Scopes != nil {
+		updates["scopes"] = strings.TrimSpace(*in.Scopes)
+	}
 	setStrOrDefault("user_id_field", in.UserIDField, "sub")
 	setStrOrDefault("username_field", in.UsernameField, "preferred_username")
 	setStrOrDefault("display_name_field", in.DisplayNameField, "name")

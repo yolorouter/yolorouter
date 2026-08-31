@@ -175,6 +175,60 @@ func withKnobs(in CreateOAuthProviderInput, header string, pkce bool, params str
 	return in
 }
 
+// TestOAuthProviderScopesAreExplicit pins the scopes semantics: nil takes
+// the OIDC default (a request that never mentioned scopes), an explicit
+// empty is a stored choice (Feishu's authorize endpoint rejects OIDC-style
+// scope names with error 20043), and PATCH can clear the field without a
+// refill.
+func TestOAuthProviderScopesAreExplicit(t *testing.T) {
+	svc, _ := newOAuthProviderServiceForTest(t)
+	now := time.Now().UTC()
+
+	view, err := svc.CreateProvider(minimalProviderInput("scopes"), now)
+	if err != nil {
+		t.Fatalf("create without scopes: %v", err)
+	}
+	if view.Scopes != "openid profile email" {
+		t.Fatalf("unmentioned scopes must default, got %q", view.Scopes)
+	}
+
+	empty := ""
+	view, err = svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{Scopes: &empty}, now)
+	if err != nil {
+		t.Fatalf("patch scopes empty: %v", err)
+	}
+	if view.Scopes != "" {
+		t.Fatalf("explicit empty scopes must stay empty (no refill), got %q", view.Scopes)
+	}
+
+	custom := "contact:user.base:readonly"
+	view, err = svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{Scopes: &custom}, now)
+	if err != nil {
+		t.Fatalf("patch scopes custom: %v", err)
+	}
+	if view.Scopes != custom {
+		t.Fatalf("custom scopes must persist, got %q", view.Scopes)
+	}
+	view, err = svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{}, now)
+	if err != nil {
+		t.Fatalf("empty patch: %v", err)
+	}
+	if view.Scopes != custom {
+		t.Fatalf("scopes-less patch must not touch scopes, got %q", view.Scopes)
+	}
+
+	// Create with an explicit empty (the Feishu preset's shape) stores empty.
+	in := minimalProviderInput("feishu-like")
+	in.Scopes = &empty
+	view, err = svc.CreateProvider(in, now)
+	if err != nil {
+		t.Fatalf("create with empty scopes: %v", err)
+	}
+	if view.Scopes != "" {
+		t.Fatalf("create with explicit empty scopes must store empty, got %q", view.Scopes)
+	}
+}
+
 func TestCreateOAuthProviderRejectsDuplicateSlug(t *testing.T) {
 	svc, _ := newOAuthProviderServiceForTest(t)
 	now := time.Now().UTC()

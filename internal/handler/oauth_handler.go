@@ -198,15 +198,18 @@ type oauthProviderRequest struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint" binding:"required,url,max=512"`
 	TokenEndpoint         string `json:"token_endpoint" binding:"required,url,max=512"`
 	UserinfoEndpoint      string `json:"userinfo_endpoint" binding:"required,url,max=512"`
-	Scopes                string `json:"scopes" binding:"omitempty,max=255"`
-	UserIDField           string `json:"user_id_field" binding:"omitempty,max=128"`
-	UsernameField         string `json:"username_field" binding:"omitempty,max=128"`
-	DisplayNameField      string `json:"display_name_field" binding:"omitempty,max=128"`
-	EmailField            string `json:"email_field" binding:"omitempty,max=128"`
-	AuthStyle             string `json:"auth_style" binding:"omitempty,oneof=basic post"`
-	TokenRequestStyle     string `json:"token_request_style" binding:"omitempty,oneof=form json"`
-	TokenFieldStyle       string `json:"token_field_style" binding:"omitempty,oneof=snake camel"`
-	UserinfoTokenHeader   string `json:"userinfo_token_header" binding:"omitempty,max=128"`
+	// Scopes nil = OIDC default; an explicit empty is a valid choice
+	// (Feishu takes no scope names) and must reach the service as nil-vs-
+	// empty distinguishable.
+	Scopes              *string `json:"scopes" binding:"omitempty,max=255"`
+	UserIDField         string  `json:"user_id_field" binding:"omitempty,max=128"`
+	UsernameField       string  `json:"username_field" binding:"omitempty,max=128"`
+	DisplayNameField    string  `json:"display_name_field" binding:"omitempty,max=128"`
+	EmailField          string  `json:"email_field" binding:"omitempty,max=128"`
+	AuthStyle           string  `json:"auth_style" binding:"omitempty,oneof=basic post"`
+	TokenRequestStyle   string  `json:"token_request_style" binding:"omitempty,oneof=form json"`
+	TokenFieldStyle     string  `json:"token_field_style" binding:"omitempty,oneof=snake camel"`
+	UserinfoTokenHeader string  `json:"userinfo_token_header" binding:"omitempty,max=128"`
 	// PkceEnabled nil = default (on): a request that never mentions the
 	// knob must not silently turn PKCE off.
 	PkceEnabled          *bool  `json:"pkce_enabled"`

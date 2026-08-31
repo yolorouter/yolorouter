@@ -588,8 +588,8 @@ function selectMode(v: ProviderMode) {
     case 'feishu':
       Object.assign(base, {
         slug: 'feishu', name: t('oauthProviders.presetFeishu'),
-        authorization_endpoint: 'https://accounts.feishu.cn/open-apis/authen/v1/authorize',
-        token_endpoint: 'https://open.feishu.cn/open-apis/authen/v2/oauth/token',
+        authorization_endpoint: 'https://accounts.feishu.cn/oauth/v3/authorize',
+        token_endpoint: 'https://accounts.feishu.cn/oauth/v3/token',
         userinfo_endpoint: 'https://open.feishu.cn/open-apis/authen/v1/user_info',
         scopes: '',
         user_id_field: 'data.union_id', username_field: 'data.name',
