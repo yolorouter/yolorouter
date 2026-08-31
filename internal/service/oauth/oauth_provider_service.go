@@ -210,7 +210,7 @@ func validateHeaderName(name string) error {
 			return errcode.ErrOAuthProviderConfigInvalid
 		}
 		if !strings.ContainsRune(tchars, r) &&
-			!(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') {
+			(r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
 			return errcode.ErrOAuthProviderConfigInvalid
 		}
 	}
