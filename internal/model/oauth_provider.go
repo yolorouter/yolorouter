@@ -1,6 +1,8 @@
 // OAuthProvider / UserIdentity / AuthState back external login.
-// Schema lives in migrations/{sqlite,postgres}/00025_oauth_login.sql —
-// goose owns DDL, GORM here is query-only (no AutoMigrate).
+// Schema lives in migrations/{sqlite,postgres}/00025_oauth_login.sql (the
+// protocol-style columns: 00037_oauth_protocol_styles.sql and
+// 00038_oauth_dingtalk_knobs.sql) — goose owns DDL, GORM here is
+// query-only (no AutoMigrate).
 package model
 
 import "time"
@@ -9,6 +11,18 @@ import "time"
 const (
 	OAuthAuthStyleBasic = "basic" // client_secret_basic: Authorization header
 	OAuthAuthStylePost  = "post"  // client_secret_post: form body parameters
+)
+
+// OAuth token-endpoint protocol styles: how the exchange request body is
+// encoded, and how its JSON fields are spelled. These absorb non-standard
+// IdPs (Feishu: JSON + snake_case; DingTalk: JSON + camelCase and a trimmed
+// field set) as configuration rather than per-provider code.
+const (
+	OAuthTokenRequestStyleForm = "form" // form-encoded body (standard)
+	OAuthTokenRequestStyleJSON = "json" // JSON body (Feishu, DingTalk)
+
+	OAuthTokenFieldStyleSnake = "snake" // grant_type/client_id/... (Feishu)
+	OAuthTokenFieldStyleCamel = "camel" // grantType/clientId/... (DingTalk)
 )
 
 // OAuthProvider is one admin-configured identity source. A single generic
@@ -30,13 +44,39 @@ type OAuthProvider struct {
 	Scopes                string `gorm:"column:scopes" json:"scopes"`
 	// Field paths into the userinfo JSON (dot-separated for nesting, e.g.
 	// "data.user.id"), so non-OIDC providers with custom shapes still map.
-	UserIDField      string    `gorm:"column:user_id_field" json:"user_id_field"`
-	UsernameField    string    `gorm:"column:username_field" json:"username_field"`
-	DisplayNameField string    `gorm:"column:display_name_field" json:"display_name_field"`
-	EmailField       string    `gorm:"column:email_field" json:"email_field"`
-	AuthStyle        string    `gorm:"column:auth_style" json:"auth_style"`
-	CreatedAt        time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt        time.Time `gorm:"column:updated_at" json:"updated_at"`
+	UserIDField      string `gorm:"column:user_id_field" json:"user_id_field"`
+	UsernameField    string `gorm:"column:username_field" json:"username_field"`
+	DisplayNameField string `gorm:"column:display_name_field" json:"display_name_field"`
+	EmailField       string `gorm:"column:email_field" json:"email_field"`
+	AuthStyle        string `gorm:"column:auth_style" json:"auth_style"`
+	// The five protocol-style knobs ride along as one embedded group:
+	// columns and JSON keys stay flat, reads stay p.TokenRequestStyle, and
+	// the admin view/API types reuse the same declaration.
+	OAuthProtocolStyle
+	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+// OAuthProtocolStyle is the orthogonal knob set that absorbs non-standard
+// token/userinfo protocols (Feishu, DingTalk) as configuration rather than
+// per-provider code. Zero values mean the standard OAuth2 shape: the
+// service layer normalizes writes, the login flow treats anything
+// unrecognized as the default.
+type OAuthProtocolStyle struct {
+	// TokenRequestStyle selects the exchange request encoding.
+	TokenRequestStyle string `gorm:"column:token_request_style" json:"token_request_style"`
+	// TokenFieldStyle spells the JSON-mode request and response fields.
+	TokenFieldStyle string `gorm:"column:token_field_style" json:"token_field_style"`
+	// UserinfoTokenHeader overrides Authorization: Bearer userinfo auth
+	// with a custom header (DingTalk: x-acs-dingtalk-access-token).
+	UserinfoTokenHeader string `gorm:"column:userinfo_token_header" json:"userinfo_token_header"`
+	// PkceEnabled gates the challenge/verifier pair; some authorize
+	// endpoints (DingTalk) have no code_challenge parameter at all.
+	PkceEnabled bool `gorm:"column:pkce_enabled" json:"pkce_enabled"`
+	// ExtraAuthorizeParams is a URL-query-shaped string appended to the
+	// authorization URL (DingTalk: prompt=consent). Reserved keys are
+	// rejected at write time.
+	ExtraAuthorizeParams string `gorm:"column:extra_authorize_params" json:"extra_authorize_params"`
 }
 
 func (OAuthProvider) TableName() string { return "oauth_providers" }
