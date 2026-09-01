@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-01
+
+### Added
+
+- Image generation is a first-class routing target. Providers expose
+  image models behind `/v1/images/generations`, spoken either as the
+  OpenAI images shape or as the DashScope native multimodal-generation
+  dialect, chosen per provider; the credential probe speaks the same
+  dialect as delivery, so a passing key means a deliverable image.
+  Image models bill per delivered image against a quality/size tier
+  table instead of per token (migrations 00039-00040); each request log
+  carries the settlement snapshot — axes, delivered count, unit price —
+  that priced it, so per-image costs stay auditable after tier edits.
+  Output-modality declarations flow through model create, edit, batch
+  create and bulk import, gate which endpoints a model's pool may use,
+  and a bulk import refuses rows contradicting the modality a model
+  already declared, surfacing the skip and its reason in the import
+  progress view. The provider detail page prices image-billed mappings
+  per delivered image and badges unpriced rows by billing mode.
+
 ## [0.2.0] - 2026-08-28
 
 ### Added
@@ -538,7 +558,8 @@ failover, and observe usage and cost.
 - Single binary with the web console embedded via `go:embed`; SQLite or PostgreSQL storage; upstream keys encrypted at rest (AES-256).
 - Self-update via the `update` command and update-check API.
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/yolorouter/yolorouter/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yolorouter/yolorouter/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/yolorouter/yolorouter/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/yolorouter/yolorouter/compare/v0.1.7...v0.1.8
