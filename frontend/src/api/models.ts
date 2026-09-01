@@ -12,7 +12,7 @@ export interface ModelCandidate {
   cache_read_price: number | null
   max_output: number
   /** What settlement prices this candidate in: "token" (default) or "image". */
-  billing_mode: string
+  billing_mode: BillingMode
   /** The per-image price table, null when the candidate does not bill per image. */
   image_pricing_tiers: ImagePricingTiers | null
   // Whether the last probe confirmed the capability: true when it did, null when
@@ -41,6 +41,11 @@ export interface ModelCandidate {
 
 /** How the gateway orders a model's candidate chain: which candidate leads. */
 export type SchedulingMode = 'failover' | 'balanced'
+
+/** What settlement prices a row in: token prices or the per-image tier table.
+ * Mirrors the Go vocabulary (model.BillingModeToken / BillingModeImage) — the
+ * backend normalizes every stored value onto it. */
+export type BillingMode = 'token' | 'image'
 
 export interface Model {
   id: number
@@ -85,7 +90,7 @@ export interface CreateCandidateInput {
   cache_read_price?: number
   max_output: number
   management_status?: number
-  billing_mode?: string
+  billing_mode?: BillingMode
   image_pricing_tiers?: ImagePricingTiers | null
 }
 
@@ -97,7 +102,7 @@ export interface UpdateCandidateInput {
   cache_read_price?: number
   max_output: number
   management_status?: number
-  billing_mode?: string
+  billing_mode?: BillingMode
   image_pricing_tiers?: ImagePricingTiers | null
 }
 
@@ -426,7 +431,7 @@ export interface ProviderCandidate {
   cache_read_price: number | null
   // Billing follows the mode: token prices settle "token" rows, the tier
   // table settles "image" rows (the token slots are inert there).
-  billing_mode: string
+  billing_mode: BillingMode
   image_pricing_tiers: ImagePricingTiers | null
   max_output: number
   management_status: number

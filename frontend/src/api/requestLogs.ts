@@ -13,6 +13,7 @@
 // The handler also cannot swap to the JSON envelope mid-stream once the BOM
 // is on the wire — see ExportRequestLogsCSV in request_log_handler.go.
 import { apiFetch } from './client'
+import type { BillingMode } from './models'
 
 // Mirrors repository.StatusSuccess / StatusFailed / StatusPartial /
 // StatusCancelled / StatusRejected. The empty-string "all" bucket is a
@@ -91,7 +92,7 @@ export interface AttemptRecord {
 // lives on disk instead — see has_stream_body / stream_body_path below).
 /** The parsed form of a per-image settlement's snapshot: what priced the row. */
 export interface ImagePricingSnapshot {
-  billing_mode: string
+  billing_mode: BillingMode
   request_quality: string
   request_size: string
   request_n: number
