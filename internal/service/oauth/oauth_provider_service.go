@@ -210,7 +210,7 @@ func validateHeaderName(name string) error {
 			return errcode.ErrOAuthProviderConfigInvalid
 		}
 		if !strings.ContainsRune(tchars, r) &&
-			!(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') {
+			(r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
 			return errcode.ErrOAuthProviderConfigInvalid
 		}
 	}
@@ -340,7 +340,8 @@ type UpdateOAuthProviderInput struct {
 }
 
 func (s *OAuthProviderService) UpdateProvider(id uint, in UpdateOAuthProviderInput, now time.Time) (*OAuthProviderView, error) {
-	if _, err := repository.FindOAuthProviderByID(s.db, id); err != nil {
+	existing, err := repository.FindOAuthProviderByID(s.db, id)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errcode.ErrOAuthProviderNotFound
 		}
@@ -402,16 +403,13 @@ func (s *OAuthProviderService) UpdateProvider(id uint, in UpdateOAuthProviderInp
 	if in.AuthStyle != nil {
 		updates["auth_style"] = normalizeAuthStyle(*in.AuthStyle)
 	}
-	if in.TokenRequestStyle != nil {
-		updates["token_request_style"] = normalizeTokenRequestStyle(*in.TokenRequestStyle)
-	}
-	if in.TokenFieldStyle != nil {
-		updates["token_field_style"] = normalizeTokenFieldStyle(*in.TokenFieldStyle)
-	}
-	// The free-form knobs validate once, together; each provided value
-	// then lands in the sparse update map.
+	// The free-form knobs validate against the merged (stored + patched)
+	// shape, so a row whose stored extra_authorize_params violates the
+	// reserved-key rule is caught on the next PATCH that touches either
+	// knob — not only when this request happens to replace the offending
+	// value.
 	if in.UserinfoTokenHeader != nil || in.ExtraAuthorizeParams != nil {
-		header, params := "", ""
+		header, params := existing.UserinfoTokenHeader, existing.ExtraAuthorizeParams
 		if in.UserinfoTokenHeader != nil {
 			header = *in.UserinfoTokenHeader
 		}
@@ -422,15 +420,18 @@ func (s *OAuthProviderService) UpdateProvider(id uint, in UpdateOAuthProviderInp
 			return nil, err
 		}
 	}
-	if in.UserinfoTokenHeader != nil {
-		updates["userinfo_token_header"] = strings.TrimSpace(*in.UserinfoTokenHeader)
+	setStyle := func(col string, v *string, norm func(string) string) {
+		if v != nil {
+			updates[col] = norm(*v)
+		}
 	}
+	setStyle("token_request_style", in.TokenRequestStyle, normalizeTokenRequestStyle)
+	setStyle("token_field_style", in.TokenFieldStyle, normalizeTokenFieldStyle)
+	setStr("userinfo_token_header", in.UserinfoTokenHeader)
 	if in.PkceEnabled != nil {
 		updates["pkce_enabled"] = *in.PkceEnabled
 	}
-	if in.ExtraAuthorizeParams != nil {
-		updates["extra_authorize_params"] = strings.TrimSpace(*in.ExtraAuthorizeParams)
-	}
+	setStr("extra_authorize_params", in.ExtraAuthorizeParams)
 	if in.ClientSecret != nil {
 		encrypted, err := s.secrets.Encrypt(*in.ClientSecret)
 		if err != nil {

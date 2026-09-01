@@ -166,6 +166,30 @@ func TestOAuthProviderDingTalkKnobsValidation(t *testing.T) {
 	}
 }
 
+// TestOAuthProviderPatchRevalidatesStoredKnobs pins the merged validation:
+// a row whose stored extra params violate the reserved-key rule — only
+// reachable by direct DB writes, every API path validates — is caught the
+// next time a PATCH touches either free-form knob, not just when the
+// offending value itself is replaced.
+func TestOAuthProviderPatchRevalidatesStoredKnobs(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewOAuthProviderService(db, testutil.ProviderSecrets())
+	now := time.Now().UTC()
+
+	view, err := svc.CreateProvider(minimalProviderInput("storedbad"), now)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := db.Model(&model.OAuthProvider{}).Where("id = ?", view.ID).
+		Update("extra_authorize_params", "scope=evil").Error; err != nil {
+		t.Fatalf("seed stored bad params: %v", err)
+	}
+	header := "x-custom-token"
+	if _, err := svc.UpdateProvider(view.ID, UpdateOAuthProviderInput{UserinfoTokenHeader: &header}, now); !errors.Is(err, errcode.ErrOAuthProviderConfigInvalid) {
+		t.Fatalf("patch touching a knob must revalidate the stored pair, got %v", err)
+	}
+}
+
 // withKnobs returns a copy of in with the three DingTalk knobs set, so
 // each invalid-value case starts from an otherwise valid input.
 func withKnobs(in CreateOAuthProviderInput, header string, pkce bool, params string) CreateOAuthProviderInput {
