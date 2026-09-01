@@ -115,7 +115,8 @@ import { NButton, NSpace, NSwitch, NTag, useDialog, useMessage, type DataTableCo
 import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle } from '@lucide/vue'
 import { useProvidersStore } from '../../store/providers'
 import { listProviderCandidates, retestCandidate, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
-import { candidateIsOwedWork, candidateProgressState, isUnpriced, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress } from '../../utils/importProgress'
+import { candidateIsOwedWork, candidateProgressState, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress } from '../../utils/importProgress'
+import { candidateUnpriced, formatImagePrice, imagePriceSummary } from '../../utils/imagePriceSummary'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
@@ -511,7 +512,7 @@ const modelColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
     minWidth: 180,
     render: (row) => {
       const parts = [h('span', row.model_name)]
-      if (isUnpriced(row)) {
+      if (candidateUnpriced(row)) {
         parts.push(
           h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('providers.candidateUnpriced') }),
         )
@@ -534,6 +535,19 @@ const modelColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
     // dashes would just add noise. What the numbers mean lives in the header
     // tooltip, keeping the header itself to one word.
     render: (row) => {
+      // An image-billed mapping prices per delivered image out of its tier
+      // table; the per-M token slots on the row are inert under that mode
+      // and would read as the mapping's price.
+      if (row.billing_mode === 'image') {
+        const summary = imagePriceSummary(row.image_pricing_tiers)
+        if (!summary) return h('div', { class: 'candidate-muted' }, t('providers.candidateImageUnpriced'))
+        if (summary.range)
+          return h(
+            'div',
+            t('providers.candidateImagePriceRange', { min: formatImagePrice(summary.min), max: formatImagePrice(summary.max) }),
+          )
+        return h('div', t('providers.candidateImagePrice', { price: formatImagePrice(summary.min) }))
+      }
       const parts = [h('div', `${row.input_price} / ${row.output_price}`)]
       if (row.cache_write_price !== null || row.cache_read_price !== null) {
         parts.push(

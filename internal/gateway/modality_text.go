@@ -223,11 +223,11 @@ func (p *textPayload) FinalizeUsage(d fact.Delivery) *fact.UsageReported {
 // LogPolicy keeps all four bodies. They are JSON, they are what a protocol
 // conversion bug has to be diagnosed from, and this table exists to hold them.
 func (p *textPayload) LogPolicy() LogPolicy {
-	return LogPolicy{Store: map[BodyKind]bool{
-		BodyClientRequest:    true,
-		BodyUpstreamRequest:  true,
-		BodyUpstreamResponse: true,
-		BodyClientResponse:   true,
+	return LogPolicy{Store: map[BodyKind]BodyStorage{
+		BodyClientRequest:    BodyStoredRaw,
+		BodyUpstreamRequest:  BodyStoredRaw,
+		BodyUpstreamResponse: BodyStoredRaw,
+		BodyClientResponse:   BodyStoredRaw,
 	}}
 }
 

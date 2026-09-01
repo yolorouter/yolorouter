@@ -485,6 +485,13 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	v1.POST("/chat/completions", gateway.PostChatCompletions(relaySvc))
 	v1.POST("/messages", gateway.PostChatCompletions(relaySvc))
 	v1.POST("/responses", gateway.PostChatCompletions(relaySvc))
+	// Image generation rides the same handler and middleware chain as the
+	// chat routes: the path resolves to the images protocol, the modality
+	// registry hands the request to the image modality, and everything the
+	// chain already does (auth, body cap, budget gate, audit) applies
+	// unchanged. The request body is small JSON — a prompt, not pixels —
+	// so the shared 20MiB cap needs no widening here.
+	v1.POST("/images/generations", gateway.PostChatCompletions(relaySvc))
 	// Model discovery: GET /v1/models and GET /v1/models/:model are
 	// read-only and bypass Service (no provider fan-out, no spend).
 	// They reuse the same APIKeyAuth + body-cap chain the relay POSTs above

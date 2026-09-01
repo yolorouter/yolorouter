@@ -20,6 +20,10 @@ type createModelRequest struct {
 	// SchedulingMode is optional; the empty value creates the model with
 	// the failover default.
 	SchedulingMode model.SchedulingMode `json:"scheduling_mode"`
+	// OutputModalities is optional; an absent list creates the model as
+	// text-only. Values are validated by the service, which owns the
+	// vocabulary (a binding tag would be a second, driftable copy of it).
+	OutputModalities []string `json:"output_modalities" binding:"omitempty,max=4,dive,max=32"`
 }
 
 type batchCreateModelsRequest struct {
@@ -27,6 +31,9 @@ type batchCreateModelsRequest struct {
 	// SchedulingMode applies to every model the batch creates (empty = the
 	// failover default), matching the single-create endpoint's contract.
 	SchedulingMode model.SchedulingMode `json:"scheduling_mode"`
+	// OutputModalities likewise applies to every created row (absent =
+	// text-only); the service validates the vocabulary.
+	OutputModalities []string `json:"output_modalities" binding:"omitempty,max=4,dive,max=32"`
 }
 
 type updateModelRequest struct {
@@ -42,6 +49,10 @@ type updateModelRequest struct {
 	// reading it as the default, which would let a submission that carries
 	// nothing silently reset the scheduler.
 	SchedulingMode *model.SchedulingMode `json:"scheduling_mode"`
+	// OutputModalities follows the same convention: present replaces the
+	// whole declaration (and an empty present list is rejected by the
+	// service, not read as the text default), absent keeps the stored one.
+	OutputModalities *[]string `json:"output_modalities" binding:"omitempty,max=4,dive,max=32"`
 }
 
 type setModelStatusRequest struct {
@@ -57,6 +68,36 @@ type createCandidateRequest struct {
 	CacheReadPrice    *float64 `json:"cache_read_price" binding:"omitempty,min=0"`
 	MaxOutput         int      `json:"max_output" binding:"min=0"`
 	ManagementStatus  int      `json:"management_status" binding:"omitempty,oneof=1 2"`
+	// BillingMode is optional (empty = the token default). The pair is
+	// validated by the service, which owns the vocabulary — a binding tag
+	// here would be a second copy of it.
+	BillingMode       string                 `json:"billing_mode"`
+	ImagePricingTiers *imagePricingTiersBody `json:"image_pricing_tiers"`
+}
+
+// imagePricingTiersBody is the wire form of a per-image price table, mapped
+// onto the model package's declaration at the handler boundary.
+type imagePricingTiersBody struct {
+	Mode         string                 `json:"mode"`
+	Tiers        []imagePricingTierBody `json:"tiers"`
+	DefaultPrice *float64               `json:"default_price"`
+}
+
+type imagePricingTierBody struct {
+	Quality string  `json:"quality"`
+	Size    string  `json:"size"`
+	Price   float64 `json:"price"`
+}
+
+func (b *imagePricingTiersBody) toModel() *model.ImagePricingTiers {
+	if b == nil {
+		return nil
+	}
+	tiers := make([]model.ImagePricingTier, 0, len(b.Tiers))
+	for _, t := range b.Tiers {
+		tiers = append(tiers, model.ImagePricingTier{Quality: t.Quality, Size: t.Size, Price: t.Price})
+	}
+	return &model.ImagePricingTiers{Mode: b.Mode, Tiers: tiers, DefaultPrice: b.DefaultPrice}
 }
 
 type updateCandidateRequest struct {
@@ -70,6 +111,11 @@ type updateCandidateRequest struct {
 	// disable. As a plain int, any client PATCHing only prices would send the
 	// zero value and silently take the candidate out of routing.
 	ManagementStatus *int `json:"management_status" binding:"omitempty,oneof=1 2"`
+	// Billing follows the same nil-means-leave-alone convention: absent mode
+	// and absent table keep what is stored. Validation lives in the service,
+	// which owns the vocabulary.
+	BillingMode       *string                `json:"billing_mode"`
+	ImagePricingTiers *imagePricingTiersBody `json:"image_pricing_tiers"`
 }
 
 type candidateReorderRequest struct {
@@ -108,7 +154,7 @@ func PostModel(svc *modeladmin.ModelService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.CreateModel(modeladmin.CreateModelInput{Name: req.Name, SchedulingMode: req.SchedulingMode}, timeNow())
+		view, err := svc.CreateModel(modeladmin.CreateModelInput{Name: req.Name, SchedulingMode: req.SchedulingMode, OutputModalities: req.OutputModalities}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -126,7 +172,7 @@ func PostModelsBatch(svc *modeladmin.ModelService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		result, err := svc.CreateModelsBatch(modeladmin.CreateModelsBatchInput{Names: req.Names, SchedulingMode: req.SchedulingMode}, timeNow())
+		result, err := svc.CreateModelsBatch(modeladmin.CreateModelsBatchInput{Names: req.Names, SchedulingMode: req.SchedulingMode, OutputModalities: req.OutputModalities}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
 			return
@@ -174,11 +220,17 @@ func PatchModel(svc *modeladmin.ModelService) gin.HandlerFunc {
 				imageInput = &f
 			}
 		}
+		var outputModalities []string
+		if req.OutputModalities != nil {
+			outputModalities = *req.OutputModalities
+		}
 		view, err := svc.UpdateModel(id, modeladmin.UpdateModelInput{
-			Name:           req.Name,
-			ImageInputSet:  req.ImageInput != nil,
-			ImageInput:     imageInput,
-			SchedulingMode: req.SchedulingMode,
+			Name:                req.Name,
+			ImageInputSet:       req.ImageInput != nil,
+			ImageInput:          imageInput,
+			SchedulingMode:      req.SchedulingMode,
+			OutputModalitiesSet: req.OutputModalities != nil,
+			OutputModalities:    outputModalities,
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
@@ -247,6 +299,7 @@ func PostModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 			InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice,
 			MaxOutput: req.MaxOutput, ManagementStatus: req.ManagementStatus,
+			BillingMode: req.BillingMode, ImagePricingTiers: req.ImagePricingTiers.toModel(),
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
@@ -270,6 +323,7 @@ func PatchModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 			ProviderModelName: req.ProviderModelName, InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice, MaxOutput: req.MaxOutput,
 			ManagementStatus: req.ManagementStatus,
+			BillingMode:      req.BillingMode, ImagePricingTiers: req.ImagePricingTiers.toModel(),
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)

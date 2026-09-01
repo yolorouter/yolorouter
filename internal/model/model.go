@@ -4,6 +4,10 @@
 package model
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -53,12 +57,98 @@ type Model struct {
 	// read images. Tri-state: nil = undeclared, and the gateway must not
 	// touch images at all (neither describe nor strip) — a missing
 	// declaration must never degrade a vision-capable model.
-	SupportsImageInput *bool     `gorm:"column:supports_image_input" json:"supports_image_input"`
-	CreatedAt          time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt          time.Time `gorm:"column:updated_at" json:"updated_at"`
+	SupportsImageInput *bool `gorm:"column:supports_image_input" json:"supports_image_input"`
+	// OutputModalities is the JSON array of modality ids this model produces
+	// ("text", "image"), stored as a string column. The gateway routes a
+	// request only when the endpoint's modality is declared here, so models
+	// stay in the pools they belong to. Read leniently: an empty or malformed
+	// value reads as text-only, which is what every row predating the column
+	// was.
+	OutputModalities string    `gorm:"column:output_modalities" json:"output_modalities"`
+	CreatedAt        time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt        time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (Model) TableName() string { return "models" }
+
+// The modality ids a model may declare in output_modalities. The gateway's
+// modality registry uses the same spellings for its own ids, so the two
+// vocabularies meet as plain strings without either side importing the other.
+const (
+	OutputModalityText  = "text"
+	OutputModalityImage = "image"
+)
+
+// ValidOutputModalities is the write-path vocabulary: every id an
+// output_modalities value may contain. The read path (ServesOutputModality)
+// is deliberately laxer — an unknown id in a stored row reads as "not this
+// modality" rather than failing the request.
+var ValidOutputModalities = []string{OutputModalityText, OutputModalityImage}
+
+// DefaultOutputModalitiesJSON is what a row created without a declaration
+// stores: text only, which is what every model predating the column was.
+const DefaultOutputModalitiesJSON = `["text"]`
+
+// OutputModalityList parses the stored declaration. Empty or malformed
+// values read as text-only — a read must always have a usable answer, and
+// every row that predates the column was a text model.
+func (m Model) OutputModalityList() []string {
+	raw := strings.TrimSpace(m.OutputModalities)
+	if raw == "" {
+		return []string{OutputModalityText}
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil || len(list) == 0 {
+		return []string{OutputModalityText}
+	}
+	return list
+}
+
+// ServesOutputModality reports whether the model declares it produces
+// modality. The id spelled here is the gateway modality's own id, so the
+// caller's question and the row's answer share one vocabulary.
+func (m Model) ServesOutputModality(modality string) bool {
+	for _, id := range m.OutputModalityList() {
+		if id == modality {
+			return true
+		}
+	}
+	return false
+}
+
+// OutputImageExclusive reports whether the model declares image output and
+// nothing else. That is the shape whose mappings bill per image; a model that
+// also serves text keeps token settlement, because the same mapping carries
+// its chat traffic too.
+func (m Model) OutputImageExclusive() bool {
+	return !m.ServesOutputModality(OutputModalityText) && m.ServesOutputModality(OutputModalityImage)
+}
+
+// CanonicalOutputModalities validates a declaration from the write path and
+// returns the JSON form the column stores. Rejects an empty list (a model
+// produces something), an unknown id (typos must not silently narrow
+// routing), and a duplicate (the list is a set, and a repeated entry would
+// be stored to be read back as one).
+func CanonicalOutputModalities(list []string) (string, error) {
+	if len(list) == 0 {
+		return "", errors.New("output modalities must not be empty")
+	}
+	seen := make(map[string]bool, len(list))
+	for _, id := range list {
+		if !slices.Contains(ValidOutputModalities, id) {
+			return "", fmt.Errorf("unknown output modality %q", id)
+		}
+		if seen[id] {
+			return "", fmt.Errorf("duplicate output modality %q", id)
+		}
+		seen[id] = true
+	}
+	out, err := json.Marshal(list)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
 
 // SchedulingMode is how the gateway orders a model's candidate chain. It is
 // its own string type so the two-value vocabulary travels with the value
@@ -107,6 +197,14 @@ type ModelCandidate struct {
 	CacheWritePrice   *float64 `gorm:"column:cache_write_price" json:"cache_write_price"`
 	CacheReadPrice    *float64 `gorm:"column:cache_read_price" json:"cache_read_price"`
 	MaxOutput         int      `gorm:"column:max_output" json:"max_output"`
+	// BillingMode says which quantities settlement prices this candidate
+	// in: token (the default every row had before the column) or image
+	// (per delivered image, through ImagePricingTiers).
+	BillingMode string `gorm:"column:billing_mode" json:"billing_mode"`
+	// ImagePricingTiers is the per-image price table, stored as the JSON
+	// form model.ImagePricingTiers defines. Only read when BillingMode is
+	// image; parsed leniently on the hot path and validated at save time.
+	ImagePricingTiers string `gorm:"column:image_pricing_tiers" json:"image_pricing_tiers"`
 	// SupportsStreaming / SupportsFunctionCalling record whether the last probe
 	// CONFIRMED the capability: true when it did, nil when it did not. They are
 	// informational — the admin UI shows them and routing ignores them entirely

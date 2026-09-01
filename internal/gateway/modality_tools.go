@@ -187,10 +187,10 @@ type TransferLimits struct {
 	// from WriteWindow on purpose: a render that legitimately takes ten minutes
 	// still must not stall for thirty seconds on any one write.
 	//
-	// Resolved here and read by nothing yet. The per-attempt deadline is still
-	// derived by the relay from the request budget alone; giving a modality a
-	// say in it belongs with the change that moves attempt dispatch behind this
-	// interface, not before it.
+	// Enforced at admission, where the request deadline is narrowed to it —
+	// every downstream deadline (per-attempt budgets, the request context)
+	// derives from that one, so the declaration caps all of them at once. A
+	// modality can only narrow the kernel's own budget, never outlive it.
 	TotalBudget time.Duration
 }
 

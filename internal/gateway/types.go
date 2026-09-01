@@ -181,19 +181,50 @@ type Exchange struct {
 
 	// bodies is the audit record for the request_log_bodies row: the caller's
 	// request, its compressed variant, what was sent upstream, what came
-	// back, what the caller received, and the stream capture file. v0.1
-	// stores them VERBATIM — body content is not scrubbed (only request
-	// headers are masked; see RequestHeaders below). The capture package owns
-	// every write, including the stream file's name (capture.StreamFileName,
-	// reported back through StreamName); this struct only holds it.
+	// back, what the caller received, and the stream capture file. Stored as
+	// the payload's log policy admits (the text modality admits everything,
+	// verbatim — only request headers are masked, see RequestHeaders below);
+	// a payload that keeps no bodies is why the policy is enforced at all.
+	// The capture package owns every write, including the stream file's name
+	// (capture.StreamFileName, reported back through StreamName); this struct
+	// only holds it.
 	bodies capture.Bodies
 	// requestHeaders is the caller's request headers as a JSON object, with
-	// sensitive headers already masked (SanitizeHeaders). This header-name
-	// masking is the ONLY redaction v0.1 does — body content is stored
-	// verbatim. Captured once at Handle entry so it survives even an early
-	// rejection.
+	// sensitive headers already masked (SanitizeHeaders). Captured once at
+	// Handle entry so it survives even an early rejection.
 	requestHeaders []byte
+	// payloadLog is the admitted payload's policy for its own bodies — which
+	// may be persisted, how large each may be, and how to render them — read
+	// once at admission and enforced by the kernel before anything records
+	// them. Nil until a payload is admitted: a request the modality refused
+	// never got one, and its bodies keep the kernel's own view of them.
+	payloadLog *payloadLogView
+	// upstreamContentType is the content type the payload stated for the body
+	// the last attempt sent. Carried beside the body it describes so the log
+	// policy can hand a sanitizer the content type (and the multipart
+	// boundary inside it) that the body was encoded with.
+	upstreamContentType string
+	// imagePricingSnapshot is the per-image settlement's account of itself,
+	// built by the same numbers the cost was computed from and read by the
+	// audit recorder. Empty on every request not priced per image.
+	imagePricingSnapshot string
 }
+
+// CandidateProviderModelName is the provider's own name for the model the
+// current attempt is addressing. Dialect details of a model family — the
+// size separator an image request needs, for one — key on this name, which
+// the caller's public alias cannot answer.
+func (rc *Exchange) CandidateProviderModelName() string {
+	if c := rc.attempt.Candidate(); c != nil {
+		return c.ProviderModelName
+	}
+	return ""
+}
+
+// ImagePricingSnapshot is the JSON account of a per-image settlement — mode,
+// request axes, requested vs delivered count, unit price — or empty when the
+// request was not priced per image.
+func (rc *Exchange) ImagePricingSnapshot() string { return rc.imagePricingSnapshot }
 
 // markFirstByteSent flips firstByteSent true under the lock. Returns whether
 // this call was the one that flipped it — the stream path uses that to decide

@@ -127,6 +127,8 @@ export default {
   fieldSettledPrices: 'Settled Prices',
   settledPriceValues: 'Input {input} / Output {output} / Cache write {write} / Cache read {read} · CNY per million tokens',
   settledPricesNone: 'No snapshot',
+  fieldImagePricing: 'Image pricing',
+  imagePricingValues: '{count} × {price} per image · {quality} / {size} · via {source}',
   fieldRequestEndpoint: 'Request Endpoint',
   fieldUpstreamEndpoint: 'Upstream Endpoint',
 

@@ -21,6 +21,7 @@ import (
 
 	compresscap "github.com/yolorouter/yolorouter/internal/capability/compress"
 	"github.com/yolorouter/yolorouter/internal/capability/contentinspect"
+	"github.com/yolorouter/yolorouter/internal/capability/imagesize"
 	"github.com/yolorouter/yolorouter/internal/capability/maxtokens"
 	"github.com/yolorouter/yolorouter/internal/capability/modelname"
 	"github.com/yolorouter/yolorouter/internal/capability/ratelimit"
@@ -172,6 +173,8 @@ func newSvcWithSettingsAndGateway(t *testing.T, db *gorm.DB, sp stubSettingsProv
 		func(e *Exchange) compresscap.View { return e })
 	RegisterUpstreamErrorObserver(svc, contentinspect.New(),
 		func(e *Exchange) contentinspect.View { return e })
+	RegisterEgressRewriter(svc, imagesize.New(), StageImageSize,
+		func(e *Exchange) imagesize.View { return e })
 	RegisterEgressRewriter(svc, systemprompt.New(), StageCustomPrompt,
 		func(e *Exchange) systemprompt.View { return e })
 	RegisterResponseCodecWrapper(svc, modelname.New(), StageModelName,

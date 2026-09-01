@@ -39,6 +39,8 @@ func IngressProtocol(requestPath string) protocols.ProtocolID {
 		return protocols.ProtocolOpenAI
 	case "/v1/responses":
 		return protocols.ProtocolResponses
+	case "/v1/images/generations":
+		return protocols.ProtocolImages
 	default:
 		return protocols.ProtocolOpenAI
 	}

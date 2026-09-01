@@ -11,6 +11,10 @@ export interface ModelCandidate {
   cache_write_price: number | null
   cache_read_price: number | null
   max_output: number
+  /** What settlement prices this candidate in: "token" (default) or "image". */
+  billing_mode: string
+  /** The per-image price table, null when the candidate does not bill per image. */
+  image_pricing_tiers: ImagePricingTiers | null
   // Whether the last probe confirmed the capability: true when it did, null when
   // it did not. Informational only — routing ignores these. A false can still
   // arrive from a row written by an older build.
@@ -51,8 +55,25 @@ export interface Model {
    * can read images (false enables vision fallback / image stripping).
    */
   supports_image_input: boolean | null
+  /** What this model produces ("text", "image"), driving which endpoints answer it. */
+  output_modalities: string[]
   candidates: ModelCandidate[]
   created_at: string
+}
+
+/** One row of a per-image price table: the price of a single image at this
+ *  quality and size. An empty quality or size is a wildcard. */
+export interface ImagePricingTier {
+  quality: string
+  size: string
+  price: number
+}
+
+/** A candidate's per-image price table, when it bills per image. */
+export interface ImagePricingTiers {
+  mode: string
+  tiers: ImagePricingTier[]
+  default_price?: number | null
 }
 
 export interface CreateCandidateInput {
@@ -64,6 +85,8 @@ export interface CreateCandidateInput {
   cache_read_price?: number
   max_output: number
   management_status?: number
+  billing_mode?: string
+  image_pricing_tiers?: ImagePricingTiers | null
 }
 
 export interface UpdateCandidateInput {
@@ -74,6 +97,8 @@ export interface UpdateCandidateInput {
   cache_read_price?: number
   max_output: number
   management_status?: number
+  billing_mode?: string
+  image_pricing_tiers?: ImagePricingTiers | null
 }
 
 // ProbeReport is one probe's result. `ran: false` means the probe was skipped
@@ -124,8 +149,23 @@ function compactBody(fields: Record<string, unknown>): string {
   return JSON.stringify(body)
 }
 
-export function createModel(name: string, schedulingMode?: SchedulingMode): Promise<Model> {
-  return apiFetch('/api/admin/models', { method: 'POST', body: compactBody({ name, scheduling_mode: schedulingMode }) })
+// What a model-creation request may carry besides the name. One object for
+// the single and batch endpoints alike, so a new creation attribute stops
+// being a positional parameter threaded through every caller.
+export interface CreateModelOptions {
+  schedulingMode?: SchedulingMode
+  outputModalities?: string[]
+}
+
+export function createModel(name: string, opts?: CreateModelOptions): Promise<Model> {
+  return apiFetch('/api/admin/models', {
+    method: 'POST',
+    body: compactBody({
+      name,
+      scheduling_mode: opts?.schedulingMode,
+      output_modalities: opts?.outputModalities,
+    }),
+  })
 }
 
 export interface BatchSkippedModel {
@@ -138,8 +178,15 @@ export interface BatchCreateModelsResult {
   skipped: BatchSkippedModel[]
 }
 
-export function createModelsBatch(names: string[], schedulingMode?: SchedulingMode): Promise<BatchCreateModelsResult> {
-  return apiFetch('/api/admin/models/batch', { method: 'POST', body: compactBody({ names, scheduling_mode: schedulingMode }) })
+export function createModelsBatch(names: string[], opts?: CreateModelOptions): Promise<BatchCreateModelsResult> {
+  return apiFetch('/api/admin/models/batch', {
+    method: 'POST',
+    body: compactBody({
+      names,
+      scheduling_mode: opts?.schedulingMode,
+      output_modalities: opts?.outputModalities,
+    }),
+  })
 }
 
 export function getModel(id: number): Promise<Model> {
@@ -155,12 +202,18 @@ export interface ModelPatch {
   name: string
   imageInput?: ImageInputChoice
   schedulingMode?: SchedulingMode
+  outputModalities?: string[]
 }
 
 export function updateModel(id: number, patch: ModelPatch): Promise<Model> {
   return apiFetch(`/api/admin/models/${id}`, {
     method: 'PATCH',
-    body: compactBody({ name: patch.name, image_input: patch.imageInput, scheduling_mode: patch.schedulingMode }),
+    body: compactBody({
+      name: patch.name,
+      image_input: patch.imageInput,
+      scheduling_mode: patch.schedulingMode,
+      output_modalities: patch.outputModalities,
+    }),
   })
 }
 
@@ -307,6 +360,12 @@ export function suggestCandidatePrice(
 
 export interface ImportModelItemInput {
   provider_model_name: string
+  // Optional per-row declaration of what the imported model produces; an
+  // absent list imports as text-only. When the import creates the model the
+  // declaration is stored on it; when the model already exists, a present
+  // declaration must match the stored one or the row is skipped with reason
+  // 'modality_mismatch'.
+  output_modalities?: string[]
   input_price: number
   output_price: number
   cache_write_price: number | null
@@ -317,7 +376,7 @@ export interface ImportModelItemInput {
 export interface ImportItemResult {
   name: string
   status: 'created' | 'appended' | 'skipped'
-  reason?: 'exists' | 'invalid'
+  reason?: 'exists' | 'invalid' | 'modality_mismatch'
   model_id?: number
   candidate_id?: number
 }
@@ -365,6 +424,10 @@ export interface ProviderCandidate {
   output_price: number
   cache_write_price: number | null
   cache_read_price: number | null
+  // Billing follows the mode: token prices settle "token" rows, the tier
+  // table settles "image" rows (the token slots are inert there).
+  billing_mode: string
+  image_pricing_tiers: ImagePricingTiers | null
   max_output: number
   management_status: number
   verification_status: number

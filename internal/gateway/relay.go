@@ -472,6 +472,26 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// order and reconciles what a modality claims against what actually went
 	// out to the caller.
 	adm := admitted{payload: newOrderedPayload(payload, rc.requestID), limits: modality.Limits()}
+	// The payload's policy for its own bodies is read once, here, so the
+	// record path can enforce it without holding the payload for two more
+	// calls. Settled requests only: a refusal above leaves nil, which the
+	// policy applier reads as "keep the kernel's own view".
+	rc.payloadLog = admitBodyLog(adm.payload, c.GetHeader("Content-Type"))
+	// A modality that declared a total budget narrows the request deadline to
+	// it. The declaration is a real cap, not advice: everything downstream —
+	// per-attempt budgets, the request context the DB reads run on — derives
+	// from this deadline, so narrowing it here is narrowing all of them at
+	// once. Only ever narrowed: a modality may shorten the kernel's budget,
+	// never outlive it.
+	if adm.limits.TotalBudget > 0 {
+		if capped := start.Add(adm.limits.TotalBudget); capped.Before(rc.requestDeadline) {
+			rc.requestDeadline = capped
+			budgetCtx, budgetCancel := context.WithDeadline(c.Request.Context(), rc.requestDeadline)
+			defer budgetCancel()
+			requestCtx = budgetCtx
+			rc.requestCtx = requestCtx
+		}
+	}
 	routing := adm.payload.Routing()
 	rc.originalModel = routing.Model
 	rc.isStream = routing.Stream
@@ -507,6 +527,18 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	}
 	if m.ManagementStatus != model.ModelStatusEnabled {
 		s.rejectRequest(c, rc, http.StatusNotFound, errTypeNotFound, "model does not exist", "model_disabled", fact.FaultClient, start)
+		return
+	}
+
+	// The model must declare the output modality this endpoint serves. The
+	// vocabulary is the modality's own id, so the gate stays generic: a new
+	// modality registers an id, model rows declare it, and nothing here
+	// names an endpoint family. The refusal comes before any candidate is
+	// walked, so a mismatched pairing costs no upstream call.
+	if !m.ServesOutputModality(string(modality.ID())) {
+		s.rejectRequest(c, rc, http.StatusBadRequest, errTypeInvalidRequest,
+			fmt.Sprintf("model %q does not serve %s requests", rc.originalModel, modality.ID()),
+			"model_modality_mismatch", fact.FaultClient, start)
 		return
 	}
 
@@ -918,6 +950,9 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 		// the modality states a path within a provider it was already talking
 		// to, and the kernel decides which host that provider is.
 		url := protocols.JoinUpstreamURL(egress.BaseURL, call.Path, egress.Protocol)
+		if call.OriginRelative {
+			url = protocols.OriginURL(egress.BaseURL, call.Path)
+		}
 		// Rewriters run over the finished egress body, after the modality
 		// built it and before anything is sent. A rewriter that refuses comes
 		// back as a verdict for this loop to act on, not as an error: what a
@@ -961,7 +996,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 		// onto the same key.
 		enabled = s.keyPool.walkOrder(provider.ID, enabled)
 		attemptsBefore := rc.attemptsSpent
-		if s.tryKeys(c, rc, adm, enabled, plain, egress, outBody, url, start) == outcomeDone {
+		if s.tryKeys(c, rc, adm, enabled, plain, egress, outBody, url, call, start) == outcomeDone {
 			// The response was written by this candidate — a success, or a
 			// terminal answer that is the caller's own to act on; either
 			// way the provider was reachable and served. A caller whose
@@ -1061,7 +1096,7 @@ const (
 // has been written to the client, or outcomeNextCandidate when every key on
 // this provider failed with a key-rotation error and the chain should move
 // to the next candidate (same-provider no usable key, THEN failover).
-func (s *Service) tryKeys(c *gin.Context, rc *Exchange, adm admitted, keys []model.ProviderKey, plain map[uint]string, egress *EgressDecision, outBody []byte, url string, start time.Time) relayOutcome {
+func (s *Service) tryKeys(c *gin.Context, rc *Exchange, adm admitted, keys []model.ProviderKey, plain map[uint]string, egress *EgressDecision, outBody []byte, url string, call *UpstreamCall, start time.Time) relayOutcome {
 	provider := rc.attempt.Provider()
 	// Indexed by hand because one iteration can legitimately not advance: a
 	// repaired-body retry re-enters the same key with the new body. One
@@ -1100,7 +1135,7 @@ func (s *Service) tryKeys(c *gin.Context, rc *Exchange, adm admitted, keys []mod
 		// unverified, destination-stale, undecryptable — are all filtered
 		// before rotation, which is also why this lookup cannot miss: every
 		// walked key decrypted in that filter.
-		result, repaired := s.attemptOne(c, rc, adm, plain[pk.ID], egress, outBody, url, start, repairsUsed == 0)
+		result, repaired := s.attemptOne(c, rc, adm, plain[pk.ID], egress, outBody, url, call, start, repairsUsed == 0)
 		if result == attemptSuccess || result == attemptTerminal {
 			return outcomeDone
 		}
@@ -1129,7 +1164,7 @@ func (s *Service) tryKeys(c *gin.Context, rc *Exchange, adm admitted, keys []mod
 // The modality delivers, this side settles. Keeping those apart is what stops
 // "how a response is delivered" and "what the request cost and how it is
 // recorded" from having to be known in one place.
-func (s *Service) deliverAndSettle(c *gin.Context, rc *Exchange, adm admitted, resp *http.Response, start time.Time) attemptResult {
+func (s *Service) deliverAndSettle(c *gin.Context, rc *Exchange, adm admitted, resp *http.Response, call *UpstreamCall, start time.Time) attemptResult {
 	// The payloads close the body themselves, from a defer INSIDE Deliver — but
 	// a panic can fire before that defer is registered: the call-order wrapper
 	// asserts before it forwards, and an assertion tripping there unwinds with
@@ -1137,7 +1172,11 @@ func (s *Service) deliverAndSettle(c *gin.Context, rc *Exchange, adm admitted, r
 	// context expires. Closing twice is safe; leaking on the one path that
 	// panics before anyone armed a close is not.
 	defer func() { _ = resp.Body.Close() }()
-	tools, release := s.newDeliveryTools(c, rc, adm.limits, rc.isStream)
+	// Delivery tooling is built for the caller's stream ask OR the payload's
+	// progressive declaration. They are different questions: a response that
+	// cannot be buffered whole must be forwarded as it arrives whether or not
+	// the caller marked the request as streaming.
+	tools, release := s.newDeliveryTools(c, rc, adm.limits, rc.isStream || call.Progressive)
 	defer release()
 	return s.recordAndSettle(c, rc, adm, adm.payload.Deliver(tools, resp), resp.StatusCode, start)
 }
@@ -1432,7 +1471,7 @@ func (s *Service) markProviderKeyForRetest(ctx context.Context, rc *Exchange, pk
 	}
 }
 
-func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plaintext string, egress *EgressDecision, outBody []byte, url string, start time.Time, repairAllowed bool) (attemptResult, []byte) {
+func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plaintext string, egress *EgressDecision, outBody []byte, url string, call *UpstreamCall, start time.Time, repairAllowed bool) (attemptResult, []byte) {
 	// The attempt's identity — candidate, provider, key — lives on rc.attempt,
 	// staged by the loops above; plaintext alone stays a parameter, because a
 	// credential parked on the exchange would outlive the one call that needs
@@ -1469,6 +1508,10 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	// last write wins, matching the "successful attempt, else the last
 	// attempt" rule.
 	rc.bodies.SetUpstreamRequest(outBody)
+	// The content type the payload stated for those bytes, kept beside them
+	// so the log policy can hand a sanitizer the type (and any multipart
+	// boundary in it) the body was actually encoded with.
+	rc.upstreamContentType = call.ContentType
 	// Record the dispatched URL for the log row and each AttemptRecord.
 	// Redacted (userinfo/query/fragment stripped) so a base URL that embeds
 	// credentials never reaches the audit log or UI; the raw url is used
@@ -1487,6 +1530,15 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 		return attemptNextCandidate, nil
 	}
 	codecsFor(egress.Protocol).RequestEncoder.SetupRequest(req, plaintext)
+	// A content type the payload stated for the body it built is authoritative
+	// over the egress codec's. The codec's header is right for the JSON
+	// protocols and wrong for a body that is not JSON — a re-encoded multipart
+	// carries a boundary nothing but its builder knows — so the override comes
+	// after SetupRequest rather than instead of it: the codec still owns every
+	// header that is about transport and credentials.
+	if call.ContentType != "" {
+		req.Header.Set("Content-Type", call.ContentType)
+	}
 
 	resp, err := s.client.SendUpstreamRequest(req)
 	// The request reached for the wire, and that is what the attempt budget
@@ -1569,7 +1621,7 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 		// Acceptance already refutes a rate limit; how delivery ends
 		// cannot un-refute it.
 		s.keyPool.clearKey(pk.ID, pk.ConfigVersion, rc.keyDispatchedAt)
-		return s.deliverAndSettle(c, rc, adm, resp, start), nil
+		return s.deliverAndSettle(c, rc, adm, resp, call, start), nil
 	}
 
 	statusCode := resp.StatusCode

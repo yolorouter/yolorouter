@@ -178,3 +178,18 @@ func redactQuery(rawQuery string) string {
 	}
 	return kept.Encode()
 }
+
+// OriginURL joins an origin-relative egress path onto a provider base URL's
+// scheme and host. A provider whose API spreads across several path branches
+// of one host (an OpenAI-compatible route and a native route on the same
+// domain) serves the second from a path the base's own version segment would
+// otherwise corrupt; the payload that needs that says so, and the origin
+// still comes from the provider's configured base — a payload never names a
+// host of its own. A base that does not parse falls back to plain
+// concatenation.
+func OriginURL(base, egressPath string) string {
+	if u, err := url.Parse(base); err == nil && u.Scheme != "" && u.Host != "" {
+		return u.Scheme + "://" + u.Host + egressPath
+	}
+	return strings.TrimRight(base, "/") + egressPath
+}

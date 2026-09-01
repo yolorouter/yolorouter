@@ -54,6 +54,23 @@ type UsageReported struct {
 	// way to that point is one nobody downstream can re-derive, because the
 	// frames it came from are gone.
 	WebSearchCount int
+	// Count is the billable quantity of a counted unit — what Unit counts
+	// when the unit counts things rather than measures them (images
+	// delivered, seconds spoken). The token fields stay the token fields:
+	// an exchange that reports both (an image model that also reports its
+	// text tokens) carries each quantity in its own field, and settlement
+	// prices the one the candidate's billing mode names.
+	Count int
+	// Requested is what the caller asked Count to be. Not billable — billed
+	// is what arrived — but carried because the difference between the two
+	// is the discrepancy an operator will be asked about, and it does not
+	// survive anywhere else.
+	Requested int
+	// Quality and Size are the axes a per-unit price is keyed by (an image
+	// tier prices by quality and size). Empty means the caller sent none,
+	// which prices from the wildcard or the fallback, never from a guess.
+	Quality string
+	Size    string
 }
 
 func (UsageReported) RecordName() string { return "usage_reported" }

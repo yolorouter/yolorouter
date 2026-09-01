@@ -228,6 +228,23 @@ func (b *Bodies) DiscardEmptyStream() {
 	b.streamCaptured = false
 }
 
+// DropStream closes and deletes the capture file, if any, and unmarks it —
+// the caller-facing body it holds is not to be persisted.
+//
+// Distinct from DiscardEmptyStream, which keeps a capture that has content and
+// only removes an empty one: this drops whatever is there. Unlike that path it
+// also discards a truncated capture, since the decision to keep nothing is not
+// about what the file managed to record.
+func (b *Bodies) DropStream() {
+	if !b.streamCaptured {
+		return
+	}
+	path := filepath.Join(b.streamDir, b.streamName)
+	b.CloseStream()
+	_ = os.Remove(path)
+	b.streamCaptured = false
+}
+
 // StreamCaptured reports whether a capture file was opened and kept.
 func (b *Bodies) StreamCaptured() bool { return b.streamCaptured }
 

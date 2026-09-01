@@ -212,21 +212,29 @@ type UpstreamCall struct {
 	// removes the step that could be forgotten; the kernel derives the length
 	// from the body itself for the same reason.
 	//
-	// NOTE: the kernel does not read this field yet. The outgoing header is
-	// still set by the egress codec, which is correct for the JSON protocols
-	// this build carries and wrong for a multipart body — wiring this through
-	// the dispatch path lands with the modality that needs it.
+	// When stated, it is authoritative over the egress codec's own header:
+	// the codec's value is right for the JSON protocols and wrong for a body
+	// that is not JSON. The kernel applies it after the codec has set every
+	// transport and credential header, so the codec keeps what is its own.
 	ContentType string
 	// Progressive is the payload's declaration that this response must be
 	// forwarded as it arrives — some responses cannot be buffered whole in any
 	// sensible amount of memory.
 	//
-	// NOTE: the kernel does not read this field yet. Delivery tooling is built
-	// from whether the CALLER asked to stream, which is a different question —
-	// an audio response may need progressive forwarding on a request nobody
-	// marked as streaming. Honouring the declaration lands with the modality
-	// that needs it.
+	// The kernel honours it alongside (not instead of) the caller's stream
+	// ask: delivery tooling is built for either, because they are different
+	// questions — a response that cannot be buffered must be forwarded
+	// incrementally on a request nobody marked as streaming.
 	Progressive bool
+	// OriginRelative says Path is relative to the provider's ORIGIN
+	// (scheme://host) rather than to its configured base path. A provider
+	// whose API lives at several path branches of one host — an
+	// OpenAI-compatible chat route and a native image route on the same
+	// domain — serves the second from a path the base's version segment
+	// would otherwise corrupt. The origin is still the kernel's to take from
+	// the provider's own base URL: the payload names a path within the
+	// provider it was already talking to, same as ever.
+	OriginRelative bool
 }
 
 // ErrorEnvelope is an upstream failure translated into what the caller is
@@ -251,6 +259,24 @@ const (
 	BodyClientResponse
 )
 
+// String names a body kind for logs and audit rows. The four spellings are
+// stable identifiers a dashboard can rely on, not prose: they name the same
+// bodies the log policy's Store map is keyed by.
+func (k BodyKind) String() string {
+	switch k {
+	case BodyClientRequest:
+		return "client_request"
+	case BodyUpstreamRequest:
+		return "upstream_request"
+	case BodyUpstreamResponse:
+		return "upstream_response"
+	case BodyClientResponse:
+		return "client_response"
+	default:
+		return "unknown_body_kind"
+	}
+}
+
 // LogPolicy says what of a request may be persisted, decided by the modality
 // because only it knows what its bytes are.
 //
@@ -259,18 +285,40 @@ const (
 // new modality that forgets this logs too little, rather than writing megabytes
 // of binary audio into a text column.
 //
-// NOTE: nothing in the kernel reads a LogPolicy yet. The bodies still reach the
-// audit row raw, through the recording capability's own view of the exchange,
-// so every field below states an intention rather than causing an effect. The
-// wiring lands with the modalities that need it — see the note on
-// orderedPayload's LogPolicy for why it is not done here.
+// The kernel reads the policy once at admission and enforces it over the
+// captured bodies after settlement, before anything records them: dropped
+// bodies never reach storage, raw bodies are kept as the bytes that arrived,
+// rendered bodies are kept as SanitizeForLog writes them, and MaxBytes caps
+// either form. A request the modality refused at Admit never got a policy and
+// keeps the kernel's own account of its bodies.
 type LogPolicy struct {
-	// Store lists the bodies that may be persisted at all. Anything absent is
-	// dropped before it reaches storage.
-	Store map[BodyKind]bool
+	// Store says, for each body, whether it may be persisted and in which
+	// form. Anything absent (or BodyDropped) never reaches storage.
+	Store map[BodyKind]BodyStorage
 	// MaxBytes caps each stored body. Zero leaves the cap to whoever stores it.
 	MaxBytes int64
 }
 
-// Stores reports whether this policy admits one body kind.
-func (p LogPolicy) Stores(k BodyKind) bool { return p.Store[k] }
+// Storage reports how this policy may persist one body kind.
+func (p LogPolicy) Storage(k BodyKind) BodyStorage { return p.Store[k] }
+
+// BodyStorage is the form in which one admitted body may be persisted.
+type BodyStorage uint8
+
+const (
+	// BodyDropped keeps nothing. The zero value, so a policy that says
+	// nothing about a body keeps none of it.
+	BodyDropped BodyStorage = iota
+	// BodyStoredRaw keeps the bytes exactly as they arrived. The kernel
+	// holds on to the slice it was given — no copy, no rendering — which is
+	// the form a modality whose bodies are already text asks for: on a
+	// twenty-megabyte request body the copy is a real cost, and there is
+	// nothing to render.
+	BodyStoredRaw
+	// BodyStoredRendered keeps what SanitizeForLog makes of the bytes. This
+	// is the form for bodies that must not be stored as they arrived —
+	// binary payloads, or text with regions the modality redacts. Rendering
+	// copies; that is the price of the form, and a modality that does not
+	// need it says raw instead.
+	BodyStoredRendered
+)

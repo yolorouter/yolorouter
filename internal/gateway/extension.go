@@ -286,6 +286,11 @@ type EgressRewriterOf[V any] interface {
 type EgressStage uint8
 
 const (
+	// StageImageSize converts an image request's size separator for the
+	// upstream dialect that spells it differently. Runs before the text
+	// stages because it is about one field of one request family, and after
+	// it runs nothing else needs to know the spelling changed.
+	StageImageSize EgressStage = 40
 	// StageCustomPrompt appends to the system text, so it runs late: it must
 	// see the body every other rewriter has finished shaping.
 	StageCustomPrompt EgressStage = 50

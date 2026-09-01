@@ -47,13 +47,13 @@ export const useModelsStore = defineStore('models', {
     async fetchDetail(id: number): Promise<Model> {
       return modelsApi.getModel(id)
     },
-    async create(name: string, schedulingMode?: SchedulingMode): Promise<Model> {
-      const created = await modelsApi.createModel(name, schedulingMode)
+    async create(name: string, opts?: modelsApi.CreateModelOptions): Promise<Model> {
+      const created = await modelsApi.createModel(name, opts)
       await this.fetchList()
       return created
     },
-    async createBatch(names: string[], schedulingMode?: SchedulingMode): Promise<modelsApi.BatchCreateModelsResult> {
-      const result = await modelsApi.createModelsBatch(names, schedulingMode)
+    async createBatch(names: string[], opts?: modelsApi.CreateModelOptions): Promise<modelsApi.BatchCreateModelsResult> {
+      const result = await modelsApi.createModelsBatch(names, opts)
       await this.fetchList()
       return result
     },

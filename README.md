@@ -177,8 +177,16 @@ protocol that provider natively speaks.
 | `POST /v1/chat/completions` | OpenAI Chat Completions | `Authorization: Bearer`, `X-Api-Key` |
 | `POST /v1/responses` | OpenAI Responses | `Authorization: Bearer`, `X-Api-Key` |
 | `POST /v1/messages` | Anthropic Messages | `Authorization: Bearer`, `X-Api-Key` |
+| `POST /v1/images/generations` | OpenAI Images (generation) | `Authorization: Bearer`, `X-Api-Key` |
 | `POST /v1beta/models/{model}:generateContent`<br>`POST /v1beta/models/{model}:streamGenerateContent` | Gemini | `x-goog-api-key`, `?key=`, `Authorization: Bearer`, `X-Api-Key` |
 | `GET /v1/models`, `GET /v1/models/{model}` | Model discovery | `Authorization: Bearer`, `X-Api-Key` |
+
+The images ingress serves models declared with the **image** output modality in
+the console. OpenAI-compatible providers are passed through as-is; providers on a
+DashScope host are served through its native image endpoint (URL answers only —
+a `b64_json` request is refused per candidate). Image models bill either per
+delivered image through a quality×size price table or by token counts, whichever
+the candidate declares, and a request that delivered nothing bills nothing.
 
 The `model` in every request is the **public name** you configured. Yolorouter picks
 a provider candidate, swaps in the real upstream model id, and keeps your public
@@ -188,6 +196,11 @@ name in the response.
 > when the request has to be translated to a different egress protocol; only text is
 > forwarded. Same-protocol passthrough is unaffected, and image content translates
 > correctly on the other three ingresses.
+>
+> **Image generation notes**: `stream` is not supported on
+> `/v1/images/generations` (a `stream: true` request is refused with a clear 400);
+> `/v1/images/edits` is not served yet. Returned image URLs come from the upstream
+> and follow the upstream's expiry — Yolorouter does not rehost image bytes.
 
 ### Point existing SDKs and tools at it
 

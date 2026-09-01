@@ -42,6 +42,11 @@ const FAIL_REASON_CODES: Record<string, string> = {
   no_verified_candidate: 'failReason.noVerifiedCandidate',
   no_enabled_candidate: 'failReason.noEnabledCandidate',
   stream_no_done: 'failReason.streamNoDone',
+  empty_prompt: 'failReason.emptyPrompt',
+  image_streaming_unsupported: 'failReason.imageStreamingUnsupported',
+  model_modality_mismatch: 'failReason.modelModalityMismatch',
+  image_response_empty: 'failReason.imageResponseEmpty',
+  dashscope_business_error: 'failReason.dashscopeBusinessError',
 }
 
 // formatFailReason converts a raw gateway fail_reason into a user-friendly

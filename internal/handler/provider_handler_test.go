@@ -84,6 +84,10 @@ func (alwaysSuccessClient) TestChatCompletion(ctx context.Context, proto protoco
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
+func (alwaysSuccessClient) TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
 func (alwaysSuccessClient) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
@@ -118,6 +122,10 @@ func (catalogueRefusingClient) ListModels(ctx context.Context, proto protocols.P
 // alwaysSuccessClient can never reach.
 type modelNotFoundClient struct{}
 
+func (modelNotFoundClient) TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
 func (modelNotFoundClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3}, nil
 }
@@ -138,6 +146,10 @@ func (modelNotFoundClient) ListModels(ctx context.Context, proto protocols.Proto
 // a concurrency cap rejection), never a TestResult outcome — exercises
 // PostProviderTestKey's ProviderTestFailed mapping.
 type erroringClient struct{}
+
+func (erroringClient) TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
 
 func (erroringClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{}, errors.New("client refused the call")
@@ -1055,6 +1067,10 @@ func (perProtocolClient) resultFor(proto protocols.ProtocolID) providerclient.Te
 		}
 	}
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: perProtocolPrimaryDurationMs}
+}
+
+func (c perProtocolClient) TestImageGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
 }
 
 func (c perProtocolClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {

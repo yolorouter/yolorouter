@@ -109,6 +109,43 @@
         </template>
         <n-switch v-model:value="form.enabled" @update:value="statusTouched = true" />
       </n-form-item>
+      <n-form-item>
+        <template #label>
+          <HelpLabel :tip="t('models.billingMode_tip')">{{ t('models.billingMode') }}</HelpLabel>
+        </template>
+        <n-select v-model:value="form.billingMode" :options="billingModeOptions" />
+      </n-form-item>
+      <div v-if="form.billingMode === 'image'" class="tiers-section">
+        <div class="tiers-section__head">
+          <span class="tiers-section__label">{{ t('models.imageTiers') }}</span>
+          <n-button size="small" @click="addTier">{{ t('models.imageTierAdd') }}</n-button>
+        </div>
+        <!-- One row per quality×size price. Quality/size left empty are
+             wildcards server-side; first match wins, so rows keep the order
+             they were entered in. -->
+        <div v-for="(tier, i) in form.imageTiers" :key="i" class="tier-row">
+          <n-input v-model:value="tier.quality" :placeholder="t('models.imageTierQuality')" />
+          <n-input v-model:value="tier.size" :placeholder="t('models.imageTierSize')" />
+          <n-input-number
+            v-model:value="tier.price"
+            :min="0"
+            :placeholder="t('models.imageTierPrice')"
+            style="width: 100%"
+          />
+          <n-button quaternary size="small" :aria-label="t('models.imageTierRemove')" @click="removeTier(i)">
+            ✕
+          </n-button>
+        </div>
+        <n-form-item>
+          <template #label>
+            <HelpLabel :tip="t('models.imageDefaultPrice_tip')">{{ t('models.imageDefaultPrice') }}</HelpLabel>
+          </template>
+          <n-input-number v-model:value="form.imageDefaultPrice" :min="0" style="width: 100%" />
+        </n-form-item>
+        <n-alert v-if="tierErrorKey" type="warning" style="margin-top: 4px">
+          {{ t(tierErrorKey) }}
+        </n-alert>
+      </div>
     </n-form>
 
     <!-- Rendered in place rather than as a toast: this one blocks saving, so it
@@ -220,7 +257,13 @@ import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
 import FilterSelectField from '../common/FilterSelectField.vue'
 import NewProviderModal from '../providers/NewProviderModal.vue'
-import type { CandidateTestReport, ModelCandidate, ProbeReport, SuggestedPrice } from '../../api/models'
+import type {
+  CandidateTestReport,
+  ImagePricingTier,
+  ModelCandidate,
+  ProbeReport,
+  SuggestedPrice,
+} from '../../api/models'
 import { suggestCandidatePrice } from '../../api/models'
 import { CANDIDATE_STATUS_DISABLED, CANDIDATE_STATUS_ENABLED } from '../../api/candidateStatus'
 
@@ -289,6 +332,35 @@ const form = reactive({
   cacheReadPrice: null as number | null,
   maxOutput: 0 as number | null,
   enabled: true,
+  billingMode: 'token' as 'token' | 'image',
+  imageTiers: [] as ImagePricingTier[],
+  imageDefaultPrice: null as number | null,
+})
+
+const billingModeOptions = computed(() => [
+  { label: t('models.billingModeToken'), value: 'token' },
+  { label: t('models.billingModeImage'), value: 'image' },
+])
+
+function addTier() {
+  form.imageTiers.push({ quality: '', size: '', price: 0 })
+}
+
+function removeTier(index: number) {
+  form.imageTiers.splice(index, 1)
+}
+
+// tierErrorKey holds an i18n key while the image declaration cannot price a
+// request — no tier, no default — or a price is negative. Blocking is local:
+// the server re-validates, this exists so the operator never has to round-trip
+// to learn the table is empty.
+const tierErrorKey = computed<string | null>(() => {
+  if (form.billingMode !== 'image') return null
+  const hasTier = form.imageTiers.length > 0
+  const hasDefault = form.imageDefaultPrice !== null
+  if (!hasTier && !hasDefault) return 'models.imageTiersEmpty'
+  if (form.imageTiers.some((tier) => tier.price < 0)) return 'models.imageTierNegative'
+  return null
 })
 
 type PriceField = 'inputPrice' | 'outputPrice' | 'cacheWritePrice' | 'cacheReadPrice'
@@ -696,6 +768,12 @@ watch(
       form.cacheReadPrice = props.editingCandidate.cache_read_price
       form.maxOutput = props.editingCandidate.max_output
       form.enabled = props.editingCandidate.management_status === CANDIDATE_STATUS_ENABLED
+      form.billingMode = props.editingCandidate.billing_mode === 'image' ? 'image' : 'token'
+      const stored = props.editingCandidate.image_pricing_tiers
+      form.imageTiers = stored
+        ? stored.tiers.map((tier) => ({ quality: tier.quality, size: tier.size, price: tier.price }))
+        : []
+      form.imageDefaultPrice = stored?.default_price ?? null
       statusTouched.value = false
       // The stored prices already describe this pair, so opening the dialog is
       // not a reason to re-price it. Only a change from here is.
@@ -765,8 +843,23 @@ function candidatePayload() {
     cache_read_price: form.cacheReadPrice ?? undefined,
     max_output: form.maxOutput ?? 0,
   }
-  if (props.editingCandidate && !statusTouched.value) return base
-  return { ...base, management_status: form.enabled ? CANDIDATE_STATUS_ENABLED : CANDIDATE_STATUS_DISABLED }
+  const withBilling = {
+    ...base,
+    billing_mode: form.billingMode,
+    image_pricing_tiers:
+      form.billingMode === 'image'
+        ? {
+            mode: 'per_image',
+            tiers: form.imageTiers.map((tier) => ({ ...tier })),
+            default_price: form.imageDefaultPrice ?? null,
+          }
+        : null,
+  }
+  if (props.editingCandidate && !statusTouched.value) return withBilling
+  return {
+    ...withBilling,
+    management_status: form.enabled ? CANDIDATE_STATUS_ENABLED : CANDIDATE_STATUS_DISABLED,
+  }
 }
 
 // A run whose every probe came back affirmative needs no acknowledgement — the
@@ -870,6 +963,10 @@ async function onSave() {
       message.warning(t(priceUnresolvedKey.value))
       return
     }
+    if (tierErrorKey.value) {
+      message.warning(t(tierErrorKey.value))
+      return
+    }
     // Clearing the previous verdicts waits until here so an aborted save leaves
     // the probe results the operator was reading on screen.
     report.value = null
@@ -932,6 +1029,10 @@ async function onSaveAnywayDisabled() {
       message.warning(t(priceUnresolvedKey.value))
       return
     }
+    if (tierErrorKey.value) {
+      message.warning(t(tierErrorKey.value))
+      return
+    }
     if (props.editingCandidate) {
       await store.updateCandidate(props.modelId, props.editingCandidate.id, {
         ...candidatePayload(),
@@ -959,6 +1060,31 @@ async function onSaveAnywayDisabled() {
 </script>
 
 <style scoped lang="less">
+.tiers-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+.tiers-section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tiers-section__label {
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+.tier-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
 /* Read-only context: which outward model this candidate is being mapped to.
    A blank provider model name defaults to this, so it doubles as the fallback
    reference the admin needs when choosing the provider-side model. */

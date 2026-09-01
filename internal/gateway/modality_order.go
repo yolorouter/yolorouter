@@ -330,13 +330,11 @@ func (p *orderedPayload) FinalizeUsage(d fact.Delivery) *fact.UsageReported {
 // whatever else went wrong, and a payload that refused to describe its own
 // bodies would leave the audit row unable to say anything about them.
 //
-// NOTE: nothing in the kernel calls either one yet. The bodies still reach the
-// audit row raw, through the recording capability's own view of the exchange,
-// and the answers a payload gives here are not consulted on the way. That is
-// not an oversight in this file — routing them through the modality changes
-// what every capability is shown, and it lands with the modalities that
-// actually need it. Until then these two are declared, ordered, and unread, and
-// no test below can pin behaviour that has no call site.
+// Both are read by the kernel now: the policy once at admission (it describes
+// the whole request), the sanitizer at enforcement time, after settlement and
+// before anything records. Both calls go through this wrapper, which is why
+// they are unordered rather than stage-checked — enforcement happens after
+// FinalizeUsage, and a stage gate here would refuse the call it exists for.
 func (p *orderedPayload) LogPolicy() LogPolicy {
 	release, ok := p.enter("LogPolicy")
 	defer release()

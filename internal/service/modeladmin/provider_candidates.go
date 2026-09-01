@@ -17,20 +17,26 @@ import (
 // the import progress poll and the provider detail page's model tab render;
 // ModelID travels along because the retest route is model-scoped.
 type ProviderCandidateView struct {
-	CandidateID        uint       `json:"candidate_id"`
-	ModelID            uint       `json:"model_id"`
-	ModelName          string     `json:"model_name"`
-	ProviderModelName  string     `json:"provider_model_name"`
-	InputPrice         float64    `json:"input_price"`
-	OutputPrice        float64    `json:"output_price"`
-	CacheWritePrice    *float64   `json:"cache_write_price"`
-	CacheReadPrice     *float64   `json:"cache_read_price"`
-	MaxOutput          int        `json:"max_output"`
-	ManagementStatus   int        `json:"management_status"`
-	VerificationStatus int        `json:"verification_status"`
-	LastTestResult     *int       `json:"last_test_result"`
-	LastTestedAt       *time.Time `json:"last_tested_at"`
-	LastTestError      *string    `json:"last_test_error"`
+	CandidateID       uint     `json:"candidate_id"`
+	ModelID           uint     `json:"model_id"`
+	ModelName         string   `json:"model_name"`
+	ProviderModelName string   `json:"provider_model_name"`
+	InputPrice        float64  `json:"input_price"`
+	OutputPrice       float64  `json:"output_price"`
+	CacheWritePrice   *float64 `json:"cache_write_price"`
+	CacheReadPrice    *float64 `json:"cache_read_price"`
+	// BillingMode says which quantity settles this mapping ("token" or
+	// "image"); ImagePricingTiers is the per-image table for image mode,
+	// nil when none is configured. A list column prices an image-billed
+	// mapping off these — its per-M token prices are inert under that mode.
+	BillingMode        string                   `json:"billing_mode"`
+	ImagePricingTiers  *model.ImagePricingTiers `json:"image_pricing_tiers"`
+	MaxOutput          int                      `json:"max_output"`
+	ManagementStatus   int                      `json:"management_status"`
+	VerificationStatus int                      `json:"verification_status"`
+	LastTestResult     *int                     `json:"last_test_result"`
+	LastTestedAt       *time.Time               `json:"last_tested_at"`
+	LastTestError      *string                  `json:"last_test_error"`
 	// AutoEnableOnPass is the standing probe promise: true means the queue
 	// (on some instance — not necessarily the one answering this request)
 	// still owes this row a probe outcome, so pollers should keep watching
@@ -157,6 +163,8 @@ func (s *ModelService) ListProviderCandidates(providerID uint) ([]ProviderCandid
 			OutputPrice:        c.OutputPrice,
 			CacheWritePrice:    c.CacheWritePrice,
 			CacheReadPrice:     c.CacheReadPrice,
+			BillingMode:        model.NormalizeBillingMode(c.BillingMode),
+			ImagePricingTiers:  model.ParseImagePricingTiers(c.ImagePricingTiers),
 			MaxOutput:          c.MaxOutput,
 			ManagementStatus:   c.ManagementStatus,
 			VerificationStatus: c.VerificationStatus,

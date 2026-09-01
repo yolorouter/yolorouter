@@ -183,7 +183,7 @@ func (p *fakeAudioPayload) FinalizeUsage(d fact.Delivery) *fact.UsageReported {
 // LogPolicy stores the caller's request and nothing else. The request is text;
 // both response bodies are audio.
 func (p *fakeAudioPayload) LogPolicy() LogPolicy {
-	return LogPolicy{Store: map[BodyKind]bool{BodyClientRequest: true}}
+	return LogPolicy{Store: map[BodyKind]BodyStorage{BodyClientRequest: BodyStoredRaw}}
 }
 
 // SanitizeForLog renders audio as a digest.
@@ -375,10 +375,10 @@ func TestAudioIsRecordedAsADigestNeverAsBytes(t *testing.T) {
 		t.Fatalf("Admit refused a valid request: %+v", rej)
 	}
 
-	if payload.LogPolicy().Stores(BodyUpstreamResponse) || payload.LogPolicy().Stores(BodyClientResponse) {
+	if payload.LogPolicy().Storage(BodyUpstreamResponse) != BodyDropped || payload.LogPolicy().Storage(BodyClientResponse) != BodyDropped {
 		t.Error("this modality's policy admits an audio body into storage")
 	}
-	if !payload.LogPolicy().Stores(BodyClientRequest) {
+	if payload.LogPolicy().Storage(BodyClientRequest) == BodyDropped {
 		t.Error("the caller's request is text and is what an operator reads first; it must be kept")
 	}
 

@@ -30,4 +30,9 @@ export default {
   noVerifiedCandidate: '没有已验证的上游 Key 可用',
   noEnabledCandidate: '没有可用的上游候选',
   streamNoDone: '流式响应未收到结束信号',
+  emptyPrompt: '请求缺少提示词文本。',
+  imageStreamingUnsupported: '图片生成不支持流式；请去掉 stream 参数后重试。',
+  modelModalityMismatch: '该模型不服务于你调用的端点（例如仅图片模型调用了对话端点，或文本模型调用了图片端点）。',
+  imageResponseEmpty: '上游成功响应但没有交付图片。',
+  dashscopeBusinessError: '上游拒绝了图片请求（详见日志中的错误详情）。',
 }

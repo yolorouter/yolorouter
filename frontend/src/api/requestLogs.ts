@@ -89,6 +89,20 @@ export interface AttemptRecord {
 // directly in the detail response; empty string means "not recorded" (early
 // failure before body capture, or a stream request where the response body
 // lives on disk instead — see has_stream_body / stream_body_path below).
+/** The parsed form of a per-image settlement's snapshot: what priced the row. */
+export interface ImagePricingSnapshot {
+  billing_mode: string
+  request_quality: string
+  request_size: string
+  request_n: number
+  actual_n: number
+  unit_price: number
+  price_source: string
+  unit: string
+  prompt_tokens?: number
+  output_tokens?: number
+}
+
 export interface RequestLogDetail extends RequestLogRow {
   attempts_detail: AttemptRecord[]
   // Price snapshot: the four unit prices (per million tokens) this row was
@@ -99,6 +113,9 @@ export interface RequestLogDetail extends RequestLogRow {
   settled_output_price: number | null
   settled_cache_write_price: number | null
   settled_cache_read_price: number | null
+  /** What a per-image settlement priced by, as the server's JSON string.
+   *  Empty on every row not billed per image. */
+  image_pricing_snapshot: string
   // upstream_url is the full URL the gateway dispatched to for the final
   // attempt (e.g. https://api.openai.com/v1/chat/completions); '' when not
   // recorded (pre-migration row or a request rejected pre-relay).

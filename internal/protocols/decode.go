@@ -10,6 +10,13 @@ const (
 	ProtocolClaude    ProtocolID = "anthropic"
 	ProtocolGemini    ProtocolID = "gemini"
 	ProtocolResponses ProtocolID = "responses"
+	// ProtocolImages is the OpenAI Images API family (POST
+	// /v1/images/generations): JSON in, JSON out, no IR. Unlike the four
+	// chat protocols it has no IR codecs — a request is routed on a subset
+	// of its fields and forwarded with only the model field rewritten, so
+	// its "codec" is the parse in internal/protocols/images and the
+	// modality's own passthrough.
+	ProtocolImages ProtocolID = "images"
 )
 
 // RequestDecoder decodes a protocol-specific request JSON into IR.

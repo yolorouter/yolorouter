@@ -169,14 +169,24 @@ Windows 上，用管理员身份运行 PowerShell 会装成开机自启的系统
 | `POST /v1/chat/completions` | OpenAI Chat Completions | `Authorization: Bearer`、`X-Api-Key` |
 | `POST /v1/responses` | OpenAI Responses | `Authorization: Bearer`、`X-Api-Key` |
 | `POST /v1/messages` | Anthropic Messages | `Authorization: Bearer`、`X-Api-Key` |
+| `POST /v1/images/generations` | OpenAI Images（图片生成） | `Authorization: Bearer`、`X-Api-Key` |
 | `POST /v1beta/models/{model}:generateContent`<br>`POST /v1beta/models/{model}:streamGenerateContent` | Gemini | `x-goog-api-key`、`?key=`、`Authorization: Bearer`、`X-Api-Key` |
 | `GET /v1/models`、`GET /v1/models/{model}` | 模型发现 | `Authorization: Bearer`、`X-Api-Key` |
+
+图片入口只服务于在后台声明了**图片**输出模态的模型。OpenAI 兼容供应商原样透传；
+供应商地址在 DashScope 域名下的，经由其原生图片端点服务（只返回图片 URL——请求
+`b64_json` 的候选会被逐一拒绝）。图片模型按候选声明的口径计费：按实际交付张数走
+质量×尺寸价格表，或按 token 用量；请求没有交付图片则不计费。
 
 请求里的 `model` 是你在后台配置的**对外名**。Yolorouter 会挑选供应商候选、替换成真实的
 上游模型 id，并在返回时保持你的对外名不变。
 
 > **已知限制**：Responses 入口的 `input_image` 条目，在请求需要翻译成另一种出口协议时
 > 会被丢弃，只有文本被传递。同协议透传不受影响，另外三个入口的图片内容翻译正常。
+>
+> **图片生成说明**：`/v1/images/generations` 不支持 `stream`（`stream: true` 会收到明确的
+> 400）；`/v1/images/edits` 暂未提供。返回的图片 URL 来自上游，时效由上游决定——
+> Yolorouter 不转存图片字节。
 
 ### 让现有 SDK 和工具直接指过来
 

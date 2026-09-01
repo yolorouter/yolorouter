@@ -80,7 +80,7 @@ func (p *fakeMultipartPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, e
 // set to a plausible-looking cap: nothing reads a LogPolicy yet, and a limit
 // stated here would be a number no test can show taking effect.
 func (p *fakeMultipartPayload) LogPolicy() LogPolicy {
-	return LogPolicy{Store: map[BodyKind]bool{BodyClientRequest: true, BodyUpstreamRequest: true}}
+	return LogPolicy{Store: map[BodyKind]BodyStorage{BodyClientRequest: BodyStoredRaw, BodyUpstreamRequest: BodyStoredRaw}}
 }
 
 // SanitizeForLog renders a multipart body as its shape rather than its bytes.

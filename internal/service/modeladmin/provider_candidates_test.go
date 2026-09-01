@@ -85,3 +85,41 @@ func TestListProviderCandidatesProviderNotFound(t *testing.T) {
 		t.Fatalf("expected ErrProviderNotFound, got %v", err)
 	}
 }
+
+// The list view carries the billing declaration so a price column can price
+// an image-billed mapping off its tier table instead of the (inert) per-M
+// token slots.
+func TestListProviderCandidatesCarriesBillingDeclaration(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	prov := seedEnabledProviderForModelTest(t, providerService, "billing-view-provider")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+
+	view, err := svc.CreateModel(modeladmin.CreateModelInput{
+		Name: "billing-view-model", OutputModalities: []string{model.OutputModalityImage},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create image model: %v", err)
+	}
+	tiers := &model.ImagePricingTiers{Mode: "per_image", DefaultPrice: ptrFloat(0.25)}
+	if _, err := svc.CreateModelCandidate(t.Context(), view.ID, modeladmin.CreateCandidateInput{
+		ProviderID: prov.ID, ProviderModelName: "billing-view-model",
+		InputPrice: 0.3, OutputPrice: 1.2, BillingMode: model.BillingModeImage, ImagePricingTiers: tiers,
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("create candidate: %v", err)
+	}
+
+	list, err := svc.ListProviderCandidatesWithQueueStates(prov.ID, nil)
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected one row, got %+v", list)
+	}
+	row := list[0]
+	if row.BillingMode != model.BillingModeImage {
+		t.Fatalf("billing mode not carried, got %q", row.BillingMode)
+	}
+	if row.ImagePricingTiers == nil || row.ImagePricingTiers.DefaultPrice == nil || *row.ImagePricingTiers.DefaultPrice != 0.25 {
+		t.Fatalf("tier table not carried, got %+v", row.ImagePricingTiers)
+	}
+}

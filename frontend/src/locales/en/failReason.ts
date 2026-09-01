@@ -30,4 +30,9 @@ export default {
   noVerifiedCandidate: 'No verified upstream key available',
   noEnabledCandidate: 'No enabled upstream candidate',
   streamNoDone: 'Stream completed without done signal',
+  emptyPrompt: 'The request carried no prompt text.',
+  imageStreamingUnsupported: 'Image generation does not support streaming; send the request without stream.',
+  modelModalityMismatch: 'This model does not serve the endpoint you called it on (for example, an image-only model on a chat endpoint, or a text model on the images endpoint).',
+  imageResponseEmpty: 'The upstream answered successfully but delivered no image.',
+  dashscopeBusinessError: 'The upstream refused the image request (see the logged error detail).',
 }

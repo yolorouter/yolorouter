@@ -323,6 +323,12 @@ func openStreamBodyFile(c *gin.Context, rc *Exchange) {
 	if rc.requestID == "" {
 		return
 	}
+	// A payload whose policy keeps no client response keeps no capture file:
+	// the file IS the caller-facing body. Checked at this choke point because
+	// both the toolbox builder and the streaming pumps open through it.
+	if rc.payloadLog != nil && rc.payloadLog.policy.Storage(BodyClientResponse) == BodyDropped {
+		return
+	}
 	dir := streamBodiesDir(c)
 	if dir == "" {
 		return

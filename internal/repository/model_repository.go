@@ -51,6 +51,11 @@ type ModelUpdate struct {
 	ImageInputSet  bool
 	ImageInput     *bool
 	SchedulingMode *model.SchedulingMode
+	// OutputModalitiesSet marks the output-modalities declaration as
+	// submitted; the value itself is the canonical JSON string (validated
+	// and serialized by the service before it reaches here).
+	OutputModalitiesSet bool
+	OutputModalities    string
 }
 
 // UpdateModel writes every submitted field of u in ONE statement,
@@ -63,6 +68,9 @@ func UpdateModel(db *gorm.DB, id uint, u ModelUpdate, now time.Time) error {
 	}
 	if u.SchedulingMode != nil {
 		updates["scheduling_mode"] = *u.SchedulingMode
+	}
+	if u.OutputModalitiesSet {
+		updates["output_modalities"] = u.OutputModalities
 	}
 	return db.Model(&model.Model{}).Where("id = ?", id).Updates(updates).Error
 }
@@ -276,6 +284,22 @@ func UpdateModelCandidate(db *gorm.DB, id uint, providerModelName string, inputP
 		updates["last_test_error"] = nil
 	}
 	return db.Model(&model.ModelCandidate{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// UpdateModelCandidateBilling writes the billing declaration (mode plus the
+// serialized per-image table) in one statement. Separate from
+// UpdateModelCandidate because the declaration is edited as a unit with its
+// own validation, and callers that never touch it — the price form among
+// them — must not have to carry its columns through their signatures. Run
+// inside the same transaction as the field update when both fire: one edit,
+// one rollback.
+func UpdateModelCandidateBilling(db *gorm.DB, id uint, billingMode, imagePricingTiers string, now time.Time) error {
+	return db.Model(&model.ModelCandidate{}).Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"billing_mode":        billingMode,
+			"image_pricing_tiers": imagePricingTiers,
+			"updated_at":          now,
+		}).Error
 }
 
 // DemoteUnverifiedEnabledCandidate is the enabled-implies-verified backstop:

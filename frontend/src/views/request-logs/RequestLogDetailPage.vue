@@ -156,6 +156,20 @@
             </span>
             <NTag v-else size="small" :bordered="false" type="default">{{ t('requestLogs.settledPricesNone') }}</NTag>
           </NDescriptionsItem>
+          <!-- Image settlement snapshot: what a per-image bill priced by.
+               Rendered only when present — every non-image row keeps its
+               token snapshot above and nothing here. -->
+          <NDescriptionsItem v-if="imageSnapshot" :label="t('requestLogs.fieldImagePricing')" :span="2">
+            <span class="settled-prices">
+              {{ t('requestLogs.imagePricingValues', {
+                count: imageSnapshot.actual_n,
+                price: imageSnapshot.unit_price,
+                source: imageSnapshot.price_source,
+                quality: imageSnapshot.request_quality || '—',
+                size: imageSnapshot.request_size || '—',
+              }) }}
+            </span>
+          </NDescriptionsItem>
         </NDescriptions>
       </section>
 
@@ -314,6 +328,7 @@ import {
   getRequestLogDetail,
   streamRequestLogBody,
   type AttemptRecord,
+  type ImagePricingSnapshot,
   type RequestLogDetail,
 } from '../../api/requestLogs'
 import { APIError, displayMessage } from '../../api/client'
@@ -337,6 +352,19 @@ const router = useRouter()
 const message = useMessage()
 
 const detail = ref<RequestLogDetail | null>(null)
+
+// Parsed per-image settlement snapshot: the raw column is JSON the server
+// built at settlement, and a rolling upgrade can serve a row whose value is
+// absent — both cases read as "nothing to show".
+const imageSnapshot = computed<ImagePricingSnapshot | null>(() => {
+  const raw = detail.value?.image_pricing_snapshot
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as ImagePricingSnapshot
+  } catch {
+    return null
+  }
+})
 const loading = ref(false)
 const notFound = ref(false)
 const isMobile = useIsMobile()

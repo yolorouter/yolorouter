@@ -555,7 +555,7 @@ func TestTheSearchCountSurvivesEveryHopToTheObserver(t *testing.T) {
 	// disagree and only one of them is persisted.
 	rc := &Exchange{requestID: "req-searches", ingress: protocols.ProtocolOpenAI}
 	sink := newExchangeSink(rc)
-	(&Service{}).reportUsage(rc, onExchange, sink)
+	(&Service{}).reportUsage(rc, usageReportOf(onExchange), onExchange, sink)
 	if got := requireBilled(t, rc).WebSearchCount; got != 3 {
 		t.Errorf("searches = %d in the audit row, want 3: this is the record that outlives "+
 			"the request, and the body the count came from does not", got)

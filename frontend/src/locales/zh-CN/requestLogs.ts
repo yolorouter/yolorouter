@@ -127,6 +127,8 @@ export default {
   fieldSettledPrices: '结算价目',
   settledPriceValues: '输入 {input} / 输出 {output} / 缓存写 {write} / 缓存读 {read} · 元 / 百万 token',
   settledPricesNone: '无快照',
+  fieldImagePricing: '图片计价',
+  imagePricingValues: '{count} 张 × 单价 {price} · {quality} / {size} · 命中{source}',
   fieldRequestEndpoint: '请求 Endpoint',
   fieldUpstreamEndpoint: '上游 Endpoint',
 

@@ -289,3 +289,91 @@ func TestPostProviderSuggestPricesAcceptsFullCatalogSizedBatch(t *testing.T) {
 		t.Fatalf("expected 200 for a 501-name price look-up, got %d, body: %s", w.Code, w.Body.String()[:200])
 	}
 }
+
+// The transport layer must carry the per-row modality declaration into the
+// service and the per-item skip reasons back out — the import dialog's
+// conflict messaging rides on both directions.
+func TestPostProviderModelsImportDeclaresModality(t *testing.T) {
+	r, db := newModelTestRouter(t)
+	p := seedProviderRow(t, db, "prov-import-modality")
+
+	w, env := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/providers/%d/models/import", p.ID), map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"provider_model_name": "wan2.7-image", "output_modalities": []string{"image"}},
+		},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var result struct {
+		Items []struct {
+			Name        string `json:"name"`
+			Status      string `json:"status"`
+			ModelID     uint   `json:"model_id"`
+			CandidateID uint   `json:"candidate_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(env.Data, &result); err != nil {
+		t.Fatalf("unmarshal import response: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Status != "created" {
+		t.Fatalf("expected one created item, got %+v", result.Items)
+	}
+	var m model.Model
+	if err := db.First(&m, result.Items[0].ModelID).Error; err != nil {
+		t.Fatalf("load imported model: %v", err)
+	}
+	if m.OutputModalities != `["image"]` {
+		t.Fatalf("expected the row declaration stored, got %q", m.OutputModalities)
+	}
+	var c model.ModelCandidate
+	if err := db.First(&c, result.Items[0].CandidateID).Error; err != nil {
+		t.Fatalf("load imported candidate: %v", err)
+	}
+	if c.BillingMode != model.BillingModeImage {
+		t.Fatalf("an image-exclusive row must bill per image, got %q", c.BillingMode)
+	}
+}
+
+func TestPostProviderModelsImportSurfacesModalityMismatch(t *testing.T) {
+	r, db := newModelTestRouter(t)
+	p := seedProviderRow(t, db, "prov-import-mismatch")
+	now := time.Now().UTC()
+	if err := db.Create(&model.Model{
+		Name: "wan2.7-image", ManagementStatus: model.ModelStatusEnabled,
+		SchedulingMode: model.ModelSchedulingModeFailover, OutputModalities: `["text"]`,
+		CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed model failed: %v", err)
+	}
+
+	w, env := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/providers/%d/models/import", p.ID), map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"provider_model_name": "wan2.7-image", "output_modalities": []string{"image"}},
+		},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (a per-item skip, not a request failure), got %d, body: %s", w.Code, w.Body.String())
+	}
+	var result struct {
+		Items []struct {
+			Name        string `json:"name"`
+			Status      string `json:"status"`
+			Reason      string `json:"reason"`
+			CandidateID uint   `json:"candidate_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(env.Data, &result); err != nil {
+		t.Fatalf("unmarshal import response: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Status != "skipped" || result.Items[0].Reason != "modality_mismatch" || result.Items[0].CandidateID != 0 {
+		t.Fatalf("expected a modality_mismatch skip with no candidate, got %+v", result.Items)
+	}
+	var count int64
+	if err := db.Model(&model.ModelCandidate{}).Where("provider_id = ?", p.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count candidates: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("a refused row must store no mapping, found %d", count)
+	}
+}

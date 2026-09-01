@@ -54,6 +54,7 @@ type View interface {
 	UpstreamResponseBody() []byte
 	StreamBodyPath() string
 	StreamBodyTruncated() bool
+	ImagePricingSnapshot() string
 }
 
 // Recorder writes the audit trail.
@@ -143,6 +144,8 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 		row.SettledCacheReadPrice = &crPrice
 	}
 
+	row.ImagePricingSnapshot = view.ImagePricingSnapshot()
+
 	if err := repository.CreateRequestLog(r.db.WithContext(ctx), row); err != nil {
 		logger.Error("gateway: write request log failed",
 			zap.String("request_id", view.RequestID()), zap.Error(err))
@@ -206,6 +209,10 @@ type usageNotInColumns struct {
 	Reasoning             int    `json:"reasoning,omitempty"`
 	Incoherent            bool   `json:"incoherent,omitempty"`
 	WebSearchCount        int    `json:"web_search_count,omitempty"`
+	Count                 int    `json:"count,omitempty"`
+	Requested             int    `json:"requested,omitempty"`
+	Quality               string `json:"quality,omitempty"`
+	Size                  string `json:"size,omitempty"`
 }
 
 func (usageNotInColumns) RecordName() string { return "usage_not_in_columns" }
@@ -236,6 +243,10 @@ func usageResidue(rec fact.UsageReported) fact.Record {
 		Reasoning:             rec.Reasoning,
 		Incoherent:            rec.Incoherent,
 		WebSearchCount:        rec.WebSearchCount,
+		Count:                 rec.Count,
+		Requested:             rec.Requested,
+		Quality:               rec.Quality,
+		Size:                  rec.Size,
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,11 @@ type CandidateView struct {
 	CacheWritePrice   *float64 `json:"cache_write_price"`
 	CacheReadPrice    *float64 `json:"cache_read_price"`
 	MaxOutput         int      `json:"max_output"`
+	// BillingMode says what settlement prices this candidate in (token or
+	// image); ImagePricingTiers is the per-image table, nil when none is
+	// stored. The write path validates the pair together.
+	BillingMode       string                   `json:"billing_mode"`
+	ImagePricingTiers *model.ImagePricingTiers `json:"image_pricing_tiers"`
 	// Mirrors model.ModelCandidate: true when the last probe confirmed the
 	// capability, null when it did not. Informational — routing ignores these.
 	SupportsStreaming       *bool `json:"supports_streaming"`
@@ -121,9 +127,14 @@ type ModelView struct {
 	// SupportsImageInput mirrors the admin's tri-state declaration (nil =
 	// undeclared): whether this model can read images, driving the vision
 	// fallback and strip behaviors in the gateway.
-	SupportsImageInput *bool           `json:"supports_image_input"`
-	Candidates         []CandidateView `json:"candidates"`
-	CreatedAt          time.Time       `json:"created_at"`
+	SupportsImageInput *bool `json:"supports_image_input"`
+	// OutputModalities is what the model produces, in the gateway's modality
+	// vocabulary ("text", "image"). Drives which endpoints the model answers:
+	// a request whose endpoint serves a modality the row does not declare is
+	// refused before any candidate is walked.
+	OutputModalities []string        `json:"output_modalities"`
+	Candidates       []CandidateView `json:"candidates"`
+	CreatedAt        time.Time       `json:"created_at"`
 }
 
 // Why a candidate cannot be routed to. Each value names a different repair, and
@@ -230,7 +241,8 @@ func buildCandidateView(c model.ModelCandidate, providerName string, blockedBy s
 	return CandidateView{
 		ID: c.ID, ProviderID: c.ProviderID, ProviderName: providerName, ProviderModelName: c.ProviderModelName,
 		InputPrice: c.InputPrice, OutputPrice: c.OutputPrice, CacheWritePrice: c.CacheWritePrice, CacheReadPrice: c.CacheReadPrice,
-		MaxOutput: c.MaxOutput, SupportsStreaming: c.SupportsStreaming, SupportsFunctionCalling: c.SupportsFunctionCalling,
+		MaxOutput: c.MaxOutput, BillingMode: model.NormalizeBillingMode(c.BillingMode), ImagePricingTiers: model.ParseImagePricingTiers(c.ImagePricingTiers),
+		SupportsStreaming: c.SupportsStreaming, SupportsFunctionCalling: c.SupportsFunctionCalling,
 		ManagementStatus: c.ManagementStatus, SortOrder: c.SortOrder, VerificationStatus: c.VerificationStatus,
 		Routable:           blockedBy == "",
 		BlockedBy:          blockedBy,
@@ -248,8 +260,9 @@ func (s *ModelService) toModelView(m model.Model, candidates []model.ModelCandid
 	views := s.buildCandidateViews(candidates, keysByProvider)
 	return ModelView{
 		ID: m.ID, Name: m.Name, ManagementStatus: m.ManagementStatus, SupportsImageInput: m.SupportsImageInput,
-		SchedulingMode: m.SchedulingMode.Normalized(),
-		RunningStatus:  computeModelRunningStatus(m.SchedulingMode, views), Candidates: views, CreatedAt: m.CreatedAt,
+		OutputModalities: m.OutputModalityList(),
+		SchedulingMode:   m.SchedulingMode.Normalized(),
+		RunningStatus:    computeModelRunningStatus(m.SchedulingMode, views), Candidates: views, CreatedAt: m.CreatedAt,
 	}
 }
 
@@ -367,6 +380,9 @@ type CreateModelInput struct {
 	// SchedulingMode is optional: the empty value means the default
 	// (failover). Any other value must be one of the two modes.
 	SchedulingMode model.SchedulingMode
+	// OutputModalities is optional: an empty list creates the model as
+	// text-only, which is what every model without a declaration is.
+	OutputModalities []string
 }
 
 func isValidModelName(name string) bool {
@@ -387,6 +403,22 @@ func resolveSchedulingMode(mode model.SchedulingMode) (model.SchedulingMode, err
 	return mode, nil
 }
 
+// resolveOutputModalities validates a creation-submitted declaration and
+// maps the empty list onto the text-only default: a create request that
+// never mentions the field gets a text model, same as every row that
+// predates the column. Updates do NOT share this mapping — there a present
+// empty list is a rejection, not a request for the default.
+func resolveOutputModalities(list []string) (string, error) {
+	if len(list) == 0 {
+		return model.DefaultOutputModalitiesJSON, nil
+	}
+	out, err := model.CanonicalOutputModalities(list)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errcode.ErrModelOutputModalityInvalid, err)
+	}
+	return out, nil
+}
+
 func (s *ModelService) CreateModel(input CreateModelInput, now time.Time) (*ModelView, error) {
 	if !isValidModelName(input.Name) {
 		return nil, fmt.Errorf("%w: model name must be slash-separated segments of letters, digits, dots, hyphens, and underscores", errcode.ErrModelNameTaken)
@@ -395,12 +427,16 @@ func (s *ModelService) CreateModel(input CreateModelInput, now time.Time) (*Mode
 	if err != nil {
 		return nil, err
 	}
+	outputModalities, err := resolveOutputModalities(input.OutputModalities)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := repository.FindModelByName(s.db, input.Name); err == nil {
 		return nil, errcode.ErrModelNameTaken
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
-	m := &model.Model{Name: input.Name, ManagementStatus: model.ModelStatusEnabled, SchedulingMode: schedulingMode, CreatedAt: now, UpdatedAt: now}
+	m := &model.Model{Name: input.Name, ManagementStatus: model.ModelStatusEnabled, SchedulingMode: schedulingMode, OutputModalities: outputModalities, CreatedAt: now, UpdatedAt: now}
 	if err := repository.CreateModel(s.db, m); err != nil {
 		if repository.IsUniqueViolation(err) {
 			return nil, errcode.ErrModelNameTaken
@@ -429,12 +465,14 @@ type BatchCreateModelsResult struct {
 }
 
 // CreateModelsBatchInput is CreateModelInput's batch sibling. SchedulingMode
-// applies to every created row (empty = the failover default) — the batch
-// endpoint is the create dialog's preset quick-add, and a mode chosen there
-// is a statement about the whole submission, not one name.
+// and OutputModalities apply to every created row (empty mode = the failover
+// default, empty modalities = text-only) — the batch endpoint is the create
+// dialog's preset quick-add, and a choice made there is a statement about the
+// whole submission, not one name.
 type CreateModelsBatchInput struct {
-	Names          []string
-	SchedulingMode model.SchedulingMode
+	Names            []string
+	SchedulingMode   model.SchedulingMode
+	OutputModalities []string
 }
 
 // CreateModelsBatch creates each requested name best-effort: invalid names and
@@ -453,6 +491,13 @@ func (s *ModelService) CreateModelsBatch(in CreateModelsBatchInput, now time.Tim
 	if err != nil {
 		return nil, err
 	}
+	// The declaration is batch-level, so a bad list rejects the whole request
+	// — the same treatment the single create applies — rather than skipping
+	// names for a reason that is not about any one name.
+	outputModalities, err := resolveOutputModalities(in.OutputModalities)
+	if err != nil {
+		return nil, err
+	}
 	result := &BatchCreateModelsResult{Created: []ModelView{}, Skipped: []BatchSkippedModel{}}
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		for _, name := range in.Names {
@@ -466,7 +511,7 @@ func (s *ModelService) CreateModelsBatch(in CreateModelsBatchInput, now time.Tim
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
-			m := &model.Model{Name: name, ManagementStatus: model.ModelStatusEnabled, SchedulingMode: resolvedMode, CreatedAt: now, UpdatedAt: now}
+			m := &model.Model{Name: name, ManagementStatus: model.ModelStatusEnabled, SchedulingMode: resolvedMode, OutputModalities: outputModalities, CreatedAt: now, UpdatedAt: now}
 			if err := repository.CreateModel(tx, m); err != nil {
 				// A unique violation here means a concurrent request claimed
 				// the name between the lookup above and this insert; roll the
@@ -498,6 +543,11 @@ type CreateCandidateInput struct {
 	CacheReadPrice    *float64
 	MaxOutput         int
 	ManagementStatus  int // requested target status; only ==Enabled triggers the server-side retest
+	// BillingMode and ImagePricingTiers say what settlement prices this
+	// candidate in and, for image mode, the per-image table. Both optional:
+	// the create default is the token mode every candidate had before.
+	BillingMode       string
+	ImagePricingTiers *model.ImagePricingTiers
 }
 
 // Where a suggested price came from; empty ("") means nothing matched.
@@ -724,10 +774,22 @@ type TestAndCreateResult struct {
 // misleading "not supported" for a mapping that is simply misconfigured. Once
 // the fundamentals hold the remaining two are independent, so they run together
 // to keep the admin's wait to two round trips rather than three.
-func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, providerModelName string) (CandidateTestReport, error) {
+func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, providerModelName string, imageModel bool) (CandidateTestReport, error) {
 	var report CandidateTestReport
 
-	basic, err := s.client.TestChatCompletion(ctx, proto, baseURL, apiKey, providerModelName)
+	// An image-only model is probed the way traffic reaches it: through the
+	// images endpoint. A chat probe against one answers nothing the mapping
+	// needs — it would fail on a working provider and never let the candidate
+	// verify — and its capability probes (streaming, tool calls) describe
+	// behaviours an image model does not carry, so they are skipped rather
+	// than recorded as absent.
+	var basic providerclient.TestResult
+	var err error
+	if imageModel {
+		basic, err = s.client.TestImageGeneration(ctx, baseURL, apiKey, providerModelName)
+	} else {
+		basic, err = s.client.TestChatCompletion(ctx, proto, baseURL, apiKey, providerModelName)
+	}
 	if err != nil {
 		return report, err
 	}
@@ -738,6 +800,10 @@ func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.P
 		report.Basic.verificationStatus = &status
 	}
 	if !basicPassed {
+		return report, nil
+	}
+
+	if imageModel {
 		return report, nil
 	}
 
@@ -809,9 +875,23 @@ func toProbeCommit(report CandidateTestReport) repository.CandidateProbeCommit {
 	return commit
 }
 
+// candidateModelID resolves a candidate row to its parent model's id. A
+// missing row answers zero, which the probe path reads as "no modality
+// declared" — the chat probe — rather than failing a retest over metadata
+// it cannot consult.
+func (s *ModelService) candidateModelID(candidateID uint) uint {
+	c, err := repository.FindModelCandidateByID(s.db, candidateID)
+	if err != nil {
+		return 0
+	}
+	return c.ModelID
+}
+
 // probeCandidateMapping resolves the provider, its highest-priority usable key
-// and the effective upstream model name, then probes the mapping.
-func (s *ModelService) probeCandidateMapping(ctx context.Context, providerID uint, providerModelName string) (CandidateTestReport, error) {
+// and the effective upstream model name, then probes the mapping. modelID
+// names the parent model row, which is where the modality — and therefore
+// which probe to run — is declared.
+func (s *ModelService) probeCandidateMapping(ctx context.Context, modelID, providerID uint, providerModelName string) (CandidateTestReport, error) {
 	provider, err := repository.FindProviderByID(s.db, providerID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -827,7 +907,11 @@ func (s *ModelService) probeCandidateMapping(ctx context.Context, providerID uin
 	if err != nil {
 		return CandidateTestReport{}, err
 	}
-	return s.runCandidateProbes(ctx, providerproto.TypeOf(provider.ProviderType), provider.BaseURL, plaintext, providerModelName)
+	imageModel := false
+	if m, err := repository.FindModelByID(s.db, modelID); err == nil {
+		imageModel = m.OutputImageExclusive()
+	}
+	return s.runCandidateProbes(ctx, providerproto.TypeOf(provider.ProviderType), provider.BaseURL, plaintext, providerModelName, imageModel)
 }
 
 // TestAndCreateCandidate probes a mapping and only then decides whether to
@@ -854,7 +938,7 @@ func (s *ModelService) TestAndCreateCandidate(ctx context.Context, modelID uint,
 
 	requestedEnable := input.ManagementStatus == model.ModelCandidateStatusEnabled
 
-	report, err := s.probeCandidateMapping(ctx, input.ProviderID, providerModelName)
+	report, err := s.probeCandidateMapping(ctx, modelID, input.ProviderID, providerModelName)
 	if err != nil {
 		// The probe could not run at all — no verified key on the provider yet, or
 		// the provider vanished. Asking to enable cannot be honoured, so the
@@ -973,6 +1057,32 @@ func (s *ModelService) insertCandidateWithSortOrder(candidate *model.ModelCandid
 	return lastErr
 }
 
+// resolveBillingDeclaration validates a candidate's billing declaration
+// and returns its stored form. An empty mode is the token default; image
+// mode must carry a table that prices (validated, then serialized), because
+// an image-mode candidate without a table prices nothing and the write path
+// is where that mistake should stop.
+func resolveBillingDeclaration(mode string, tiers *model.ImagePricingTiers) (string, string, error) {
+	if mode == "" {
+		mode = model.BillingModeToken
+	}
+	if !slices.Contains(model.ValidBillingModes, mode) {
+		return "", "", fmt.Errorf("%w: unknown billing mode %q", errcode.ErrModelBillingInvalid, mode)
+	}
+	tiersJSON := ""
+	if mode == model.BillingModeImage {
+		if tiers == nil {
+			return "", "", fmt.Errorf("%w: image billing mode needs a pricing table", errcode.ErrModelBillingInvalid)
+		}
+		out, err := model.MarshalImagePricingTiers(tiers)
+		if err != nil {
+			return "", "", fmt.Errorf("%w: %v", errcode.ErrModelBillingInvalid, err)
+		}
+		tiersJSON = out
+	}
+	return mode, tiersJSON, nil
+}
+
 func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, input CreateCandidateInput, now time.Time) (*CandidateView, error) {
 	m, err := repository.FindModelByID(s.db, modelID)
 	if err != nil {
@@ -987,10 +1097,15 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 	if providerModelName == "" {
 		providerModelName = m.Name
 	}
+	billingMode, tiersJSON, err := resolveBillingDeclaration(input.BillingMode, input.ImagePricingTiers)
+	if err != nil {
+		return nil, err
+	}
 	candidate := &model.ModelCandidate{
 		ModelID: modelID, ProviderID: input.ProviderID, ProviderModelName: providerModelName,
 		InputPrice: input.InputPrice, OutputPrice: input.OutputPrice,
 		CacheWritePrice: input.CacheWritePrice, CacheReadPrice: input.CacheReadPrice, MaxOutput: input.MaxOutput,
+		BillingMode: billingMode, ImagePricingTiers: tiersJSON,
 		ManagementStatus:   model.ModelCandidateStatusDisabled,
 		VerificationStatus: model.ModelVerificationStatusUntested,
 		CreatedAt:          now, UpdatedAt: now, PriceUpdatedAt: now,
@@ -1258,7 +1373,7 @@ func (s *ModelService) probeAndCommitExistingCandidate(
 	expectedManagementStatus int, expectedProbeRunID, probeRunID string, enableIfPassed, enableWhenArmed bool,
 	expectedRowUpdatedAt time.Time, now time.Time,
 ) (report CandidateTestReport, applied, ran bool, err error) {
-	report, err = s.probeCandidateMapping(ctx, providerID, providerModelName)
+	report, err = s.probeCandidateMapping(ctx, s.candidateModelID(candidateID), providerID, providerModelName)
 	if err != nil {
 		return report, false, false, err
 	}
@@ -1330,6 +1445,12 @@ type UpdateCandidateInput struct {
 	// Asking to enable a candidate that is currently disabled triggers a
 	// re-probe, because enabling asserts the mapping works right now.
 	ManagementStatus *int
+	// BillingMode is the billing declaration, nil to leave it untouched.
+	// ImagePricingTiers is the per-image table; set-ness follows the
+	// pointer, so an update can clear the table by submitting an empty one
+	// alongside image mode only at its own risk of pricing nothing.
+	BillingMode       *string
+	ImagePricingTiers *model.ImagePricingTiers
 }
 
 // UpdateCandidateResult carries the updated candidate plus the probe run, if
@@ -1406,6 +1527,30 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 	if input.ManagementStatus != nil {
 		targetEnabled = *input.ManagementStatus == model.ModelCandidateStatusEnabled
 	}
+	// The billing declaration, resolved against what is stored when the edit
+	// leaves part of it alone: a PATCH that switches only the mode keeps the
+	// table, and one that replaces only the table keeps the mode. A change to
+	// either half is a price change for the clock below — the auto-suggest
+	// ranking is about "who last made a pricing claim", and a tier table is
+	// one.
+	billingMode := candidate.BillingMode
+	imageTiersJSON := candidate.ImagePricingTiers
+	if input.BillingMode != nil || input.ImagePricingTiers != nil {
+		mode := candidate.BillingMode
+		if input.BillingMode != nil {
+			mode = *input.BillingMode
+		}
+		tiers := model.ParseImagePricingTiers(candidate.ImagePricingTiers)
+		if input.ImagePricingTiers != nil {
+			tiers = input.ImagePricingTiers
+		}
+		resolvedMode, resolvedTiers, err := resolveBillingDeclaration(mode, tiers)
+		if err != nil {
+			return nil, err
+		}
+		priceChanged = priceChanged || resolvedMode != candidate.BillingMode || resolvedTiers != candidate.ImagePricingTiers
+		billingMode, imageTiersJSON = resolvedMode, resolvedTiers
+	}
 
 	// One transaction for the status instruction and the field update, so a
 	// failure on either write rolls back both — the caller's error response
@@ -1428,8 +1573,14 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 				return err
 			}
 		}
-		return repository.UpdateModelCandidate(tx, id, providerModelName, input.InputPrice, input.OutputPrice,
-			input.CacheWritePrice, input.CacheReadPrice, input.MaxOutput, targetChanged, priceChanged, now)
+		if err := repository.UpdateModelCandidate(tx, id, providerModelName, input.InputPrice, input.OutputPrice,
+			input.CacheWritePrice, input.CacheReadPrice, input.MaxOutput, targetChanged, priceChanged, now); err != nil {
+			return err
+		}
+		if billingMode != candidate.BillingMode || imageTiersJSON != candidate.ImagePricingTiers {
+			return repository.UpdateModelCandidateBilling(tx, id, billingMode, imageTiersJSON, now)
+		}
+		return nil
 	}); err != nil {
 		return nil, err
 	}
@@ -1631,7 +1782,7 @@ func (s *ModelService) RetestModelCandidate(ctx context.Context, id uint, now ti
 		}
 		return nil, false, err
 	}
-	report, err := s.probeCandidateMapping(ctx, candidate.ProviderID, candidate.ProviderModelName)
+	report, err := s.probeCandidateMapping(ctx, candidate.ModelID, candidate.ProviderID, candidate.ProviderModelName)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1736,6 +1887,10 @@ type UpdateModelInput struct {
 	ImageInputSet  bool
 	ImageInput     *bool
 	SchedulingMode *model.SchedulingMode
+	// OutputModalitiesSet marks the declaration as submitted; an update
+	// that omits it leaves the stored declaration alone.
+	OutputModalitiesSet bool
+	OutputModalities    []string
 }
 
 // UpdateModel saves the model's name and every submitted optional field in
@@ -1756,6 +1911,17 @@ func (s *ModelService) UpdateModel(id uint, in UpdateModelInput, now time.Time) 
 	if in.SchedulingMode != nil && !in.SchedulingMode.Valid() {
 		return nil, errcode.ErrModelSchedulingModeInvalid
 	}
+	// An update that submits the declaration submits a whole list — the
+	// empty list is a rejection rather than the create path's text default,
+	// so a PATCH cannot silently reset a model's modality by sending [].
+	outputModalities := ""
+	if in.OutputModalitiesSet {
+		out, err := model.CanonicalOutputModalities(in.OutputModalities)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errcode.ErrModelOutputModalityInvalid, err)
+		}
+		outputModalities = out
+	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		m, err := repository.FindModelByID(tx, id)
 		if err != nil {
@@ -1767,7 +1933,8 @@ func (s *ModelService) UpdateModel(id uint, in UpdateModelInput, now time.Time) 
 		update := repository.ModelUpdate{
 			Name: in.Name, Status: m.ManagementStatus,
 			ImageInputSet: in.ImageInputSet, ImageInput: in.ImageInput,
-			SchedulingMode: in.SchedulingMode,
+			SchedulingMode:      in.SchedulingMode,
+			OutputModalitiesSet: in.OutputModalitiesSet, OutputModalities: outputModalities,
 		}
 		if err := repository.UpdateModel(tx, id, update, now); err != nil {
 			return err

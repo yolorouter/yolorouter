@@ -126,7 +126,12 @@ type RequestLogDetail struct {
 	SettledCacheWritePrice *float64 `json:"settled_cache_write_price"`
 	SettledCacheReadPrice  *float64 `json:"settled_cache_read_price"`
 	FailReason             *string  `json:"fail_reason"`
-	Attempts               int      `json:"attempts"`
+	// ImagePricingSnapshot is the per-image settlement's own account of
+	// itself (mode, request axes, requested vs delivered count, unit price)
+	// as JSON, empty on every row not billed per image. Rendered parsed, not
+	// raw: it is an explanation, not a payload.
+	ImagePricingSnapshot string `json:"image_pricing_snapshot"`
+	Attempts             int    `json:"attempts"`
 	// Same split the list rows carry — the detail must not narrow the type
 	// contract the shared frontend row shape promises.
 	KeySwitches          int                     `json:"key_switches"`
@@ -372,6 +377,7 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 		SettledOutputPrice:     row.SettledOutputPrice,
 		SettledCacheWritePrice: row.SettledCacheWritePrice,
 		SettledCacheReadPrice:  row.SettledCacheReadPrice,
+		ImagePricingSnapshot:   row.ImagePricingSnapshot,
 		FailReason:             row.FailReason,
 		Attempts:               row.Attempts,
 		KeySwitches:            keySwitches,

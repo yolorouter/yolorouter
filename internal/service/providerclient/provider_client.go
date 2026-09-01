@@ -24,6 +24,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/protocols"
+	"github.com/yolorouter/yolorouter/internal/protocols/images"
 	"github.com/yolorouter/yolorouter/internal/protocols/responses"
 	"github.com/yolorouter/yolorouter/internal/service/safehttp"
 	"github.com/yolorouter/yolorouter/pkg/logger"
@@ -111,6 +112,13 @@ type ProviderClient interface {
 	// TestFunctionCalling validates that baseURL+model can return a
 	// structurally valid tool_calls response to a minimal tool definition.
 	TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (TestResult, error)
+	// TestImageGeneration validates that baseURL+model can generate an
+	// image: a minimal generation request. Rides the OpenAI wire family
+	// (bearer credential, JSON body) regardless of the provider's chat
+	// protocol, with one dialect exception: a DashScope host is asked
+	// through its native multimodal-generation endpoint, the same way the
+	// gateway's image delivery reaches it.
+	TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
 	// ListModels fetches the upstream model catalogue for a credential
 	// (openai/anthropic/responses: GET /v1/models; gemini: GET /v1beta/models),
 	// used to populate the admin UI's test-model picker before a provider row
@@ -305,6 +313,16 @@ func (c *HTTPProviderClient) runTestRequest(
 	ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string, reqPayload interface{},
 	handle func(resp *http.Response, durationMs int64) (TestResult, error),
 ) (TestResult, error) {
+	return c.runTestRequestAt(ctx, providerTestURL(baseURL, proto, model), proto, apiKey, model, reqPayload, handle)
+}
+
+// runTestRequestAt is runTestRequest against a caller-stated URL, for the
+// probes whose endpoint is not their protocol's chat path (the images probe
+// rides the OpenAI wire family but not its chat route).
+func (c *HTTPProviderClient) runTestRequestAt(
+	ctx context.Context, url string, proto protocols.ProtocolID, apiKey, model string, reqPayload interface{},
+	handle func(resp *http.Response, durationMs int64) (TestResult, error),
+) (TestResult, error) {
 	if !c.limiter.TryAcquire() {
 		return TestResult{}, fmt.Errorf("too many concurrent provider test calls in flight")
 	}
@@ -318,7 +336,6 @@ func (c *HTTPProviderClient) runTestRequest(
 		return TestResult{}, fmt.Errorf("marshal request body: %w", err)
 	}
 
-	url := providerTestURL(baseURL, proto, model)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
 		return TestResult{}, fmt.Errorf("build request: %w", err)
@@ -574,6 +591,118 @@ func (c *HTTPProviderClient) TestChatCompletion(ctx context.Context, proto proto
 		}
 		return classifyResponse(proto, resp, body, model, duration), nil
 	})
+}
+
+// imageProbePrompt is the minimal generation prompt every image probe sends:
+// cheap to generate, no size (so a dialect's default spelling cannot 400 the
+// probe before the mapping is judged).
+const imageProbePrompt = "a small red square on a white background"
+
+// isDashScopeImageBase is images.IsDashScopeBase, overridable in tests: a
+// local httptest server can never carry the real hostname, and the native
+// branch below (origin-joined URL, native body, business-error
+// classification) still needs exercising against a live HTTP stub.
+var isDashScopeImageBase = images.IsDashScopeBase
+
+// TestImageGeneration probes a mapping the way an image request actually
+// reaches the provider: the images endpoint on the provider's base, a
+// minimal prompt. A DashScope-compatible base is the exception the
+// gateway's image delivery already knows — those hosts serve image models
+// through the native multimodal-generation endpoint, reachable from the
+// provider's origin rather than its versioned base — so the probe asks the
+// same way; asking the OpenAI-shaped images path there would measure a 404
+// no routed request would ever hit.
+func (c *HTTPProviderClient) TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	if isDashScopeImageBase(baseURL) {
+		return c.testDashScopeImageGeneration(ctx, baseURL, apiKey, model)
+	}
+	payload := map[string]interface{}{"model": model, "prompt": imageProbePrompt, "n": 1}
+	imagesURL := protocols.JoinUpstreamURL(baseURL, "/v1/images/generations", protocols.ProtocolOpenAI)
+	return c.runTestRequestAt(ctx, imagesURL, protocols.ProtocolOpenAI, apiKey, model, payload,
+		func(resp *http.Response, duration int64) (TestResult, error) {
+			body, ok := readBoundedBody(resp)
+			if !ok {
+				return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
+			}
+			if resp.StatusCode == http.StatusOK {
+				// A 200 is judged ONLY by the images shape. The generic
+				// classifier's 200 validator recognizes chat bodies, so a
+				// chat-shaped answer routed here (an images path that is
+				// really serving chat) would otherwise certify a mapping
+				// that cannot deliver a single image.
+				if res, recognized := classifyImageSuccessBody(body, duration); recognized {
+					return res, nil
+				}
+				return TestResult{
+					Outcome:    TestUpstreamError,
+					DurationMs: duration,
+					Detail:     "HTTP 200: response carries no data array",
+				}, nil
+			}
+			return classifyResponse(protocols.ProtocolOpenAI, resp, body, model, duration), nil
+		})
+}
+
+// testDashScopeImageGeneration runs the probe against the native dialect:
+// the body is the native multimodal-generation encoding, and a 200 answer is
+// judged ONLY by that dialect's rules — a delivered image passes, a
+// 200-carried business code fails with the upstream's own message, and any
+// other 200 (unparseable, or no image in it) is an upstream error with the
+// decode failure said so. Falling to the shared classifier instead would
+// hand the 200 to its chat-body validator, certifying a chat-shaped answer
+// as an image mapping. Non-200 statuses do use the shared classification
+// (its status mapping is protocol-neutral and its error-detail fallback
+// keeps a snippet of the dashscope error body).
+func (c *HTTPProviderClient) testDashScopeImageGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	native, err := images.EncodeRequest(imageProbePrompt, model, 1, "")
+	if err != nil {
+		return TestResult{}, fmt.Errorf("encode dashscope image probe: %w", err)
+	}
+	return c.runTestRequestAt(ctx, images.UpstreamURL(baseURL), protocols.ProtocolOpenAI, apiKey, model, json.RawMessage(native),
+		func(resp *http.Response, duration int64) (TestResult, error) {
+			body, ok := readBoundedBody(resp)
+			if !ok {
+				return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
+			}
+			if resp.StatusCode == http.StatusOK {
+				_, _, decodeErr := images.DecodeResponse(body)
+				if decodeErr == nil {
+					return TestResult{Outcome: TestSuccess, DurationMs: duration}, nil
+				}
+				var business *images.BusinessError
+				if errors.As(decodeErr, &business) {
+					return TestResult{
+						Outcome:    TestUpstreamError,
+						DurationMs: duration,
+						Detail:     fmt.Sprintf("HTTP 200: dashscope error %s: %s", business.Code, business.Message),
+					}, nil
+				}
+				return TestResult{
+					Outcome:    TestUpstreamError,
+					DurationMs: duration,
+					Detail:     fmt.Sprintf("HTTP 200: %v", decodeErr),
+				}, nil
+			}
+			return classifyResponse(protocols.ProtocolOpenAI, resp, body, model, duration), nil
+		})
+}
+
+// classifyImageSuccessBody judges a 200 images answer. A data array — even
+// an empty one — proves the endpoint recognized the request; the gateway's
+// own delivery rules handle an empty answer at traffic time, and a mapping
+// probe only owes the verdict that the mapping works. A 200 whose body
+// parses as JSON but carries no data array (a chat-shaped answer, an
+// unrelated document) is NOT an images answer — the pointer stays nil and
+// the caller falls to the generic classifier instead of certifying a
+// mapping that cannot deliver.
+func classifyImageSuccessBody(body []byte, durationMs int64) (TestResult, bool) {
+	var parsed struct {
+		Data *[]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Data == nil {
+		return TestResult{}, false
+	}
+	return TestResult{Outcome: TestSuccess, DurationMs: durationMs}, true
 }
 
 // streamChunk mirrors the minimal OpenAI streaming chunk shape this test

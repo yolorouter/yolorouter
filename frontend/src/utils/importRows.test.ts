@@ -105,18 +105,48 @@ describe('chunkByCap', () => {
 describe('toImportItems', () => {
   it('submits checked new rows and checked unfinished rows, defaulting blank prices to zero', () => {
     const rows: ImportRow[] = [
-      { name: 'a', added: false, unfinished: false, checked: true, priceSource: 'seed', inputPrice: 2, outputPrice: 8, cacheWritePrice: 0.5, cacheReadPrice: null },
-      { name: 'b', added: false, unfinished: false, checked: true, priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
-      { name: 'c', added: false, unfinished: false, checked: false, priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
-      { name: 'd', added: true, unfinished: false, checked: false, priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+      { name: 'a', added: false, unfinished: false, checked: true, modality: 'text', priceSource: 'seed', inputPrice: 2, outputPrice: 8, cacheWritePrice: 0.5, cacheReadPrice: null },
+      { name: 'b', added: false, unfinished: false, checked: true, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+      { name: 'c', added: false, unfinished: false, checked: false, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+      { name: 'd', added: true, unfinished: false, checked: false, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
       // A checked unfinished mapping goes in the payload: the server skips it
       // as existing but hands back its candidate id for requeueing.
-      { name: 'e', added: true, unfinished: true, checked: true, priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+      { name: 'e', added: true, unfinished: true, checked: true, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
     ]
     expect(toImportItems(rows)).toEqual([
-      { provider_model_name: 'a', input_price: 2, output_price: 8, cache_write_price: 0.5, cache_read_price: null },
-      { provider_model_name: 'b', input_price: 0, output_price: 0, cache_write_price: null, cache_read_price: null },
+      { provider_model_name: 'a', output_modalities: ['text'], input_price: 2, output_price: 8, cache_write_price: 0.5, cache_read_price: null },
+      { provider_model_name: 'b', output_modalities: ['text'], input_price: 0, output_price: 0, cache_write_price: null, cache_read_price: null },
+      // An added row carries NO declaration: the server reads a present
+      // declaration on an existing model as a claim that must match the
+      // stored one, and the requeue path must not submit a claim (the
+      // modality select is inert on added rows).
       { provider_model_name: 'e', input_price: 0, output_price: 0, cache_write_price: null, cache_read_price: null },
     ])
+  })
+})
+
+describe('import modalities', () => {
+  it('preselects image for known image-output families and text otherwise', () => {
+    const rows = buildImportRows(['wan2.7-image-pro', 'qwen-vl-max', 'deepseek-v4'], [], {})
+    expect(rows.map((r) => r.modality)).toEqual(['image', 'text', 'text'])
+  })
+
+  it('matches vendor-namespaced catalogue ids on their last segment', () => {
+    const rows = buildImportRows(['ByteDance/Seedream-4.0', 'black-forest-labs/FLUX.1-schnell', 'Qwen/Qwen3-235B'], [], {})
+    expect(rows.map((r) => r.modality)).toEqual(['image', 'image', 'text'])
+  })
+
+  it('submits the row modality as the per-item declaration', () => {
+    const rows: ImportRow[] = [
+      { name: 'img', added: false, unfinished: false, checked: true, modality: 'image', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+      { name: 'both', added: false, unfinished: false, checked: true, modality: 'both', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+      { name: 'txt', added: false, unfinished: false, checked: true, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+    ]
+    expect(toImportItems(rows).map((i) => i.output_modalities)).toEqual([['image'], ['text', 'image'], ['text']])
+  })
+
+  it('keeps added rows on text: their modality is server-owned', () => {
+    const rows = buildImportRows(['wan2.7-image'], [mapped('wan2.7-image', 0)], {})
+    expect(rows[0].modality).toBe('text')
   })
 })

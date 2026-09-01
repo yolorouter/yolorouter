@@ -8,12 +8,17 @@ import (
 )
 
 type importModelItemRequest struct {
-	ProviderModelName string   `json:"provider_model_name" binding:"required,max=200"`
-	InputPrice        float64  `json:"input_price" binding:"min=0"`
-	OutputPrice       float64  `json:"output_price" binding:"min=0"`
-	CacheWritePrice   *float64 `json:"cache_write_price" binding:"omitempty,min=0"`
-	CacheReadPrice    *float64 `json:"cache_read_price" binding:"omitempty,min=0"`
-	MaxOutput         int      `json:"max_output" binding:"min=0"`
+	ProviderModelName string `json:"provider_model_name" binding:"required,max=200"`
+	// The binding only guards transport shape here; an unknown id or an
+	// over-long list must reach the service, which skips just that row —
+	// the import's per-item best-effort contract. (The create endpoints are
+	// the opposite: a bad list rejects the whole request there.)
+	OutputModalities []string `json:"output_modalities" binding:"omitempty,max=32,dive,max=32"`
+	InputPrice       float64  `json:"input_price" binding:"min=0"`
+	OutputPrice      float64  `json:"output_price" binding:"min=0"`
+	CacheWritePrice  *float64 `json:"cache_write_price" binding:"omitempty,min=0"`
+	CacheReadPrice   *float64 `json:"cache_read_price" binding:"omitempty,min=0"`
+	MaxOutput        int      `json:"max_output" binding:"min=0"`
 }
 
 // The cap only guards against pathological payloads. It must comfortably hold
@@ -48,6 +53,7 @@ func PostProviderModelsImport(svc *modeladmin.ModelService, queue *modeladmin.Pr
 		for _, it := range req.Items {
 			items = append(items, modeladmin.ImportModelItem{
 				ProviderModelName: it.ProviderModelName,
+				OutputModalities:  it.OutputModalities,
 				InputPrice:        it.InputPrice, OutputPrice: it.OutputPrice,
 				CacheWritePrice: it.CacheWritePrice, CacheReadPrice: it.CacheReadPrice,
 				MaxOutput: it.MaxOutput,

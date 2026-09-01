@@ -1182,6 +1182,10 @@ type blockingClient struct {
 	release    chan struct{}
 }
 
+func (b *blockingClient) TestImageGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
+}
+
 func (b *blockingClient) TestChatCompletion(ctx context.Context, _ protocols.ProtocolID, _, _, _ string) (providerclient.TestResult, error) {
 	b.mu.Lock()
 	b.cur++
@@ -1357,6 +1361,10 @@ func TestProbeQueueRerunsIdReEnqueuedWhileProbing(t *testing.T) {
 type stubbornClient struct {
 	started chan struct{}
 	release chan struct{}
+}
+
+func (b *stubbornClient) TestImageGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
 }
 
 func (b *stubbornClient) TestChatCompletion(context.Context, protocols.ProtocolID, string, string, string) (providerclient.TestResult, error) {

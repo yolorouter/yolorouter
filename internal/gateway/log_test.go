@@ -270,7 +270,7 @@ func TestFinalizeWritesCompressColumns(t *testing.T) {
 	rc.attempt.BeginCandidate(cand)
 	seedCompressionSaved(rc, 1500, "whitespace", "whitespace", "contractions")
 	rc.bodies.SetCompressedRequest([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
-	svc.finalize(rc, &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 50}, 200, "", time.Now())
+	svc.finalize(rc, &fact.UsageReported{Unit: fact.UnitToken, Prompt: 100, Completion: 50, Total: 150}, 200, "", time.Now())
 	svc.recordTerminal(rc)
 
 	row, err := repository.GetRequestLogByRequestID(db, "req-compress-1")
@@ -867,7 +867,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 			reqID := fmt.Sprintf("req-cacheconv-%d", i)
 			rc := &Exchange{requestID: reqID, apiKeyID: apiKey.ID}
 			rc.attempt.BeginCandidate(cand)
-			svc.finalize(rc, tc.usage, 200, "", time.Now())
+			svc.finalize(rc, usageReportOf(tc.usage), 200, "", time.Now())
 			svc.recordTerminal(rc)
 
 			row, err := repository.GetRequestLogByRequestID(db, reqID)
@@ -920,7 +920,7 @@ func TestReportUsageCarriesEveryCount(t *testing.T) {
 		ReasoningTokens:  23,
 		WebSearchCount:   29,
 	}
-	svc.reportUsage(rc, usage, newExchangeSink(rc))
+	svc.reportUsage(rc, usageReportOf(usage), usage, newExchangeSink(rc))
 
 	var rep *fact.UsageReported
 	for _, e := range rc.timeline.All() {

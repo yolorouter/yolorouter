@@ -17,12 +17,19 @@ import (
 // mapping, "appended" added a mapping to a model that already existed, and
 // "skipped" stored nothing — Reason then tells why (BatchSkipReasonExists /
 // BatchSkipReasonInvalid, shared with CreateModelsBatch so clients group both
-// summaries the same way).
+// summaries the same way; BatchSkipReasonModalityMismatch is import-only).
 const (
 	ImportStatusCreated  = "created"
 	ImportStatusAppended = "appended"
 	ImportStatusSkipped  = "skipped"
 )
+
+// BatchSkipReasonModalityMismatch is import-only: the row declared output
+// modalities for a name whose model already exists with a different stored
+// declaration. The mapping is not stored — billing and probe selection both
+// follow the model row, so appending anyway would silently bill and probe
+// against the model the declaration contradicts.
+const BatchSkipReasonModalityMismatch = "modality_mismatch"
 
 type ImportModelItem struct {
 	ProviderModelName string
@@ -31,6 +38,16 @@ type ImportModelItem struct {
 	CacheWritePrice   *float64
 	CacheReadPrice    *float64
 	MaxOutput         int
+	// OutputModalities declares what the imported model produces. Optional:
+	// an empty list imports as text-only, the same default every model
+	// without a declaration gets. When the import CREATES the model the
+	// declaration is stored on it; when the model already exists, an
+	// explicit declaration must MATCH the stored one (a mismatch skips the
+	// row — the model edit is the only lever that changes a live model's
+	// pools, never a bulk import row), while an absent declaration follows
+	// whatever the model already says. An invalid list skips the row, the
+	// same best-effort treatment an invalid name gets.
+	OutputModalities []string
 }
 
 type ImportItemResult struct {
@@ -106,6 +123,7 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 	// in-batch duplicates and skip as existing (their ModelID is backfilled
 	// after the transaction resolves ids).
 	firstIndex := make(map[string]int, len(items))
+	resolvedModalities := make(map[string]resolvedModality, len(items))
 	names := make([]string, 0, len(items))
 	for i, item := range items {
 		name := strings.TrimSpace(item.ProviderModelName)
@@ -117,7 +135,26 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 			results[i] = ImportItemResult{Name: name, Status: ImportStatusSkipped, Reason: BatchSkipReasonExists}
 			continue
 		}
+		// The same validation the single-create path applies, but a bad
+		// declaration costs only its own row: the import is best-effort per
+		// item, so a typo'd modality skips like a typo'd name would. The
+		// validated LIST is kept, not its serialized form: the conflict
+		// comparison below is order-insensitive, and serialization would make
+		// an identical declaration in a different id order read as a conflict.
+		// An absent declaration resolves to the text-only default here; the
+		// conflict check below still tells "absent" apart from "declared"
+		// through the raw item, so the default never masquerades as a claim.
+		resolved := item.OutputModalities
+		if len(resolved) == 0 {
+			resolved = []string{model.OutputModalityText}
+		}
+		canonical, err := model.CanonicalOutputModalities(resolved)
+		if err != nil {
+			results[i] = ImportItemResult{Name: name, Status: ImportStatusSkipped, Reason: BatchSkipReasonInvalid}
+			continue
+		}
 		firstIndex[name] = i
+		resolvedModalities[name] = resolvedModality{declared: len(item.OutputModalities) > 0, list: resolved, canonical: canonical}
 		names = append(names, name)
 	}
 
@@ -137,7 +174,7 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 				if _, ok := modelsByName[name]; ok {
 					continue
 				}
-				newModels = append(newModels, &model.Model{Name: name, ManagementStatus: model.ModelStatusEnabled, SchedulingMode: model.ModelSchedulingModeFailover, CreatedAt: now, UpdatedAt: now})
+				newModels = append(newModels, &model.Model{Name: name, ManagementStatus: model.ModelStatusEnabled, SchedulingMode: model.ModelSchedulingModeFailover, OutputModalities: resolvedModalities[name].canonical, CreatedAt: now, UpdatedAt: now})
 			}
 			// A unique violation here means a concurrent request claimed a name
 			// between the preload and this insert; the whole batch rolls back
@@ -169,6 +206,22 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 			requeueIDs := make([]uint, 0)
 			for _, name := range names {
 				m := modelsByName[name]
+				// A contradicting declaration outranks every other skip reason
+				// for the row, on both the append and the exists branch: the
+				// row's understanding of the model is wrong, and reporting
+				// anything else (a routine "exists", or an appended mapping)
+				// would either hide that or store a mapping whose next probe
+				// runs against a modality the admin just disavowed. No requeue
+				// either — the probe would use the contradicted declaration.
+				// An absent declaration never conflicts: it follows the model
+				// row, which is what the requeue recovery path relies on.
+				if declaresConflict(m, resolvedModalities[name]) {
+					results[firstIndex[name]] = ImportItemResult{
+						Name: name, Status: ImportStatusSkipped,
+						Reason: BatchSkipReasonModalityMismatch, ModelID: m.ID,
+					}
+					continue
+				}
 				if existing, ok := mapped[m.ID]; ok {
 					skip := ImportItemResult{Name: name, Status: ImportStatusSkipped, Reason: BatchSkipReasonExists, ModelID: m.ID}
 					// An existing mapping still waiting on a verdict surfaces its
@@ -184,11 +237,27 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 					continue
 				}
 				item := items[firstIndex[name]]
+				// Billing mode follows the model row's stored declaration —
+				// for a created model that is the declaration this batch just
+				// resolved, for an existing one it is whatever the model
+				// already says, so a re-import of an image model derives
+				// per-image even when the row forgot to re-declare. A model
+				// that also serves text keeps token settlement: the mapping
+				// carries its chat traffic too, and per-image pricing applies
+				// to image requests alone. Image tiers stay empty — the import
+				// table carries per-M prices, not a quality-by-size table, so
+				// an imported image mapping starts as known-unpriced until an
+				// admin fills the tier editor.
+				billingMode := model.BillingModeToken
+				if m.OutputImageExclusive() {
+					billingMode = model.BillingModeImage
+				}
 				newCandidates = append(newCandidates, &model.ModelCandidate{
 					ModelID: m.ID, ProviderID: providerID, ProviderModelName: name,
 					InputPrice: item.InputPrice, OutputPrice: item.OutputPrice,
 					CacheWritePrice: item.CacheWritePrice, CacheReadPrice: item.CacheReadPrice,
 					MaxOutput:          item.MaxOutput,
+					BillingMode:        billingMode,
 					ManagementStatus:   model.ModelCandidateStatusDisabled,
 					VerificationStatus: model.ModelVerificationStatusUntested,
 					// The import's auto-enable promise, persisted so the queue
@@ -340,4 +409,51 @@ func (s *ModelService) SuggestCandidatePrices(providerID uint, names []string) (
 		result[name] = SuggestedPrice{}
 	}
 	return result, nil
+}
+
+// resolvedModality is one row's validated declaration in every form it is
+// consumed: the id list for the order-insensitive conflict comparison, the
+// canonical JSON for storage on a newly created model, and whether the row
+// declared anything at all — the absent-vs-default distinction the conflict
+// check keys on (an absent declaration follows the model row and never
+// conflicts; a defaulted one must not masquerade as a claim).
+type resolvedModality struct {
+	declared  bool
+	list      []string
+	canonical string
+}
+
+// declaresConflict reports whether an import row explicitly declares output
+// modalities that contradict what the named model's stored row already says.
+// Modality is model-global — it decides routing pools, billing mode, and
+// which probe verifies the mapping — so an agreeing declaration is redundant
+// (fine) while a contradicting one, honored silently, would bill and probe
+// against a model the row just disavowed. The model edit is the lever that
+// actually changes the pools; never a bulk import row.
+func declaresConflict(m *model.Model, rm resolvedModality) bool {
+	if !rm.declared {
+		return false
+	}
+	return !sameModalitySet(rm.list, m.OutputModalityList())
+}
+
+// sameModalitySet compares two modality lists as sets. The stored
+// declaration's id order is not guaranteed to match a freshly submitted
+// one — the write path canonicalizes content, not order — so both a
+// serialized and an element-wise comparison would flag an identical
+// declaration as a conflict.
+func sameModalitySet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]bool, len(a))
+	for _, id := range a {
+		seen[id] = true
+	}
+	for _, id := range b {
+		if !seen[id] {
+			return false
+		}
+	}
+	return true
 }

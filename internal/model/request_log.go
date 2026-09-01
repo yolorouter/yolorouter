@@ -70,6 +70,12 @@ type RequestLog struct {
 	// this column — the detail UI renders the placeholder for empty values.
 	RequestPath string `gorm:"column:request_path" json:"request_path"`
 	UpstreamURL string `gorm:"column:upstream_url" json:"upstream_url"`
+	// ImagePricingSnapshot is what a per-image settlement priced by: the
+	// billing mode, the request's quality/size, requested vs delivered
+	// count, and the unit price the tier table resolved to. Written from the
+	// same numbers the cost was computed from, so a billed row can always
+	// explain itself. Empty on every row not billed per image.
+	ImagePricingSnapshot string `gorm:"column:image_pricing_snapshot" json:"image_pricing_snapshot"`
 	// Source marks who initiated the request: "" = a normal caller request,
 	// "vision_fallback" = an image-description sub-call the gateway made on
 	// behalf of the request named by ParentRequestID. Sub-calls are separate

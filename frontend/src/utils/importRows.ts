@@ -1,22 +1,37 @@
 import { VERIFICATION_UNTESTED } from '../api/candidateStatus'
 import type { ImportModelItemInput, SuggestedPrice } from '../api/models'
+import { suggestsImageOutput } from './imageModelNames'
 
-// One row of the bulk-import dialog: an upstream model id plus its selection
-// and editable prices. Rows for models this provider already maps are "added";
-// among those, a mapping still waiting on a probe verdict is additionally
-// "unfinished" and stays selectable — re-submitting it is how probes lost to a
-// restart get requeued (the probe queue is not durable). A settled added row
-// can never be selected again.
+// One row of the bulk-import dialog: an upstream model id plus its selection,
+// editable prices, and the modality the row will import under. Rows for models
+// this provider already maps are "added"; among those, a mapping still waiting
+// on a probe verdict is additionally "unfinished" and stays selectable —
+// re-submitting it is how probes lost to a restart get requeued (the probe
+// queue is not durable). A settled added row can never be selected again.
 export interface ImportRow {
   name: string
   added: boolean
   unfinished: boolean
   checked: boolean
+  // The single-select form of the output-modalities declaration the row
+  // submits: 'both' is the ['text','image'] pair. Default 'text' — the same
+  // default every undeclared import gets server-side.
+  modality: ImportRowModality
   priceSource: SuggestedPrice['source']
   inputPrice: number | null
   outputPrice: number | null
   cacheWritePrice: number | null
   cacheReadPrice: number | null
+}
+
+export type ImportRowModality = 'text' | 'image' | 'both'
+
+// modalitiesFor maps the select's single value onto the declaration list the
+// request sends.
+export function modalitiesFor(modality: ImportRowModality): string[] {
+  if (modality === 'image') return ['image']
+  if (modality === 'both') return ['text', 'image']
+  return ['text']
 }
 
 // The dialog's hard length cap for catalog ids. Bulk import publishes the
@@ -57,7 +72,9 @@ export interface ExistingMapping {
 // — the smart default that selects mainstream models while leaving embedding /
 // deprecated entries unchecked. Unfinished added rows (mapping stored, verdict
 // still Untested) stay selectable for recovery but are NOT pre-checked: see
-// the note at their construction.
+// the note at their construction. A name the image-family heuristic recognizes
+// preselects the image modality — an override, not a verdict, and only a
+// starting point the admin can flip per row.
 export function buildImportRows(
   upstreamNames: string[],
   existing: ExistingMapping[],
@@ -77,7 +94,10 @@ export function buildImportRows(
       // untested mapping is not necessarily lost queue work — an admin may
       // have saved it disabled on purpose, and re-probing it auto-enables on
       // a pass. Checking one is the admin's explicit request to (re)probe.
-      rows.push({ name, added: true, unfinished, checked: false, priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null })
+      // Their modality stays 'text' because the declaration column is inert
+      // here — the server derives an existing model's billing from the model
+      // row it already has, never from the re-queued submission.
+      rows.push({ name, added: true, unfinished, checked: false, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null })
       continue
     }
     const suggestion = prices[name]
@@ -87,6 +107,7 @@ export function buildImportRows(
       added: false,
       unfinished: false,
       checked: hasPrice,
+      modality: suggestsImageOutput(name) ? 'image' : 'text',
       priceSource: hasPrice ? suggestion.source : '',
       inputPrice: hasPrice ? suggestion.input_price : null,
       outputPrice: hasPrice ? suggestion.output_price : null,
@@ -121,12 +142,18 @@ export function chunkByCap<T>(items: T[], cap: number): T[][] {
 // rows alike — the server skips an existing mapping but returns its candidate
 // id so its lost probe is requeued. Prices left blank go as zero — the
 // "unpriced but importable" contract (an existing mapping's stored prices are
-// untouched by the skip).
+// untouched by the skip). A new row carries its modality declaration; an
+// added row OMITS the field entirely — the server treats a present
+// declaration on an existing model as a claim that must match the stored
+// one, and the requeue path must not submit a claim it never made (the
+// modality select is inert on added rows, so whatever it shows is not a
+// declaration).
 export function toImportItems(rows: ImportRow[]): ImportModelItemInput[] {
   return rows
     .filter((r) => r.checked && (!r.added || r.unfinished))
     .map((r) => ({
       provider_model_name: r.name,
+      ...(r.added ? {} : { output_modalities: modalitiesFor(r.modality) }),
       input_price: r.inputPrice ?? 0,
       output_price: r.outputPrice ?? 0,
       cache_write_price: r.cacheWritePrice,

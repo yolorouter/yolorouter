@@ -1,12 +1,12 @@
 <!-- frontend/src/components/models/ImportModelsModal.vue -->
 <template>
   <!-- Wider than the 520px form dialogs on purpose: this is a batch table
-       (selection + name + suggestion + four editable price columns), not a
-       label/field form. -->
+       (selection + name + modality + suggestion + four editable price
+       columns), not a label/field form. -->
   <ModalDrawer
     v-model:show="showModel"
     :title="phase === 'select' ? t('models.importTitle') : t('models.importProgressTitle')"
-    max-width="880px"
+    max-width="980px"
     :mask-closable="false"
     :close-on-esc="false"
     :confirm-text="phase === 'select' ? t('models.importSelected', { count: selectedCount }) : t('models.importClose')"
@@ -63,8 +63,8 @@
         <n-data-table
           size="small"
           :columns="progressColumns"
-          :data="progressRows"
-          :row-key="(row: ProviderCandidate) => row.candidate_id"
+          :data="progressEntries"
+          :row-key="progressRowKey"
           :max-height="380"
         />
       </div>
@@ -79,15 +79,16 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 // NProgress is not in main.ts's create() list — it must be imported explicitly
 // or Vue renders <n-progress> as an unknown element with zero build errors.
-import { NInputNumber, NProgress, NTag, useMessage, type DataTableColumns } from 'naive-ui'
+import { NInputNumber, NProgress, NSelect, NTag, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
 import { AlertTriangle, Inbox } from '@lucide/vue'
 import { listModelsForProvider } from '../../api/providers'
-import { importProviderModels, listProviderCandidates, suggestPrices, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
+import { importProviderModels, listProviderCandidates, suggestPrices, type ImportItemResult, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
 import { displayMessage } from '../../api/client'
 import { buildImportRows, chunkByCap, IMPORT_BATCH_CAP, normalizeCatalogNames, toImportItems, type ImportRow } from '../../utils/importRows'
 import { catalogueFailure, NO_CATALOGUE_FAILURE, type CatalogueFailure } from '../../utils/catalogueFailure'
 import { candidateIsOwedWork, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress, type ImportProgress } from '../../utils/importProgress'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
+import { outputModalityOptions } from '../../utils/modalityOptions'
 import ModalDrawer from '../common/ModalDrawer.vue'
 import EmptyState from '../EmptyState.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
@@ -121,6 +122,11 @@ const checkedKeys = ref<Array<string | number>>([])
 const phase = ref<'select' | 'progress'>('select')
 const importedIds = ref<number[]>([])
 const progressRows = ref<ProviderCandidate[]>([])
+// Rows the import refused to store, with a reason worth reading. "exists"
+// skips are deliberately absent: a settled mapping re-submitted is routine,
+// not a problem to solve. Static — unlike the probed rows there is nothing
+// to poll.
+const skippedItems = ref<ImportItemResult[]>([])
 const progress = ref<ImportProgress>({ total: 0, passed: 0, failed: 0, inconclusive: 0, pending: 0, done: true })
 // The shared generation-guarded backoff loop; see useBackoffPoll. dialogGeneration
 // additionally invalidates the batched-submit flow when the dialog closes —
@@ -217,6 +223,7 @@ function reset() {
   phase.value = 'select'
   importedIds.value = []
   progressRows.value = []
+  skippedItems.value = []
   progress.value = { total: 0, passed: 0, failed: 0, inconclusive: 0, pending: 0, done: true }
 }
 
@@ -246,10 +253,27 @@ function startProgressPoll() {
   })
 }
 
+// A row the admin marked as image-ONLY settles per delivered image, not per
+// token — the four per-M price cells and the token-price suggestion are
+// inert for it, and saying so beats showing editable fields that do nothing.
+// A 'both' row is NOT included: the mapping still serves chat traffic and
+// bills tokens, so its per-M prices are exactly what the row should collect.
+// Re-queued "added" rows keep their old suggestion display: their prices are
+// server-owned and never change on this submit.
+function rowBillsPerImage(row: ImportRow): boolean {
+  return !row.added && row.modality === 'image'
+}
+
 function suggestionTag(row: ImportRow) {
   if (row.added && row.unfinished)
     return h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('models.importUnfinished') })
   if (row.added) return h(NTag, { size: 'small', bordered: false }, { default: () => t('models.importAdded') })
+  if (rowBillsPerImage(row))
+    return h(
+      'span',
+      { class: 'candidate-muted', title: t('models.importImagePricingHint_tip') },
+      t('models.importImagePricingHint'),
+    )
   if (row.priceSource === 'history')
     return h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => t('models.importPriceHistory') })
   if (row.priceSource === 'seed')
@@ -265,8 +289,30 @@ function priceInput(row: ImportRow, field: 'inputPrice' | 'outputPrice' | 'cache
     min: 0,
     showButton: false,
     placeholder: '0',
+    disabled: rowBillsPerImage(row),
     'onUpdate:value': (v: number | null) => {
       row[field] = v
+    },
+  })
+}
+
+// The modality column: a per-row declaration of what the imported model
+// produces, defaulting to text and preselected by name for known image
+// families. Inert on "added" rows — the server derives an existing model's
+// modality and billing from the model row it already has.
+const modalityOptions = computed<SelectOption[]>(() => [
+  ...outputModalityOptions(t),
+  { label: t('models.importModalityBoth'), value: 'both' },
+])
+
+function modalitySelect(row: ImportRow) {
+  if (row.added) return h('span', { class: 'candidate-muted' }, '—')
+  return h(NSelect, {
+    value: row.modality,
+    size: 'small',
+    options: modalityOptions.value,
+    'onUpdate:value': (v: ImportRow['modality']) => {
+      row.modality = v
     },
   })
 }
@@ -279,8 +325,14 @@ const columns = computed<DataTableColumns<ImportRow>>(() => [
   {
     title: columnTitle(t('models.importModelName'), t('models.importModelName_tip')),
     key: 'name',
-    minWidth: 220,
+    minWidth: 200,
     render: (row) => h('span', { class: row.added ? 'candidate-muted' : undefined }, row.name),
+  },
+  {
+    title: columnTitle(t('models.importModalities'), t('models.importModalities_tip')),
+    key: 'modality',
+    width: 120,
+    render: modalitySelect,
   },
   {
     title: columnTitle(t('models.importPriceSuggestion'), t('models.importPriceSuggestion_tip')),
@@ -331,6 +383,7 @@ async function onImport() {
     message.warning(t('models.importNothingSelected'))
     return
   }
+  skippedItems.value = []
   importing.value = true
   // Dismissal is blocked while the request runs, but a route change can still
   // unmount and reset the dialog with the request in flight. The generation
@@ -394,10 +447,18 @@ async function onImport() {
   if (merged.items.length === 0) return
   emit('imported', merged)
   if (generation !== dialogGeneration) return
+  // Skips worth reading are kept for the progress view: an "exists" skip is
+  // routine, but "invalid" and "modality_mismatch" name something the admin
+  // must fix for the row to ever import.
+  skippedItems.value = merged.items.filter(
+    (it) => it.status === 'skipped' && !it.candidate_id && it.reason !== 'exists' && it.reason !== '',
+  )
   const ids = merged.items.flatMap((item) => (item.candidate_id ? [item.candidate_id] : []))
   if (ids.length === 0) {
-    // Everything was skipped — there is nothing to watch being probed.
-    if (batchError === null) showModel.value = false
+    // Nothing to watch being probed. Rows the import refused still deserve
+    // their explanation, so the progress view opens for those alone.
+    if (batchError === null && skippedItems.value.length === 0) showModel.value = false
+    if (skippedItems.value.length > 0) phase.value = 'progress'
     return
   }
   importedIds.value = ids
@@ -406,23 +467,51 @@ async function onImport() {
   startProgressPoll()
 }
 
-const progressColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
+// One row of the progress view: a mapping being probed, or a row the import
+// refused to store. The refused shape is display-only — there is no candidate
+// behind it to poll.
+type ProgressEntry = ProviderCandidate | { skipped: true; name: string; reason: string }
+
+function isSkippedEntry(row: ProgressEntry): row is { skipped: true; name: string; reason: string } {
+  return 'skipped' in row
+}
+
+const progressEntries = computed<ProgressEntry[]>(() => [
+  ...progressRows.value,
+  ...skippedItems.value.map((it) => ({ skipped: true as const, name: it.name, reason: it.reason ?? '' })),
+])
+
+function progressRowKey(row: ProgressEntry): string | number {
+  return isSkippedEntry(row) ? `skipped:${row.name}` : row.candidate_id
+}
+
+function skipReasonText(reason: string): string {
+  if (reason === 'modality_mismatch') return t('models.importSkipModalityMismatch')
+  if (reason === 'invalid') return t('models.importSkipInvalid')
+  return reason
+}
+
+const progressColumns = computed<DataTableColumns<ProgressEntry>>(() => [
   {
     title: columnTitle(t('models.importModelName'), t('models.importModelName_tip')),
     key: 'model_name',
     minWidth: 240,
+    render: (row) => h('span', undefined, isSkippedEntry(row) ? row.name : row.model_name),
   },
   {
     title: columnTitle(t('providers.candidateProbeStatus'), t('providers.candidateProbeStatus_tip')),
     key: 'state',
     width: STATUS_COL_WIDTH,
-    render: (row) => renderProbeStateTag(t, row, { labelKey: 'models.importStatePending', type: 'info' }),
+    render: (row) =>
+      isSkippedEntry(row)
+        ? h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('models.importSkippedTag') })
+        : renderProbeStateTag(t, row, { labelKey: 'models.importStatePending', type: 'info' }),
   },
   {
     title: columnTitle(t('providers.candidateFailReason'), t('providers.candidateFailReason_tip')),
     key: 'last_test_error',
     minWidth: 240,
-    render: renderFailReasonCell,
+    render: (row) => (isSkippedEntry(row) ? skipReasonText(row.reason) : renderFailReasonCell(row)),
   },
 ])
 </script>

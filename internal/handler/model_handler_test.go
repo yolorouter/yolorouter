@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/internal/service/providerclient"
@@ -1132,5 +1133,53 @@ func TestModelSchedulingModeNullMeansAbsent(t *testing.T) {
 	}
 	if len(batch.Created) != 1 || batch.Created[0].SchedulingMode != "failover" {
 		t.Fatalf("batch create with null mode = %+v, want one model with the failover default", batch.Created)
+	}
+}
+
+func TestPostModelsBatchCarriesOutputModalities(t *testing.T) {
+	r, db := newModelTestRouter(t)
+	w, env := doJSON(t, r, http.MethodPost, "/api/admin/models/batch", map[string]interface{}{
+		"names":             []string{"wan2.7-image"},
+		"output_modalities": []string{"image"},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Created []modelResponse `json:"created"`
+	}
+	if err := json.Unmarshal(env.Data, &body); err != nil {
+		t.Fatalf("unmarshal batch response: %v", err)
+	}
+	if len(body.Created) != 1 {
+		t.Fatalf("expected 1 created model, got %+v", body.Created)
+	}
+	var m model.Model
+	if err := db.First(&m, body.Created[0].ID).Error; err != nil {
+		t.Fatalf("load created model: %v", err)
+	}
+	if m.OutputModalities != `["image"]` {
+		t.Fatalf("expected the batch declaration stored, got %q", m.OutputModalities)
+	}
+}
+
+func TestPostModelsBatchRejectsUnknownModality(t *testing.T) {
+	r, db := newModelTestRouter(t)
+	w, env := doJSON(t, r, http.MethodPost, "/api/admin/models/batch", map[string]interface{}{
+		"names":             []string{"never-created"},
+		"output_modalities": []string{"video"},
+	}, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.ModelOutputModalityInvalid {
+		t.Fatalf("expected code %d, got %d", errcode.ModelOutputModalityInvalid, env.Code)
+	}
+	var count int64
+	if err := db.Model(&model.Model{}).Where("name = ?", "never-created").Count(&count).Error; err != nil {
+		t.Fatalf("count models: %v", err)
+	}
+	if count != 0 {
+		t.Fatal("a rejected declaration must not leave rows behind")
 	}
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/capability/compress"
 	"github.com/yolorouter/yolorouter/internal/capability/contentinspect"
+	"github.com/yolorouter/yolorouter/internal/capability/imagesize"
 	"github.com/yolorouter/yolorouter/internal/capability/maxtokens"
 	"github.com/yolorouter/yolorouter/internal/capability/modelname"
 	"github.com/yolorouter/yolorouter/internal/capability/ratelimit"
@@ -34,6 +35,8 @@ func registerCapabilities(svc *gateway.Service, db *gorm.DB, loopbackBase string
 		func(e *gateway.Exchange) visionfallback.View { return e })
 	gateway.RegisterUpstreamErrorObserver(svc, contentinspect.New(),
 		func(e *gateway.Exchange) contentinspect.View { return e })
+	gateway.RegisterEgressRewriter(svc, imagesize.New(), gateway.StageImageSize,
+		func(e *gateway.Exchange) imagesize.View { return e })
 	gateway.RegisterEgressRewriter(svc, systemprompt.New(), gateway.StageCustomPrompt,
 		func(e *gateway.Exchange) systemprompt.View { return e })
 	gateway.RegisterResponseCodecWrapper(svc, modelname.New(), gateway.StageModelName,

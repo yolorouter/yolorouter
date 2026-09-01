@@ -60,6 +60,11 @@ type costBreakdown struct {
 	// computed with — nil exactly when Known is false, so an unpriced row can
 	// never carry a pseudo-snapshot.
 	Prices *fact.SettledPrices
+	// ImageSnapshot is the per-image settlement's account of itself (mode,
+	// request axes, counts, unit price) as JSON. Empty on every cost not
+	// computed per image. Built by the same numbers the micros were, so the
+	// explanation cannot drift from the bill.
+	ImageSnapshot string
 }
 
 // netPromptTokens returns the billable/loggable net input token count: the
@@ -269,7 +274,7 @@ func safeUpstreamMessage(status int) string {
 // atomically (repository.IncrementAPIKeyBudgetSpent is a single
 // budget_spent_micros = budget_spent_micros + ? UPDATE) cannot lose updates to
 // each other.
-func (s *Service) finalize(rc *Exchange, usage *protocols.IRUsage, statusCode int, failReason string, start time.Time) {
+func (s *Service) finalize(rc *Exchange, report *fact.UsageReported, statusCode int, failReason string, start time.Time) {
 	if rc.logWritten.Swap(true) {
 		return // already finalized (e.g. Handle's panic-recovery defer after a normal finalize)
 	}
@@ -281,6 +286,12 @@ func (s *Service) finalize(rc *Exchange, usage *protocols.IRUsage, statusCode in
 	duration := time.Since(start)
 
 	sink := newKernelSink(rc)
+
+	// Token view of the report: the cache-convention netting and the token
+	// cost line read tokens. A counted unit's report carries its quantity in
+	// Count and its token sub-counts in the token fields; the netting below
+	// is about tokens and leaves the count alone.
+	usage := usageFromReport(report)
 
 	// Settle the cache convention once, here, before either consumer of the
 	// usage reads it: pricing below and the persisted counts must not be able to
@@ -295,9 +306,17 @@ func (s *Service) finalize(rc *Exchange, usage *protocols.IRUsage, statusCode in
 	// net reading simply stays inclusive and is rejected as incoherent, exactly
 	// as it was before.
 	normalizeCacheConvention(usage)
-	cost := computeCost(rc.attempt.Candidate(), usage, compressTokensSaved(rc.timeline))
+	// Pricing dispatches on the settling candidate's billing mode, not on the
+	// modality: the payload reports facts (a count, token sub-counts), and
+	// which fact prices the request is configuration. A token-mode image
+	// model and an image-mode one deliver the same report and settle
+	// differently.
+	cost := computeSettlementCost(rc.attempt.Candidate(), report, usage, compressTokensSaved(rc.timeline))
+	if cost.ImageSnapshot != "" {
+		rc.imagePricingSnapshot = cost.ImageSnapshot
+	}
 
-	billedUsage := s.reportUsage(rc, usage, sink)
+	billedUsage := s.reportUsage(rc, report, usage, sink)
 	sink.Note(fact.CostComputed{
 		Known:                   cost.Known,
 		Micros:                  cost.CostMicros,
@@ -359,6 +378,10 @@ func (s *Service) recordTerminal(rc *Exchange) {
 	if !rc.outcomeSettled {
 		return
 	}
+	// The admitted payload's policy for its own bodies is enforced here, once,
+	// before anything records — so every recorder sees the same filtered view
+	// instead of each deciding for itself what may be stored.
+	rc.applyBodyLogPolicy()
 	s.runRecorders(rc.requestCtx, rc, rc.outcome)
 }
 
@@ -369,9 +392,26 @@ func (s *Service) recordTerminal(rc *Exchange) {
 // negative or impossible count poisons every SUM() the dashboard runs, and the
 // same rejection is applied to pricing, so the stored counts can never disagree
 // with the billing decision.
-func (s *Service) reportUsage(rc *Exchange, usage *protocols.IRUsage, sink fact.Sink) *fact.UsageReported {
-	if usage == nil {
+//
+// A counted unit's report (Unit other than token) is the payload's own
+// statement and passes through as itself: the token coherence rules are about
+// token totals corroborating their parts, and mean nothing for a count of
+// delivered things. Only the impossible is refused — a count that could not
+// have been delivered.
+func (s *Service) reportUsage(rc *Exchange, report *fact.UsageReported, usage *protocols.IRUsage, sink fact.Sink) *fact.UsageReported {
+	if report == nil {
 		return nil
+	}
+	if report.Unit != fact.UnitToken {
+		if report.Count < 0 {
+			logger.Warn("gateway: payload reported a negative count, dropped",
+				zap.String("request_id", rc.requestID),
+				zap.Int("count", report.Count))
+			sink.Note(fact.UsageIncoherent{Reason: "negative delivered count"})
+			return nil
+		}
+		sink.Note(*report)
+		return report
 	}
 	if !usageIsCoherent(usage) {
 		logger.Warn("gateway: upstream reported incoherent token usage, counts dropped",
@@ -485,7 +525,7 @@ type settleOptions struct {
 func (s *Service) settleChecked(rc *Exchange, d fact.Delivery, sink *exchangeSink, start time.Time) {
 	s.observeDelivery(rc, d, sink)
 	s.logSettlement(rc, d)
-	s.finalize(rc, usageFromReport(d.Usage), d.BillingStatus, d.FailReason, start)
+	s.finalize(rc, d.Usage, d.BillingStatus, d.FailReason, start)
 }
 
 // logSettlement records how a request ended, at the level its ending deserves.

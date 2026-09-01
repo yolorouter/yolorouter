@@ -35,6 +35,15 @@
         </template>
         <n-select v-model:value="form.schedulingMode" :options="schedulingModeOptions" />
       </n-form-item>
+      <n-form-item path="outputModalities">
+        <template #label>
+          <HelpLabel :tip="t('models.outputModalities_tip')">{{ t('models.outputModalities') }}</HelpLabel>
+        </template>
+        <!-- Multiple with a non-empty starting value: a model always produces
+             something, and clearing the last entry would leave nothing for the
+             endpoints to match against. -->
+        <n-select v-model:value="form.outputModalities" multiple :options="outputModalityOptions" />
+      </n-form-item>
     </n-form>
   </ModalDrawer>
 </template>
@@ -48,6 +57,7 @@ import ModalDrawer from '../common/ModalDrawer.vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { useSchedulingModeOptions } from '../../utils/schedulingMode'
+import { outputModalityOptions as buildOutputModalityOptions } from '../../utils/modalityOptions'
 import type { ImageInputChoice, Model, SchedulingMode } from '../../api/models'
 import { modelNameRule } from '../../utils/modelValidators'
 import { modelRenameContent } from '../../utils/impactSummary'
@@ -69,10 +79,16 @@ const store = useModelsStore()
 
 const formRef = ref<FormInst | null>(null)
 const submitting = ref(false)
-const form = reactive<{ name: string; imageInput: ImageInputChoice; schedulingMode: SchedulingMode }>({
+const form = reactive<{
+  name: string
+  imageInput: ImageInputChoice
+  schedulingMode: SchedulingMode
+  outputModalities: string[]
+}>({
   name: '',
   imageInput: 'unknown',
   schedulingMode: 'failover',
+  outputModalities: ['text'],
 })
 const rules: FormRules = { name: modelNameRule(t) }
 
@@ -84,8 +100,19 @@ const imageInputOptions = computed<SelectOption[]>(() => [
 
 const schedulingModeOptions = useSchedulingModeOptions()
 
+const outputModalityOptions = computed(() => buildOutputModalityOptions(t))
+
 function toImageInputChoice(v: boolean | null): ImageInputChoice {
   return v === null ? 'unknown' : v ? 'yes' : 'no'
+}
+
+// Order-insensitive comparison: the declaration is a set, and a re-ordered
+// list from the multi-select is not a change the server needs to hear about.
+function sameModalities(a: string[], b: string[] | undefined): boolean {
+  if (!b || a.length !== b.length) return false
+  const left = [...a].sort()
+  const right = [...b].sort()
+  return left.every((v, i) => v === right[i])
 }
 
 watch(
@@ -95,6 +122,8 @@ watch(
     form.name = model.name
     form.imageInput = toImageInputChoice(model.supports_image_input)
     form.schedulingMode = model.scheduling_mode
+    form.outputModalities =
+      model.output_modalities && model.output_modalities.length > 0 ? [...model.output_modalities] : ['text']
   },
 )
 
@@ -111,7 +140,8 @@ async function onSubmit() {
   if (form.name === props.model.name) {
     const imageChanged = form.imageInput !== toImageInputChoice(props.model.supports_image_input)
     const modeChanged = form.schedulingMode !== props.model.scheduling_mode
-    if (imageChanged || modeChanged) {
+    const modalitiesChanged = !sameModalities(form.outputModalities, props.model.output_modalities)
+    if (imageChanged || modeChanged || modalitiesChanged) {
       void doSave()
       return
     }
@@ -155,10 +185,12 @@ async function doSave() {
     // before another admin switched the mode cannot switch it back merely by
     // saving an unrelated edit.
     const modeChanged = form.schedulingMode !== props.model.scheduling_mode
+    const modalitiesChanged = !sameModalities(form.outputModalities, props.model.output_modalities)
     await store.update(props.model.id, {
       name: form.name,
       imageInput: form.imageInput,
       schedulingMode: modeChanged ? form.schedulingMode : undefined,
+      outputModalities: modalitiesChanged ? [...form.outputModalities] : undefined,
     })
     message.success(t('models.saveSuccess'))
     emit('updated')
