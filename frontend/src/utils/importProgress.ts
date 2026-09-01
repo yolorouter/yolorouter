@@ -1,5 +1,5 @@
 import { CANDIDATE_STATUS_ENABLED, VERIFICATION_FAILED, VERIFICATION_PASSED, VERIFICATION_UNTESTED } from '../api/candidateStatus'
-import type { ProviderCandidate } from '../api/models'
+import type { ImportItemResult, ProviderCandidate } from '../api/models'
 
 // How one mapping reads on a progress/status view. 'pending' means the queue
 // still owes it a probe (queued or in flight — the row's queue_state tells
@@ -114,6 +114,15 @@ export function isUnpriced(
   c: Pick<ProviderCandidate, 'input_price' | 'output_price' | 'cache_write_price' | 'cache_read_price'>,
 ): boolean {
   return !c.input_price && !c.output_price && !c.cache_write_price && !c.cache_read_price
+}
+
+// The skipped import rows worth reading in the progress view: an "exists"
+// skip is routine (the mapping is already there), but "invalid" and
+// "modality_mismatch" name something the admin must fix for the row to ever
+// import. Rows that came away with a candidate are not skips at all — they
+// are being probed like any other mapping.
+export function skipsWorthReading(items: ImportItemResult[]): ImportItemResult[] {
+  return items.filter((it) => it.status === 'skipped' && !it.candidate_id && it.reason !== 'exists')
 }
 
 export interface ImportProgress {
