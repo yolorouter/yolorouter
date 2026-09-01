@@ -451,7 +451,7 @@ async function onImport() {
   // routine, but "invalid" and "modality_mismatch" name something the admin
   // must fix for the row to ever import.
   skippedItems.value = merged.items.filter(
-    (it) => it.status === 'skipped' && !it.candidate_id && it.reason !== 'exists' && it.reason !== '',
+    (it) => it.status === 'skipped' && !it.candidate_id && it.reason !== 'exists',
   )
   const ids = merged.items.flatMap((item) => (item.candidate_id ? [item.candidate_id] : []))
   if (ids.length === 0) {

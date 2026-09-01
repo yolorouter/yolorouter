@@ -80,7 +80,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { NCheckbox, NSelect, useMessage, type FormInst, type FormItemRule, type FormRules, type SelectOption } from 'naive-ui'
+import { NCheckbox, NSelect, useMessage, type FormInst, type FormItemRule, type FormRules } from 'naive-ui'
 import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
 import { useModelsStore } from '../../store/models'
