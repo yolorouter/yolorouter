@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Local gate for pushes to the public github remote.
+#
+# The dev line pushes to GitLab first; the GitHub side carries the full CI
+# gate (see .github/workflows/ci.yml). Code that only ever ran on the
+# GitLab line has repeatedly landed red on GitHub (a nil-Context lint
+# error, missing type checks) — this hook moves that gate in front of the
+# push instead of after it.
+#
+# It mirrors the CI jobs that need no toolchain beyond Go: the lint job
+# (golangci-lint run against the same .golangci.yml) and the compile
+# checks (native + windows cross-build). The frontend embed build is NOT
+# run here — run `make embed-frontend` yourself before a release push.
+#
+# One-time activation per clone: git config core.hooksPath .githooks
+set -euo pipefail
+
+remote="${1:-}"
+if [ "$remote" != "github" ]; then
+  exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! command -v golangci-lint > /dev/null 2>&1; then
+  echo "!! golangci-lint is not installed — the gate cannot run." >&2
+  echo "   brew install golangci-lint (CI pins v2.13.1)" >&2
+  exit 1
+fi
+
+echo "==> github-push gate: golangci-lint + go build (mirrors ci.yml)" >&2
+golangci-lint run
+go build ./...
+GOOS=windows GOARCH=amd64 go build ./...
+echo "==> gate passed" >&2
