@@ -195,6 +195,25 @@ func TestLookupDoesNotAliasTheIndex(t *testing.T) {
 	}
 }
 
+// cache_read/cache_write silently deserialize as nil when the JSON keys use
+// the wrong casing (e.g. "cacheRead"), and nil passes every non-negativity
+// check above. At least one shipped cache price must come through, or the
+// casing regressed and every cache-price prefill quietly went empty.
+func TestEmbeddedCatalogDeserializesCachePrices(t *testing.T) {
+	idx, err := load()
+	if err != nil {
+		t.Fatalf("embedded catalog failed to load: %v", err)
+	}
+	for _, models := range idx {
+		for _, p := range models {
+			if p.CacheRead != nil || p.CacheWrite != nil {
+				return
+			}
+		}
+	}
+	t.Fatal("embedded catalog has no non-nil cache price; the JSON keys have probably regressed to camelCase")
+}
+
 func TestUpdatedAtReportsTheEmbeddedDate(t *testing.T) {
 	// The date is what tells an operator whether a suggested price is a month or
 	// a year old, so an empty string here means the catalog failed to load.
