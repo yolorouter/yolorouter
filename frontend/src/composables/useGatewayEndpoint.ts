@@ -80,9 +80,15 @@ function curlExample(key = '<API Key>'): string {
 
 // The image-generation twin of curlExample: same credential rules, aimed at
 // the images endpoint. The sample keeps an image-model placeholder so the
-// two samples stay distinguishable at a glance.
+// samples stay distinguishable at a glance.
 function imageCurlExample(key = '<API Key>'): string {
   return `curl ${openAIBaseUrl.value}/images/generations -H "Authorization: Bearer ${key}" -d '{"model":"<image model>","prompt":"a cat"}'`
+}
+
+// The edits twin: multipart, because an edit carries pixels in, and -F keeps
+// the sample copy-pasteable next to a real file the caller names.
+function imageEditCurlExample(key = '<API Key>'): string {
+  return `curl ${openAIBaseUrl.value}/images/edits -H "Authorization: Bearer ${key}" -F model=<image model> -F prompt="add a red hat" -F image=@input.png`
 }
 
 export function useGatewayEndpoint(): {
@@ -90,6 +96,7 @@ export function useGatewayEndpoint(): {
   openAIBaseUrl: ComputedRef<string>
   curlExample: (key?: string) => string
   imageCurlExample: (key?: string) => string
+  imageEditCurlExample: (key?: string) => string
   pending: Ref<boolean>
 } {
   // load() must never throw synchronously: it is assigned to inFlight, and
@@ -100,5 +107,5 @@ export function useGatewayEndpoint(): {
   if (!resolved && !inFlight) {
     inFlight = load()
   }
-  return { endpoint, openAIBaseUrl, curlExample, imageCurlExample, pending }
+  return { endpoint, openAIBaseUrl, curlExample, imageCurlExample, imageEditCurlExample, pending }
 }

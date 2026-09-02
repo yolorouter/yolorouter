@@ -7,9 +7,11 @@ package images
 // by the OpenAI-compatible endpoint at their native quality tiers.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -78,7 +80,11 @@ type dashScopeMessage struct {
 }
 
 type dashScopeContent struct {
-	Text string `json:"text"`
+	// One content item is a text or an image; the empty half is omitted so
+	// an image item never carries a "text":"" field the dialect would have
+	// to make sense of.
+	Text  string `json:"text,omitempty"`
+	Image string `json:"image,omitempty"`
 }
 
 type dashScopeParams struct {
@@ -103,6 +109,43 @@ func EncodeRequest(prompt, model string, n int, size string) ([]byte, error) {
 		Parameters: dashScopeParams{N: n, Size: ConvertSize(size)},
 	}
 	return json.Marshal(req)
+}
+
+// EncodeEditRequest builds the DashScope native request for one edit: the
+// uploaded reference images travel as base64 data URIs in the content
+// array — the dialect accepts the data form anywhere it accepts a hosted
+// image URL — with the instruction as the trailing text item. The endpoint
+// is the same multimodal-generation one the generation half posts to.
+func EncodeEditRequest(prompt, model string, images []EditFile, n int, size string) ([]byte, error) {
+	if n <= 0 {
+		n = 1
+	}
+	content := make([]dashScopeContent, 0, len(images)+1)
+	for _, img := range images {
+		content = append(content, dashScopeContent{Image: imageDataURI(img)})
+	}
+	content = append(content, dashScopeContent{Text: prompt})
+	req := dashScopeReq{
+		Model: model,
+		Input: dashScopeInput{
+			Messages: []dashScopeMessage{{Role: "user", Content: content}},
+		},
+		Parameters: dashScopeParams{N: n, Size: ConvertSize(size)},
+	}
+	return json.Marshal(req)
+}
+
+// imageDataURI renders one uploaded file as the data URI the native dialect
+// reads in place of a hosted URL. A part that arrived without a content
+// type — or with curl's default application/octet-stream, which -F sends
+// whatever the file is — gets its bytes sniffed rather than passing the
+// upload off as a stream of nothing, which the edit endpoint would refuse.
+func imageDataURI(f EditFile) string {
+	ct := f.ContentType
+	if ct == "" || ct == "application/octet-stream" {
+		ct = http.DetectContentType(f.Data)
+	}
+	return "data:" + ct + ";base64," + base64.StdEncoding.EncodeToString(f.Data)
 }
 
 // The DashScope response shape: output.choices[].message.content[] carries

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
@@ -13,8 +14,9 @@ import (
 	"github.com/yolorouter/yolorouter/internal/protocols/images"
 )
 
-// imageModality serves the OpenAI Images API family: JSON in, JSON out,
-// counted in images. It is stateless and shared by every request.
+// imageModality serves the OpenAI Images API family — generations in JSON,
+// edits in multipart — answered in the API's JSON shape and counted in
+// images. It is stateless and shared by every request.
 //
 // There is no IR here and none is wanted. An images request is routed on a
 // subset of its fields and forwarded with only the model field rewritten —
@@ -36,6 +38,10 @@ func NewImageModality() Modality { return imageModality{} }
 // modality gate match an endpoint's modality against a model's declaration
 // without either side knowing the other's types.
 const ModalityImage ModalityID = "image"
+
+// dashScopeURLsOnlyReason is the per-candidate refusal a b64_json ask earns
+// on a DashScope base, whichever half the request came in on.
+const dashScopeURLsOnlyReason = "dashscope serves image URLs only and cannot answer a b64_json request"
 
 // isDashScopeBase is the provider-dialect detector for the images modality:
 // candidates whose provider base points at a DashScope host are served
@@ -62,8 +68,14 @@ func (imageModality) Limits() TransferLimits {
 
 // Admit parses the caller's request far enough to route it, and refuses what
 // no candidate could have served — a body that does not parse, a missing
-// model or prompt, a streaming ask this modality does not carry.
+// model or prompt, a streaming ask for a model family whose upstreams do
+// not stream. The edits route parses its multipart upload instead of JSON;
+// the two halves share the response side, which is the same OpenAI images
+// shape either way.
 func (imageModality) Admit(_ context.Context, in Ingress) (Payload, *Rejection) {
+	if in.Path == images.EditPath {
+		return admitEdit(in)
+	}
 	req, err := images.ParseRequest(in.Body)
 	if err != nil {
 		return nil, &Rejection{
@@ -73,36 +85,78 @@ func (imageModality) Admit(_ context.Context, in Ingress) (Payload, *Rejection) 
 		}
 	}
 	if req.Model == "" {
-		return nil, &Rejection{
-			Status: http.StatusBadRequest, ErrorType: errTypeInvalidRequest,
-			Message: "model is required", FailReason: "empty_model",
-			Fault: fact.FaultClient,
-		}
+		return nil, rejectMissingField("model", "empty_model")
 	}
 	if req.Prompt == "" {
-		return nil, &Rejection{
-			Status: http.StatusBadRequest, ErrorType: errTypeInvalidRequest,
-			Message: "prompt is required", FailReason: "empty_prompt",
-			Fault: fact.FaultClient,
-		}
+		return nil, rejectMissingField("prompt", "empty_prompt")
 	}
-	if req.Stream {
-		return nil, &Rejection{
-			Status: http.StatusBadRequest, ErrorType: errTypeInvalidRequest,
-			Message:    "streaming is not supported for image generation",
-			FailReason: "image_streaming_unsupported",
-			Fault:      fact.FaultClient,
-		}
+	if req.Stream && !strings.HasPrefix(req.Model, gptImagePrefix) {
+		return nil, rejectStreamingModel()
 	}
 	return &imagePayload{body: in.Body, req: req}, nil
 }
 
-// imagePayload is one image request. Like the text payload it holds no
-// kernel object: everything it needs to reach the outside world arrives as
-// DeliveryTools.
+// rejectMissingField is the door refusal both halves share for a required
+// field the caller did not send.
+func rejectMissingField(field, reason string) *Rejection {
+	return &Rejection{
+		Status: http.StatusBadRequest, ErrorType: errTypeInvalidRequest,
+		Message: field + " is required", FailReason: reason,
+		Fault: fact.FaultClient,
+	}
+}
+
+// rejectStreamingModel is the door refusal both halves share for a
+// streaming ask outside the family whose upstreams stream.
+func rejectStreamingModel() *Rejection {
+	return &Rejection{
+		Status: http.StatusBadRequest, ErrorType: errTypeInvalidRequest,
+		Message:    "Streaming is only supported for gpt-image-* models",
+		FailReason: "image_streaming_model_unsupported",
+		Fault:      fact.FaultClient,
+	}
+}
+
+// admitEdit is the edits half of Admit: the same door rules over a multipart
+// body, plus the one field the generations half does not owe — a reference
+// image, without which no edit candidate has anything to work on.
+func admitEdit(in Ingress) (Payload, *Rejection) {
+	req, err := images.ParseEditRequest(in.ContentType, in.Body)
+	if err != nil {
+		return nil, &Rejection{
+			Status: http.StatusBadRequest, ErrorType: errTypeInvalidRequest,
+			Message: "invalid multipart body", FailReason: "parse: " + err.Error(),
+			Fault: fact.FaultClient,
+		}
+	}
+	if req.Model == "" {
+		return nil, rejectMissingField("model", "empty_model")
+	}
+	if req.Prompt == "" {
+		return nil, rejectMissingField("prompt", "empty_prompt")
+	}
+	if len(req.Images) == 0 {
+		return nil, rejectMissingField("image", "empty_image")
+	}
+	if req.Stream && !strings.HasPrefix(req.Model, gptImagePrefix) {
+		return nil, rejectStreamingModel()
+	}
+	return &imagePayload{body: in.Body, contentType: in.ContentType, edit: req}, nil
+}
+
+// imagePayload is one image request — a generation or an edit. Like the
+// text payload it holds no kernel object: everything it needs to reach the
+// outside world arrives as DeliveryTools.
 type imagePayload struct {
 	body []byte
-	req  *images.Request
+	// contentType is the caller's own Content-Type, carried for the edits
+	// half: a multipart body cannot be re-read without its boundary.
+	contentType string
+	req         *images.Request
+	// edit is non-nil on the edits route and nil on generations; the two
+	// halves branch on its presence rather than on the path again, so a
+	// payload is self-describing once admitted.
+	edit *images.EditRequest
 	// cand is the candidate PrepareUpstream built for, read back by the
 	// delivery that follows — the same memoization contract the ordered
 	// payload wrapper asserts.
@@ -111,10 +165,56 @@ type imagePayload struct {
 	// the settlement will ask for. Only the delivery that ends the request
 	// reaches FinalizeUsage, so there is exactly one body worth keeping.
 	delivered []byte
+	// rewritten caches the model-rewritten multipart per target provider
+	// model: re-encoding a 20 MiB upload is the expensive step of an edits
+	// attempt, and failover retries the same provider model far more often
+	// than it changes it.
+	rewritten map[string]rewrittenMultipart
+}
+
+// rewrittenMultipart is one cached edits re-encode: the body and the
+// content type that carries the writer's fresh boundary. The two travel
+// together or the boundary in the type describes a body that is not the
+// one sent.
+type rewrittenMultipart struct {
+	body        []byte
+	contentType string
+}
+
+// isEdit reports which half of the Images API this payload serves.
+func (p *imagePayload) isEdit() bool { return p.edit != nil }
+
+// requestModel names the model the caller asked for, whichever half the
+// request came in on — both spell it as a scalar field the routing reads.
+func (p *imagePayload) requestModel() string {
+	if p.isEdit() {
+		return p.edit.Model
+	}
+	return p.req.Model
+}
+
+// responseFormat states the delivery format the caller asked for, whichever
+// half the request came in on — both spell it as a scalar field the
+// DashScope verdicts key on.
+func (p *imagePayload) responseFormat() string {
+	if p.isEdit() {
+		return p.edit.ResponseFormat
+	}
+	return p.req.ResponseFormat
+}
+
+// requestAxes states the pricing axes the caller sent — the count asked
+// for, the quality and size the snapshot keys on — whichever half the
+// request came in on.
+func (p *imagePayload) requestAxes() (requested int, quality, size string) {
+	if p.isEdit() {
+		return p.edit.N, p.edit.Quality, p.edit.Size
+	}
+	return p.req.N, p.req.Quality, p.req.Size
 }
 
 func (p *imagePayload) Routing() RoutingIntent {
-	return RoutingIntent{Model: p.req.Model}
+	return RoutingIntent{Model: p.requestModel(), Stream: p.streamAsked()}
 }
 
 // EstimateCost cannot name a figure before the upstream answers — the count
@@ -142,10 +242,43 @@ func (p *imagePayload) Supports(cand Candidate) CandidateVerdict {
 			Reason: "provider does not serve the images API (egress " + string(cand.EgressProtocol) + ")",
 		}
 	}
-	if isDashScopeBase(cand.BaseURL) && p.req.ResponseFormat == "b64_json" {
+	if isDashScopeBase(cand.BaseURL) && p.responseFormat() == "b64_json" {
 		return CandidateVerdict{
 			OK:     false,
-			Reason: "dashscope serves image URLs only and cannot answer a b64_json request",
+			Reason: dashScopeURLsOnlyReason,
+		}
+	}
+	if p.isEdit() && isDashScopeBase(cand.BaseURL) {
+		if p.edit.Mask != nil {
+			return CandidateVerdict{
+				OK:     false,
+				Reason: "the dashscope edit dialect has no field to carry a mask upload",
+			}
+		}
+		if len(p.edit.UnmappedFields) > 0 {
+			return CandidateVerdict{
+				OK: false,
+				Reason: "the dashscope edit dialect has no field for: " +
+					strings.Join(p.edit.UnmappedFields, ", "),
+			}
+		}
+	}
+	if p.streamAsked() {
+		// The alias between the caller's name and the provider's can change
+		// this answer, which is why the door's prefix check is repeated here
+		// against the provider's own name for the model. The native dialect
+		// has no streaming half at all, prefix or no.
+		if isDashScopeBase(cand.BaseURL) {
+			return CandidateVerdict{
+				OK:     false,
+				Reason: "the dashscope native dialect does not stream images",
+			}
+		}
+		if !strings.HasPrefix(cand.ProviderModelName, gptImagePrefix) {
+			return CandidateVerdict{
+				OK:     false,
+				Reason: "streaming is supported for gpt-image-* models only",
+			}
 		}
 	}
 	return CandidateVerdict{OK: true}
@@ -158,9 +291,14 @@ func (p *imagePayload) Supports(cand Candidate) CandidateVerdict {
 // DashScope provider gets a native request re-encoded from the fields the
 // gateway parsed, posted to the dialect's own endpoint on the provider's
 // origin — the base's version segment belongs to the compatible-mode route
-// and would corrupt the native path.
+// and would corrupt the native path. On the edits half the model rewrite is
+// a multipart re-encode, cached per target model because it is the
+// expensive step of an attempt.
 func (p *imagePayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 	p.cand = cand
+	if p.isEdit() {
+		return p.prepareEditUpstream(cand)
+	}
 	if isDashScopeBase(cand.BaseURL) {
 		body, err := images.EncodeRequest(p.req.Prompt, cand.ProviderModelName, p.req.N, p.req.Size)
 		if err != nil {
@@ -184,6 +322,40 @@ func (p *imagePayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 	}, nil
 }
 
+// prepareEditUpstream is the edits half of PrepareUpstream. An
+// OpenAI-compatible provider gets the rewritten multipart, cached per
+// target model because the re-encode is the expensive step of an attempt.
+// A DashScope provider gets the upload re-encoded into the native dialect:
+// the reference images become base64 data URI content items beside the
+// instruction text, posted to the dialect's own endpoint on the provider's
+// origin — the same arrangement the generation half uses.
+func (p *imagePayload) prepareEditUpstream(cand Candidate) (*UpstreamCall, error) {
+	if isDashScopeBase(cand.BaseURL) {
+		body, err := images.EncodeEditRequest(p.edit.Prompt, cand.ProviderModelName, p.edit.Images, p.edit.N, p.edit.Size)
+		if err != nil {
+			return nil, fmt.Errorf("encode dashscope edit request: %w", err)
+		}
+		return &UpstreamCall{
+			Path:           images.GenerationPath,
+			Body:           body,
+			ContentType:    "application/json",
+			OriginRelative: true,
+		}, nil
+	}
+	if p.rewritten == nil {
+		p.rewritten = make(map[string]rewrittenMultipart)
+	}
+	if cached, ok := p.rewritten[cand.ProviderModelName]; ok {
+		return &UpstreamCall{Path: images.EditPath, Body: cached.body, ContentType: cached.contentType}, nil
+	}
+	out, contentType, err := images.RewriteEditModelField(p.contentType, p.body, cand.ProviderModelName)
+	if err != nil {
+		return nil, fmt.Errorf("rewrite model field: %w", err)
+	}
+	p.rewritten[cand.ProviderModelName] = rewrittenMultipart{body: out, contentType: contentType}
+	return &UpstreamCall{Path: images.EditPath, Body: out, ContentType: contentType}, nil
+}
+
 // NormalizeUpstreamError decides what the caller is told about an upstream
 // failure: the status class, and a message that does not quote the upstream
 // body, which can name the provider, the model behind the alias, or the
@@ -199,11 +371,15 @@ func (p *imagePayload) NormalizeUpstreamError(status int, _ []byte, _ string) Er
 
 // Deliver forwards a whole upstream response to the caller.
 //
-// There is no streaming half and no re-encode: an images response is a
-// bounded JSON body whose model name never appears in it (the API's response
-// shape has no model field), so what the upstream sent is what the caller
-// gets, byte for byte.
+// There is no re-encode: an images response is a bounded JSON body whose
+// model name never appears in it (the API's response shape has no model
+// field), so what the upstream sent is what the caller gets, byte for byte.
+// The streaming half is the one delivery this modality forwards as it
+// arrives rather than whole.
 func (p *imagePayload) Deliver(tools DeliveryTools, resp *http.Response) fact.Delivery {
+	if p.streamAsked() {
+		return p.deliverStream(tools, resp)
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// One byte past the cap, so an oversized body is refused rather than
@@ -298,18 +474,26 @@ func (p *imagePayload) clientWriteFailure(served int, err error) fact.Delivery {
 // token-billed image model settles by. The unit says what the modality
 // counts; which quantity actually prices the request is the candidate's
 // billing mode, decided by settlement, not here.
-func (p *imagePayload) FinalizeUsage(fact.Delivery) *fact.UsageReported {
+func (p *imagePayload) FinalizeUsage(d fact.Delivery) *fact.UsageReported {
+	// A stream settles from what its pump attached to the delivery — there
+	// is no whole body to parse. Returning the delivery's own usage here is
+	// what keeps it: settlement re-asks this method, and a nil answer would
+	// clear what the pump reported.
+	if d.Usage != nil {
+		return d.Usage
+	}
 	parsed, err := images.ParseResponse(p.delivered)
 	if err != nil || parsed == nil {
 		return nil
 	}
+	requested, quality, size := p.requestAxes()
 	report := &fact.UsageReported{
 		Unit:      fact.UnitImage,
 		Source:    fact.UsageFromUpstream,
 		Count:     parsed.ImageCount(),
-		Requested: p.req.N,
-		Quality:   p.req.Quality,
-		Size:      p.req.Size,
+		Requested: requested,
+		Quality:   quality,
+		Size:      size,
 	}
 	if parsed.Usage != nil {
 		report.Prompt = parsed.Usage.InputTokens
@@ -319,36 +503,73 @@ func (p *imagePayload) FinalizeUsage(fact.Delivery) *fact.UsageReported {
 	return report
 }
 
-// LogPolicy keeps the requests raw and stores the responses rendered: a
-// b64_json answer is megabytes of base64 whose only diagnostic value is that
-// it existed and how big it was, and a debug table is not an image store.
+// requestStorage says how this request's two halves keep their request
+// bodies: a generations request is the caller's own small JSON and stays
+// raw; an edits upload renders to its multipart shape so its pixels never
+// reach storage.
+func (p *imagePayload) requestStorage() BodyStorage {
+	if p.isEdit() {
+		return BodyStoredRendered
+	}
+	return BodyStoredRaw
+}
+
+// LogPolicy stores the responses rendered: a b64_json answer is megabytes of
+// base64 whose only diagnostic value is that it existed and how big it was,
+// and a debug table is not an image store.
 func (p *imagePayload) LogPolicy() LogPolicy {
+	if p.streamAsked() {
+		// A streamed answer is partial events with whole base64 images
+		// inside them — the one images body whose bytes are worth less to a
+		// debug row than the row's own size. Dropping the client response
+		// also means the capture file is never opened; the requests and the
+		// settlement carry what an operator can read.
+		return LogPolicy{Store: map[BodyKind]BodyStorage{
+			BodyClientRequest:    p.requestStorage(),
+			BodyUpstreamRequest:  p.requestStorage(),
+			BodyUpstreamResponse: BodyDropped,
+			BodyClientResponse:   BodyDropped,
+		}}
+	}
 	return LogPolicy{Store: map[BodyKind]BodyStorage{
-		BodyClientRequest:    BodyStoredRaw,
-		BodyUpstreamRequest:  BodyStoredRaw,
+		BodyClientRequest:    p.requestStorage(),
+		BodyUpstreamRequest:  p.requestStorage(),
 		BodyUpstreamResponse: BodyStoredRendered,
 		BodyClientResponse:   BodyStoredRendered,
 	}}
 }
 
-// SanitizeForLog renders one body for the audit trail. Requests are the
-// caller's own small JSON and pass through untouched; responses run through
-// the base64 redactor, which keeps every field but the image payloads
-// themselves.
-func (p *imagePayload) SanitizeForLog(k BodyKind, _ string, body []byte) string {
-	if k != BodyUpstreamResponse && k != BodyClientResponse {
-		return string(body)
+// SanitizeForLog renders one body for the audit trail. Generation requests
+// are the caller's own small JSON and pass through untouched; an edit
+// request renders its multipart shape with file parts as size notes — but
+// the native edit request is JSON whose image fields carry the uploads as
+// base64 data URIs, and that one gets the same redaction the responses get:
+// a debug row is not an image store on either side of the wire. Responses
+// run through the base64 redactor, which keeps every field but the image
+// payloads themselves.
+func (p *imagePayload) SanitizeForLog(k BodyKind, contentType string, body []byte) string {
+	if k == BodyUpstreamResponse || k == BodyClientResponse {
+		return redactBase64Images(body)
 	}
-	return redactBase64Images(body)
+	if p.isEdit() {
+		if strings.HasPrefix(contentType, "multipart/") {
+			return images.RenderEditBodyForLog(contentType, body)
+		}
+		return redactImageRequest(body)
+	}
+	return string(body)
 }
 
 // b64ImageJSON matches a base64 image payload long enough that keeping it
 // verbatim is the difference between a debug row and a megabyte blob. The
 // well-known field names cover the OpenAI images shape and the b64 fields
-// providers nest inside content arrays; everything else in the body is kept.
-// The length floor is as high as Go's regexp repeat limit allows (1000): a
-// real image payload is orders of magnitude longer, and short values stay.
-var b64ImageJSON = regexp.MustCompile(`"(b64_json|image)"\s*:\s*"([A-Za-z0-9+/=]{1000,})"`)
+// providers nest inside content arrays; the optional data-URI prefix covers
+// the same payloads in the native edit request, where the upload rides as
+// data:<mime>;base64,… inside the image field. Everything else in the body
+// is kept. The length floor is as high as Go's regexp repeat limit allows
+// (1000): a real image payload is orders of magnitude longer, and short
+// values stay.
+var b64ImageJSON = regexp.MustCompile(`"(b64_json|image)"\s*:\s*"(data:[^"]{0,128};base64,)?([A-Za-z0-9+/=]{1000,})"`)
 
 // b64OmitNote is what a redacted payload is replaced with — the fact of the
 // image and its length, which is all a protocol bug needs to see.
@@ -363,6 +584,29 @@ const b64OmitNote = "[base64 image omitted: %d chars]"
 func redactBase64Images(body []byte) string {
 	return b64ImageJSON.ReplaceAllStringFunc(string(body), func(match string) string {
 		m := b64ImageJSON.FindStringSubmatch(match)
+		if m == nil {
+			return match
+		}
+		return `"` + m[1] + `":"` + fmt.Sprintf(b64OmitNote, len(m[3])) + `"`
+	})
+}
+
+// imageDataURIJSON is the request-side redactor: a data URI inside an image
+// field is an image payload by construction — this gateway put it there — so
+// it is redacted at any length. The response redactor's length floor exists
+// to keep short response values from being mangled as thumbnails; a request
+// has no such false positives to guard against, and a caller's upload can
+// honestly be a few hundred bytes.
+var imageDataURIJSON = regexp.MustCompile(`"(b64_json|image)"\s*:\s*"data:[^"]{0,128};base64,([A-Za-z0-9+/=]+)"`)
+
+// redactImageRequest renders a request body for the audit trail: the
+// response redactor first (a caller's JSON request can embed long b64
+// values too), then every remaining data-URI image field whatever its
+// length.
+func redactImageRequest(body []byte) string {
+	out := redactBase64Images(body)
+	return imageDataURIJSON.ReplaceAllStringFunc(out, func(match string) string {
+		m := imageDataURIJSON.FindStringSubmatch(match)
 		if m == nil {
 			return match
 		}

@@ -20,6 +20,7 @@
       <EndpointRow :label="t('apiKeys.endpointAnthropic')" :value="gatewayEndpoint" :pending="endpointPending" />
       <EndpointRow :label="t('apiKeys.endpointExample')" :value="curlSample" :pending="endpointPending" wide />
       <EndpointRow :label="t('apiKeys.endpointImageExample')" :value="imageCurlSample" :pending="endpointPending" wide />
+      <EndpointRow :label="t('apiKeys.endpointEditExample')" :value="imageEditCurlSample" :pending="endpointPending" wide />
     </div>
 
     <div class="filter-panel">
@@ -133,9 +134,10 @@ const showCreate = ref(false)
 // Gateway access info panel. The sample request carries a placeholder
 // rather than a key — a real one only ever appears in the create modal's
 // one-time plaintext step.
-const { endpoint: gatewayEndpoint, openAIBaseUrl, curlExample, imageCurlExample, pending: endpointPending } = useGatewayEndpoint()
+const { endpoint: gatewayEndpoint, openAIBaseUrl, curlExample, imageCurlExample, imageEditCurlExample, pending: endpointPending } = useGatewayEndpoint()
 const curlSample = computed(() => curlExample())
 const imageCurlSample = computed(() => imageCurlExample())
+const imageEditCurlSample = computed(() => imageEditCurlExample())
 const showEdit = ref(false)
 const editingId = ref<number | null>(null)
 const showCompress = ref(false)

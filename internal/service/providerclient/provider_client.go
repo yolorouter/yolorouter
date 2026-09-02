@@ -11,7 +11,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -323,6 +328,22 @@ func (c *HTTPProviderClient) runTestRequestAt(
 	ctx context.Context, url string, proto protocols.ProtocolID, apiKey, model string, reqPayload interface{},
 	handle func(resp *http.Response, durationMs int64) (TestResult, error),
 ) (TestResult, error) {
+	reqBody, err := json.Marshal(reqPayload)
+	if err != nil {
+		return TestResult{}, fmt.Errorf("marshal request body: %w", err)
+	}
+	return c.runRawTestRequestAt(ctx, url, proto, apiKey, "application/json", reqBody, handle)
+}
+
+// runRawTestRequestAt is runTestRequestAt for a body that is already bytes
+// and a content type that says what it is — the multipart edit probe cannot
+// ride the JSON marshal the generic runner does. An explicit content type
+// overrides the one the codec set, so a multipart upload is not announced
+// as JSON.
+func (c *HTTPProviderClient) runRawTestRequestAt(
+	ctx context.Context, url string, proto protocols.ProtocolID, apiKey, contentType string, reqBody []byte,
+	handle func(resp *http.Response, durationMs int64) (TestResult, error),
+) (TestResult, error) {
 	if !c.limiter.TryAcquire() {
 		return TestResult{}, fmt.Errorf("too many concurrent provider test calls in flight")
 	}
@@ -330,11 +351,6 @@ func (c *HTTPProviderClient) runTestRequestAt(
 
 	ctx, cancel := context.WithTimeout(ctx, providerClientTimeout)
 	defer cancel()
-
-	reqBody, err := json.Marshal(reqPayload)
-	if err != nil {
-		return TestResult{}, fmt.Errorf("marshal request body: %w", err)
-	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
@@ -344,6 +360,9 @@ func (c *HTTPProviderClient) runTestRequestAt(
 	// Authorization: Bearer for openai/responses, x-api-key +
 	// anthropic-version for anthropic, an API-key header/param for gemini.
 	requestEncoderFor(proto).SetupRequest(req, apiKey)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 
 	watcher := &connectionWatcher{}
 	req = watcher.attach(req)
@@ -614,7 +633,13 @@ var isDashScopeImageBase = images.IsDashScopeBase
 // no routed request would ever hit.
 func (c *HTTPProviderClient) TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
 	if isDashScopeImageBase(baseURL) {
+		if isEditShapedModel(model) {
+			return c.testDashScopeImageEdit(ctx, baseURL, apiKey, model)
+		}
 		return c.testDashScopeImageGeneration(ctx, baseURL, apiKey, model)
+	}
+	if isEditShapedModel(model) {
+		return c.testImageEdit(ctx, baseURL, apiKey, model)
 	}
 	payload := map[string]interface{}{"model": model, "prompt": imageProbePrompt, "n": 1}
 	imagesURL := protocols.JoinUpstreamURL(baseURL, "/v1/images/generations", protocols.ProtocolOpenAI)
@@ -625,19 +650,111 @@ func (c *HTTPProviderClient) TestImageGeneration(ctx context.Context, baseURL, a
 				return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
 			}
 			if resp.StatusCode == http.StatusOK {
-				// A 200 is judged ONLY by the images shape. The generic
-				// classifier's 200 validator recognizes chat bodies, so a
-				// chat-shaped answer routed here (an images path that is
-				// really serving chat) would otherwise certify a mapping
-				// that cannot deliver a single image.
-				if res, recognized := classifyImageSuccessBody(body, duration); recognized {
+				return classifyOpenAIImageProbeBody(body, duration), nil
+			}
+			return classifyResponse(protocols.ProtocolOpenAI, resp, body, model, duration), nil
+		})
+}
+
+// isEditShapedModel reports whether a model's name says it is an edit model
+// (qwen-image-edit and kin). The edit family requires a reference image — a
+// text-only generation probe would measure the family's own input rule, not
+// the mapping — so the probe switches to the edits shape for these names. A
+// name heuristic, like the import-time modality heuristic it belongs with:
+// catalogues say "edit", they do not carry a capability flag for it.
+func isEditShapedModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "edit")
+}
+
+// editProbeImage is the reference image the edit-shaped probes attach: a
+// solid red 64x64 square, rendered with the standard library on first use
+// rather than embedded as a byte literal or loaded from a file the binary
+// would have to carry. A flat colour compresses to a few hundred PNG bytes,
+// cheap enough for a connectivity probe.
+var editProbeImage = func() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{R: 200, G: 30, B: 30, A: 255}}, image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic("providerclient: render edit probe image: " + err.Error())
+	}
+	return buf.Bytes()
+}()
+
+// classifyOpenAIImageProbeBody judges a 200 ONLY by the images shape. The
+// generic classifier's 200 validator recognizes chat bodies, so a
+// chat-shaped answer on an images path (one that is really serving chat)
+// would otherwise certify a mapping that cannot deliver a single image.
+func classifyOpenAIImageProbeBody(body []byte, duration int64) TestResult {
+	if res, recognized := classifyImageSuccessBody(body, duration); recognized {
+		return res
+	}
+	return TestResult{
+		Outcome:    TestUpstreamError,
+		DurationMs: duration,
+		Detail:     "HTTP 200: response carries no data array",
+	}
+}
+
+// testImageEdit probes an edit-shaped mapping the way an edits request
+// actually reaches an OpenAI-compatible provider: the edits endpoint, a
+// multipart upload with the reference image attached.
+func (c *HTTPProviderClient) testImageEdit(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for field, value := range map[string]string{
+		"model":  model,
+		"prompt": imageProbePrompt,
+		"n":      "1",
+	} {
+		if err := w.WriteField(field, value); err != nil {
+			return TestResult{}, fmt.Errorf("build image edit probe: %w", err)
+		}
+	}
+	part, err := w.CreateFormFile("image", "probe.png")
+	if err != nil {
+		return TestResult{}, fmt.Errorf("build image edit probe: %w", err)
+	}
+	if _, err := part.Write(editProbeImage); err != nil {
+		return TestResult{}, fmt.Errorf("build image edit probe: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return TestResult{}, fmt.Errorf("build image edit probe: %w", err)
+	}
+
+	editsURL := protocols.JoinUpstreamURL(baseURL, images.EditPath, protocols.ProtocolOpenAI)
+	return c.runRawTestRequestAt(ctx, editsURL, protocols.ProtocolOpenAI, apiKey, w.FormDataContentType(), buf.Bytes(),
+		func(resp *http.Response, duration int64) (TestResult, error) {
+			body, ok := readBoundedBody(resp)
+			if !ok {
+				return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
+			}
+			if resp.StatusCode == http.StatusOK {
+				return classifyOpenAIImageProbeBody(body, duration), nil
+			}
+			return classifyResponse(protocols.ProtocolOpenAI, resp, body, model, duration), nil
+		})
+}
+
+// testDashScopeImageEdit is the edit-shaped half of the native probe: the
+// reference image travels as a base64 data URI content item in the native
+// encoding, and the answer is judged by the native dialect's rules.
+func (c *HTTPProviderClient) testDashScopeImageEdit(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	native, err := images.EncodeEditRequest(imageProbePrompt, model,
+		[]images.EditFile{{FieldName: "image", FileName: "probe.png", ContentType: "image/png", Data: editProbeImage}}, 1, "")
+	if err != nil {
+		return TestResult{}, fmt.Errorf("encode dashscope image edit probe: %w", err)
+	}
+	return c.runRawTestRequestAt(ctx, images.UpstreamURL(baseURL), protocols.ProtocolOpenAI, apiKey, "application/json", native,
+		func(resp *http.Response, duration int64) (TestResult, error) {
+			body, ok := readBoundedBody(resp)
+			if !ok {
+				return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
+			}
+			if resp.StatusCode == http.StatusOK {
+				if res, ok := classifyDashScopeImageProbeBody(body, duration); ok {
 					return res, nil
 				}
-				return TestResult{
-					Outcome:    TestUpstreamError,
-					DurationMs: duration,
-					Detail:     "HTTP 200: response carries no data array",
-				}, nil
 			}
 			return classifyResponse(protocols.ProtocolOpenAI, resp, body, model, duration), nil
 		})
@@ -665,26 +782,38 @@ func (c *HTTPProviderClient) testDashScopeImageGeneration(ctx context.Context, b
 				return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
 			}
 			if resp.StatusCode == http.StatusOK {
-				_, _, decodeErr := images.DecodeResponse(body)
-				if decodeErr == nil {
-					return TestResult{Outcome: TestSuccess, DurationMs: duration}, nil
+				if res, ok := classifyDashScopeImageProbeBody(body, duration); ok {
+					return res, nil
 				}
-				var business *images.BusinessError
-				if errors.As(decodeErr, &business) {
-					return TestResult{
-						Outcome:    TestUpstreamError,
-						DurationMs: duration,
-						Detail:     fmt.Sprintf("HTTP 200: dashscope error %s: %s", business.Code, business.Message),
-					}, nil
-				}
-				return TestResult{
-					Outcome:    TestUpstreamError,
-					DurationMs: duration,
-					Detail:     fmt.Sprintf("HTTP 200: %v", decodeErr),
-				}, nil
 			}
 			return classifyResponse(protocols.ProtocolOpenAI, resp, body, model, duration), nil
 		})
+}
+
+// classifyDashScopeImageProbeBody judges a native-dialect 200 by the
+// dialect's own rules: a delivered image passes, a 200-carried business code
+// fails with the upstream's own message, any other 200 (unparseable, or no
+// image in it) is an upstream error that says so. The boolean says whether
+// the body was judged at all, so a non-200 caller can fall to the shared
+// status classification.
+func classifyDashScopeImageProbeBody(body []byte, duration int64) (TestResult, bool) {
+	_, _, decodeErr := images.DecodeResponse(body)
+	if decodeErr == nil {
+		return TestResult{Outcome: TestSuccess, DurationMs: duration}, true
+	}
+	var business *images.BusinessError
+	if errors.As(decodeErr, &business) {
+		return TestResult{
+			Outcome:    TestUpstreamError,
+			DurationMs: duration,
+			Detail:     fmt.Sprintf("HTTP 200: dashscope error %s: %s", business.Code, business.Message),
+		}, true
+	}
+	return TestResult{
+		Outcome:    TestUpstreamError,
+		DurationMs: duration,
+		Detail:     fmt.Sprintf("HTTP 200: %v", decodeErr),
+	}, true
 }
 
 // classifyImageSuccessBody judges a 200 images answer. A data array — even

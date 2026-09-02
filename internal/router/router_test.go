@@ -3,8 +3,10 @@ package router
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -726,5 +728,41 @@ func TestRetrieveModelRouteMatchesSlashNamedModel(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 (route matched, auth rejected), got %d, body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestImageEditsRouteReachesGatewayWithValidKey proves POST /v1/images/edits
+// is registered on the protected /v1 group (auth, body cap, bodies-dir) and
+// dispatches a multipart upload into the gateway handler. No model is
+// configured here, so Service.Handle's own "model does not exist" answer is
+// the proof the request arrived: a routing miss would answer the engine's
+// route_not_found envelope instead, and an auth miss would answer 401.
+func TestImageEditsRouteReachesGatewayWithValidKey(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedAPIKey(t, db, "sk-yr-image-edits-route")
+	r, err := New(testDeps(t, db))
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", "qwen-image-edit")
+	_ = mw.WriteField("prompt", "brighten it")
+	part, _ := mw.CreateFormFile("image", "a.png")
+	_, _ = part.Write([]byte("\x89PNG fake bytes"))
+	_ = mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(buf.Bytes()))
+	req.Header.Set("X-Api-Key", "sk-yr-image-edits-route")
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code == http.StatusUnauthorized || w.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("expected the request to reach the gateway handler (not rejected at auth/routing), got %d, body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "model does not exist") {
+		t.Fatalf("expected the gateway's model-not-found answer, got %d, body: %s", w.Code, w.Body.String())
 	}
 }

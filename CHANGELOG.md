@@ -35,6 +35,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on every model object (OpenAI and Anthropic shapes), so clients can
   discover which models are image models.
 
+- Image editing. `POST /v1/images/edits` accepts the OpenAI multipart
+  upload (reference images, mask, prompt) and forwards it to
+  OpenAI-compatible providers with only the model field rewritten, the
+  re-encode cached across failover attempts. DashScope providers are served
+  through the native multimodal-generation dialect with the uploaded images
+  carried as base64 data URIs; that dialect has no mask field, so a masked
+  ask is refused per candidate rather than silently dropped. Settlement
+  reuses the per-image rules, and the audit row renders the upload's shape
+  — file parts become size notes — instead of its pixels.
+
+- Image streaming. `stream=true` on the images endpoints is served as
+  named-event SSE passthrough for `gpt-image-*` models (partial_image and
+  completed events, on both the generation and the edit route); any other
+  model keeps the 400. Usage is read from the completed events, and an
+  incomplete delivery — the upstream's own error event, a stream that never
+  completes an image, a broken read — bills nothing.
+
+- Edit-shaped models are probed with a reference image attached (multipart
+  on OpenAI-compatible bases, a data-URI content item in the native
+  dialect), so importing e.g. qwen-image-edit no longer measures the edit
+  family's own input rule as a probe failure.
+
 ## [0.2.0] - 2026-08-28
 
 ### Added

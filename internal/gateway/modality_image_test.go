@@ -7,6 +7,7 @@ package gateway
 // exactly when the behaviour it describes comes undone.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -39,11 +40,12 @@ func setImageOutputModalities(t *testing.T, db *gorm.DB, modelID uint, list stri
 // image-capable model with one candidate, and a caller key allowed to reach
 // that model.
 type imageRig struct {
-	svc     *Service
-	db      *gorm.DB
-	key     *model.APIKey
-	modelID uint
-	hits    atomic.Int64
+	svc      *Service
+	db       *gorm.DB
+	key      *model.APIKey
+	modelID  uint
+	provider *model.Provider
+	hits     atomic.Int64
 	// lastPath / lastAuth / lastBody record what the upstream saw, written
 	// from the handler goroutine and read after Handle returns.
 	lastPath string
@@ -55,6 +57,14 @@ const imageUpstreamBody = `{"created":1700000000,"data":[{"url":"https://example
 
 func newImageRig(t *testing.T) *imageRig {
 	t.Helper()
+	return newImageRigWith(t, nil)
+}
+
+// newImageRigWith builds the fixture with a caller-chosen upstream answer;
+// nil means the default OpenAI-shaped images JSON. The recording wrapper
+// runs for every answer, so a test's handler only writes its response.
+func newImageRigWith(t *testing.T, answer func(w http.ResponseWriter, r *http.Request)) *imageRig {
+	t.Helper()
 	rig := &imageRig{}
 	rig.db = testutil.NewSQLiteDB(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,12 +72,17 @@ func newImageRig(t *testing.T) *imageRig {
 		rig.lastPath = r.URL.Path
 		rig.lastAuth = r.Header.Get("Authorization")
 		rig.lastBody, _ = io.ReadAll(r.Body)
+		if answer != nil {
+			answer(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(imageUpstreamBody))
 	}))
 	t.Cleanup(up.Close)
 	rig.svc = newSvc(t, rig.db)
 	p := createProvider(t, rig.db, "image-provider", up.URL)
+	rig.provider = p
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "image-model", "image-model-real", false, false, 1)
 	setImageOutputModalities(t, rig.db, m.ID, `["image"]`)
@@ -161,9 +176,9 @@ func TestImageGenerationPassthroughEndToEnd(t *testing.T) {
 	}
 }
 
-// A streaming ask is refused at the door, before any upstream is walked:
-// the caller learns the endpoint does not stream rather than hanging on a
-// stream that never frames.
+// A streaming ask for a model outside the streaming family is refused at
+// the door, before any upstream is walked: the caller learns which models
+// stream rather than hanging on a stream that never frames.
 func TestImageStreamingIsRefusedBeforeUpstream(t *testing.T) {
 	rig := newImageRig(t)
 
@@ -181,12 +196,12 @@ func TestImageStreamingIsRefusedBeforeUpstream(t *testing.T) {
 	if err := rig.db.Where("request_id = ?", "req-image-stream").First(&row).Error; err != nil {
 		t.Fatalf("no request log row: %v", err)
 	}
-	if row.FailReason == nil || *row.FailReason != "image_streaming_unsupported" {
+	if row.FailReason == nil || *row.FailReason != "image_streaming_model_unsupported" {
 		got := "<nil>"
 		if row.FailReason != nil {
 			got = *row.FailReason
 		}
-		t.Errorf("fail_reason = %q, want image_streaming_unsupported", got)
+		t.Errorf("fail_reason = %q, want image_streaming_model_unsupported", got)
 	}
 }
 
@@ -380,5 +395,21 @@ func TestImageB64ResponseIsAuditedRedacted(t *testing.T) {
 	// The request bodies stay raw: they are the caller's own small JSON.
 	if !strings.Contains(row.RequestBody, "a fox") {
 		t.Errorf("request_body was rendered instead of kept raw: %.120s", row.RequestBody)
+	}
+}
+
+// A small upload redacts as surely as a large one: the request-side data-URI
+// redactor has no length floor, because a caller's image can honestly be a
+// few hundred bytes and a data URI in a request this gateway encoded is an
+// image payload by construction.
+func TestImageRequestRedactionHasNoLengthFloor(t *testing.T) {
+	tiny := base64.StdEncoding.EncodeToString([]byte("\x89PNG small"))
+	body := []byte(`{"model":"m","input":{"messages":[{"role":"user","content":[{"image":"data:image/png;base64,` + tiny + `"},{"text":"p"}]}]}}`)
+	out := redactImageRequest(body)
+	if strings.Contains(out, tiny) || strings.Contains(out, "data:image/") {
+		t.Errorf("small data URI survived the request redactor: %s", out)
+	}
+	if !strings.Contains(out, "[base64 image omitted:") {
+		t.Errorf("redaction note missing: %s", out)
 	}
 }

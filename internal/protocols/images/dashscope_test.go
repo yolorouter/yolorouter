@@ -6,6 +6,7 @@ package images
 // classes, and error normalization.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -273,4 +274,59 @@ func TestNormalizeError(t *testing.T) {
 			t.Errorf("fallback message should contain the status, got: %q", msg)
 		}
 	})
+}
+
+// The native edit encode carries the uploaded reference images as base64
+// data URI content items ahead of the instruction text, through the same
+// message and parameter shape the generation half builds.
+func TestEncodeEditRequest(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	images := []EditFile{
+		{FieldName: "image", FileName: "a.png", ContentType: "image/png", Data: png},
+		{FieldName: "image", FileName: "b.bin", Data: []byte{0xff}},
+	}
+	body, err := EncodeEditRequest("remove the hat", "qwen-image-edit", images, 2, "1024x1024")
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var got struct {
+		Model      string `json:"model"`
+		Parameters struct {
+			N    int    `json:"n"`
+			Size string `json:"size"`
+		} `json:"parameters"`
+		Input struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Text  string `json:"text"`
+					Image string `json:"image"`
+				} `json:"content"`
+			} `json:"messages"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("encoded body did not parse: %v (%s)", err, body)
+	}
+	if got.Model != "qwen-image-edit" || got.Parameters.N != 2 || got.Parameters.Size != "1024*1024" {
+		t.Errorf("routing/axes = %q n:%d size:%q", got.Model, got.Parameters.N, got.Parameters.Size)
+	}
+	if len(got.Input.Messages) != 1 || got.Input.Messages[0].Role != "user" {
+		t.Fatalf("messages = %+v", got.Input.Messages)
+	}
+	content := got.Input.Messages[0].Content
+	if len(content) != 3 {
+		t.Fatalf("content items = %d, want 2 images then the prompt", len(content))
+	}
+	if want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png); content[0].Image != want || content[0].Text != "" {
+		t.Errorf("first image item = %+v, want the png data URI with no text field", content[0])
+	}
+	// A part that arrived without a content type has its bytes sniffed
+	// rather than sent as a contentless URI.
+	if !strings.HasPrefix(content[1].Image, "data:text/plain; charset=utf-8;base64,") {
+		t.Errorf("sniffed image item = %q", content[1].Image)
+	}
+	if content[2].Text != "remove the hat" || content[2].Image != "" {
+		t.Errorf("prompt item = %+v, want the trailing text item", content[2])
+	}
 }

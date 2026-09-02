@@ -65,6 +65,7 @@ export default {
   endpointAnthropic: 'Anthropic-compatible',
   endpointExample: 'Example request',
   endpointImageExample: 'Image generation example',
+  endpointEditExample: 'Image editing example',
   copyFullKey: 'Copy full key',
   savedConfirm: 'I have saved it',
   unsavedConfirmTitle: 'Not confirmed saved',

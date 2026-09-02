@@ -489,9 +489,17 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// chat routes: the path resolves to the images protocol, the modality
 	// registry hands the request to the image modality, and everything the
 	// chain already does (auth, body cap, budget gate, audit) applies
-	// unchanged. The request body is small JSON — a prompt, not pixels —
-	// so the shared 20MiB cap needs no widening here.
+	// unchanged. The generations request body is small JSON — a prompt, not
+	// pixels — so the shared 20MiB cap needs no widening there. The edits
+	// route below IS pixels, but its uploads fit the same cap: a reference
+	// image is megabytes, not tens of them, and an oversized upload is
+	// refused with 413 rather than priced into every other route.
 	v1.POST("/images/generations", gateway.PostChatCompletions(relaySvc))
+	// The edits path is relative to this /v1 group, unlike the images
+	// package's EditPath constant, which is the full ingress route other
+	// layers match on (IngressProtocol) and the egress path on
+	// OpenAI-compatible providers.
+	v1.POST("/images/edits", gateway.PostChatCompletions(relaySvc))
 	// Model discovery: GET /v1/models and GET /v1/models/:model are
 	// read-only and bypass Service (no provider fan-out, no spend).
 	// They reuse the same APIKeyAuth + body-cap chain the relay POSTs above
