@@ -8,6 +8,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"image"
@@ -545,7 +546,7 @@ func TestImageEditDashScopeBusinessErrorIsAnsweredNotRetried(t *testing.T) {
 // built, the same seam PrepareUpstream serves in production.
 func TestImageEditReencodeCachedPerModel(t *testing.T) {
 	ct, body := buildEditUpload(t)
-	payload, rej := (imageModality{}).Admit(nil, Ingress{
+	payload, rej := (imageModality{}).Admit(context.TODO(), Ingress{
 		Protocol: protocols.ProtocolImages, Path: "/v1/images/edits", ContentType: ct, Body: body,
 	})
 	if rej != nil {
