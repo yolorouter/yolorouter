@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-08-30",
+  "updated_at": "2026-08-31",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
@@ -35,12 +35,6 @@
         "output": 27,
         "cacheWrite": null,
         "cacheRead": 1.1
-      },
-      "kimi-k2.5": {
-        "input": 4,
-        "output": 21,
-        "cacheWrite": null,
-        "cacheRead": 0.7
       }
     },
     "open.bigmodel.cn": {

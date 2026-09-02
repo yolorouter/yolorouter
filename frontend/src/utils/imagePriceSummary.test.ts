@@ -41,7 +41,7 @@ describe('imagePriceSummary', () => {
 
 describe('candidateUnpriced', () => {
   const tokenRow = {
-    billing_mode: 'token',
+    billing_mode: 'token' as const,
     image_pricing_tiers: null,
     input_price: 0,
     output_price: 0,
@@ -59,7 +59,7 @@ describe('candidateUnpriced', () => {
     // nothing — the badge must not read them as "priced".
     const imageRow = {
       ...tokenRow,
-      billing_mode: 'image',
+      billing_mode: 'image' as const,
       input_price: 0.3,
       output_price: 1.2,
       image_pricing_tiers: null,

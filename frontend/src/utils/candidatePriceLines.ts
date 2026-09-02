@@ -12,7 +12,7 @@
 // helpers, so the two pages (and anything later) grey out identically.
 
 import { h, type VNodeChild } from 'vue'
-import type { ImagePricingTiers } from '../api/models'
+import type { BillingMode, ImagePricingTiers } from '../api/models'
 import { formatImagePrice, imagePriceSummary } from './imagePriceSummary'
 
 type Translator = (key: string, named?: Record<string, unknown>) => string
@@ -20,7 +20,7 @@ type Translator = (key: string, named?: Record<string, unknown>) => string
 // The fields both price columns read. Satisfied by ModelCandidate and
 // ProviderCandidate alike.
 export type PricedCandidate = {
-  billing_mode: string
+  billing_mode: BillingMode
   image_pricing_tiers: ImagePricingTiers | null
   input_price: number
   output_price: number

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { candidateDisplayState, candidateIsOwedWork, candidateProgressState, isUnpriced, pendingStateBadge, summarizeImportProgress } from './importProgress'
+import type { ImportItemResult, ProviderCandidate } from '../api/models'
+import { candidateDisplayState, candidateIsOwedWork, candidateProgressState, isUnpriced, pendingStateBadge, skipsWorthReading, summarizeImportProgress } from './importProgress'
 
+// Full-shape ProviderCandidate factory: the return type pins the fixture to
+// the API contract, so a newly required field breaks HERE, at the factory,
+// instead of at every call site the fixture feeds.
 const cand = (
   id: number,
   verification: number,
@@ -8,7 +12,7 @@ const cand = (
   error: string | null = null,
   testedAt: string | null = null,
   queueState: '' | 'queued' | 'probing' = '',
-) => ({
+): ProviderCandidate => ({
   candidate_id: id,
   model_id: id,
   model_name: `m-${id}`,
@@ -159,5 +163,42 @@ describe('candidateDisplayState', () => {
     expect(candidateDisplayState(cand(3, 2, 2))).toBe('failed')
     expect(candidateDisplayState({ ...cand(4, 0, 2), auto_enable_on_pass: true })).toBe('pending')
     expect(candidateDisplayState(cand(4, 0, 2))).toBe('idle')
+  })
+})
+
+describe('skipsWorthReading', () => {
+  // The backend's skip reasons (internal/service/modeladmin/import_service.go):
+  // 'exists' is routine, 'invalid' and 'modality_mismatch' name admin action.
+  const skip = (name: string, reason?: ImportItemResult['reason']): ImportItemResult => ({
+    name,
+    status: 'skipped',
+    ...(reason === undefined ? {} : { reason }),
+  })
+
+  it('keeps the actionable skips and hides the routine exists skip', () => {
+    const items = [skip('a', 'invalid'), skip('b', 'modality_mismatch'), skip('c', 'exists')]
+    expect(skipsWorthReading(items).map((it) => it.name)).toEqual(['a', 'b'])
+  })
+
+  it('keeps a skip that carries no reason — undefined is not "exists"', () => {
+    // The wire contract omits reason (omitempty), it never sends "". A
+    // reasonless skip must still surface in the progress view.
+    expect(skipsWorthReading([skip('a')])).toEqual([{ name: 'a', status: 'skipped' }])
+  })
+
+  it('drops rows that are not skips, whatever their reason field says', () => {
+    const items: ImportItemResult[] = [
+      { name: 'a', status: 'created', candidate_id: 1, model_id: 1 },
+      { name: 'b', status: 'appended', candidate_id: 2, model_id: 2, reason: 'exists' },
+      // No candidate_id either: on the wire created/appended rows always
+      // carry one, so this row exercises the status conjunct alone.
+      { name: 'c', status: 'created' },
+    ]
+    expect(skipsWorthReading(items)).toEqual([])
+  })
+
+  it('drops a skipped row that carries a candidate_id — it is probed, not displayed', () => {
+    const items: ImportItemResult[] = [{ name: 'a', status: 'skipped', reason: 'invalid', candidate_id: 9, model_id: 9 }]
+    expect(skipsWorthReading(items)).toEqual([])
   })
 })

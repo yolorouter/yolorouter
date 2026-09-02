@@ -258,6 +258,7 @@ import ModalDrawer from '../common/ModalDrawer.vue'
 import FilterSelectField from '../common/FilterSelectField.vue'
 import NewProviderModal from '../providers/NewProviderModal.vue'
 import type {
+  BillingMode,
   CandidateTestReport,
   ImagePricingTier,
   ModelCandidate,
@@ -332,7 +333,7 @@ const form = reactive({
   cacheReadPrice: null as number | null,
   maxOutput: 0 as number | null,
   enabled: true,
-  billingMode: 'token' as 'token' | 'image',
+  billingMode: 'token' as BillingMode,
   imageTiers: [] as ImagePricingTier[],
   imageDefaultPrice: null as number | null,
 })

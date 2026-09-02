@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isVNode, type VNodeChild } from 'vue'
+import type { BillingMode } from '../api/models'
 import { candidatePriceLines, type PricedCandidate } from './candidatePriceLines'
 
 // The shared price renderer's four branches: an image-billed row reads its
@@ -12,7 +13,7 @@ const t = (key: string, named?: Record<string, unknown>) =>
   named ? `${key} ${JSON.stringify(named)}` : key
 
 const imageRow = (tiers: PricedCandidate['image_pricing_tiers']): PricedCandidate => ({
-  billing_mode: 'image',
+  billing_mode: 'image' as BillingMode,
   image_pricing_tiers: tiers,
   input_price: 1,
   output_price: 2,
@@ -21,7 +22,7 @@ const imageRow = (tiers: PricedCandidate['image_pricing_tiers']): PricedCandidat
 })
 
 const tokenRow = (cacheWrite: number | null, cacheRead: number | null): PricedCandidate => ({
-  billing_mode: 'token',
+  billing_mode: 'token' as BillingMode,
   image_pricing_tiers: null,
   input_price: 1,
   output_price: 2,

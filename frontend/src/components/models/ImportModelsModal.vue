@@ -86,7 +86,7 @@ import { importProviderModels, listProviderCandidates, suggestPrices, type Impor
 import { displayMessage } from '../../api/client'
 import { buildImportRows, chunkByCap, IMPORT_BATCH_CAP, normalizeCatalogNames, toImportItems, type ImportRow } from '../../utils/importRows'
 import { catalogueFailure, NO_CATALOGUE_FAILURE, type CatalogueFailure } from '../../utils/catalogueFailure'
-import { candidateIsOwedWork, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress, type ImportProgress } from '../../utils/importProgress'
+import { candidateIsOwedWork, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, skipsWorthReading, summarizeImportProgress, type ImportProgress } from '../../utils/importProgress'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
 import { outputModalityOptions } from '../../utils/modalityOptions'
 import ModalDrawer from '../common/ModalDrawer.vue'
@@ -447,12 +447,7 @@ async function onImport() {
   if (merged.items.length === 0) return
   emit('imported', merged)
   if (generation !== dialogGeneration) return
-  // Skips worth reading are kept for the progress view: an "exists" skip is
-  // routine, but "invalid" and "modality_mismatch" name something the admin
-  // must fix for the row to ever import.
-  skippedItems.value = merged.items.filter(
-    (it) => it.status === 'skipped' && !it.candidate_id && it.reason !== 'exists',
-  )
+  skippedItems.value = skipsWorthReading(merged.items)
   const ids = merged.items.flatMap((item) => (item.candidate_id ? [item.candidate_id] : []))
   if (ids.length === 0) {
     // Nothing to watch being probed. Rows the import refused still deserve
