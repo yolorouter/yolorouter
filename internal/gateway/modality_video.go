@@ -13,6 +13,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,9 +23,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/gateway/video/wan"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
+	"github.com/yolorouter/yolorouter/internal/service/videotask"
 )
 
 // ModalityVideo names the video modality. The spelling is the model row's
@@ -138,7 +139,7 @@ func (p *videoPayload) Supports(cand Candidate) CandidateVerdict {
 	if !isDashScopeBase(cand.BaseURL) {
 		return CandidateVerdict{OK: false, Reason: openAIVideoUnsupported}
 	}
-	if wan.ModelFamily(cand.ProviderModelName) == wan.FamilyNone {
+	if videos.DashScopeModelFamily(cand.ProviderModelName) == videos.DashScopeFamilyNone {
 		return CandidateVerdict{OK: false, Reason: wanFamilyUnsupported}
 	}
 	// Memoize the winner so PrepareUpstream builds the same submit this
@@ -173,14 +174,14 @@ func (p *videoPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 		p.submitErr = fmt.Errorf("video payload prepared for a candidate Supports did not approve")
 		return nil, p.submitErr
 	}
-	resolution, ratio, ok := wan.MapSize(p.effectiveSize())
+	resolution, ratio, ok := videos.MapDashScopeSize(p.effectiveSize())
 	if !ok {
 		// The door validated the vocabulary; this is unreachable defense
 		// against the two maps drifting.
 		p.submitErr = fmt.Errorf("size %q has no dashscope mapping", p.effectiveSize())
 		return nil, p.submitErr
 	}
-	submit := wan.SubmitRequest{
+	submit := videos.DashScopeSubmitRequest{
 		Model: cand.ProviderModelName, Prompt: p.req.Prompt,
 		Resolution: resolution, Ratio: ratio, Duration: p.effectiveSeconds(),
 	}
@@ -191,17 +192,17 @@ func (p *videoPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 			submit.RefContentType = ref.File.ContentType
 		}
 	}
-	body, err := wan.EncodeSubmit(submit)
+	body, err := videos.EncodeDashScopeSubmit(submit)
 	if err != nil {
 		p.submitErr = err
 		return nil, err
 	}
 	return &UpstreamCall{
-		Path:           wan.SubmitPath,
+		Path:           videos.DashScopeSubmitPath,
 		OriginRelative: true,
 		Body:           body,
 		ContentType:    "application/json",
-		Headers:        map[string]string{wan.AsyncHeader: "enable"},
+		Headers:        map[string]string{videos.DashScopeAsyncHeader: "enable"},
 	}, nil
 }
 
@@ -239,9 +240,9 @@ func (p *videoPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 		return fact.HandedOn(fact.FaultUpstream, "response_too_large", nil)
 	}
 
-	taskID, bizErr, perr := wan.ParseSubmitResponse(body)
+	taskID, bizErr, perr := videos.ParseDashScopeSubmitResponse(body)
 	if perr != nil {
-		return fact.HandedOn(fact.FaultUpstream, "wan_submit_decode: "+perr.Error(), perr)
+		return fact.HandedOn(fact.FaultUpstream, "dashscope_submit_decode: "+perr.Error(), perr)
 	}
 	if bizErr != nil {
 		// A business refusal inside a 200: the request itself was refused,
@@ -267,6 +268,19 @@ func (p *videoPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 	// the create must land even if the caller hangs up mid-response —
 	// caller-lifetime contexts are exactly the wrong scope for it.
 	if err := videoTasks.Create(context.Background(), task, time.Now()); err != nil {
+		var budget *videotask.BudgetExceededError
+		if errors.As(err, &budget) {
+			// The caller's own ceiling, not any candidate's health:
+			// answered 429 and settled here so the attempt loop does not
+			// walk every other candidate into the same wall.
+			body, _ := json.Marshal(map[string]any{"error": map[string]string{
+				"message": budget.Error(), "type": errTypeInsufficientQuota,
+			}})
+			if failed := writeVideoJSON(tools, http.StatusTooManyRequests, body); failed != nil {
+				return *failed
+			}
+			return fact.Rejected(http.StatusTooManyRequests, fact.FaultClient, "video_budget_exceeded", budget)
+		}
 		return fact.HandedOn(fact.FaultGateway, "persist video task: "+err.Error(), err)
 	}
 
@@ -283,13 +297,13 @@ func (p *videoPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 // request was rejected, not the provider's. Delivered rather than failed
 // over — settling with no task bills nothing, and the status the caller
 // sees is the refusal's, not a gateway 5xx that reads like an outage.
-func (p *videoPayload) deliverWanRefusal(tools DeliveryTools, upstreamBody []byte, bizErr *wan.BizError) fact.Delivery {
+func (p *videoPayload) deliverWanRefusal(tools DeliveryTools, upstreamBody []byte, bizErr *videos.DashScopeBizError) fact.Delivery {
 	body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": bizErr.Code, "message": bizErr.Message}})
 	tools.Capture.Upstream(upstreamBody)
 	if failed := writeVideoJSON(tools, http.StatusUnprocessableEntity, body); failed != nil {
 		return *failed
 	}
-	return fact.Rejected(http.StatusUnprocessableEntity, fact.FaultClient, "wan_business_error", bizErr)
+	return fact.Rejected(http.StatusUnprocessableEntity, fact.FaultClient, "dashscope_business_error", bizErr)
 }
 
 // writeVideoJSON is the commit→write→flush handshake every video answer

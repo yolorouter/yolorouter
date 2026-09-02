@@ -149,3 +149,60 @@ func ListVideoTasks(db *gorm.DB, f ListVideoTasksFilter) ([]model.VideoTask, int
 	err := q.Order("created_at DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&tasks).Error
 	return tasks, total, err
 }
+
+// SumInFlightVideoEstimated totals the submit-time cost bounds of one
+// key's unfinished tasks: what the budget gate must reserve against, on
+// top of what has already been spent. A completed-but-unsettled row
+// counts too — its charge is coming, exactly once, and the window
+// between the observation and the settle must not be a hole the next
+// submit slips through. Unpriced tasks contribute nothing — there is no
+// number to reserve.
+func SumInFlightVideoEstimated(db *gorm.DB, apiKeyID uint) (int64, error) {
+	var sum struct{ Total int64 }
+	err := db.Model(&model.VideoTask{}).
+		Select("COALESCE(SUM(estimated_micros), 0) AS total").
+		Where("api_key_id = ? AND billed = ? AND (status IN ? OR status = ?)",
+			apiKeyID, false, videoTaskNonTerminal, model.VideoTaskCompleted).
+		Scan(&sum).Error
+	return sum.Total, err
+}
+
+// ListUnbilledCompletedVideoTasks returns the rows the reaper's
+// reconciliation pass settles: completed, never charged, in no
+// particular order — the billed compare-and-set decides the winner, not
+// the walk.
+func ListUnbilledCompletedVideoTasks(db *gorm.DB) ([]model.VideoTask, error) {
+	var tasks []model.VideoTask
+	err := db.Where("status = ? AND billed = ?", model.VideoTaskCompleted, false).
+		Limit(500).Find(&tasks).Error
+	return tasks, err
+}
+
+// ChargeVideoTask settles one completed task exactly once: the billed
+// compare-and-set claims the row, and only the claimer books the charge
+// on the owning key's spend. Both writes share a transaction so a task
+// can never read billed while its charge is missing. Returns false when
+// the row was already settled — the caller treats that as idempotent
+// success, not a race lost.
+func ChargeVideoTask(db *gorm.DB, taskID string, micros int64, now time.Time) (bool, error) {
+	var applied bool
+	err := db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.VideoTask{}).
+			Where("id = ? AND billed = ? AND status = ?", taskID, false, model.VideoTaskCompleted).
+			Updates(map[string]any{"billed": true, "billed_micros": micros, "updated_at": now})
+		if res.Error != nil {
+			return res.Error
+		}
+		applied = res.RowsAffected > 0
+		if !applied {
+			return nil
+		}
+		if micros == 0 {
+			return nil
+		}
+		return tx.Model(&model.APIKey{}).
+			Where("id = (SELECT api_key_id FROM video_tasks WHERE id = ?)", taskID).
+			Update("budget_spent_micros", gorm.Expr("budget_spent_micros + ?", micros)).Error
+	})
+	return applied, err
+}

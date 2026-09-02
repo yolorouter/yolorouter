@@ -1167,7 +1167,7 @@ func TestPostModelsBatchRejectsUnknownModality(t *testing.T) {
 	r, db := newModelTestRouter(t)
 	w, env := doJSON(t, r, http.MethodPost, "/api/admin/models/batch", map[string]interface{}{
 		"names":             []string{"never-created"},
-		"output_modalities": []string{"video"},
+		"output_modalities": []string{"audio"},
 	}, nil)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())

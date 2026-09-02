@@ -124,6 +124,13 @@ type ProviderClient interface {
 	// through its native multimodal-generation endpoint, the same way the
 	// gateway's image delivery reaches it.
 	TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
+	// TestVideoGeneration validates that baseURL+model can run the video
+	// task conversation a routed request runs: a submit the upstream
+	// accepts (task id back) and one query it answers — completion is not
+	// waited for, a render outlasting the probe budget is a healthy
+	// mapping, not a broken one. DashScope hosts only; this build wires
+	// no OpenAI-dialect video upstream.
+	TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
 	// ListModels fetches the upstream model catalogue for a credential
 	// (openai/anthropic/responses: GET /v1/models; gemini: GET /v1beta/models),
 	// used to populate the admin UI's test-model picker before a provider row
@@ -332,7 +339,7 @@ func (c *HTTPProviderClient) runTestRequestAt(
 	if err != nil {
 		return TestResult{}, fmt.Errorf("marshal request body: %w", err)
 	}
-	return c.runRawTestRequestAt(ctx, url, proto, apiKey, "application/json", reqBody, handle)
+	return c.runRawTestRequestAt(ctx, url, proto, apiKey, "application/json", reqBody, nil, handle)
 }
 
 // runRawTestRequestAt is runTestRequestAt for a body that is already bytes
@@ -342,6 +349,7 @@ func (c *HTTPProviderClient) runTestRequestAt(
 // as JSON.
 func (c *HTTPProviderClient) runRawTestRequestAt(
 	ctx context.Context, url string, proto protocols.ProtocolID, apiKey, contentType string, reqBody []byte,
+	extraHeaders map[string]string,
 	handle func(resp *http.Response, durationMs int64) (TestResult, error),
 ) (TestResult, error) {
 	if !c.limiter.TryAcquire() {
@@ -360,6 +368,11 @@ func (c *HTTPProviderClient) runRawTestRequestAt(
 	// Authorization: Bearer for openai/responses, x-api-key +
 	// anthropic-version for anthropic, an API-key header/param for gemini.
 	requestEncoderFor(proto).SetupRequest(req, apiKey)
+	// Dialect-required headers (a task-mode switch an upstream gates its
+	// endpoint on), applied after the codec's own.
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -617,11 +630,11 @@ func (c *HTTPProviderClient) TestChatCompletion(ctx context.Context, proto proto
 // probe before the mapping is judged).
 const imageProbePrompt = "a small red square on a white background"
 
-// isDashScopeImageBase is images.IsDashScopeBase, overridable in tests: a
+// isDashScopeBase is images.IsDashScopeBase, overridable in tests: a
 // local httptest server can never carry the real hostname, and the native
 // branch below (origin-joined URL, native body, business-error
 // classification) still needs exercising against a live HTTP stub.
-var isDashScopeImageBase = images.IsDashScopeBase
+var isDashScopeBase = images.IsDashScopeBase
 
 // TestImageGeneration probes a mapping the way an image request actually
 // reaches the provider: the images endpoint on the provider's base, a
@@ -632,7 +645,7 @@ var isDashScopeImageBase = images.IsDashScopeBase
 // same way; asking the OpenAI-shaped images path there would measure a 404
 // no routed request would ever hit.
 func (c *HTTPProviderClient) TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
-	if isDashScopeImageBase(baseURL) {
+	if isDashScopeBase(baseURL) {
 		if isEditShapedModel(model) {
 			return c.testDashScopeImageEdit(ctx, baseURL, apiKey, model)
 		}
@@ -723,7 +736,7 @@ func (c *HTTPProviderClient) testImageEdit(ctx context.Context, baseURL, apiKey,
 	}
 
 	editsURL := protocols.JoinUpstreamURL(baseURL, images.EditPath, protocols.ProtocolOpenAI)
-	return c.runRawTestRequestAt(ctx, editsURL, protocols.ProtocolOpenAI, apiKey, w.FormDataContentType(), buf.Bytes(),
+	return c.runRawTestRequestAt(ctx, editsURL, protocols.ProtocolOpenAI, apiKey, w.FormDataContentType(), buf.Bytes(), nil,
 		func(resp *http.Response, duration int64) (TestResult, error) {
 			body, ok := readBoundedBody(resp)
 			if !ok {
@@ -745,7 +758,7 @@ func (c *HTTPProviderClient) testDashScopeImageEdit(ctx context.Context, baseURL
 	if err != nil {
 		return TestResult{}, fmt.Errorf("encode dashscope image edit probe: %w", err)
 	}
-	return c.runRawTestRequestAt(ctx, images.UpstreamURL(baseURL), protocols.ProtocolOpenAI, apiKey, "application/json", native,
+	return c.runRawTestRequestAt(ctx, images.UpstreamURL(baseURL), protocols.ProtocolOpenAI, apiKey, "application/json", native, nil,
 		func(resp *http.Response, duration int64) (TestResult, error) {
 			body, ok := readBoundedBody(resp)
 			if !ok {
@@ -775,7 +788,7 @@ func (c *HTTPProviderClient) testDashScopeImageGeneration(ctx context.Context, b
 	if err != nil {
 		return TestResult{}, fmt.Errorf("encode dashscope image probe: %w", err)
 	}
-	return c.runTestRequestAt(ctx, images.UpstreamURL(baseURL), protocols.ProtocolOpenAI, apiKey, model, json.RawMessage(native),
+	return c.runRawTestRequestAt(ctx, images.UpstreamURL(baseURL), protocols.ProtocolOpenAI, apiKey, "application/json", json.RawMessage(native), nil,
 		func(resp *http.Response, duration int64) (TestResult, error) {
 			body, ok := readBoundedBody(resp)
 			if !ok {

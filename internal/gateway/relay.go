@@ -20,7 +20,6 @@ import (
 	"github.com/yolorouter/yolorouter/internal/decision"
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/gateway/circuit"
-	"github.com/yolorouter/yolorouter/internal/gateway/video/wan"
 	"github.com/yolorouter/yolorouter/internal/loopback"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
@@ -237,22 +236,22 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 		keyPool:  newKeyPool(time.Now),
 		bindings: NewBindingRegistry(time.Now),
 	}
-	// The video task domain and its wan poller hang off the service's own
+	// The video task domain and its dashscope poller hang off the service's own
 	// db/secrets/client, and the modality's delivery-side sink points at
 	// the same instance so a job persisted at submit and a job polled at
 	// GET share one state machine.
-	taskDomain := videotask.NewService(db, &wan.Querier{
-		DB: db, Secrets: secrets,
-		Client: upstreamDoer{client: svc.client},
+	taskDomain := videotask.NewService(db, &dashScopeQuerier{
+		db: db, secrets: secrets,
+		client: upstreamDoer{client: svc.client},
 	})
 	svc.videoTasks = taskDomain
 	videoTasks = taskDomain
 	return svc
 }
 
-// upstreamDoer adapts the gateway's upstream client to the wan querier's
-// Doer — the same transport rules (private-network gating, timeouts),
-// one method name apart.
+// upstreamDoer adapts the gateway's upstream client to the video
+// poller's Doer — the same transport rules (private-network gating,
+// timeouts), one method name apart.
 type upstreamDoer struct{ client *UpstreamClient }
 
 func (d upstreamDoer) Do(req *http.Request) (*http.Response, error) {

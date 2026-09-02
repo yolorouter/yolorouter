@@ -113,6 +113,10 @@ func (f *Fake) TestImageGeneration(ctx context.Context, baseURL, apiKey, model s
 	return f.record("image", protocols.ProtocolOpenAI, baseURL, model)
 }
 
+func (f *Fake) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return f.record("video", protocols.ProtocolOpenAI, baseURL, model)
+}
+
 func (f *Fake) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return f.record("streaming", proto, baseURL, model)
 }

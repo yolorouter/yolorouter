@@ -1,41 +1,41 @@
-package wan
+package videos
 
-// Unit pins for the dialect's pure halves: family classification, size
-// mapping, and the response parsers. The submit/poll round trips are held
-// by the gateway's end-to-end battery; these are the vocabulary tables
-// underneath them.
+// Unit pins for the DashScope half of the video dialect: family
+// classification, size mapping, and the response parsers. The
+// submit/poll round trips are held by the gateway's end-to-end battery;
+// these are the vocabulary tables underneath them.
 
 import (
 	"strings"
 	"testing"
 )
 
-func TestModelFamily(t *testing.T) {
-	cases := map[string]Family{
-		"wan2.7-t2v":         FamilyMedia,
-		"wan2.7-i2v":         FamilyMedia,
-		"wan3.0-video":       FamilyMedia,
-		"wan3.0-video-prime": FamilyMedia,
-		"wan2.6-t2v":         FamilyLegacy,
-		"wan2.5-t2v-preview": FamilyLegacy,
-		"wan2.2-t2v-plus":    FamilyLegacy,
-		"wanx2.1-i2v-turbo":  FamilyLegacy,
+func TestDashScopeModelFamily(t *testing.T) {
+	cases := map[string]DashScopeFamily{
+		"wan2.7-t2v":         DashScopeFamilyMedia,
+		"wan2.7-i2v":         DashScopeFamilyMedia,
+		"wan3.0-video":       DashScopeFamilyMedia,
+		"wan3.0-video-prime": DashScopeFamilyMedia,
+		"wan2.6-t2v":         DashScopeFamilyLegacy,
+		"wan2.5-t2v-preview": DashScopeFamilyLegacy,
+		"wan2.2-t2v-plus":    DashScopeFamilyLegacy,
+		"wanx2.1-i2v-turbo":  DashScopeFamilyLegacy,
 		// A family the dialect has not read shape documentation for is
 		// none of its business, however wan-adjacent the name looks.
-		"happyhorse-1.1-t2v": FamilyNone,
-		"happyhorse-1.0-t2v": FamilyNone,
-		"qwen-video":         FamilyNone,
-		"sora-2":             FamilyNone,
-		"":                   FamilyNone,
+		"happyhorse-1.1-t2v": DashScopeFamilyNone,
+		"happyhorse-1.0-t2v": DashScopeFamilyNone,
+		"qwen-video":         DashScopeFamilyNone,
+		"sora-2":             DashScopeFamilyNone,
+		"":                   DashScopeFamilyNone,
 	}
 	for name, want := range cases {
-		if got := ModelFamily(name); got != want {
-			t.Errorf("ModelFamily(%q) = %v, want %v", name, got, want)
+		if got := DashScopeModelFamily(name); got != want {
+			t.Errorf("DashScopeModelFamily(%q) = %v, want %v", name, got, want)
 		}
 	}
 }
 
-func TestMapSize(t *testing.T) {
+func TestMapDashScopeSize(t *testing.T) {
 	cases := map[string]struct{ res, ratio string }{
 		"720x1280":  {"720P", "9:16"},
 		"1280x720":  {"720P", "16:9"},
@@ -43,23 +43,23 @@ func TestMapSize(t *testing.T) {
 		"1792x1024": {"1080P", "16:9"},
 	}
 	for size, want := range cases {
-		res, ratio, ok := MapSize(size)
+		res, ratio, ok := MapDashScopeSize(size)
 		if !ok || res != want.res || ratio != want.ratio {
-			t.Errorf("MapSize(%q) = %q,%q,%v; want %q,%q", size, res, ratio, ok, want.res, want.ratio)
+			t.Errorf("MapDashScopeSize(%q) = %q,%q,%v; want %q,%q", size, res, ratio, ok, want.res, want.ratio)
 		}
 	}
 	for _, size := range []string{"", "1080x1920", "720p"} {
-		if _, _, ok := MapSize(size); ok {
-			t.Errorf("MapSize(%q) must not map", size)
+		if _, _, ok := MapDashScopeSize(size); ok {
+			t.Errorf("MapDashScopeSize(%q) must not map", size)
 		}
 	}
 }
 
-func TestEncodeSubmitFamilyShapes(t *testing.T) {
+func TestEncodeDashScopeSubmitFamilyShapes(t *testing.T) {
 	// The media family, text-only: input.prompt and no media array — the
 	// flat shape the image-to-video and wan3.0 references document — with
 	// the ratio stated because no reference image decides it.
-	body, err := EncodeSubmit(SubmitRequest{
+	body, err := EncodeDashScopeSubmit(DashScopeSubmitRequest{
 		Model: "wan2.7-t2v", Prompt: "p", Resolution: "720P", Ratio: "16:9", Duration: 4,
 	})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestEncodeSubmitFamilyShapes(t *testing.T) {
 	}
 	// The media family with a reference: a typed input.media[] entry, and
 	// NO ratio — the reference image decides the aspect.
-	body, err = EncodeSubmit(SubmitRequest{
+	body, err = EncodeDashScopeSubmit(DashScopeSubmitRequest{
 		Model: "wan2.7-i2v", Prompt: "p", Resolution: "720P", Ratio: "16:9", Duration: 4,
 		RefURL: "https://example.test/first.png",
 	})
@@ -88,9 +88,8 @@ func TestEncodeSubmitFamilyShapes(t *testing.T) {
 	if strings.Contains(string(body), `"ratio"`) {
 		t.Fatalf("an image-referenced submit must not state a ratio: %s", body)
 	}
-	// The legacy family: the flat prompt (and img_url only with a
-	// reference).
-	body, err = EncodeSubmit(SubmitRequest{
+	// The legacy family: the flat prompt, img_url only with a reference.
+	body, err = EncodeDashScopeSubmit(DashScopeSubmitRequest{
 		Model: "wan2.6-i2v", Prompt: "p", Resolution: "720P", Duration: 8,
 		RefURL: "data:image/png;base64,QUJD",
 	})
@@ -103,13 +102,13 @@ func TestEncodeSubmitFamilyShapes(t *testing.T) {
 	// A model outside the families refuses to encode — a candidate like
 	// that was already refused by the verdict; this is the same rule on
 	// the encode side.
-	if _, err := EncodeSubmit(SubmitRequest{Model: "qwen-video", Prompt: "p"}); err == nil {
+	if _, err := EncodeDashScopeSubmit(DashScopeSubmitRequest{Model: "qwen-video", Prompt: "p"}); err == nil {
 		t.Fatal("a non-wan model must refuse to encode")
 	}
 }
 
-func TestEncodeSubmitSniffsFileContentType(t *testing.T) {
-	body, err := EncodeSubmit(SubmitRequest{
+func TestEncodeDashScopeSubmitSniffsFileContentType(t *testing.T) {
+	body, err := EncodeDashScopeSubmit(DashScopeSubmitRequest{
 		Model: "wan2.6-i2v", Prompt: "p", Resolution: "720P", Duration: 4,
 		RefData: []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A},
 	})
@@ -121,21 +120,21 @@ func TestEncodeSubmitSniffsFileContentType(t *testing.T) {
 	}
 }
 
-func TestParseSubmitResponse(t *testing.T) {
-	id, biz, err := ParseSubmitResponse([]byte(`{"output":{"task_id":"t-1","task_status":"PENDING"},"request_id":"r"}`))
+func TestParseDashScopeSubmitResponse(t *testing.T) {
+	id, biz, err := ParseDashScopeSubmitResponse([]byte(`{"output":{"task_id":"t-1","task_status":"PENDING"},"request_id":"r"}`))
 	if err != nil || biz != nil || id != "t-1" {
 		t.Fatalf("plain acceptance: id=%q biz=%v err=%v", id, biz, err)
 	}
-	_, biz, err = ParseSubmitResponse([]byte(`{"code":"InvalidApiKey","message":"bad"}`))
+	_, biz, err = ParseDashScopeSubmitResponse([]byte(`{"code":"InvalidApiKey","message":"bad"}`))
 	if err != nil || biz == nil || biz.Code != "InvalidApiKey" {
 		t.Fatalf("business refusal: biz=%v err=%v", biz, err)
 	}
-	if _, _, err := ParseSubmitResponse([]byte(`{"output":{}}`)); err == nil {
+	if _, _, err := ParseDashScopeSubmitResponse([]byte(`{"output":{}}`)); err == nil {
 		t.Fatal("a task-less acceptance must be a decode error, not a job with an empty id")
 	}
 }
 
-func TestParseTaskStatusVocabulary(t *testing.T) {
+func TestParseDashScopeTaskStatusVocabulary(t *testing.T) {
 	cases := map[string]struct{ status, code string }{
 		`{"output":{"task_status":"PENDING"}}`:                         {"pending", ""},
 		`{"output":{"task_status":"RUNNING"}}`:                         {"processing", ""},
@@ -146,7 +145,7 @@ func TestParseTaskStatusVocabulary(t *testing.T) {
 		`{"output":{"task_status":"UNKNOWN"}}`:                         {"expired", "task_expired"},
 	}
 	for body, want := range cases {
-		obs, biz, err := ParseTaskResponse([]byte(body))
+		obs, biz, err := ParseDashScopeTaskResponse([]byte(body))
 		if err != nil || biz != nil {
 			t.Fatalf("%s: err=%v biz=%v", body, err, biz)
 		}
@@ -154,17 +153,17 @@ func TestParseTaskStatusVocabulary(t *testing.T) {
 			t.Fatalf("%s: got %q/%q, want %q/%q", body, obs.Status, obs.ErrorCode, want.status, want.code)
 		}
 	}
-	obs, _, err := ParseTaskResponse([]byte(`{"output":{"task_status":"SUCCEEDED","video_url":"https://v"},"usage":{"duration":8}}`))
+	obs, _, err := ParseDashScopeTaskResponse([]byte(`{"output":{"task_status":"SUCCEEDED","video_url":"https://v"},"usage":{"duration":8}}`))
 	if err != nil || obs.VideoURL != "https://v" || obs.UsageSecs != 8 {
 		t.Fatalf("completion must carry url and usage: %+v err=%v", obs, err)
 	}
-	if _, _, err := ParseTaskResponse([]byte(`{"output":{"task_status":"WEIRD"}}`)); err == nil {
+	if _, _, err := ParseDashScopeTaskResponse([]byte(`{"output":{"task_status":"WEIRD"}}`)); err == nil {
 		t.Fatal("an undocumented status word must be a decode error, never a guess")
 	}
 }
 
-func TestOriginOf(t *testing.T) {
-	if got := OriginOf("https://dashscope.aliyuncs.com/compatible-mode/v1"); got != "https://dashscope.aliyuncs.com" {
+func TestDashScopeOrigin(t *testing.T) {
+	if got := DashScopeOrigin("https://dashscope.aliyuncs.com/compatible-mode/v1"); got != "https://dashscope.aliyuncs.com" {
 		t.Fatalf("origin = %q", got)
 	}
 }

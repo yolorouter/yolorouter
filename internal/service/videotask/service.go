@@ -10,12 +10,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/protocols/videos"
 	"github.com/yolorouter/yolorouter/internal/repository"
 )
 
@@ -41,6 +44,12 @@ type QueryResult struct {
 	ErrorCode    string
 	ErrorMessage string
 }
+
+// microsPerYuan is the micro-yuan per yuan fixed point this package
+// prices in — the same 1:1,000,000 the gateway's cost ledger uses (its
+// microsPerUnit); restated locally because the ledger's constant lives
+// across a package boundary this service does not import.
+const microsPerYuan = 1_000_000
 
 // Poll pacing: one upstream query per task per interval, no matter how
 // eagerly the caller polls. Two seconds is the SDK create_and_poll rhythm
@@ -90,9 +99,58 @@ func NewTaskID() string {
 	return "vid_" + hex.EncodeToString(raw[:])
 }
 
-// Create records one accepted task: pending, on the clock, with the
-// zombie horizon already set. ID and horizon are filled here when empty
-// so a caller cannot mint its own.
+// BudgetExceededError says a submit would push its key past the budget
+// limit, and by how much — the numbers the caller is told, computed from
+// the same reads the gate made.
+type BudgetExceededError struct {
+	Limit    int64
+	Spent    int64
+	InFlight int64
+	Ask      int64
+}
+
+func (e *BudgetExceededError) Error() string {
+	return fmt.Sprintf("video budget exceeded: limit %d, spent %d, in-flight %d, this task %d", e.Limit, e.Spent, e.InFlight, e.Ask)
+}
+
+// priceMicros resolves what one accepted task costs at submit time: the
+// candidate's own per-second tier price, read through the
+// size-to-resolution map, multiplied by the seconds the caller asked for.
+// Unpriced returns ok=false — a candidate with no table for this
+// resolution bills nothing and reserves nothing, the same "unpriced is
+// not free, it is unknown" reading the image settlement takes.
+func (s *Service) priceMicros(ctx context.Context, task *model.VideoTask) (int64, bool, error) {
+	cand, err := repository.FindModelCandidateByID(s.db.WithContext(ctx), task.CandidateID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// The candidate row vanished between routing and this create —
+			// deleted mid-flight, or a fixture with no pricing surface.
+			// Read as unpriced rather than failed: the task still exists,
+			// it simply bills nothing, which is the lenient direction the
+			// image settlement takes for a table it cannot resolve.
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	if model.NormalizeBillingMode(cand.BillingMode) != model.BillingModeVideo {
+		return 0, false, nil
+	}
+	resolution, _, ok := videos.MapDashScopeSize(task.Size)
+	if !ok {
+		return 0, false, nil
+	}
+	price, ok := model.ParseVideoPricingTiers(cand.VideoPricingTiers).ResolveSellPrice(resolution)
+	if !ok || price < 0 {
+		return 0, false, nil
+	}
+	return int64(math.Round(price * microsPerYuan)), true, nil
+}
+
+// Create records one accepted task: priced at the submit-time tier (the
+// snapshot every later settlement charges against), budget-checked
+// against the key's limit with every unfinished task's reservation
+// counted, pending, and on the clock. ID and horizon are filled here when
+// empty so a caller cannot mint its own.
 func (s *Service) Create(ctx context.Context, task *model.VideoTask, now time.Time) error {
 	if task.ID == "" {
 		task.ID = NewTaskID()
@@ -105,7 +163,44 @@ func (s *Service) Create(ctx context.Context, task *model.VideoTask, now time.Ti
 		task.ExpiresAt = &horizon
 	}
 	task.UpstreamSubmittedAt = now
+
+	if unit, priced, err := s.priceMicros(ctx, task); err != nil {
+		return err
+	} else if priced {
+		ask := unit * int64(task.Seconds)
+		task.EstimatedMicros = ask
+		if err := s.checkBudget(ctx, task, ask); err != nil {
+			return err
+		}
+	}
 	return repository.CreateVideoTask(s.db.WithContext(ctx), task)
+}
+
+// checkBudget is the submit-time upper bound: what the key has spent,
+// plus what its unfinished tasks have reserved, plus what this task will
+// cost, against the limit. Exact because a video's seconds and tier price
+// are both known at submit — the one billing shape that can promise its
+// bound. Unpriced tasks skip the gate: there is no number to hold.
+func (s *Service) checkBudget(ctx context.Context, task *model.VideoTask, ask int64) error {
+	key, err := repository.FindAPIKeyByID(s.db.WithContext(ctx), task.APIKeyID)
+	if err != nil {
+		return err
+	}
+	if key.BudgetLimitMicros == nil || *key.BudgetLimitMicros <= 0 {
+		return nil
+	}
+	inFlight, err := repository.SumInFlightVideoEstimated(s.db.WithContext(ctx), task.APIKeyID)
+	if err != nil {
+		return err
+	}
+	// The boundary matches the kernel's own admission gate: reaching the
+	// limit exactly is allowed and the NEXT ask is refused — its
+	// spent >= limit check and this spent+inFlight+ask > limit check are
+	// the same rule stated at the two places a budget can be touched.
+	if key.BudgetSpentMicros+inFlight+ask > *key.BudgetLimitMicros {
+		return &BudgetExceededError{Limit: *key.BudgetLimitMicros, Spent: key.BudgetSpentMicros, InFlight: inFlight, Ask: ask}
+	}
+	return nil
 }
 
 // Get returns one task for its owner, refreshing it from upstream if the
@@ -117,6 +212,13 @@ func (s *Service) Get(ctx context.Context, apiKeyID uint, id string, now time.Ti
 		return nil, err
 	}
 	if model.VideoTaskTerminal(task.Status) {
+		// The settlement backstop: a task whose completion was recorded
+		// but whose charge never landed — a crash between the two writes,
+		// or a settle that errored — is settled here, on read, from the
+		// same snapshot. The billed compare-and-set keeps it once-only.
+		if task.Status == model.VideoTaskCompleted && !task.Billed {
+			s.settle(ctx, task, now)
+		}
 		return task, nil
 	}
 	if task.ExpiresAt != nil && now.After(*task.ExpiresAt) {
@@ -202,8 +304,33 @@ func (s *Service) refresh(ctx context.Context, task *model.VideoTask, now time.T
 			task.CoverURL = result.CoverURL
 			task.UsageSeconds = result.UsageSeconds
 			task.UpstreamCompletedAt = &now
+			s.settle(ctx, task, now)
 		}
 	}
+}
+
+// settle charges a freshly completed task exactly once, from the
+// submit-time snapshot: the unit price is the estimated bound divided by
+// the seconds asked (exact by construction — the bound was built as
+// seconds × unit), and the bill is the seconds actually observed times
+// that unit. A crash between the observation and this call loses nothing:
+// the next poll of a completed task is a no-op read, and the billed
+// compare-and-set in the store is what makes the once-only.
+func (s *Service) settle(ctx context.Context, task *model.VideoTask, now time.Time) {
+	micros := int64(0)
+	if task.EstimatedMicros > 0 && task.Seconds > 0 {
+		unit := task.EstimatedMicros / int64(task.Seconds)
+		micros = int64(task.UsageSeconds) * unit
+	}
+	if _, err := repository.ChargeVideoTask(s.db.WithContext(ctx), task.ID, micros, now); err != nil {
+		// A settlement failure is logged by nobody on purpose: the row is
+		// still unbilled, and the next poll's completion re-runs this —
+		// the CAS is the retry. A sweeper-side reconciliation pass can be
+		// added if a deployment ever shows unbilled completed rows.
+		return
+	}
+	task.Billed = true
+	task.BilledMicros = micros
 }
 
 // terminalUpdate is the service-side spelling of a terminal transition's
@@ -216,10 +343,23 @@ func terminalUpdate(status, code string, now time.Time) map[string]any {
 }
 
 // SweepExpired is the reaper's tick: every non-terminal task past its
-// horizon moves to expired. Rows are never deleted here or anywhere —
-// the row is the billing evidence.
+// horizon moves to expired, and every completed-but-unsettled row gets
+// its charge — the reconciliation half of the once-only settle, so a
+// task nobody polls again still bills. Rows are never deleted here or
+// anywhere — the row is the billing evidence.
 func (s *Service) SweepExpired(ctx context.Context, now time.Time) (int64, error) {
-	return repository.ExpireStaleVideoTasks(s.db.WithContext(ctx), now)
+	moved, err := repository.ExpireStaleVideoTasks(s.db.WithContext(ctx), now)
+	if err != nil {
+		return moved, err
+	}
+	unbilled, err := repository.ListUnbilledCompletedVideoTasks(s.db.WithContext(ctx))
+	if err != nil {
+		return moved, err
+	}
+	for i := range unbilled {
+		s.settle(ctx, &unbilled[i], now)
+	}
+	return moved, nil
 }
 
 // ExpireProviderTasks is the provider-change hook: after a provider's

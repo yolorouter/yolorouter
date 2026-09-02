@@ -50,7 +50,7 @@ func TestCreateModelOutputModalities(t *testing.T) {
 	})
 
 	t.Run("unknown id is rejected", func(t *testing.T) {
-		_, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "broken", OutputModalities: []string{"video"}}, now)
+		_, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "broken", OutputModalities: []string{"audio"}}, now)
 		if err == nil {
 			t.Fatal("create accepted an unknown modality id")
 		}
@@ -151,7 +151,7 @@ func TestCreateModelsBatchOutputModalities(t *testing.T) {
 
 	t.Run("invalid list rejects the whole request", func(t *testing.T) {
 		_, err := svc.CreateModelsBatch(modeladmin.CreateModelsBatchInput{
-			Names: []string{"never-created"}, OutputModalities: []string{"video"},
+			Names: []string{"never-created"}, OutputModalities: []string{"audio"},
 		}, now)
 		if err == nil {
 			t.Fatal("batch create accepted an unknown modality id")

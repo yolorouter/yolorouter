@@ -499,3 +499,86 @@ func TestVideoBusinessRefusalIsAnsweredNotFailedOver(t *testing.T) {
 		t.Fatalf("a refused submit must leave no task row, got %d", taskCount)
 	}
 }
+
+// priceVideo switches the rig's candidate to per-second video billing
+// at one tier for every resolution, and optionally caps the caller key's
+// budget.
+func (r *videoRig) priceVideo(t *testing.T, sellPrice float64, limitMicros *int64) {
+	t.Helper()
+	tiers, err := model.MarshalVideoPricingTiers(&model.VideoPricingTiers{Tiers: []model.VideoPricingTier{
+		{Resolution: "", PurchasePrice: 0, SellPrice: sellPrice},
+	}})
+	if err != nil {
+		t.Fatalf("marshal tiers: %v", err)
+	}
+	if err := r.db.Model(&model.ModelCandidate{}).Where("model_id = ?", r.modelID).
+		Updates(map[string]any{"billing_mode": model.BillingModeVideo, "video_pricing_tiers": tiers}).Error; err != nil {
+		t.Fatalf("price candidate: %v", err)
+	}
+	if limitMicros != nil {
+		if err := r.db.Model(&model.APIKey{}).Where("id = ?", r.key.ID).
+			Update("budget_limit_micros", *limitMicros).Error; err != nil {
+			t.Fatalf("limit key: %v", err)
+		}
+	}
+}
+
+func (r *videoRig) keySpent(t *testing.T) int64 {
+	t.Helper()
+	var key model.APIKey
+	if err := r.db.Where("id = ?", r.key.ID).First(&key).Error; err != nil {
+		t.Fatalf("reload key: %v", err)
+	}
+	return key.BudgetSpentMicros
+}
+
+func TestVideoPricedSubmitSettlesExactlyOnce(t *testing.T) {
+	rig := newVideoRig(t, "wan2.7-t2v")
+	rig.priceVideo(t, 0.5, nil)
+	rig.upstream.tasks["up-task-1"] = []string{
+		`{"output":{"task_status":"RUNNING"},"usage":{}}`,
+		`{"output":{"task_status":"SUCCEEDED","video_url":"` + rig.server.URL + `/media/v.mp4"},"usage":{"duration":8}}`,
+	}
+
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"priced","seconds":8}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("priced submit must pass, got %d %s", w.Code, w.Body.String())
+	}
+	jobID := jobIDOf(t, w)
+	var task model.VideoTask
+	_ = rig.db.Where("id = ?", jobID).First(&task).Error
+	if task.EstimatedMicros != 4_000_000 {
+		t.Fatalf("the submit-time bound must land on the row, got %d", task.EstimatedMicros)
+	}
+
+	rig.poll(t, rig.key, jobID) // RUNNING
+	rig.agePoll(t, jobID)
+	rig.poll(t, rig.key, jobID) // SUCCEEDED → settle
+	if spent := rig.keySpent(t); spent != 4_000_000 {
+		t.Fatalf("completion must charge observed seconds once, spent=%d", spent)
+	}
+	rig.agePoll(t, jobID)
+	rig.poll(t, rig.key, jobID) // completed re-read settles nothing further
+	if spent := rig.keySpent(t); spent != 4_000_000 {
+		t.Fatalf("re-reading a settled task must not recharge, spent=%d", spent)
+	}
+}
+
+func TestVideoBudgetExceededAnswers429(t *testing.T) {
+	rig := newVideoRig(t, "wan2.7-t2v")
+	limit := int64(1_000_000)
+	rig.priceVideo(t, 0.5, &limit) // an 8s ask is 4,000,000: over the ceiling
+
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"too rich","seconds":8}`)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("an over-budget submit must answer 429, got %d %s", w.Code, w.Body.String())
+	}
+	var taskCount int64
+	rig.db.Model(&model.VideoTask{}).Count(&taskCount)
+	if taskCount != 0 {
+		t.Fatalf("a refused submit must leave no task row, got %d", taskCount)
+	}
+	if spent := rig.keySpent(t); spent != 0 {
+		t.Fatalf("nothing was charged, spent=%d", spent)
+	}
+}

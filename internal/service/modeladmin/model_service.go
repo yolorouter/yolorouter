@@ -779,20 +779,36 @@ type TestAndCreateResult struct {
 // misleading "not supported" for a mapping that is simply misconfigured. Once
 // the fundamentals hold the remaining two are independent, so they run together
 // to keep the admin's wait to two round trips rather than three.
-func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, providerModelName string, imageModel bool) (CandidateTestReport, error) {
+// probeShape is which endpoint family a mapping's basic probe speaks.
+// A pair of booleans was tried first and decayed on contact with a third
+// family: one value with three spellings says what a caller may pass
+// without a fourth arriving as another bool.
+type probeShape int
+
+const (
+	probeShapeChat probeShape = iota
+	probeShapeImage
+	probeShapeVideo
+)
+
+func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, providerModelName string, shape probeShape) (CandidateTestReport, error) {
 	var report CandidateTestReport
 
-	// An image-only model is probed the way traffic reaches it: through the
-	// images endpoint. A chat probe against one answers nothing the mapping
-	// needs — it would fail on a working provider and never let the candidate
-	// verify — and its capability probes (streaming, tool calls) describe
-	// behaviours an image model does not carry, so they are skipped rather
-	// than recorded as absent.
+	// An image-only or video-only model is probed the way traffic reaches
+	// it: through the endpoint family it actually serves. A chat probe
+	// against one answers nothing the mapping needs — it would fail on a
+	// working provider and never let the candidate verify — and the
+	// capability probes (streaming, tool calls) describe behaviours these
+	// models do not carry, so they are skipped rather than recorded as
+	// absent.
 	var basic providerclient.TestResult
 	var err error
-	if imageModel {
+	switch shape {
+	case probeShapeImage:
 		basic, err = s.client.TestImageGeneration(ctx, baseURL, apiKey, providerModelName)
-	} else {
+	case probeShapeVideo:
+		basic, err = s.client.TestVideoGeneration(ctx, baseURL, apiKey, providerModelName)
+	default:
 		basic, err = s.client.TestChatCompletion(ctx, proto, baseURL, apiKey, providerModelName)
 	}
 	if err != nil {
@@ -808,7 +824,7 @@ func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.P
 		return report, nil
 	}
 
-	if imageModel {
+	if shape != probeShapeChat {
 		return report, nil
 	}
 
@@ -912,11 +928,16 @@ func (s *ModelService) probeCandidateMapping(ctx context.Context, modelID, provi
 	if err != nil {
 		return CandidateTestReport{}, err
 	}
-	imageModel := false
+	shape := probeShapeChat
 	if m, err := repository.FindModelByID(s.db, modelID); err == nil {
-		imageModel = m.OutputImageExclusive()
+		switch {
+		case m.OutputImageExclusive():
+			shape = probeShapeImage
+		case m.OutputVideoExclusive():
+			shape = probeShapeVideo
+		}
 	}
-	return s.runCandidateProbes(ctx, providerproto.TypeOf(provider.ProviderType), provider.BaseURL, plaintext, providerModelName, imageModel)
+	return s.runCandidateProbes(ctx, providerproto.TypeOf(provider.ProviderType), provider.BaseURL, plaintext, providerModelName, shape)
 }
 
 // TestAndCreateCandidate probes a mapping and only then decides whether to

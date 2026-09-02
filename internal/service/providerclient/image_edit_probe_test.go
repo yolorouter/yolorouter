@@ -82,7 +82,7 @@ func TestEditShapedModelProbesOpenAIEditsEndpoint(t *testing.T) {
 // dialect with the reference image as a base64 data URI content item ahead
 // of the prompt.
 func TestEditShapedModelProbesDashScopeNativeWithImage(t *testing.T) {
-	withDashScopeImageBase(t)
+	withDashScopeBase(t)
 
 	var gotPath string
 	var gotBody map[string]any

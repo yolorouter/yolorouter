@@ -1073,6 +1073,10 @@ func (c perProtocolClient) TestImageGeneration(ctx context.Context, _, _, _ stri
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
 }
 
+func (c perProtocolClient) TestVideoGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
+}
+
 func (c perProtocolClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return c.resultFor(proto), nil
 }
@@ -1718,4 +1722,16 @@ func TestDeleteProviderFreesNameWithoutAdoptingOldHistory(t *testing.T) {
 	if n := countWhere(t, db, "request_logs", "provider_id = ?", newID); n != 0 {
 		t.Fatalf("old history was adopted by the recreated provider")
 	}
+}
+
+func (alwaysSuccessClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
+func (modelNotFoundClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
+func (erroringClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }

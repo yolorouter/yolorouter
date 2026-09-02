@@ -1185,6 +1185,9 @@ type blockingClient struct {
 func (b *blockingClient) TestImageGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
 }
+func (b *blockingClient) TestVideoGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
+}
 
 func (b *blockingClient) TestChatCompletion(ctx context.Context, _ protocols.ProtocolID, _, _, _ string) (providerclient.TestResult, error) {
 	b.mu.Lock()
@@ -1364,6 +1367,9 @@ type stubbornClient struct {
 }
 
 func (b *stubbornClient) TestImageGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
+}
+func (b *stubbornClient) TestVideoGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
 }
 

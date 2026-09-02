@@ -77,13 +77,14 @@ func (Model) TableName() string { return "models" }
 const (
 	OutputModalityText  = "text"
 	OutputModalityImage = "image"
+	OutputModalityVideo = "video"
 )
 
 // ValidOutputModalities is the write-path vocabulary: every id an
 // output_modalities value may contain. The read path (ServesOutputModality)
 // is deliberately laxer — an unknown id in a stored row reads as "not this
 // modality" rather than failing the request.
-var ValidOutputModalities = []string{OutputModalityText, OutputModalityImage}
+var ValidOutputModalities = []string{OutputModalityText, OutputModalityImage, OutputModalityVideo}
 
 // DefaultOutputModalitiesJSON is what a row created without a declaration
 // stores: text only, which is what every model predating the column was.
@@ -114,6 +115,15 @@ func (m Model) ServesOutputModality(modality string) bool {
 		}
 	}
 	return false
+}
+
+// OutputVideoExclusive reports whether the model declares video output
+// and nothing else: the shape whose mappings bill per second and whose
+// probes speak a task dialect rather than a completion. A model that also
+// serves text keeps chat semantics, because the same mapping carries its
+// chat traffic too.
+func (m Model) OutputVideoExclusive() bool {
+	return m.ServesOutputModality(OutputModalityVideo) && len(m.OutputModalityList()) == 1
 }
 
 // OutputImageExclusive reports whether the model declares image output and

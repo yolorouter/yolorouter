@@ -14,13 +14,13 @@ import (
 	"github.com/yolorouter/yolorouter/internal/protocols/images"
 )
 
-// withDashScopeImageBase forces the probe's dashscope-host detection on for
+// withDashScopeBase forces the probe's dashscope-host detection on for
 // one test: a local httptest server can never carry the real hostname.
-func withDashScopeImageBase(t *testing.T) {
+func withDashScopeBase(t *testing.T) {
 	t.Helper()
-	previous := isDashScopeImageBase
-	isDashScopeImageBase = func(string) bool { return true }
-	t.Cleanup(func() { isDashScopeImageBase = previous })
+	previous := isDashScopeBase
+	isDashScopeBase = func(string) bool { return true }
+	t.Cleanup(func() { isDashScopeBase = previous })
 }
 
 // Mirrors the endpoint as actually observed: image items carry only the URL,
@@ -28,7 +28,7 @@ func withDashScopeImageBase(t *testing.T) {
 const nativeSuccessBody = `{"request_id":"t-1","output":{"choices":[{"finish_reason":"stop","message":{"content":[{"image":"https://img.example/t.png"}]}}],"finished":true},"usage":{"input_tokens":4,"output_tokens":5},"created":1}`
 
 func TestImageGenerationProbesDashScopeNativeEndpoint(t *testing.T) {
-	withDashScopeImageBase(t)
+	withDashScopeBase(t)
 
 	var gotPath, gotAuth, gotContentType string
 	var gotBody map[string]any
@@ -72,7 +72,7 @@ func TestImageGenerationProbesDashScopeNativeEndpoint(t *testing.T) {
 }
 
 func TestImageGenerationDashScopeBusinessErrorFails(t *testing.T) {
-	withDashScopeImageBase(t)
+	withDashScopeBase(t)
 
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -94,7 +94,7 @@ func TestImageGenerationDashScopeBusinessErrorFails(t *testing.T) {
 }
 
 func TestImageGenerationDashScopeNon200ClassifiesByStatus(t *testing.T) {
-	withDashScopeImageBase(t)
+	withDashScopeBase(t)
 
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -149,7 +149,7 @@ func TestImageGenerationOpenAIShapeRequiresDataArray(t *testing.T) {
 }
 
 func TestImageGenerationDashScopeUnparseable200IsNotCertified(t *testing.T) {
-	withDashScopeImageBase(t)
+	withDashScopeBase(t)
 
 	// A 200 that is neither a native image answer nor a business refusal —
 	// a chat-shaped body. Certifying it would repeat, on the native branch,
