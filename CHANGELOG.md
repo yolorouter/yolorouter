@@ -35,6 +35,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dialect), so importing e.g. qwen-image-edit no longer measures the edit
   family's own input rule as a probe failure.
 
+- Video generation. `POST /v1/videos` submits an OpenAI Videos job and
+  returns immediately with a pollable job resource (`GET /v1/videos/{id}`,
+  finished clips at `GET /v1/videos/{id}/content`); both body shapes — the
+  official SDK's multipart and plain JSON — parse into one request, and
+  the job status stays inside the SDK's strict four-value vocabulary with
+  internal retired states travelling as `failed` plus an error code. Two
+  task dialects are served natively, DashScope (wan families, split
+  request shapes) and Volcengine Ark (Seedance, uniform endpoint),
+  including reference images; other bases refuse per candidate, and a
+  submitted job is never re-submitted elsewhere.
+
+- Video settlement. Candidates declare per-second pricing in a
+  resolution-tiered table; a submit prices its job at that instant
+  (the snapshot) and reserves it against the key's budget alongside every
+  unfinished job's bound, an over-budget submit answering 429 with the
+  full arithmetic. The charge lands exactly once — when completion is
+  first observed, reaper-reconciled if nobody polls — on the seconds the
+  upstream actually reports; failed, cancelled, and expired jobs bill
+  nothing.
+
+- Video probing. A video-only model is verified by the conversation a
+  routed request runs: a submit the upstream accepts plus one task query
+  it answers, `RUNNING` included — a render outlasting the probe budget
+  is a healthy mapping, not a broken one.
+
 ### Changed
 
 - The price-catalog refresh pipeline moved to its own data repository
