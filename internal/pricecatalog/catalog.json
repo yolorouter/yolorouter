@@ -7,750 +7,750 @@
       "deepseek-v4-flash": {
         "input": 1.5,
         "output": 4.5,
-        "cacheWrite": null,
-        "cacheRead": 0.05
+        "cache_write": null,
+        "cache_read": 0.05
       },
       "deepseek-v4-pro": {
         "input": 4.5,
         "output": 13.5,
-        "cacheWrite": null,
-        "cacheRead": 0.15
+        "cache_write": null,
+        "cache_read": 0.15
       }
     },
     "api.moonshot.cn": {
       "kimi-k3": {
         "input": 20,
         "output": 100,
-        "cacheWrite": null,
-        "cacheRead": 2
+        "cache_write": null,
+        "cache_read": 2
       },
       "kimi-k2.7-code": {
         "input": 6.5,
         "output": 27,
-        "cacheWrite": null,
-        "cacheRead": 1.3
+        "cache_write": null,
+        "cache_read": 1.3
       },
       "kimi-k2.6": {
         "input": 6.5,
         "output": 27,
-        "cacheWrite": null,
-        "cacheRead": 1.1
+        "cache_write": null,
+        "cache_read": 1.1
       }
     },
     "open.bigmodel.cn": {
       "glm-5.3": {
         "input": 8,
         "output": 28,
-        "cacheWrite": null,
-        "cacheRead": 2
+        "cache_write": null,
+        "cache_read": 2
       },
       "glm-5.3-flash": {
         "input": 0.4,
         "output": 1.4,
-        "cacheWrite": null,
-        "cacheRead": 0.115
+        "cache_write": null,
+        "cache_read": 0.115
       },
       "glm-5.2": {
         "input": 8,
         "output": 28,
-        "cacheWrite": null,
-        "cacheRead": 2
+        "cache_write": null,
+        "cache_read": 2
       },
       "glm-5.1": {
         "input": 6,
         "output": 24,
-        "cacheWrite": null,
-        "cacheRead": 1.3
+        "cache_write": null,
+        "cache_read": 1.3
       },
       "glm-5v-turbo": {
         "input": 5,
         "output": 22,
-        "cacheWrite": null,
-        "cacheRead": 1.2
+        "cache_write": null,
+        "cache_read": 1.2
       },
       "glm-5-turbo": {
         "input": 5,
         "output": 22,
-        "cacheWrite": null,
-        "cacheRead": 1.2
+        "cache_write": null,
+        "cache_read": 1.2
       },
       "glm-5": {
         "input": 4,
         "output": 18,
-        "cacheWrite": null,
-        "cacheRead": 1
+        "cache_write": null,
+        "cache_read": 1
       },
       "glm-4.7": {
         "input": 2,
         "output": 8,
-        "cacheWrite": null,
-        "cacheRead": 0.4
+        "cache_write": null,
+        "cache_read": 0.4
       },
       "glm-4.6v": {
         "input": 1,
         "output": 3,
-        "cacheWrite": null,
-        "cacheRead": 0.2
+        "cache_write": null,
+        "cache_read": 0.2
       },
       "glm-4.5-air": {
         "input": 0.8,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": 0.16
+        "cache_write": null,
+        "cache_read": 0.16
       },
       "glm-4.7-flashx": {
         "input": 0.5,
         "output": 3,
-        "cacheWrite": null,
-        "cacheRead": 0.1
+        "cache_write": null,
+        "cache_read": 0.1
       },
       "glm-4.6v-flashx": {
         "input": 0.15,
         "output": 1.5,
-        "cacheWrite": null,
-        "cacheRead": 0.03
+        "cache_write": null,
+        "cache_read": 0.03
       },
       "glm-4.5v": {
         "input": 2,
         "output": 6,
-        "cacheWrite": null,
-        "cacheRead": 0.4
+        "cache_write": null,
+        "cache_read": 0.4
       }
     },
     "api.siliconflow.cn": {
       "deepseek-ai/DeepSeek-V4-Flash": {
         "input": 1,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "meituan-longcat/LongCat-2.0": {
         "input": 5,
         "output": 20,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3.6-35B-A3B": {
         "input": 1.6,
         "output": 12.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3.6-27B": {
         "input": 1.8,
         "output": 14.4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "deepseek-ai/DeepSeek-V4-Pro": {
         "input": 12,
         "output": 24,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "nex-agi/Nex-N2-Pro": {
         "input": 1.75,
         "output": 7,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "moonshotai/Kimi-K2.7-Code": {
         "input": 6.5,
         "output": 27,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "zai-org/GLM-5.2": {
         "input": 6,
         "output": 28,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen2.5-14B-Instruct": {
         "input": 0.7,
         "output": 0.7,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "stepfun-ai/Step-3.5-Flash": {
         "input": 0.7,
         "output": 2.1,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3.5-35B-A3B": {
         "input": 1.6,
         "output": 12.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3.5-9B": {
         "input": 1.5,
         "output": 12,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "MiniMaxAI/MiniMax-M2.5": {
         "input": 2.1,
         "output": 8.4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3.5-27B": {
         "input": 1.8,
         "output": 14.4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3.5-122B-A10B": {
         "input": 2,
         "output": 16,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3.5-397B-A17B": {
         "input": 2,
         "output": 1.2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "deepseek-ai/DeepSeek-V3.2": {
         "input": 2,
         "output": 3,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Wan-AI/Wan2.2-T2V-A14B": {
         "input": 0,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Wan-AI/Wan2.2-I2V-A14B": {
         "input": 0,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "inclusionAI/Ling-mini-2.0": {
         "input": 0.5,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "inclusionAI/Ling-flash-2.0": {
         "input": 1,
         "output": 4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "deepseek-ai/DeepSeek-V3.1-Terminus": {
         "input": 4,
         "output": 12,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "deepseek-ai/DeepSeek-V3": {
         "input": 2,
         "output": 8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "deepseek-ai/DeepSeek-R1": {
         "input": 4,
         "output": 16,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "ByteDance-Seed/Seed-OSS-36B-Instruct": {
         "input": 1.5,
         "output": 4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "zai-org/GLM-4.5V": {
         "input": 1,
         "output": 6,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3-Coder-30B-A3B-Instruct": {
         "input": 0.7,
         "output": 2.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "zai-org/GLM-4.5-Air": {
         "input": 1,
         "output": 6,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "tencent/Hunyuan-A13B-Instruct": {
         "input": 1,
         "output": 4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3-32B": {
         "input": 1,
         "output": 4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen3-14B": {
         "input": 0.5,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen2.5-32B-Instruct": {
         "input": 1.26,
         "output": 1.26,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen2.5-72B-Instruct": {
         "input": 4.13,
         "output": 4.13,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "Qwen/Qwen2.5-72B-Instruct-128K": {
         "input": 4.13,
         "output": 4.13,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       }
     },
     "api.minimaxi.com": {
       "minimax-m3": {
         "input": 4.2,
         "output": 16.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "minimax-m2.7": {
         "input": 2.1,
         "output": 8.4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "minimax-m2.7-highspeed": {
         "input": 4.2,
         "output": 16.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "minimax-m2.5": {
         "input": 2.1,
         "output": 8.4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "minimax-m2.5-highspeed": {
         "input": 4.2,
         "output": 16.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "minimax-m2.1": {
         "input": 2.1,
         "output": 8.4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "minimax-m2.1-highspeed": {
         "input": 4.2,
         "output": 16.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "minimax-m2": {
         "input": 2.1,
         "output": 8.4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       }
     },
     "api.stepfun.com": {
       "step-3.7-flash": {
         "input": 1.35,
         "output": 8.1,
-        "cacheWrite": null,
-        "cacheRead": 0.27
+        "cache_write": null,
+        "cache_read": 0.27
       },
       "step-3.5-flash": {
         "input": 0.7,
         "output": 2.1,
-        "cacheWrite": null,
-        "cacheRead": 0.14
+        "cache_write": null,
+        "cache_read": 0.14
       }
     },
     "api.baichuan-ai.com": {
       "baichuan-m3-plus": {
         "input": 5,
         "output": 9,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "baichuan-m3": {
         "input": 10,
         "output": 30,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "baichuan-m2-plus": {
         "input": 10,
         "output": 30,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "baichuan-m2": {
         "input": 2,
         "output": 20,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       }
     },
     "ark.cn-beijing.volces.com": {
       "doubao-seed-evolving": {
         "input": 6,
         "output": 30,
-        "cacheWrite": null,
-        "cacheRead": 1.2
+        "cache_write": null,
+        "cache_read": 1.2
       },
       "doubao-seed-2.1-pro": {
         "input": 6,
         "output": 30,
-        "cacheWrite": null,
-        "cacheRead": 1.2
+        "cache_write": null,
+        "cache_read": 1.2
       },
       "doubao-seed-2.1-turbo": {
         "input": 3,
         "output": 15,
-        "cacheWrite": null,
-        "cacheRead": 0.6
+        "cache_write": null,
+        "cache_read": 0.6
       },
       "doubao-seed-2.0-pro": {
         "input": 3.2,
         "output": 16,
-        "cacheWrite": null,
-        "cacheRead": 0.64
+        "cache_write": null,
+        "cache_read": 0.64
       },
       "doubao-seed-2.0-lite": {
         "input": 0.6,
         "output": 3.6,
-        "cacheWrite": null,
-        "cacheRead": 0.12
+        "cache_write": null,
+        "cache_read": 0.12
       },
       "doubao-seed-2.0-mini": {
         "input": 0.2,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": 0.04
+        "cache_write": null,
+        "cache_read": 0.04
       },
       "doubao-seed-2.0-code": {
         "input": 3.2,
         "output": 16,
-        "cacheWrite": null,
-        "cacheRead": 0.64
+        "cache_write": null,
+        "cache_read": 0.64
       },
       "doubao-seed-1.8": {
         "input": 0.8,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": 0.16
+        "cache_write": null,
+        "cache_read": 0.16
       },
       "doubao-seed-code": {
         "input": 1.2,
         "output": 8,
-        "cacheWrite": null,
-        "cacheRead": 0.24
+        "cache_write": null,
+        "cache_read": 0.24
       },
       "doubao-seed-1.6": {
         "input": 0.8,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": 0.16
+        "cache_write": null,
+        "cache_read": 0.16
       },
       "doubao-seed-1.6-lite": {
         "input": 0.3,
         "output": 0.6,
-        "cacheWrite": null,
-        "cacheRead": 0.06
+        "cache_write": null,
+        "cache_read": 0.06
       },
       "doubao-seed-1.6-flash": {
         "input": 0.15,
         "output": 1.5,
-        "cacheWrite": null,
-        "cacheRead": 0.03
+        "cache_write": null,
+        "cache_read": 0.03
       },
       "doubao-seed-translation": {
         "input": 1.2,
         "output": 3.6,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "doubao-1.5-pro-32k": {
         "input": 0.8,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": 0.16
+        "cache_write": null,
+        "cache_read": 0.16
       },
       "doubao-1.5-lite-32k": {
         "input": 0.3,
         "output": 0.6,
-        "cacheWrite": null,
-        "cacheRead": 0.06
+        "cache_write": null,
+        "cache_read": 0.06
       },
       "doubao-pro-32k": {
         "input": 0.8,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": 0.16
+        "cache_write": null,
+        "cache_read": 0.16
       }
     },
     "dashscope.aliyuncs.com": {
       "qwen3.7-max": {
         "input": 12,
         "output": 36,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-max": {
         "input": 2.5,
         "output": 10,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-max": {
         "input": 2.4,
         "output": 9.6,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.6-plus": {
         "input": 2,
         "output": 12,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.5-plus": {
         "input": 0.8,
         "output": 4.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-plus": {
         "input": 0.8,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.7-flash": {
         "input": 0.2,
         "output": 0.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.6-flash": {
         "input": 1.2,
         "output": 7.2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.5-flash": {
         "input": 0.2,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-flash": {
         "input": 0.15,
         "output": 1.5,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-turbo": {
         "input": 0.3,
         "output": 0.6,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-long": {
         "input": 0.5,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-math-plus": {
         "input": 4,
         "output": 12,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-math-turbo": {
         "input": 2,
         "output": 6,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-coder-plus": {
         "input": 4,
         "output": 16,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-coder-flash": {
         "input": 1,
         "output": 4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-coder-plus": {
         "input": 3.5,
         "output": 7,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-coder-turbo": {
         "input": 2,
         "output": 6,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-mt-plus": {
         "input": 1.8,
         "output": 5.4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-mt-flash": {
         "input": 0.7,
         "output": 1.95,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-mt-lite": {
         "input": 0.6,
         "output": 1.6,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-mt-turbo": {
         "input": 0.7,
         "output": 1.95,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-doc-turbo": {
         "input": 0.6,
         "output": 1,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen-deep-research": {
         "input": 54,
         "output": 163,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.6-35b-a3b": {
         "input": 1.8,
         "output": 10.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.6-27b": {
         "input": 3,
         "output": 18,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.5-397b-a17b": {
         "input": 1.2,
         "output": 7.2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.5-122b-a10b": {
         "input": 0.8,
         "output": 6.4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.5-27b": {
         "input": 0.6,
         "output": 4.8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3.5-35b-a3b": {
         "input": 0.4,
         "output": 3.2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-next-80b-a3b-instruct": {
         "input": 1,
         "output": 4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-235b-a22b": {
         "input": 2,
         "output": 8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-32b": {
         "input": 2,
         "output": 8,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-30b-a3b": {
         "input": 0.75,
         "output": 3,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-14b": {
         "input": 1,
         "output": 4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-8b": {
         "input": 0.5,
         "output": 2,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-coder-next": {
         "input": 1,
         "output": 4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-coder-480b-a35b-instruct": {
         "input": 6,
         "output": 24,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-coder-30b-a3b-instruct": {
         "input": 1.5,
         "output": 6,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       },
       "qwen3-livetranslate-flash": {
         "input": 10,
         "output": 4,
-        "cacheWrite": null,
-        "cacheRead": null
+        "cache_write": null,
+        "cache_read": null
       }
     }
   }
