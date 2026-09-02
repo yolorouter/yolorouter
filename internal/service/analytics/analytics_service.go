@@ -365,7 +365,7 @@ func bucketForDimension(dimension, bucket string) string {
 // after unknown_cost_calls rather than sitting next to their sibling token
 // counts.
 func tokenReportCSVColumns() []string {
-	return []string{"calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls", "cache_read_saved_micros", "cache_write_extra_micros"}
+	return []string{"calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls", "cache_read_saved_micros", "cache_write_extra_micros", "image_count"}
 }
 
 func tokenReportCSVCells(cs repository.ReportCallStats, tc repository.ReportTokenCost) []string {
@@ -380,6 +380,7 @@ func tokenReportCSVCells(cs repository.ReportCallStats, tc repository.ReportToke
 		strconv.FormatInt(tc.UnknownCostCalls, 10),
 		strconv.FormatInt(tc.CacheReadSavedMicros, 10),
 		strconv.FormatInt(tc.CacheWriteExtraMicros, 10),
+		strconv.FormatInt(tc.ImageCount, 10),
 	}
 }
 
@@ -415,6 +416,7 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 			"cost_micros", "unknown_cost_calls",
 			"input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens",
 			"cache_read_saved_micros", "cache_write_extra_micros",
+			"image_count",
 		}
 		records := make([][]string, len(typed))
 		for i, r := range typed {
@@ -433,6 +435,7 @@ func buildCSV(dimension string, rows interface{}) ([]string, [][]string, error) 
 				strconv.FormatInt(r.CacheReadTokens, 10),
 				strconv.FormatInt(r.CacheReadSavedMicros, 10),
 				strconv.FormatInt(r.CacheWriteExtraMicros, 10),
+				strconv.FormatInt(r.ImageCount, 10),
 			}
 		}
 		return headers, records, nil

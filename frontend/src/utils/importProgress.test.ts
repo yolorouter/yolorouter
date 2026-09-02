@@ -17,6 +17,8 @@ const cand = (
   output_price: 2,
   cache_write_price: null,
   cache_read_price: null,
+  billing_mode: 'token',
+  image_pricing_tiers: null,
   max_output: 0,
   management_status: management,
   verification_status: verification,

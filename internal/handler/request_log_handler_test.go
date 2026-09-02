@@ -674,7 +674,7 @@ func TestExportRequestLogsCSVReturnsBOMAndHeaderAndRows(t *testing.T) {
 	if len(lines) < 3 {
 		t.Fatalf("expected at least 3 CSV lines (header + 2 rows), got %d: %q", len(lines), text)
 	}
-	if lines[0] != "request_id,created_at,status_class,status_code,username,model_name,provider_name,is_stream,key_switches,failovers,final_provider_model,duration_ms,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cost_micros,cost_known,fail_reason" {
+	if lines[0] != "request_id,created_at,status_class,status_code,username,model_name,provider_name,is_stream,key_switches,failovers,final_provider_model,duration_ms,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,billing_unit,image_count,image_unit_price,cost_micros,cost_known,fail_reason" {
 		t.Fatalf("unexpected CSV header: %q", lines[0])
 	}
 	// Both data rows should be present; the success row references req-exp-1.

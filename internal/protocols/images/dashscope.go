@@ -34,7 +34,8 @@ func UpstreamURL(baseURL string) string {
 
 // IsDashScopeBase reports whether a provider's base URL points at a
 // DashScope host (the mainland and international endpoints, and any
-// subdomain of either).
+// subdomain of either), or at a Model Studio workspace domain under
+// maas.aliyuncs.com, which serves the same native endpoints.
 func IsDashScopeBase(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -44,7 +45,8 @@ func IsDashScopeBase(baseURL string) bool {
 	return h == "dashscope.aliyuncs.com" ||
 		h == "dashscope-intl.aliyuncs.com" ||
 		strings.HasSuffix(h, ".dashscope.aliyuncs.com") ||
-		strings.HasSuffix(h, ".dashscope-intl.aliyuncs.com")
+		strings.HasSuffix(h, ".dashscope-intl.aliyuncs.com") ||
+		strings.HasSuffix(h, ".maas.aliyuncs.com")
 }
 
 // ConvertSize rewrites the OpenAI separator ("1024x1024") into the one the

@@ -153,6 +153,8 @@ export interface ModelReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  /** Delivered images summed over the group; 0 = token-only volume. */
+  image_count: number
   cache_read_saved_micros: number
   cache_write_extra_micros: number
   cost_micros: number
@@ -173,6 +175,8 @@ export interface ProviderReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  /** Delivered images summed over the group; 0 = token-only volume. */
+  image_count: number
   cache_read_saved_micros: number
   cache_write_extra_micros: number
   cost_micros: number
@@ -197,6 +201,8 @@ export interface UserReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  /** Delivered images summed over the group; 0 = token-only volume. */
+  image_count: number
   cache_read_saved_micros: number
   cache_write_extra_micros: number
   cost_micros: number
@@ -215,6 +221,8 @@ export interface CallerReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  /** Delivered images summed over the group; 0 = token-only volume. */
+  image_count: number
   cache_read_saved_micros: number
   cache_write_extra_micros: number
   cost_micros: number
@@ -231,6 +239,8 @@ export interface TimeReportRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  /** Delivered images summed over the group; 0 = token-only volume. */
+  image_count: number
   cache_read_saved_micros: number
   cache_write_extra_micros: number
   cost_micros: number

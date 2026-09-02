@@ -150,6 +150,20 @@ export function cacheNetSavedColumn<T extends CacheEconRow>(t: Translator, sort?
   }
 }
 
+// imageCountColumn renders the per-image volume axis. A zero is "no image
+// traffic in this group" and renders an em-dash, mirroring the cache
+// columns' no-metering gate: token-only groups keep the column visually
+// quiet instead of stacking a column of zeros beside the token columns.
+export function imageCountColumn<T extends { image_count: number }>(t: Translator): DataTableColumns<T>[number] {
+  return {
+    title: columnTitle(t('analytics.imageCountColumn'), t('analytics.imageCountColumn_tip')),
+    key: 'image_count',
+    width: 120,
+    align: 'right',
+    render: (r: T) => (r.image_count > 0 ? formatNumber(r.image_count) : '—'),
+  }
+}
+
 // avgDurationColumn is provider-specific (ProviderReportRow.avg_duration_ms);
 // not every dimension has an average latency, so it stays out of MetricRow.
 export function avgDurationColumn<T extends { avg_duration_ms: number }>(

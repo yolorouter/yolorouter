@@ -916,7 +916,7 @@ func TestExportAnalyticsCSVWritesBOMAndHeadersAndRows(t *testing.T) {
 	if len(records) < 2 {
 		t.Fatalf("expected header + at least 1 row, got %d records", len(records))
 	}
-	wantHeader := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls", "cache_read_saved_micros", "cache_write_extra_micros"}
+	wantHeader := []string{"model_name", "calls", "success_rate", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "cost_micros", "unknown_cost_calls", "cache_read_saved_micros", "cache_write_extra_micros", "image_count"}
 	if len(records[0]) != len(wantHeader) {
 		t.Fatalf("header len = %d, want %d (%v)", len(records[0]), len(wantHeader), records[0])
 	}

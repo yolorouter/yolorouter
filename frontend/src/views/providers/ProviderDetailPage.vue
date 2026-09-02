@@ -116,7 +116,8 @@ import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle
 import { useProvidersStore } from '../../store/providers'
 import { listProviderCandidates, retestCandidate, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
 import { candidateIsOwedWork, candidateProgressState, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress } from '../../utils/importProgress'
-import { candidateUnpriced, formatImagePrice, imagePriceSummary } from '../../utils/imagePriceSummary'
+import { candidateUnpriced } from '../../utils/imagePriceSummary'
+import { candidatePriceLines } from '../../utils/candidatePriceLines'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
@@ -530,36 +531,14 @@ const modelColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
     title: columnTitle(t('providers.candidatePrice'), t('providers.candidatePrice_tip')),
     key: 'price',
     minWidth: 120,
-    // Input/output up front, cache prices as a quiet second line only when the
-    // mapping actually has them — most rows don't, and an always-on line of
-    // dashes would just add noise. What the numbers mean lives in the header
-    // tooltip, keeping the header itself to one word.
-    render: (row) => {
-      // An image-billed mapping prices per delivered image out of its tier
-      // table; the per-M token slots on the row are inert under that mode
-      // and would read as the mapping's price.
-      if (row.billing_mode === 'image') {
-        const summary = imagePriceSummary(row.image_pricing_tiers)
-        if (!summary) return h('div', { class: 'candidate-muted' }, t('providers.candidateImageUnpriced'))
-        if (summary.range)
-          return h(
-            'div',
-            t('providers.candidateImagePriceRange', { min: formatImagePrice(summary.min), max: formatImagePrice(summary.max) }),
-          )
-        return h('div', t('providers.candidateImagePrice', { price: formatImagePrice(summary.min) }))
-      }
-      const parts = [h('div', `${row.input_price} / ${row.output_price}`)]
-      if (row.cache_write_price !== null || row.cache_read_price !== null) {
-        parts.push(
-          h(
-            'div',
-            { class: 'candidate-cache-price' },
-            t('providers.candidateCachePrice', { write: row.cache_write_price ?? '-', read: row.cache_read_price ?? '-' }),
-          ),
-        )
-      }
-      return h('div', parts)
-    },
+    // The lines come from the shared candidate price renderer: the billing
+    // mode picks which slot means anything — image rows read their tier
+    // table, token rows their per-million prices with the cache pair as a
+    // quiet second line only when the mapping actually has them. What the
+    // numbers mean lives in the header tooltip, keeping the header itself
+    // to one word. This column shows no mode tag — the mapping table is
+    // already per-billing-mode context here.
+    render: (row) => h('div', candidatePriceLines(row, t)),
   },
   {
     title: columnTitle(t('providers.candidateProbeStatus'), t('providers.candidateProbeStatus_tip')),

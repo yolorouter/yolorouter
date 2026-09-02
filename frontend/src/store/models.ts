@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import * as modelsApi from '../api/models'
-import type { Model, ModelCandidate, CreateCandidateInput, UpdateCandidateInput, SchedulingMode } from '../api/models'
+import type { Model, ModelCandidate, CreateCandidateInput, UpdateCandidateInput } from '../api/models'
 
 interface ModelsState {
   list: Model[]

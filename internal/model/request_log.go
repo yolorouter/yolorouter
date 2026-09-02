@@ -72,10 +72,15 @@ type RequestLog struct {
 	UpstreamURL string `gorm:"column:upstream_url" json:"upstream_url"`
 	// ImagePricingSnapshot is what a per-image settlement priced by: the
 	// billing mode, the request's quality/size, requested vs delivered
-	// count, and the unit price the tier table resolved to. Written from the
-	// same numbers the cost was computed from, so a billed row can always
-	// explain itself. Empty on every row not billed per image.
+	// count, and the unit price the tier table resolved to. Written from
+	// the same numbers the cost was computed from, so a billed row can
+	// always explain itself. Empty on every row not billed per image.
 	ImagePricingSnapshot string `gorm:"column:image_pricing_snapshot" json:"image_pricing_snapshot"`
+	// ImageCount is how many images the request actually delivered, written
+	// whenever the usage report counted images — priced or not. It is the
+	// volume metric reports sum; the snapshot above is the bill's
+	// explanation, and only exists when a price resolved.
+	ImageCount int `gorm:"column:image_count" json:"image_count"`
 	// Source marks who initiated the request: "" = a normal caller request,
 	// "vision_fallback" = an image-description sub-call the gateway made on
 	// behalf of the request named by ParentRequestID. Sub-calls are separate

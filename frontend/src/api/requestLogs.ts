@@ -43,6 +43,10 @@ export interface RequestLogRow {
   output_tokens: number
   cache_write_tokens: number
   cache_read_tokens: number
+  /** Delivered-image count from the per-image settlement snapshot; 0 = the row settled in tokens (or went unpriced). */
+  image_count: number
+  /** Price of one delivered image from the same snapshot; null when image_count is 0. */
+  image_unit_price: number | null
   cost_micros: number
   cost_known: boolean
   fail_reason: string | null

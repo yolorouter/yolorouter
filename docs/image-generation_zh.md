@@ -32,8 +32,10 @@ curl https://your-router/v1/images/generations \
 ## 上游方言
 
 - **OpenAI 兼容供应商**原样透传。
-- **DashScope 供应商**（base URL 在 `dashscope.aliyuncs.com` 或
-  `dashscope-intl.aliyuncs.com` 域名下）经由原生 multimodal-generation 端点服务：
+- **DashScope 供应商**（base URL 在 `dashscope.aliyuncs.com`、
+  `dashscope-intl.aliyuncs.com` 或百炼专属工作空间域
+  `{workspaceId}.{region}.maas.aliyuncs.com` 下）经由原生 multimodal-generation
+  端点服务：
   请求会转编码为方言形状（尺寸分隔符 `1024x1024` 变为 `1024*1024`），响应解码回
   OpenAI 形状。DashScope 只返回图片 **URL**——`response_format: "b64_json"` 的
   请求对这些候选逐一拒绝，原因记录在尝试详情里。

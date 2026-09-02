@@ -89,15 +89,18 @@ func (s *ReportCallStats) finalizeRate() {
 	s.SuccessRate = successRateOf(s.SuccessCalls, s.EndedCalls)
 }
 
-// ReportTokenCost is the token + cost block shared by the model / caller /
+// ReportTokenCost is the usage + cost block shared by the model / caller /
 // user / time dimensions (provider reports duration instead of tokens and
 // keeps its own cost columns). UnknownCostCalls counts rows where
 // cost_known=false (price/token missing — must NOT display as zero cost).
+// ImageCount sums delivered images: 0 for a token-only group, so the report
+// tables render one usage volume per group without mixing units.
 type ReportTokenCost struct {
 	InputTokens      int64 `json:"input_tokens" gorm:"column:input_tokens"`
 	OutputTokens     int64 `json:"output_tokens" gorm:"column:output_tokens"`
 	CacheWriteTokens int64 `json:"cache_write_tokens" gorm:"column:cache_write_tokens"`
 	CacheReadTokens  int64 `json:"cache_read_tokens" gorm:"column:cache_read_tokens"`
+	ImageCount       int64 `json:"image_count" gorm:"column:image_count"`
 	// The settled cache economics, summed like the token counts, so the
 	// report tables can show a per-row hit rate (read ÷ (read + write +
 	// input), all three already here) and a signed net saving (read saved −
@@ -194,6 +197,7 @@ const tokenCostSumCols = `
 		COALESCE(SUM(output_tokens), 0) AS output_tokens,
 		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
 		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(image_count), 0) AS image_count,
 		COALESCE(SUM(cache_read_saved_micros), 0) AS cache_read_saved_micros,
 		COALESCE(SUM(cache_write_extra_micros), 0) AS cache_write_extra_micros,
 		COALESCE(SUM(cost_micros), 0) AS cost_micros,

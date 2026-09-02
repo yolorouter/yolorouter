@@ -32,6 +32,11 @@ func TestUpstreamURL(t *testing.T) {
 			baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1/",
 			want:    "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
 		},
+		{
+			name:    "workspace domain joins by origin",
+			baseURL: "https://bp13m4xxxx.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+			want:    "https://bp13m4xxxx.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,6 +52,10 @@ func TestIsDashScopeBase(t *testing.T) {
 		"https://dashscope.aliyuncs.com/compatible-mode/v1": true,
 		"https://dashscope-intl.aliyuncs.com":               true,
 		"https://api.dashscope.aliyuncs.com":                true,
+		"https://bp13m4xxxx.cn-beijing.maas.aliyuncs.com":   true,
+		"https://ws-01.cn-hangzhou.maas.aliyuncs.com/v1":    true,
+		"https://example.maas.aliyuncs.com.evil.com":        false,
+		"https://maas.aliyuncs.com":                         false,
 		"https://api.openai.com/v1":                         false,
 		"http://localhost:8080":                             false,
 		"://not-a-url":                                      false,

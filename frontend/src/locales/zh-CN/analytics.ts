@@ -68,6 +68,8 @@ export default {
   cacheWriteTokensColumn_tip: '该分组累计的缓存写入（cache creation）Token 数',
   cacheReadTokensColumn: '缓存读取 Token',
   cacheReadTokensColumn_tip: '该分组累计的缓存读取（cache hit）Token 数',
+  imageCountColumn: '图片张数',
+  imageCountColumn_tip: '该分组实际交付的图片张数（所有图片生成请求累计，无论按张还是按 token 计费），纯文本分组显示 —',
   costColumn: '成本',
   costColumn_tip: '该分组已知成本累计（人民币元），未知成本的请求不纳入',
   failoversColumn: '引发切换',

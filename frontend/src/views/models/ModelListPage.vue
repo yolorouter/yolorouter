@@ -99,6 +99,7 @@ import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
 import { modelDisableCopy } from '../../utils/impactSummary'
 import { modelRunningStatusDisplay, MODEL_RUNNING_STATUS_DISPLAY, routableMark } from '../../utils/modelStatusDisplay'
+import { modalityBadge, modalityBadgeLabel } from '../../utils/modalityBadge'
 import { columnTitle } from '../../utils/columnTitle'
 import { isBalancedModel } from '../../utils/schedulingMode'
 import { modelCostDetailLocation } from '../../utils/modelCostLocation'
@@ -328,7 +329,17 @@ const sharedColumns = computed<DataTableColumns<Model>>(() => [
     title: columnTitle(t('models.name'), t('models.name_tip')),
     key: 'name',
     minWidth: 200,
-    render: (row) => h('span', { class: 'model-name-cell' }, row.name),
+    render: (row) => {
+      // Text-only models carry no badge (the default modality would badge
+      // every row); image-only and both models carry theirs beside the name.
+      const badge = modalityBadge(row.output_modalities)
+      const name = h('span', { class: 'model-name-cell' }, row.name)
+      if (!badge) return name
+      return h('div', { style: 'display: flex; align-items: center; gap: 6px;' }, [
+        name,
+        h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => modalityBadgeLabel(badge, t) }),
+      ])
+    },
   },
   {
     title: columnTitle(t('models.runningStatusColumn'), t('models.runningStatusColumn_tip')),

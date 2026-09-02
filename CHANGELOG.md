@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Image generation routing. `POST /v1/images/generations` is served beside
+  the chat endpoints: a model declares what it produces (`output_modalities`,
+  migration 00039), and a model that does not declare image output is
+  refused on the images endpoint before any provider is contacted. Models
+  are created with a modality (the create/edit dialogs and the batch import
+  both carry it; the import derives per-image billing for image-only rows
+  and skips rows that contradict the stored declaration). DashScope
+  providers — including Model Studio workspace domains
+  (`{workspaceId}.{region}.maas.aliyuncs.com`) — are served through the
+  native multimodal-generation dialect, re-encoded from and decoded back to
+  the OpenAI images shape.
+
+- Per-image billing. A candidate may declare `billing_mode: image` with a
+  quality×size tier table and an optional default price (migration 00040);
+  settlement prices each delivered image, multiplies by the count actually
+  delivered, and records the resolution in the log row's pricing snapshot.
+  The usage surfaces follow the billing unit: the request-log list's usage
+  column (and its CSV export) renders token counts or "N × unit price" per
+  row, analytics reports gain a delivered-images column (migration 00041
+  adds the count column and backfills it), and the model pages show the
+  modality badge and each candidate's billing mode and price.
+
+- `GET /v1/models` and `GET /v1/models/{model}` expose `output_modalities`
+  on every model object (OpenAI and Anthropic shapes), so clients can
+  discover which models are image models.
+
 ## [0.2.0] - 2026-08-28
 
 ### Added
