@@ -9,31 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Image generation routing. `POST /v1/images/generations` is served beside
-  the chat endpoints: a model declares what it produces (`output_modalities`,
-  migration 00039), and a model that does not declare image output is
-  refused on the images endpoint before any provider is contacted. Models
-  are created with a modality (the create/edit dialogs and the batch import
-  both carry it; the import derives per-image billing for image-only rows
-  and skips rows that contradict the stored declaration). DashScope
-  providers — including Model Studio workspace domains
-  (`{workspaceId}.{region}.maas.aliyuncs.com`) — are served through the
-  native multimodal-generation dialect, re-encoded from and decoded back to
-  the OpenAI images shape.
-
-- Per-image billing. A candidate may declare `billing_mode: image` with a
-  quality×size tier table and an optional default price (migration 00040);
-  settlement prices each delivered image, multiplies by the count actually
-  delivered, and records the resolution in the log row's pricing snapshot.
-  The usage surfaces follow the billing unit: the request-log list's usage
-  column (and its CSV export) renders token counts or "N × unit price" per
-  row, analytics reports gain a delivered-images column (migration 00041
-  adds the count column and backfills it), and the model pages show the
-  modality badge and each candidate's billing mode and price.
-
-- `GET /v1/models` and `GET /v1/models/{model}` expose `output_modalities`
-  on every model object (OpenAI and Anthropic shapes), so clients can
-  discover which models are image models.
+- DashScope dialect detection covers Model Studio workspace domains
+  (`{workspaceId}.{region}.maas.aliyuncs.com`), with the matching docs
+  updates.
 
 - Image editing. `POST /v1/images/edits` accepts the OpenAI multipart
   upload (reference images, mask, prompt) and forwards it to
@@ -56,6 +34,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on OpenAI-compatible bases, a data-URI content item in the native
   dialect), so importing e.g. qwen-image-edit no longer measures the edit
   family's own input rule as a probe failure.
+
+## [0.2.1] - 2026-09-01
+
+### Added
+
+- Image generation is a first-class routing target. Providers expose
+  image models behind `/v1/images/generations`, spoken either as the
+  OpenAI images shape or as the DashScope native multimodal-generation
+  dialect, chosen per provider; the credential probe speaks the same
+  dialect as delivery, so a passing key means a deliverable image.
+  Image models bill per delivered image against a quality/size tier
+  table instead of per token (migrations 00039-00040); each request log
+  carries the settlement snapshot — axes, delivered count, unit price —
+  that priced it, so per-image costs stay auditable after tier edits.
+  Output-modality declarations flow through model create, edit, batch
+  create and bulk import, gate which endpoints a model's pool may use,
+  and a bulk import refuses rows contradicting the modality a model
+  already declared, surfacing the skip and its reason in the import
+  progress view. The provider detail page prices image-billed mappings
+  per delivered image and badges unpriced rows by billing mode.
 
 ## [0.2.0] - 2026-08-28
 
@@ -588,7 +586,8 @@ failover, and observe usage and cost.
 - Single binary with the web console embedded via `go:embed`; SQLite or PostgreSQL storage; upstream keys encrypted at rest (AES-256).
 - Self-update via the `update` command and update-check API.
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/yolorouter/yolorouter/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yolorouter/yolorouter/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/yolorouter/yolorouter/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/yolorouter/yolorouter/compare/v0.1.7...v0.1.8
