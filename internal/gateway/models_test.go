@@ -37,6 +37,46 @@ func TestOpenAIModelObject(t *testing.T) {
 	if obj["created"] != int64(1700000000) {
 		t.Errorf("created=%v want 1700000000", obj["created"])
 	}
+	if got := obj["output_modalities"]; !equalStringSlice(got, []string{"text"}) {
+		t.Errorf("output_modalities=%v want [text] (undeclared models are text)", got)
+	}
+}
+
+func TestModelObjectsCarryOutputModalities(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string // models.output_modalities column value
+		want []string
+	}{
+		{"image-exclusive", `["image"]`, []string{"image"}},
+		{"text and image", `["text","image"]`, []string{"text", "image"}},
+		{"legacy empty", "", []string{"text"}},
+	}
+	for _, tc := range cases {
+		m := model.Model{Name: "m", CreatedAt: time.Unix(1, 0), OutputModalities: tc.raw}
+		openAI := openAIModelObject(m)
+		if got := openAI["output_modalities"]; !equalStringSlice(got, tc.want) {
+			t.Errorf("%s: openAI output_modalities=%v want %v", tc.name, got, tc.want)
+		}
+		anthropic := anthropicModelObject(m)
+		if got := anthropic["output_modalities"]; !equalStringSlice(got, tc.want) {
+			t.Errorf("%s: anthropic output_modalities=%v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// equalStringSlice compares an any that holds a []string against want.
+func equalStringSlice(got any, want []string) bool {
+	g, ok := got.([]string)
+	if !ok || len(g) != len(want) {
+		return false
+	}
+	for i := range g {
+		if g[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestAnthropicModelObject(t *testing.T) {

@@ -68,6 +68,8 @@ export default {
   cacheWriteTokensColumn_tip: 'Cumulative cache-write (cache creation) tokens for this group',
   cacheReadTokensColumn: 'Cache Read Tokens',
   cacheReadTokensColumn_tip: 'Cumulative cache-read (cache hit) tokens for this group',
+  imageCountColumn: 'Images',
+  imageCountColumn_tip: 'Images actually delivered in this group (all image-generation requests, whether billed per image or per token); token-only groups show —',
   costColumn: 'Cost',
   costColumn_tip: 'Known cost total for this group (CNY); unknown-cost requests are excluded',
   failoversColumn: 'Failovers Caused',

@@ -62,21 +62,29 @@ type RequestLogListItem struct {
 	RequestPath string `json:"request_path"`
 	// Source is "" for a caller request, "vision_fallback" for a describe
 	// sub-call working for ParentRequestID.
-	Source           string  `json:"source"`
-	ParentRequestID  string  `json:"parent_request_id"`
-	ProviderID       *uint   `json:"provider_id"`
-	ProviderName     string  `json:"provider_name"`
-	IsStream         bool    `json:"is_stream"`
-	StatusCode       int     `json:"status_code"`
-	StatusClass      string  `json:"status_class"`
-	InputTokens      int     `json:"input_tokens"`
-	OutputTokens     int     `json:"output_tokens"`
-	CacheWriteTokens int     `json:"cache_write_tokens"`
-	CacheReadTokens  int     `json:"cache_read_tokens"`
-	CostMicros       int64   `json:"cost_micros"`
-	CostKnown        bool    `json:"cost_known"`
-	FailReason       *string `json:"fail_reason"`
-	Attempts         int     `json:"attempts"`
+	Source           string `json:"source"`
+	ParentRequestID  string `json:"parent_request_id"`
+	ProviderID       *uint  `json:"provider_id"`
+	ProviderName     string `json:"provider_name"`
+	IsStream         bool   `json:"is_stream"`
+	StatusCode       int    `json:"status_code"`
+	StatusClass      string `json:"status_class"`
+	InputTokens      int    `json:"input_tokens"`
+	OutputTokens     int    `json:"output_tokens"`
+	CacheWriteTokens int    `json:"cache_write_tokens"`
+	CacheReadTokens  int    `json:"cache_read_tokens"`
+	// ImageCount / ImageUnitPrice are the per-image settlement digest,
+	// parsed from the row's image pricing snapshot: how many images were
+	// actually delivered and what one image cost. A zero count means the
+	// row settled in tokens (or never priced) and the usage figures are the
+	// token counts — the usage column then renders the token figures, so
+	// one row always reads in a single billing unit.
+	ImageCount     int      `json:"image_count"`
+	ImageUnitPrice *float64 `json:"image_unit_price"`
+	CostMicros     int64    `json:"cost_micros"`
+	CostKnown      bool     `json:"cost_known"`
+	FailReason     *string  `json:"fail_reason"`
+	Attempts       int      `json:"attempts"`
 	// KeySwitches / Failovers split the row's retries into their two kinds —
 	// rotating keys within one provider versus moving to another provider —
 	// derived from the per-attempt detail with the same walk the provider
@@ -231,6 +239,7 @@ func (s *RequestLogService) toListItems(rows []model.RequestLog) ([]RequestLogLi
 	for i := range rows {
 		r := &rows[i]
 		keySwitches, failovers, finalModel := deriveAttemptBreakdown(r.AttemptsDetail, r.ProviderID)
+		imageCount, imageUnitPrice := imageUsageDigest(r.ImagePricingSnapshot)
 		items = append(items, RequestLogListItem{
 			RequestID:          r.RequestID,
 			APIKeyID:           r.APIKeyID,
@@ -248,6 +257,8 @@ func (s *RequestLogService) toListItems(rows []model.RequestLog) ([]RequestLogLi
 			OutputTokens:       r.OutputTokens,
 			CacheWriteTokens:   r.CacheWriteTokens,
 			CacheReadTokens:    r.CacheReadTokens,
+			ImageCount:         imageCount,
+			ImageUnitPrice:     imageUnitPrice,
 			CostMicros:         r.CostMicros,
 			CostKnown:          r.CostKnown,
 			FailReason:         r.FailReason,
@@ -484,6 +495,26 @@ func buildCSVRecords(items []RequestLogListItem) [][]string {
 	return records
 }
 
+// imageUsageDigest extracts the list-row digest from a stored image pricing
+// snapshot: the delivered count and the per-image price. A snapshot is only
+// written when a price resolved, so anything else — token-settled rows, image
+// rows that could not be priced — returns a zero count and the caller renders
+// the token figures. A snapshot that does not parse degrades the same way
+// rather than failing the page: it is a display digest, not the bill.
+func imageUsageDigest(snapshot string) (int, *float64) {
+	if snapshot == "" {
+		return 0, nil
+	}
+	var parsed struct {
+		ActualN   int     `json:"actual_n"`
+		UnitPrice float64 `json:"unit_price"`
+	}
+	if err := json.Unmarshal([]byte(snapshot), &parsed); err != nil || parsed.ActualN <= 0 {
+		return 0, nil
+	}
+	return parsed.ActualN, &parsed.UnitPrice
+}
+
 // fetchRelatedNames batch-loads provider_name / username for every
 // provider_id / user_id referenced in rows, via the shared namelookup
 // helpers. Returns two lookup maps keyed by id; rows whose provider/user
@@ -526,6 +557,22 @@ func lookupName(id *uint, names map[uint]string) string {
 	return names[*id]
 }
 
+// csvUsageCells renders the usage columns of the CSV as one billing unit per
+// row: a token row emits billing_unit=token with empty image columns; a
+// per-image row emits billing_unit=image, its delivered count, and the price
+// one image cost (the price guard is belt and braces for hand-edited data —
+// the DTO guarantees count>0 implies price).
+func csvUsageCells(it RequestLogListItem) []string {
+	if it.ImageCount <= 0 {
+		return []string{"token", "", ""}
+	}
+	price := ""
+	if it.ImageUnitPrice != nil {
+		price = strconv.FormatFloat(*it.ImageUnitPrice, 'f', -1, 64)
+	}
+	return []string{"image", strconv.Itoa(it.ImageCount), price}
+}
+
 // DeriveStatusClass mirrors repository.applyStatusClass's SQL WHERE
 // buckets at the row level: the same status_code + fail_reason inputs
 // select the same bucket in both the list filter's WHERE clause and the
@@ -566,6 +613,7 @@ func csvHeaderRow() []string {
 		"is_stream", "key_switches", "failovers", "final_provider_model", "duration_ms",
 		"input_tokens", "output_tokens",
 		"cache_write_tokens", "cache_read_tokens",
+		"billing_unit", "image_count", "image_unit_price",
 		"cost_micros", "cost_known", "fail_reason",
 	}
 }
@@ -579,7 +627,7 @@ func csvRowFromItem(it RequestLogListItem) []string {
 	if it.FailReason != nil {
 		failReason = *it.FailReason
 	}
-	return []string{
+	record := []string{
 		it.RequestID,
 		it.CreatedAt.Format(time.RFC3339),
 		it.StatusClass,
@@ -596,8 +644,11 @@ func csvRowFromItem(it RequestLogListItem) []string {
 		strconv.Itoa(it.OutputTokens),
 		strconv.Itoa(it.CacheWriteTokens),
 		strconv.Itoa(it.CacheReadTokens),
+	}
+	record = append(record, csvUsageCells(it)...)
+	return append(record,
 		strconv.FormatInt(it.CostMicros, 10),
 		strconv.FormatBool(it.CostKnown),
 		failReason,
-	}
+	)
 }

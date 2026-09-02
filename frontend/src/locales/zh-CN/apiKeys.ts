@@ -64,6 +64,7 @@ export default {
   endpointOpenAI: 'OpenAI 兼容',
   endpointAnthropic: 'Anthropic 兼容',
   endpointExample: '调用示例',
+  endpointImageExample: '图片生成调用示例',
   copyFullKey: '复制完整 Key',
   savedConfirm: '我已保存',
   unsavedConfirmTitle: '尚未确认已保存',

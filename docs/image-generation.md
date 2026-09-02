@@ -35,8 +35,9 @@ you wrote them.
 ## Upstream dialects
 
 - **OpenAI-compatible providers** are passed through as-is.
-- **DashScope providers** (base URL on `dashscope.aliyuncs.com` or
-  `dashscope-intl.aliyuncs.com`) are served through the native
+- **DashScope providers** (base URL on `dashscope.aliyuncs.com`,
+  `dashscope-intl.aliyuncs.com`, or a Model Studio workspace domain
+  `{workspaceId}.{region}.maas.aliyuncs.com`) are served through the native
   multimodal-generation endpoint: the request is re-encoded into the dialect's
   shape (size separator `1024x1024` becomes `1024*1024`), and the response is
   decoded back into the OpenAI shape. DashScope answers with image **URLs

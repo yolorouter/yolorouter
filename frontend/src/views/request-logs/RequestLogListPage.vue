@@ -213,6 +213,7 @@ import { listAPIKeys, toAPIKeyOptions, type APIKey } from '../../api/apiKeys'
 import { useUserOptions } from '../../composables/useUserOptions'
 import { displayMessage } from '../../api/client'
 import { formatMicros } from '../../utils/money'
+import { formatImagePrice } from '../../utils/imagePriceSummary'
 import { columnTitle } from '../../utils/columnTitle'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -762,7 +763,18 @@ function tokenRow(label: string, value: number) {
   ])
 }
 
-function tokensCell(row: RequestLogRow) {
+// The usage cell renders one billing unit per row: a per-image settlement
+// reads "count × unit price"; everything else keeps the vertical token
+// breakdown. An unpriced image row carries no snapshot (and usually no
+// token counts), so it lands on the same '-' as any unmeasured row.
+function usageCell(row: RequestLogRow) {
+  if (row.image_count > 0 && row.image_unit_price != null) {
+    return h(
+      'span',
+      { style: 'font-variant-numeric: tabular-nums; font-size:12px; white-space:nowrap;' },
+      t('requestLogs.usageImageLine', { n: row.image_count, price: formatImagePrice(row.image_unit_price) }),
+    )
+  }
   const lines = []
   if (row.input_tokens > 0) lines.push(tokenRow(t('requestLogs.tokenRowIn'), row.input_tokens))
   if (row.output_tokens > 0) lines.push(tokenRow(t('requestLogs.tokenRowOut'), row.output_tokens))
@@ -875,10 +887,10 @@ const sharedColumns = computed<DataTableColumns<RequestLogRow>>(() => [
     render: (row) => h(StatusClassTag, { status: row.status_class }),
   },
   {
-    title: columnTitle(t('requestLogs.col_tokens'), t('requestLogs.col_tokens_tip')),
-    key: 'tokens',
-    width: 112,
-    render: (row) => tokensCell(row),
+    title: columnTitle(t('requestLogs.col_usage'), t('requestLogs.col_usage_tip')),
+    key: 'usage',
+    width: 126,
+    render: (row) => usageCell(row),
   },
   {
     title: columnTitle(t('requestLogs.col_cost'), t('requestLogs.col_cost_tip')),

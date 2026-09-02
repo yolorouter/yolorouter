@@ -64,6 +64,7 @@ export default {
   endpointOpenAI: 'OpenAI-compatible',
   endpointAnthropic: 'Anthropic-compatible',
   endpointExample: 'Example request',
+  endpointImageExample: 'Image generation example',
   copyFullKey: 'Copy full key',
   savedConfirm: 'I have saved it',
   unsavedConfirmTitle: 'Not confirmed saved',

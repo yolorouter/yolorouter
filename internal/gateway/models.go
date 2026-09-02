@@ -61,21 +61,27 @@ func rejectInvalidKey(c *gin.Context, proto protocols.ProtocolID, apiKey *model.
 	return false
 }
 
+// openAIModelObject and anthropicModelObject both carry output_modalities —
+// a non-standard extension, spelled and shaped exactly like the admin API's
+// field so one vocabulary serves discovery and configuration. The list is
+// canonical: a model that never declared its modalities reports ["text"].
 func openAIModelObject(m model.Model) gin.H {
 	return gin.H{
-		"id":       m.Name,
-		"object":   "model",
-		"created":  m.CreatedAt.Unix(),
-		"owned_by": ownedByTag,
+		"id":                m.Name,
+		"object":            "model",
+		"created":           m.CreatedAt.Unix(),
+		"owned_by":          ownedByTag,
+		"output_modalities": m.OutputModalityList(),
 	}
 }
 
 func anthropicModelObject(m model.Model) gin.H {
 	return gin.H{
-		"type":         "model",
-		"id":           m.Name,
-		"display_name": m.Name,
-		"created_at":   m.CreatedAt.UTC().Format(time.RFC3339),
+		"type":              "model",
+		"id":                m.Name,
+		"display_name":      m.Name,
+		"created_at":        m.CreatedAt.UTC().Format(time.RFC3339),
+		"output_modalities": m.OutputModalityList(),
 	}
 }
 

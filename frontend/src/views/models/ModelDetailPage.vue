@@ -2,6 +2,12 @@
 <template>
   <div class="common-page" v-if="modelData">
     <PageHeader class="actions-placeholder" :eyebrow="t('models.eyebrow')" :title="modelData.name" :description="headerDescription">
+      <!-- Same badge rule as the list page's name cell; absent for text-only models. -->
+      <template v-if="headerModalityBadge" #title-suffix>
+        <n-tag size="small" :bordered="false" type="info">
+          {{ modalityBadgeLabel(headerModalityBadge, t) }}
+        </n-tag>
+      </template>
       <template #actions>
         <template v-if="!isMobile">
           <n-button size="small" @click="showEditModel = true">{{ t('models.editModel') }}</n-button>
@@ -86,6 +92,8 @@ import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
 import { isBalancedModel } from '../../utils/schedulingMode'
 import { isTestSuccess } from '../../utils/testOutcomeDisplay'
 import { modelCostDetailLocation } from '../../utils/modelCostLocation'
+import { modalityBadge, modalityBadgeLabel } from '../../utils/modalityBadge'
+import { candidatePriceLines } from '../../utils/candidatePriceLines'
 import { getModelImpact, type Model, type ModelCandidate, type ModelImpact } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -135,6 +143,11 @@ const isBalanced = computed(() => (modelData.value ? isBalancedModel(modelData.v
 const headerDescription = computed(() =>
   modelHeaderDescription(t, modelData.value?.running_status ?? 'not_configured', isBalanced.value),
 )
+
+// Computed once: the template renders the badge (and its label) off this,
+// never re-deriving the rule inline. Same rule as the list page's name cell;
+// absent for text-only models.
+const headerModalityBadge = computed(() => (modelData.value ? modalityBadge(modelData.value.output_modalities) : null))
 
 // On mobile the header buttons collapse into a single ResponsiveDropdown, so the
 // toggle-status row's label follows the model's current management_status.
@@ -347,6 +360,23 @@ const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => {
   return [
     { title: columnTitle(t('models.provider'), t('models.provider_tip')), key: 'provider_name', minWidth: 140 },
     { title: columnTitle(t('models.providerModelName'), t('models.providerModelName_tip')), key: 'provider_model_name', minWidth: 160 },
+    {
+      // Billing + price in one column, same lines as the provider detail
+      // page's price column (the shared candidate price renderer): the
+      // billing mode decides which price slot means anything, so the mode
+      // tag travels with the number it explains.
+      title: columnTitle(t('models.billingPriceColumn'), t('models.billingPriceColumn_tip')),
+      key: 'billing_price',
+      minWidth: 150,
+      render: (row) => {
+        const modeTag = h(
+          NTag,
+          { size: 'tiny', bordered: false, type: row.billing_mode === 'image' ? 'info' : 'default' },
+          { default: () => t(row.billing_mode === 'image' ? 'models.billingPerImage' : 'models.billingPerToken') },
+        )
+        return h('div', { style: 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;' }, [modeTag, ...candidatePriceLines(row, t)])
+      },
+    },
     {
       title: columnTitle(t('models.managementStatusColumn'), t('models.managementStatusColumn_tip')),
       key: 'management_status',

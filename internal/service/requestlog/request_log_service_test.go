@@ -263,3 +263,113 @@ func TestGetRequestLogDetailCarriesPriceSnapshot(t *testing.T) {
 		t.Error("pre-snapshot row must carry nil prices, not fabricated values")
 	}
 }
+
+// TestImageUsageDigest pins the snapshot parser's contract: only a parsed
+// snapshot with a positive delivered count yields a digest, and everything
+// else — no snapshot, unparseable JSON, a zero count — reads as "not an
+// image-settled row".
+func TestImageUsageDigest(t *testing.T) {
+	cases := []struct {
+		name      string
+		snapshot  string
+		wantCount int
+		wantPrice *float64
+	}{
+		{"resolved snapshot", `{"actual_n":2,"unit_price":0.25}`, 2, ptrFloat(0.25)},
+		{"empty", "", 0, nil},
+		{"unparseable", "{not-json", 0, nil},
+		{"zero delivered", `{"actual_n":0,"unit_price":0.25}`, 0, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			count, price := imageUsageDigest(c.snapshot)
+			if count != c.wantCount {
+				t.Fatalf("count = %d, want %d", count, c.wantCount)
+			}
+			switch {
+			case c.wantPrice == nil:
+				if price != nil {
+					t.Fatalf("price = %v, want nil", *price)
+				}
+			case price == nil:
+				t.Fatalf("price = nil, want %v", *c.wantPrice)
+			case *price != *c.wantPrice:
+				t.Fatalf("price = %v, want %v", *price, *c.wantPrice)
+			}
+		})
+	}
+}
+
+func ptrFloat(v float64) *float64 { return &v }
+
+// TestListRowsCarryImageUsage: a per-image settled row surfaces its digest on
+// the list DTO (count + unit price) and renders one billing unit in the CSV;
+// a token row keeps its token figures and reads billing_unit=token.
+func TestListRowsCarryImageUsage(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewRequestLogService(db)
+	now := time.Now().UTC()
+
+	imageRow := model.RequestLog{RequestID: "req-image", ModelName: "wan2.2-image", StatusCode: 200,
+		Attempts: 1, CreatedAt: now,
+		ImagePricingSnapshot: `{"billing_mode":"image","request_quality":"standard","request_size":"1024*1024",` +
+			`"request_n":4,"actual_n":2,"unit_price":0.25,"price_source":"tier","unit":"image","source":"payload"}`}
+	if err := repository.CreateRequestLog(db, &imageRow); err != nil {
+		t.Fatalf("seed image row: %v", err)
+	}
+	tokenRow := model.RequestLog{RequestID: "req-text", ModelName: "gpt-4o", StatusCode: 200,
+		InputTokens: 12, OutputTokens: 34, Attempts: 1, CreatedAt: now}
+	if err := repository.CreateRequestLog(db, &tokenRow); err != nil {
+		t.Fatalf("seed token row: %v", err)
+	}
+
+	items, _, err := svc.ListRequestLogs(&repository.RequestLogFilter{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListRequestLogs: %v", err)
+	}
+	byID := map[string]RequestLogListItem{}
+	for _, it := range items {
+		byID[it.RequestID] = it
+	}
+	img := byID["req-image"]
+	if img.ImageCount != 2 || img.ImageUnitPrice == nil || *img.ImageUnitPrice != 0.25 {
+		t.Fatalf("image row digest: count=%d price=%v, want 2 and 0.25", img.ImageCount, img.ImageUnitPrice)
+	}
+	txt := byID["req-text"]
+	if txt.ImageCount != 0 || txt.ImageUnitPrice != nil {
+		t.Fatalf("token row digest: count=%d price=%v, want 0 and nil", txt.ImageCount, txt.ImageUnitPrice)
+	}
+
+	// CSV: the usage columns line up with their header and carry one billing
+	// unit per row.
+	header := csvHeaderRow()
+	col := func(name string) int {
+		for i, h := range header {
+			if h == name {
+				return i
+			}
+		}
+		t.Fatalf("csv header missing %q: %v", name, header)
+		return -1
+	}
+	unit, count, price := col("billing_unit"), col("image_count"), col("image_unit_price")
+	if unit < 0 || count < 0 || price < 0 {
+		t.Fatalf("usage columns not all present: %v", header)
+	}
+	for _, it := range items {
+		rec := csvRowFromItem(it)
+		if len(rec) != len(header) {
+			t.Fatalf("csv record width %d != header width %d", len(rec), len(header))
+		}
+		switch it.RequestID {
+		case "req-image":
+			if rec[unit] != "image" || rec[count] != "2" || rec[price] != "0.25" {
+				t.Fatalf("image csv cells: %q %q %q", rec[unit], rec[count], rec[price])
+			}
+		case "req-text":
+			if rec[unit] != "token" || rec[count] != "" || rec[price] != "" {
+				t.Fatalf("token csv cells: %q %q %q", rec[unit], rec[count], rec[price])
+			}
+		}
+	}
+}

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The usage surfaces follow the billing unit: the request-log list's usage
+  column (and its CSV export) renders token counts or "N × unit price" per
+  row, analytics reports gain a delivered-images column (migration 00041
+  adds the count column and backfills it), and the model pages show the
+  modality badge and each candidate's billing mode and price.
+
+- `GET /v1/models` and `GET /v1/models/{model}` expose `output_modalities`
+  on every model object (OpenAI and Anthropic shapes), so clients can
+  discover which models are image models.
+
+- DashScope dialect detection covers Model Studio workspace domains
+  (`{workspaceId}.{region}.maas.aliyuncs.com`), with the matching docs
+  updates.
+
 ## [0.2.1] - 2026-09-01
 
 ### Added

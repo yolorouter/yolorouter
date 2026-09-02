@@ -69,7 +69,7 @@ func TestReportCSVColumnOrder(t *testing.T) {
 	svc := NewAnalyticsService(db)
 	seedReportLog(t, svc, "ok-1", 200, 10, 5, true)
 
-	tail := "calls,success_rate,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cost_micros,unknown_cost_calls,cache_read_saved_micros,cache_write_extra_micros"
+	tail := "calls,success_rate,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cost_micros,unknown_cost_calls,cache_read_saved_micros,cache_write_extra_micros,image_count"
 	want := map[string]string{
 		DimensionModel:  "model_name," + tail,
 		DimensionCaller: "api_key_id,username,key_prefix," + tail,
@@ -101,7 +101,7 @@ func TestReportCSVColumnOrder(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("expected one model row, got %d", len(records))
 	}
-	wantRow := []string{"m1", "1", "1.0000", "10", "0", "0", "0", "5", "0", "0", "0"}
+	wantRow := []string{"m1", "1", "1.0000", "10", "0", "0", "0", "5", "0", "0", "0", "0"}
 	for i, cell := range records[0] {
 		if cell != wantRow[i] {
 			t.Fatalf("model CSV cell %q (column %s): want %q, got row %v", cell, headers[i], wantRow[i], records[0])
@@ -232,13 +232,72 @@ func TestProviderCSVColumnOrderPreservesShippedPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCSVRecords(provider): %v", err)
 	}
-	want := "provider_id,provider_name,calls,success_rate,failovers,avg_duration_ms,cost_micros,unknown_cost_calls,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cache_read_saved_micros,cache_write_extra_micros"
+	want := "provider_id,provider_name,calls,success_rate,failovers,avg_duration_ms,cost_micros,unknown_cost_calls,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cache_read_saved_micros,cache_write_extra_micros,image_count"
 	if got := strings.Join(headers, ","); got != want {
 		t.Fatalf("provider header order:\nwant %q\ngot  %q", want, got)
 	}
 	for _, rec := range records {
 		if len(rec) != len(headers) {
 			t.Fatalf("provider record width %d != header width %d", len(rec), len(headers))
+		}
+	}
+}
+
+// TestModelReportSumsImageCount: the image column aggregates delivered
+// images per group — multiple rows of one image model add up, a token-only
+// group reads 0 (the tables render that as "-"), and the count is volume:
+// present even when the row's cost is unknown (no tier resolved).
+func TestModelReportSumsImageCount(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewAnalyticsService(db)
+	now := time.Now().UTC()
+	seed := func(requestID string, imageCount int, costKnown bool) {
+		log := model.RequestLog{RequestID: requestID, ModelName: "wan2.2-image", StatusCode: 200,
+			ImageCount: imageCount, CostKnown: costKnown, CreatedAt: now}
+		if costKnown {
+			log.CostMicros = 1
+		}
+		if err := repository.CreateRequestLog(db, &log); err != nil {
+			t.Fatalf("seed %s: %v", requestID, err)
+		}
+	}
+	seed("img-1", 2, true)
+	seed("img-2", 3, false)
+	seed("txt-1", 0, true)
+	if err := repository.CreateRequestLog(db, &model.RequestLog{
+		RequestID: "txt-2", ModelName: "gpt-4o", StatusCode: 200,
+		InputTokens: 7, CostKnown: true, CostMicros: 2, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed txt-2: %v", err)
+	}
+
+	rows, err := repository.AggregateByModel(t.Context(), db, &repository.RequestLogFilter{})
+	if err != nil {
+		t.Fatalf("AggregateByModel: %v", err)
+	}
+	byModel := map[string]int64{}
+	for _, r := range rows {
+		byModel[r.ModelName] = r.ImageCount
+	}
+	if byModel["wan2.2-image"] != 5 {
+		t.Fatalf("image model image_count: want 5 (2 priced + 3 unpriced), got %d", byModel["wan2.2-image"])
+	}
+	if byModel["gpt-4o"] != 0 {
+		t.Fatalf("token model image_count: want 0, got %d", byModel["gpt-4o"])
+	}
+
+	// The CSV tail carries the same column, appended after the shipped
+	// columns so spreadsheet consumers keep their positions.
+	headers, records, err := svc.BuildCSVRecords(t.Context(), DimensionModel, "", &repository.RequestLogFilter{}, AnalyticsOptions{}, now)
+	if err != nil {
+		t.Fatalf("BuildCSVRecords: %v", err)
+	}
+	if headers[len(headers)-1] != "image_count" {
+		t.Fatalf("csv last column: want image_count, got %q", headers[len(headers)-1])
+	}
+	for _, rec := range records {
+		if len(rec) != len(headers) {
+			t.Fatalf("record width %d != header width %d", len(rec), len(headers))
 		}
 	}
 }

@@ -277,3 +277,25 @@ func TestDeliveryObservedReachesTheOverflowColumn(t *testing.T) {
 		}
 	}
 }
+
+// TestImageUnitReportCarriesItsCount: an image-unit report's delivered count
+// lands in its column — priced or not, because the column is volume, not the
+// bill (the pricing snapshot is the bill's explanation). A token-unit report
+// must not touch it, even when it happens to carry a nonzero Count.
+func TestImageUnitReportCarriesItsCount(t *testing.T) {
+	var tl fact.Timeline
+	tl.Append(fact.Entry{Attempt: 1, Record: fact.UsageReported{
+		Unit: fact.UnitImage, Source: fact.UsageFromUpstream, Count: 3, Requested: 4,
+	}})
+	if s := summarise(tl); s.imageCount != 3 {
+		t.Fatalf("imageCount = %d, want 3", s.imageCount)
+	}
+
+	var tlToken fact.Timeline
+	tlToken.Append(fact.Entry{Attempt: 1, Record: fact.UsageReported{
+		Unit: fact.UnitToken, Source: fact.UsageFromUpstream, Prompt: 5, Completion: 7, Total: 12,
+	}})
+	if s := summarise(tlToken); s.imageCount != 0 {
+		t.Fatalf("token report touched imageCount: %d", s.imageCount)
+	}
+}

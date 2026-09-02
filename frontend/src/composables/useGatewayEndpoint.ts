@@ -78,10 +78,18 @@ function curlExample(key = '<API Key>'): string {
   return `curl ${openAIBaseUrl.value}/chat/completions -H "Authorization: Bearer ${key}" -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'`
 }
 
+// The image-generation twin of curlExample: same credential rules, aimed at
+// the images endpoint. The sample keeps an image-model placeholder so the
+// two samples stay distinguishable at a glance.
+function imageCurlExample(key = '<API Key>'): string {
+  return `curl ${openAIBaseUrl.value}/images/generations -H "Authorization: Bearer ${key}" -d '{"model":"<image model>","prompt":"a cat"}'`
+}
+
 export function useGatewayEndpoint(): {
   endpoint: ComputedRef<string>
   openAIBaseUrl: ComputedRef<string>
   curlExample: (key?: string) => string
+  imageCurlExample: (key?: string) => string
   pending: Ref<boolean>
 } {
   // load() must never throw synchronously: it is assigned to inFlight, and
@@ -92,5 +100,5 @@ export function useGatewayEndpoint(): {
   if (!resolved && !inFlight) {
     inFlight = load()
   }
-  return { endpoint, openAIBaseUrl, curlExample, pending }
+  return { endpoint, openAIBaseUrl, curlExample, imageCurlExample, pending }
 }

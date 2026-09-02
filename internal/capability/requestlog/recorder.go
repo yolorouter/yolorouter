@@ -113,6 +113,7 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 		OutputTokens:                     s.outputTokens,
 		CacheWriteTokens:                 s.cacheWriteTokens,
 		CacheReadTokens:                  s.cacheReadTokens,
+		ImageCount:                       s.imageCount,
 		CostMicros:                       s.costMicros,
 		CostKnown:                        s.costKnown,
 		CacheReadSavedMicros:             s.cacheReadSavedMicros,
@@ -172,17 +173,21 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 type summary struct {
 	inputTokens, outputTokens         int
 	cacheWriteTokens, cacheReadTokens int
-	costKnown                         bool
-	costMicros                        int64
-	settledPrices                     *fact.SettledPrices
-	cacheReadSavedMicros              int64
-	cacheWriteExtraMicros             int64
-	compressCostSavedMicros           int64
-	compressTokensSaved               int
-	compressorsApplied                string
-	compressSkipReason                string
-	attempts                          int
-	attemptsDetail                    string
+	// imageCount is the delivered-image count of an image-unit usage report.
+	// Unlike the pricing snapshot, it is volume, not a bill: it is written
+	// even when no price resolved.
+	imageCount              int
+	costKnown               bool
+	costMicros              int64
+	settledPrices           *fact.SettledPrices
+	cacheReadSavedMicros    int64
+	cacheWriteExtraMicros   int64
+	compressCostSavedMicros int64
+	compressTokensSaved     int
+	compressorsApplied      string
+	compressSkipReason      string
+	attempts                int
+	attemptsDetail          string
 	// overflow holds every record this build has no column for, so it is
 	// stored rather than dropped.
 	overflow []overflowEntry
@@ -278,6 +283,13 @@ func summarise(tl fact.Timeline) summary {
 			s.outputTokens = rec.Completion
 			s.cacheWriteTokens = rec.CacheWrite
 			s.cacheReadTokens = rec.CacheRead
+			// An image-unit report carries its quantity in Count; the column
+			// is volume, so it is taken regardless of whether a price
+			// resolved for it (the snapshot column is the one that exists
+			// only when pricing succeeded).
+			if rec.Unit == fact.UnitImage {
+				s.imageCount = rec.Count
+			}
 			// Recognising a record is not the same as having a column for all
 			// of it. This row holds four token counts; the record also carries
 			// what those counts COUNT, and a tally of provider-side tool calls
