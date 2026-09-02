@@ -44,11 +44,12 @@ update:
   # override it here.
   github_repo: ""
 # Built-in model price catalog refresh. The seed is embedded in the binary at
-# compile time; a background goroutine fetches a fresher catalog daily from the
-# distribution endpoint and hot-swaps it in (the embedded seed stays as a
-# fallback when the endpoint is unreachable). The default endpoint is live, so
-# every instance refreshes with zero config — set endpoint to "" to disable, or
-# to your own URL to self-host the source.
+# compile time (refreshed once per release from the data repo); a background
+# goroutine fetches a fresher catalog daily from the distribution endpoint and
+# hot-swaps it in (the embedded seed stays as a fallback when the endpoint is
+# unreachable). The default endpoint is live, so every instance refreshes with
+# zero config — set endpoint to "" to disable, or to your own URL to self-host
+# the source (e.g. a jsDelivr mirror of github.com/yolorouter/price-catalog).
 price_catalog:
   endpoint: "https://prices.yolorouter.com/catalog.json"
   refresh_interval: 24h

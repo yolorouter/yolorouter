@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`{workspaceId}.{region}.maas.aliyuncs.com`), with the matching docs
   updates.
 
+### Changed
+
+- The price-catalog refresh pipeline moved to its own data repository
+  ([yolorouter/price-catalog](https://github.com/yolorouter/price-catalog));
+  this repo no longer takes daily price-refresh commits, and the embedded
+  seed is refreshed once per release instead of daily.
+
+### Fixed
+
+- Cache prices in the price catalog now deserialize: the JSON keys were
+  camelCase while the Go reader expects snake_case, so `cache_write` /
+  `cache_read` prefill suggestions were silently empty on both the embedded
+  seed and the live-refreshed catalog.
+
 ## [0.2.1] - 2026-09-01
 
 ### Added
