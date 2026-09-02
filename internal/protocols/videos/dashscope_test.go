@@ -145,9 +145,9 @@ func TestParseDashScopeTaskStatusVocabulary(t *testing.T) {
 		`{"output":{"task_status":"UNKNOWN"}}`:                         {"expired", "task_expired"},
 	}
 	for body, want := range cases {
-		obs, biz, err := ParseDashScopeTaskResponse([]byte(body))
-		if err != nil || biz != nil {
-			t.Fatalf("%s: err=%v biz=%v", body, err, biz)
+		obs, _, err := ParseDashScopeTaskResponse([]byte(body))
+		if err != nil {
+			t.Fatalf("%s: err=%v", body, err)
 		}
 		if obs.Status != want.status || obs.ErrorCode != want.code {
 			t.Fatalf("%s: got %q/%q, want %q/%q", body, obs.Status, obs.ErrorCode, want.status, want.code)
@@ -162,8 +162,8 @@ func TestParseDashScopeTaskStatusVocabulary(t *testing.T) {
 	}
 }
 
-func TestDashScopeOrigin(t *testing.T) {
-	if got := DashScopeOrigin("https://dashscope.aliyuncs.com/compatible-mode/v1"); got != "https://dashscope.aliyuncs.com" {
+func TestOrigin(t *testing.T) {
+	if got := Origin("https://dashscope.aliyuncs.com/compatible-mode/v1"); got != "https://dashscope.aliyuncs.com" {
 		t.Fatalf("origin = %q", got)
 	}
 }

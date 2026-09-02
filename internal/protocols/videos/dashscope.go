@@ -11,11 +11,9 @@ package videos
 // outside the protocols tree, like the images dialect's own split.
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"strings"
 )
@@ -69,23 +67,13 @@ func DashScopeModelFamily(providerModel string) DashScopeFamily {
 }
 
 // MapDashScopeSize maps a dialect size (WIDTHxHEIGHT) onto the two axes
-// DashScope wants — resolution tier and aspect ratio — by nearest
-// neighbor, since the dialect's four sizes are pixel coordinates the
-// upstream's coarse tiers only approximate. The resolution half is also
-// the pricing tier key, so the mapping is written once here and both
-// readers use it.
+// DashScope wants — resolution tier and aspect ratio — from the shared
+// nearest-neighbor table both vendor maps answer from, so a size cannot
+// submit at one tier and price at another. The resolution half is
+// uppercase because DashScope's vocabulary is; the pricing tier shares
+// the same spelling (TierForSize).
 func MapDashScopeSize(dialectSize string) (resolution, ratio string, ok bool) {
-	switch dialectSize {
-	case "720x1280":
-		return "720P", "9:16", true
-	case "1280x720":
-		return "720P", "16:9", true
-	case "1024x1792":
-		return "1080P", "9:16", true
-	case "1792x1024":
-		return "1080P", "16:9", true
-	}
-	return "", "", false
+	return tierAndRatioForSize(dialectSize)
 }
 
 // DashScopeSubmitRequest is one video submit, already mapped: the
@@ -123,7 +111,7 @@ func EncodeDashScopeSubmit(req DashScopeSubmitRequest) ([]byte, error) {
 	}
 	ref := req.RefURL
 	if ref == "" && len(req.RefData) > 0 {
-		ref = dashScopeDataURI(req.RefContentType, req.RefData)
+		ref = dataURI(req.RefContentType, req.RefData)
 	}
 
 	// prompt_extend on is this gateway's standing choice (a short prompt
@@ -157,18 +145,6 @@ func EncodeDashScopeSubmit(req DashScopeSubmitRequest) ([]byte, error) {
 		}
 	}
 	return json.Marshal(map[string]any{"model": req.Model, "input": input, "parameters": params})
-}
-
-// dashScopeDataURI renders uploaded bytes as the data URI the upstream
-// accepts, sniffing the content type when the upload's own header is
-// missing or is the multipart default curl sends — the same lesson the
-// images dialect learned: an octet-stream from a file part is still an
-// image here.
-func dashScopeDataURI(contentType string, data []byte) string {
-	if contentType == "" || contentType == "application/octet-stream" {
-		contentType = http.DetectContentType(data)
-	}
-	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 // DashScopeTaskObservation is one poll's answer in normalized form; the
@@ -291,10 +267,11 @@ func ParseDashScopeTaskResponse(body []byte) (DashScopeTaskObservation, *DashSco
 	}, nil, nil
 }
 
-// DashScopeOrigin strips a base URL down to scheme://host — the native
-// task tree hangs off the provider's origin, and any configured path
-// would corrupt the route.
-func DashScopeOrigin(baseURL string) string {
+// Origin strips a base URL down to scheme://host — the native task
+// trees hang off the provider's origin, and any configured path would
+// corrupt the route. Named without a vendor: every task dialect answers
+// it the same way.
+func Origin(baseURL string) string {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Host == "" {
 		return strings.TrimRight(baseURL, "/")
@@ -302,9 +279,10 @@ func DashScopeOrigin(baseURL string) string {
 	return u.Scheme + "://" + u.Host
 }
 
-// ReadDashScopeBounded reads a task response body whole up to a small cap
-// — task payloads are status reads measured in bytes, not media.
-func ReadDashScopeBounded(r io.Reader) []byte {
+// ReadTaskBounded reads a task response body whole up to a small cap —
+// task payloads are status reads measured in bytes, not media. Vendor
+// neutral for the same reason Origin is.
+func ReadTaskBounded(r io.Reader) []byte {
 	const capBytes = 1 << 20
 	body, _ := io.ReadAll(io.LimitReader(r, capBytes))
 	return body

@@ -126,26 +126,52 @@ func (p *videoPayload) Routing() RoutingIntent {
 func (p *videoPayload) EstimateCost(PricingView) CostEstimate { return CostEstimate{} }
 
 const (
-	// openAIVideoUnsupported is the verdict for an OpenAI-dialect
-	// candidate: v1 wires the wan task dialect only, and proxying an
-	// OpenAI-shaped video upstream is not a thing this build does.
-	openAIVideoUnsupported = "video tasks are served through the dashscope native dialect in this build"
+	// openAIVideoUnsupported is the verdict for a candidate on a base
+	// neither task dialect speaks: proxying an OpenAI-shaped video
+	// upstream is not a thing this build does.
+	openAIVideoUnsupported = "video tasks are served through the dashscope and ark native dialects in this build"
 	// wanFamilyUnsupported is the verdict for a DashScope candidate whose
 	// provider model is not a wan video family the dialect can encode.
 	wanFamilyUnsupported = "model not in a wan video family the dashscope dialect encodes"
 )
 
+// isArkBase is videos.IsArkBase, overridable in tests for the same
+// reason isDashScopeBase is: a local httptest server never carries the
+// real hostname, and the branch needs exercising against a live stub.
+var isArkBase = videos.IsArkBase
+
 func (p *videoPayload) Supports(cand Candidate) CandidateVerdict {
-	if !isDashScopeBase(cand.BaseURL) {
+	switch {
+	case isArkBase(cand.BaseURL):
+		// One uniform endpoint family serves every Ark video model, and
+		// the model field also accepts inference endpoint ids — a name
+		// gate would refuse spellings the endpoint answers to, so the
+		// probe judges the mapping instead.
+	case isDashScopeBase(cand.BaseURL):
+		if videos.DashScopeModelFamily(cand.ProviderModelName) == videos.DashScopeFamilyNone {
+			return CandidateVerdict{OK: false, Reason: wanFamilyUnsupported}
+		}
+	default:
 		return CandidateVerdict{OK: false, Reason: openAIVideoUnsupported}
-	}
-	if videos.DashScopeModelFamily(cand.ProviderModelName) == videos.DashScopeFamilyNone {
-		return CandidateVerdict{OK: false, Reason: wanFamilyUnsupported}
 	}
 	// Memoize the winner so PrepareUpstream builds the same submit this
 	// verdict approved — the coupling the call-order contract sanctions.
 	p.cand = &cand
 	return CandidateVerdict{OK: true}
+}
+
+// attachReference carries the caller's input_reference onto a submit
+// request's reference slots, whichever vendor's struct they live in —
+// the one block both dialect branches spelled verbatim.
+func attachReference(refURL *string, refData *[]byte, refContentType *string, ref *videos.InputRef) {
+	if ref == nil {
+		return
+	}
+	*refURL = ref.ImageURL
+	if ref.File != nil {
+		*refData = ref.File.Data
+		*refContentType = ref.File.ContentType
+	}
 }
 
 // effectiveSize / effectiveSeconds apply the dialect defaults the door
@@ -174,36 +200,53 @@ func (p *videoPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 		p.submitErr = fmt.Errorf("video payload prepared for a candidate Supports did not approve")
 		return nil, p.submitErr
 	}
-	resolution, ratio, ok := videos.MapDashScopeSize(p.effectiveSize())
-	if !ok {
-		// The door validated the vocabulary; this is unreachable defense
-		// against the two maps drifting.
-		p.submitErr = fmt.Errorf("size %q has no dashscope mapping", p.effectiveSize())
-		return nil, p.submitErr
-	}
-	submit := videos.DashScopeSubmitRequest{
-		Model: cand.ProviderModelName, Prompt: p.req.Prompt,
-		Resolution: resolution, Ratio: ratio, Duration: p.effectiveSeconds(),
-	}
-	if ref := p.req.InputReference; ref != nil {
-		submit.RefURL = ref.ImageURL
-		if ref.File != nil {
-			submit.RefData = ref.File.Data
-			submit.RefContentType = ref.File.ContentType
+	var body []byte
+	var call UpstreamCall
+	call.OriginRelative = true
+	call.ContentType = "application/json"
+	switch {
+	case isArkBase(cand.BaseURL):
+		resolution, ratio, ok := videos.MapArkSize(p.effectiveSize())
+		if !ok {
+			// The door validated the vocabulary; this is unreachable
+			// defense against the shared table drifting.
+			p.submitErr = fmt.Errorf("size %q has no ark mapping", p.effectiveSize())
+			return nil, p.submitErr
 		}
+		submit := videos.ArkSubmitRequest{
+			Model: cand.ProviderModelName, Prompt: p.req.Prompt,
+			Resolution: resolution, Ratio: ratio, Duration: p.effectiveSeconds(),
+		}
+		attachReference(&submit.RefURL, &submit.RefData, &submit.RefContentType, p.req.InputReference)
+		encoded, err := videos.EncodeArkSubmit(submit)
+		if err != nil {
+			p.submitErr = err
+			return nil, err
+		}
+		body = encoded
+		call.Path = videos.ArkSubmitPath
+	default:
+		resolution, ratio, ok := videos.MapDashScopeSize(p.effectiveSize())
+		if !ok {
+			p.submitErr = fmt.Errorf("size %q has no dashscope mapping", p.effectiveSize())
+			return nil, p.submitErr
+		}
+		submit := videos.DashScopeSubmitRequest{
+			Model: cand.ProviderModelName, Prompt: p.req.Prompt,
+			Resolution: resolution, Ratio: ratio, Duration: p.effectiveSeconds(),
+		}
+		attachReference(&submit.RefURL, &submit.RefData, &submit.RefContentType, p.req.InputReference)
+		encoded, err := videos.EncodeDashScopeSubmit(submit)
+		if err != nil {
+			p.submitErr = err
+			return nil, err
+		}
+		body = encoded
+		call.Path = videos.DashScopeSubmitPath
+		call.Headers = map[string]string{videos.DashScopeAsyncHeader: "enable"}
 	}
-	body, err := videos.EncodeDashScopeSubmit(submit)
-	if err != nil {
-		p.submitErr = err
-		return nil, err
-	}
-	return &UpstreamCall{
-		Path:           videos.DashScopeSubmitPath,
-		OriginRelative: true,
-		Body:           body,
-		ContentType:    "application/json",
-		Headers:        map[string]string{videos.DashScopeAsyncHeader: "enable"},
-	}, nil
+	call.Body = body
+	return &call, nil
 }
 
 // videoTaskStore is the slice of the videotask service a delivery needs;
@@ -240,15 +283,15 @@ func (p *videoPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 		return fact.HandedOn(fact.FaultUpstream, "response_too_large", nil)
 	}
 
-	taskID, bizErr, perr := videos.ParseDashScopeSubmitResponse(body)
+	taskID, bizErr, perr := parseVideoSubmitResponse(p.cand.BaseURL, body)
 	if perr != nil {
-		return fact.HandedOn(fact.FaultUpstream, "dashscope_submit_decode: "+perr.Error(), perr)
+		return fact.HandedOn(fact.FaultUpstream, "video_submit_decode: "+perr.Error(), perr)
 	}
 	if bizErr != nil {
 		// A business refusal inside a 200: the request itself was refused,
 		// so it is answered, not failed over — any other candidate of the
 		// same dialect would refuse the same body.
-		return p.deliverWanRefusal(tools, body, bizErr)
+		return p.deliverNativeRefusal(tools, body, bizErr)
 	}
 
 	if videoTasks == nil {
@@ -292,18 +335,36 @@ func (p *videoPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 	return fact.Succeeded(http.StatusOK)
 }
 
-// deliverWanRefusal answers a business refusal with the dialect's own
+// parseVideoSubmitResponse reads a submit answer in the dialect the
+// approved candidate speaks — one branch per vendor, one normalized
+// answer out.
+func parseVideoSubmitResponse(baseURL string, body []byte) (string, *videos.Refusal, error) {
+	if isArkBase(baseURL) {
+		id, biz, err := videos.ParseArkSubmitResponse(body)
+		if biz != nil {
+			return id, &videos.Refusal{Code: biz.Code, Message: biz.Message}, nil
+		}
+		return id, nil, err
+	}
+	id, biz, err := videos.ParseDashScopeSubmitResponse(body)
+	if biz != nil {
+		return id, &videos.Refusal{Code: biz.Code, Message: biz.Message}, nil
+	}
+	return id, nil, err
+}
+
+// deliverNativeRefusal answers a business refusal with the dialect's own
 // error rendered into the videos error shape, served as 422: the caller's
 // request was rejected, not the provider's. Delivered rather than failed
 // over — settling with no task bills nothing, and the status the caller
 // sees is the refusal's, not a gateway 5xx that reads like an outage.
-func (p *videoPayload) deliverWanRefusal(tools DeliveryTools, upstreamBody []byte, bizErr *videos.DashScopeBizError) fact.Delivery {
+func (p *videoPayload) deliverNativeRefusal(tools DeliveryTools, upstreamBody []byte, bizErr *videos.Refusal) fact.Delivery {
 	body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": bizErr.Code, "message": bizErr.Message}})
 	tools.Capture.Upstream(upstreamBody)
 	if failed := writeVideoJSON(tools, http.StatusUnprocessableEntity, body); failed != nil {
 		return *failed
 	}
-	return fact.Rejected(http.StatusUnprocessableEntity, fact.FaultClient, "dashscope_business_error", bizErr)
+	return fact.Rejected(http.StatusUnprocessableEntity, fact.FaultClient, "video_business_error", errors.New(bizErr.Code+": "+bizErr.Message))
 }
 
 // writeVideoJSON is the commit→write→flush handshake every video answer

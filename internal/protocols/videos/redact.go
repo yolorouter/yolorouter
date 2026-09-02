@@ -14,14 +14,24 @@ import (
 	"regexp"
 )
 
+// The key alternation below covers every spelling a reference image takes on
+// its way upstream: the caller's own "image_url" (a plain string), the
+// legacy dialect's "img_url", and the nested "url" inside the media and
+// image_url objects the native dialects build. Exact quoted tokens, so
+// sibling keys like "video_url" cannot match.
 var (
-	dataURIRefRe = regexp.MustCompile(`("image_url"\s*:\s*")(data:[^"]{0,128};base64,)([A-Za-z0-9+/=]+)(")`)
-	bareB64Re    = regexp.MustCompile(`("image_url"\s*:\s*")([A-Za-z0-9+/=]{1000,})(")`)
+	dataURIRefRe = regexp.MustCompile(`("(?:image_url|img_url|url)"\s*:\s*")(data:[^"]{0,128};base64,)([A-Za-z0-9+/=]+)(")`)
+	bareB64Re    = regexp.MustCompile(`("(?:image_url|img_url|url)"\s*:\s*")([A-Za-z0-9+/=]{1000,})(")`)
 )
 
 // RedactRequestBody returns body as text with reference-image payloads
-// replaced by a note of their length. Everything else — the prompt, the
-// model, the knobs — is exactly what an operator needs to see and stays.
+// replaced by a note of their length, in every spelling they appear in:
+// the caller's request and the re-encoded bodies the native dialects
+// send upstream both pass through here (the log policy stores both
+// rendered), and a redactor that only knew the caller's spelling would
+// let the same pixels back in one hop later. Everything else — the
+// prompt, the model, the knobs — is exactly what an operator needs to
+// see and stays.
 func RedactRequestBody(body []byte) string {
 	out := dataURIRefRe.ReplaceAllStringFunc(string(body), func(m string) string {
 		parts := dataURIRefRe.FindStringSubmatch(m)

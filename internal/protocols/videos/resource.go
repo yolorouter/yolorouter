@@ -61,6 +61,15 @@ func MapWireStatus(taskStatus string) (wire, errCode string) {
 	}
 }
 
+// Refusal is a business refusal any task dialect may surface — a
+// request the upstream rejected on its own merits, carried behind one
+// face so the gateway's delivery, polling, and probing paths share a
+// single spelling instead of three same-shaped locals.
+type Refusal struct {
+	Code    string
+	Message string
+}
+
 // ResourceError is the error payload of a failed job, in the two fields
 // the API defines: a machine-readable code and a human-readable message.
 type ResourceError struct {

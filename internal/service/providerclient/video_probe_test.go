@@ -114,3 +114,37 @@ func TestVideoGenerationProbeNonDashScopeBaseSaysSo(t *testing.T) {
 		t.Fatalf("the probe must name what it cannot do, got %+v", res)
 	}
 }
+
+func TestVideoGenerationProbePassesOnArkBase(t *testing.T) {
+	// A local server is neither vendor by hostname; both gates flip on
+	// for this one test so the ark branch is exercised against a live
+	// stub.
+	prevArk := isArkBase
+	isArkBase = func(string) bool { return true }
+	t.Cleanup(func() { isArkBase = prevArk })
+
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/contents/generations/tasks":
+			if r.Header.Get("X-DashScope-Async") != "" {
+				t.Errorf("the ark dialect carries no async header, got %q", r.Header.Get("X-DashScope-Async"))
+			}
+			_, _ = w.Write([]byte(`{"id":"cgt-1"}`))
+		case "/api/v3/contents/generations/tasks/cgt-1":
+			_, _ = w.Write([]byte(`{"id":"cgt-1","status":"running"}`))
+		default:
+			t.Errorf("unexpected probe path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer srv.Close()
+
+	res, err := c.TestVideoGeneration(t.Context(), srv.URL+"/api/v3", "sk-test", "doubao-seedance-2-0-260128")
+	if err != nil {
+		t.Fatalf("probe errored: %v", err)
+	}
+	if res.Outcome != TestSuccess {
+		t.Fatalf("an ark submit+query round trip must pass, got %+v", res)
+	}
+}

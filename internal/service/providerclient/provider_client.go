@@ -31,6 +31,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/protocols/images"
 	"github.com/yolorouter/yolorouter/internal/protocols/responses"
+	"github.com/yolorouter/yolorouter/internal/protocols/videos"
 	"github.com/yolorouter/yolorouter/internal/service/safehttp"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
@@ -635,6 +636,11 @@ const imageProbePrompt = "a small red square on a white background"
 // branch below (origin-joined URL, native body, business-error
 // classification) still needs exercising against a live HTTP stub.
 var isDashScopeBase = images.IsDashScopeBase
+
+// isArkBase is videos.IsArkBase, overridable in tests for the same
+// reason isDashScopeBase is: a local httptest server never carries the
+// real hostname.
+var isArkBase = videos.IsArkBase
 
 // TestImageGeneration probes a mapping the way an image request actually
 // reaches the provider: the images endpoint on the provider's base, a

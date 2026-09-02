@@ -33,8 +33,10 @@ type wanUpstream struct {
 	// submits is the queue of submit outcomes; nil entries mean a plain
 	// acceptance. Exhausted or nil → plain acceptance.
 	submits []string // JSON error body to return instead, "" = accept
-	// tasks maps task id → queue of poll response bodies.
-	tasks map[string][]string
+	// tasks maps task id → queue of poll response bodies (dashscope
+	// route); arkTasks the same for the ark route.
+	tasks    map[string][]string
+	arkTasks map[string][]string
 	// media serves /media/* verbatim with the given content type.
 	media map[string]string
 	// recorded requests
@@ -48,7 +50,7 @@ type wanUpstream struct {
 }
 
 func newWanUpstream() *wanUpstream {
-	return &wanUpstream{tasks: map[string][]string{}, media: map[string]string{}}
+	return &wanUpstream{tasks: map[string][]string{}, arkTasks: map[string][]string{}, media: map[string]string{}}
 }
 
 func (u *wanUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +76,28 @@ func (u *wanUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		id := fmt.Sprintf("up-task-%d", u.submitHits)
 		_, _ = w.Write([]byte(`{"output":{"task_id":"` + id + `","task_status":"PENDING"},"request_id":"r-1"}`))
+	case r.URL.Path == "/api/v3/contents/generations/tasks":
+		u.submitHits++
+		u.lastSubmitPath = r.URL.Path
+		u.lastAsyncHdr = r.Header.Get("X-DashScope-Async")
+		u.lastAuthHeader = r.Header.Get("Authorization")
+		buf := &bytes.Buffer{}
+		_, _ = buf.ReadFrom(r.Body)
+		u.lastSubmitBody = buf.Bytes()
+		id := fmt.Sprintf("ark-task-%d", u.submitHits)
+		_, _ = w.Write([]byte(`{"id":"` + id + `"}`))
+	case strings.HasPrefix(r.URL.Path, "/api/v3/contents/generations/tasks/"):
+		u.queryHits++
+		u.lastQueryPath = r.URL.Path
+		id := strings.TrimPrefix(r.URL.Path, "/api/v3/contents/generations/tasks/")
+		queue := u.arkTasks[id]
+		if len(queue) == 0 {
+			_, _ = w.Write([]byte(`{"id":"` + id + `","status":"running"}`))
+			return
+		}
+		body := queue[0]
+		u.arkTasks[id] = queue[1:]
+		_, _ = w.Write([]byte(body))
 	case strings.HasPrefix(r.URL.Path, "/api/v1/tasks/"):
 		u.queryHits++
 		u.lastQueryPath = r.URL.Path
@@ -130,6 +154,22 @@ func newVideoRig(t *testing.T, providerModel string) *videoRig {
 	setImageOutputModalities(t, rig.db, m.ID, `["video"]`)
 	rig.modelID = m.ID
 	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	return rig
+}
+
+// newVideoArkRig is the rig on the ark dialect: same fake upstream, the
+// ark gate flipped on and the dashscope gate off, so Supports and the
+// poller both take the ark branch.
+func newVideoArkRig(t *testing.T, providerModel string) *videoRig {
+	rig := newVideoRig(t, providerModel)
+	prevArk := isArkBase
+	isArkBase = func(baseURL string) bool { return baseURL == rig.server.URL }
+	prevDS := isDashScopeBase
+	isDashScopeBase = func(string) bool { return false }
+	t.Cleanup(func() {
+		isArkBase = prevArk
+		isDashScopeBase = prevDS
+	})
 	return rig
 }
 
@@ -354,20 +394,31 @@ func TestVideoLegacyFamilySubmitsFlatForm(t *testing.T) {
 
 func TestVideoReferenceImageReachesUpstream(t *testing.T) {
 	rig := newVideoRig(t, "wan2.6-i2v")
-	body := `{"model":"video-model","prompt":"animate this","input_reference":{"image_url":"data:image/png;base64,QUJD"}}`
+	pixels := "QUJDREVG" + strings.Repeat("h6tF", 300)
+	body := `{"model":"video-model","prompt":"animate this","input_reference":{"image_url":"data:image/png;base64,` + pixels + `"}}`
 	_, w := rig.submit(t, body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("submit status = %d, body %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(string(rig.upstream.lastSubmitBody), "data:image/png;base64,QUJD") {
-		t.Fatalf("the reference image must reach the upstream: %s", rig.upstream.lastSubmitBody)
+	if !strings.Contains(string(rig.upstream.lastSubmitBody), pixels) {
+		t.Fatalf("the reference image must reach the upstream")
 	}
-	// And the audit snapshot must not keep the pixels.
+	// And neither audit surface keeps the pixels: the task's request
+	// snapshot, and the upstream request body the log policy stores —
+	// the re-encoded native spelling is where a caller-side-only
+	// redactor would let them back in.
 	jobID := jobIDOf(t, w)
 	var task model.VideoTask
 	_ = rig.db.Where("id = ?", jobID).First(&task).Error
-	if strings.Contains(task.RequestSnapshot, "QUJD") {
-		t.Fatalf("the snapshot must redact reference pixels: %q", task.RequestSnapshot)
+	if strings.Contains(task.RequestSnapshot, pixels) {
+		t.Fatalf("the snapshot must redact reference pixels")
+	}
+	var logBody model.RequestLogBody
+	if err := rig.db.Where("request_id = ?", "req-video-e2e").First(&logBody).Error; err != nil {
+		t.Fatalf("the submit's log body row must exist: %v", err)
+	}
+	if strings.Contains(logBody.UpstreamRequestBody, pixels) {
+		t.Fatalf("the stored upstream request must redact reference pixels: %.160s", logBody.UpstreamRequestBody)
 	}
 }
 
@@ -580,5 +631,140 @@ func TestVideoBudgetExceededAnswers429(t *testing.T) {
 	}
 	if spent := rig.keySpent(t); spent != 0 {
 		t.Fatalf("nothing was charged, spent=%d", spent)
+	}
+}
+
+func TestArkVideoSubmitAndPollEndToEnd(t *testing.T) {
+	rig := newVideoArkRig(t, "doubao-seedance-2-0-260128")
+	rig.priceVideo(t, 0.5, nil)
+	rig.upstream.arkTasks["ark-task-1"] = []string{
+		`{"id":"ark-task-1","status":"running"}`,
+		`{"id":"ark-task-1","status":"succeeded","content":{"video_url":"` + rig.server.URL + `/media/v.mp4"},"duration":8}`,
+	}
+	rig.upstream.media["/media/v.mp4"] = "ark-mp4-bytes"
+
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"a lantern festival at night","seconds":8,"size":"1280x720"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ark submit status = %d, body %s", w.Code, w.Body.String())
+	}
+	// The submit reached the upstream in the ark shape: content[] items,
+	// lowercase resolution, the stated ratio of a text-only ask, and no
+	// async header — ark's task endpoint is task-only already.
+	var sent struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Resolution string `json:"resolution"`
+		Ratio      string `json:"ratio"`
+		Duration   int    `json:"duration"`
+	}
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+		t.Fatalf("ark submit body: %v", err)
+	}
+	if len(sent.Content) != 1 || sent.Content[0].Type != "text" || sent.Content[0].Text != "a lantern festival at night" {
+		t.Fatalf("ark content shape wrong: %s", rig.upstream.lastSubmitBody)
+	}
+	if sent.Resolution != "720p" || sent.Ratio != "16:9" || sent.Duration != 8 {
+		t.Fatalf("ark knobs wrong: %s", rig.upstream.lastSubmitBody)
+	}
+	if rig.upstream.lastAsyncHdr != "" {
+		t.Fatalf("the ark dialect carries no async header, got %q", rig.upstream.lastAsyncHdr)
+	}
+
+	jobID := jobIDOf(t, w)
+	w = rig.poll(t, rig.key, jobID)
+	if !strings.Contains(w.Body.String(), `"in_progress"`) {
+		t.Fatalf("ark poll 1 must show in_progress: %s", w.Body.String())
+	}
+	rig.agePoll(t, jobID)
+	w = rig.poll(t, rig.key, jobID)
+	if !strings.Contains(w.Body.String(), `"completed"`) {
+		t.Fatalf("ark poll 2 must show completed: %s", w.Body.String())
+	}
+	// Settlement rides the echoed duration: 8s × 0.5 = 4,000,000.
+	if spent := rig.keySpent(t); spent != 4_000_000 {
+		t.Fatalf("ark settlement must charge the echoed duration once, spent=%d", spent)
+	}
+	w = rig.content(t, jobID)
+	if w.Code != http.StatusOK || w.Body.String() != "ark-mp4-bytes" {
+		t.Fatalf("ark content proxy wrong: %d %q", w.Code, w.Body.String())
+	}
+}
+
+func TestArkVideoReferenceAndFailurePaths(t *testing.T) {
+	t.Run("reference rides the content array and omits ratio", func(t *testing.T) {
+		rig := newVideoArkRig(t, "doubao-seedance-2-0-260128")
+		body := `{"model":"video-model","prompt":"animate this","input_reference":{"image_url":"https://example.test/first.png"}}`
+		_, w := rig.submit(t, body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("submit %d %s", w.Code, w.Body.String())
+		}
+		var sent struct {
+			Content []struct {
+				Type     string `json:"type"`
+				Role     string `json:"role"`
+				ImageURL *struct {
+					URL string `json:"url"`
+				} `json:"image_url"`
+			} `json:"content"`
+			Ratio string `json:"ratio"`
+		}
+		if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+			t.Fatalf("body: %v", err)
+		}
+		if len(sent.Content) != 2 || sent.Content[1].Role != "first_frame" || sent.Content[1].ImageURL == nil ||
+			sent.Content[1].ImageURL.URL != "https://example.test/first.png" {
+			t.Fatalf("ark reference shape wrong: %s", rig.upstream.lastSubmitBody)
+		}
+		if sent.Ratio != "" {
+			t.Fatalf("an image-referenced ark submit must not state a ratio: %s", rig.upstream.lastSubmitBody)
+		}
+	})
+	for _, tc := range []struct {
+		name, poll, wantStatus, wantCode string
+	}{
+		{
+			name:       "failed carries the upstream's error",
+			poll:       `{"id":"a","status":"failed","error":{"code":"SensitiveContentDetected","message":"refused"}}`,
+			wantStatus: "failed", wantCode: "SensitiveContentDetected",
+		},
+		{
+			name:       "cancelled maps through the error channel",
+			poll:       `{"id":"a","status":"cancelled"}`,
+			wantStatus: "failed", wantCode: "task_cancelled",
+		},
+		{
+			name:       "expired maps through the error channel",
+			poll:       `{"id":"a","status":"expired"}`,
+			wantStatus: "failed", wantCode: "task_expired",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVideoArkRig(t, "doubao-seedance-2-0-260128")
+			rig.priceVideo(t, 0.5, nil)
+			rig.upstream.arkTasks["ark-task-1"] = []string{tc.poll}
+			_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("submit %d %s", w.Code, w.Body.String())
+			}
+			jobID := jobIDOf(t, w)
+			w = rig.poll(t, rig.key, jobID)
+			var res struct {
+				Status string `json:"status"`
+				Error  *struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+				t.Fatalf("poll answer: %v (%s)", err, w.Body.String())
+			}
+			if res.Status != tc.wantStatus || res.Error == nil || res.Error.Code != tc.wantCode {
+				t.Fatalf("rendering wrong: %s", w.Body.String())
+			}
+			if spent := rig.keySpent(t); spent != 0 {
+				t.Fatalf("a %s task must bill nothing, spent=%d", tc.wantStatus, spent)
+			}
+		})
 	}
 }

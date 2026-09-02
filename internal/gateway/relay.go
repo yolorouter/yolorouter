@@ -240,7 +240,7 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 	// db/secrets/client, and the modality's delivery-side sink points at
 	// the same instance so a job persisted at submit and a job polled at
 	// GET share one state machine.
-	taskDomain := videotask.NewService(db, &dashScopeQuerier{
+	taskDomain := videotask.NewService(db, &videoTaskQuerier{
 		db: db, secrets: secrets,
 		client: upstreamDoer{client: svc.client},
 	})

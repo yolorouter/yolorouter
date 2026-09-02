@@ -203,3 +203,32 @@ func TestNewResourceRendersRequiredShape(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactRequestBodyCoversUpstreamSpellings(t *testing.T) {
+	// The same reference image travels under three spellings between the
+	// caller's body and the native dialects' re-encodings; the redactor
+	// must catch all of them or the pixels re-enter one hop after the
+	// caller's copy was scrubbed.
+	pixels := "QUJDREVG" + strings.Repeat("h6tF", 260) // >1000 base64 chars
+	bodies := []string{
+		`{"input_reference":{"image_url":"data:image/png;base64,` + pixels + `"}}`,                                                                      // caller
+		`{"model":"m","input":{"img_url":"data:image/png;base64,` + pixels + `","prompt":"p"}}`,                                                         // legacy upstream
+		`{"input":{"prompt":"p","media":[{"type":"first_frame","url":"data:image/png;base64,` + pixels + `"}]}}`,                                        // media upstream
+		`{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + pixels + `"},"role":"first_frame"},{"type":"text","text":"p"}]}`, // ark upstream
+	}
+	for _, body := range bodies {
+		out := RedactRequestBody([]byte(body))
+		if strings.Contains(out, pixels) {
+			t.Fatalf("reference pixels survived redaction: %.120s", out)
+		}
+		if !strings.Contains(out, "[base64 image omitted:") {
+			t.Fatalf("omission note missing: %.120s", out)
+		}
+	}
+	// Plain URLs under the nested key survive: an operator's debug row
+	// needs the reference's address, just not its bytes.
+	out := RedactRequestBody([]byte(`{"media":[{"url":"https://example.test/ref.png"}]}`))
+	if !strings.Contains(out, "https://example.test/ref.png") {
+		t.Fatalf("plain URLs must survive: %s", out)
+	}
+}
