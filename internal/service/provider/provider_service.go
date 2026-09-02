@@ -483,25 +483,44 @@ func (s *ProviderService) UpdateProvider(id uint, input UpdateProviderInput, now
 	// All writes now share one transaction so a name conflict rolls back
 	// the base_url/protocol change too.
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		destinationChanged := false
+		newDestinationVersion := provider.DestinationVersion
 		if input.BaseURL != provider.BaseURL {
-			if _, err := repository.UpdateProviderBaseURL(tx, id, input.BaseURL, now); err != nil {
+			v, err := repository.UpdateProviderBaseURL(tx, id, input.BaseURL, now)
+			if err != nil {
 				return err
 			}
+			destinationChanged = true
+			newDestinationVersion = v
 		}
 		// Compared against the NORMALIZED values, not the raw request
 		// strings — a semantically-identical re-submit (e.g. protocol_endpoints
 		// JSON with reordered keys) must not spuriously bump
 		// destination_version.
 		if providerType != provider.ProviderType || protocolEndpoints != provider.ProtocolEndpoints {
-			if _, err := repository.UpdateProviderProtocol(tx, id, providerType, protocolEndpoints, now); err != nil {
+			v, err := repository.UpdateProviderProtocol(tx, id, providerType, protocolEndpoints, now)
+			if err != nil {
 				return err
 			}
+			destinationChanged = true
+			newDestinationVersion = v
 		}
 		if err := repository.UpdateProviderNameNote(tx, id, input.Name, note, now); err != nil {
 			if repository.IsUniqueViolation(err) {
 				return errcode.ErrProviderNameTaken
 			}
 			return err
+		}
+		// A destination change strands every in-flight video task the old
+		// destination issued: its upstream task id is unqueryable at the new
+		// one. Expiring them here — inside the same transaction as the bump,
+		// so a rolled-back address change strands nothing — is the video
+		// task domain's consistency rule (C5), and a no-op on deployments
+		// with no video tasks.
+		if destinationChanged {
+			if _, err := repository.ExpireProviderInFlightVideoTasks(tx, id, newDestinationVersion, now); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -1050,6 +1069,15 @@ func (s *ProviderService) DeleteProviderKey(providerID, keyID uint) error {
 	}
 	if !deleted {
 		return errcode.ErrProviderKeyNotFound
+	}
+	// Deleting the provider's LAST key leaves nothing that can ever poll
+	// its in-flight video tasks; expiring them now says so on the task row
+	// instead of leaving every task to age out at its zombie horizon. With
+	// keys remaining, polling still works and nothing is expired. The -1
+	// sentinel exempts no destination version — there is no key for any of
+	// them.
+	if remaining, rerr := repository.CountProviderKeysByProvider(s.db, providerID); rerr == nil && remaining == 0 {
+		_, _ = repository.ExpireProviderInFlightVideoTasks(s.db, providerID, -1, time.Now())
 	}
 	return nil
 }

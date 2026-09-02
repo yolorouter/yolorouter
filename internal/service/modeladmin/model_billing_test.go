@@ -130,3 +130,88 @@ func TestCandidateBillingDeclaration(t *testing.T) {
 }
 
 func ptrFloat(v float64) *float64 { return &v }
+
+func TestCandidateVideoBillingDeclaration(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	providerA := seedEnabledProviderForModelTest(t, providerService, "video-billing-a")
+	createModelOnly := func(t *testing.T, name string) uint {
+		t.Helper()
+		created, err := svc.CreateModel(modeladmin.CreateModelInput{Name: name}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("create model: %v", err)
+		}
+		return created.ID
+	}
+
+	t.Run("video mode without a table is refused", func(t *testing.T) {
+		modelID := createModelOnly(t, "video-priced-one")
+		_, err := svc.CreateModelCandidate(t.Context(), modelID, modeladmin.CreateCandidateInput{
+			ProviderID: providerA.ID, ProviderModelName: "video-priced-one-real",
+			BillingMode: model.BillingModeVideo,
+		}, time.Now().UTC())
+		if !errors.Is(err, errcode.ErrModelBillingInvalid) {
+			t.Fatalf("video mode without a table must be refused with the billing error, got %v", err)
+		}
+	})
+
+	t.Run("video mode with tiers is stored, served, and editable", func(t *testing.T) {
+		modelID := createModelOnly(t, "video-priced-two")
+		view, err := svc.CreateModelCandidate(t.Context(), modelID, modeladmin.CreateCandidateInput{
+			ProviderID: providerA.ID, ProviderModelName: "video-priced-two-real",
+			BillingMode: model.BillingModeVideo,
+			VideoPricingTiers: &model.VideoPricingTiers{
+				Tiers: []model.VideoPricingTier{
+					{Resolution: "", PurchasePrice: 0.4, SellPrice: 0.5},
+					{Resolution: "1080P", PurchasePrice: 0.8, SellPrice: 1.0},
+				},
+			},
+		}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if view.BillingMode != model.BillingModeVideo || view.VideoPricingTiers == nil || len(view.VideoPricingTiers.Tiers) != 2 {
+			t.Fatalf("view must carry the video declaration, got %+v", view)
+		}
+
+		video := model.BillingModeVideo
+		result, err := svc.UpdateModelCandidate(t.Context(), view.ID, modeladmin.UpdateCandidateInput{
+			ProviderModelName: "video-priced-two-real",
+			BillingMode:       &video,
+			VideoPricingTiers: &model.VideoPricingTiers{
+				Tiers: []model.VideoPricingTier{{Resolution: "720P", PurchasePrice: 0.3, SellPrice: 0.4}},
+			},
+		}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if result.Candidate.VideoPricingTiers == nil || len(result.Candidate.VideoPricingTiers.Tiers) != 1 ||
+			result.Candidate.VideoPricingTiers.Tiers[0].Resolution != "720P" {
+			t.Fatalf("update must replace the table, got %+v", result.Candidate.VideoPricingTiers)
+		}
+
+		// An edit that submits neither half keeps the declaration.
+		result, err = svc.UpdateModelCandidate(t.Context(), view.ID, modeladmin.UpdateCandidateInput{
+			ProviderModelName: "video-priced-two-real",
+		}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("plain update: %v", err)
+		}
+		if result.Candidate.BillingMode != model.BillingModeVideo || result.Candidate.VideoPricingTiers == nil {
+			t.Fatalf("plain update dropped the video declaration: %+v", result.Candidate)
+		}
+
+		// Switching to token clears the table — token mode has none.
+		token := model.BillingModeToken
+		result, err = svc.UpdateModelCandidate(t.Context(), view.ID, modeladmin.UpdateCandidateInput{
+			ProviderModelName: "video-priced-two-real",
+			BillingMode:       &token,
+		}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("update to token: %v", err)
+		}
+		if result.Candidate.BillingMode != model.BillingModeToken || result.Candidate.VideoPricingTiers != nil {
+			t.Fatalf("token mode must leave no video table, got %+v", result.Candidate)
+		}
+	})
+}

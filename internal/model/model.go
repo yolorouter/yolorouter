@@ -198,13 +198,19 @@ type ModelCandidate struct {
 	CacheReadPrice    *float64 `gorm:"column:cache_read_price" json:"cache_read_price"`
 	MaxOutput         int      `gorm:"column:max_output" json:"max_output"`
 	// BillingMode says which quantities settlement prices this candidate
-	// in: token (the default every row had before the column) or image
-	// (per delivered image, through ImagePricingTiers).
+	// in: token (the default every row had before the column), image (per
+	// delivered image, through ImagePricingTiers), or video (per delivered
+	// second, through VideoPricingTiers).
 	BillingMode string `gorm:"column:billing_mode" json:"billing_mode"`
 	// ImagePricingTiers is the per-image price table, stored as the JSON
 	// form model.ImagePricingTiers defines. Only read when BillingMode is
 	// image; parsed leniently on the hot path and validated at save time.
 	ImagePricingTiers string `gorm:"column:image_pricing_tiers" json:"image_pricing_tiers"`
+	// VideoPricingTiers is the per-second price table, stored as the JSON
+	// form model.VideoPricingTiers defines (the shared admin frontend's
+	// editor shape). Only read when BillingMode is video; parsed leniently
+	// on the hot path and validated at save time.
+	VideoPricingTiers string `gorm:"column:video_pricing_tiers" json:"video_pricing_tiers"`
 	// SupportsStreaming / SupportsFunctionCalling record whether the last probe
 	// CONFIRMED the capability: true when it did, nil when it did not. They are
 	// informational — the admin UI shows them and routing ignores them entirely

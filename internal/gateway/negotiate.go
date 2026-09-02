@@ -9,6 +9,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/protocols/images"
+	"github.com/yolorouter/yolorouter/internal/protocols/videos"
 	"github.com/yolorouter/yolorouter/internal/providerproto"
 )
 
@@ -42,6 +43,8 @@ func IngressProtocol(requestPath string) protocols.ProtocolID {
 		return protocols.ProtocolResponses
 	case "/v1/images/generations", images.EditPath:
 		return protocols.ProtocolImages
+	case videos.CreatePath:
+		return protocols.ProtocolVideos
 	default:
 		return protocols.ProtocolOpenAI
 	}

@@ -61,6 +61,10 @@ type Ingress struct {
 	// without the boundary it carries.
 	ContentType string
 	Body        []byte
+	// APIKeyID owns the request. A payload whose effects outlive the
+	// request — a task a caller will poll for later — needs the owner at
+	// admission; request-scoped modalities ignore it.
+	APIKeyID uint
 }
 
 // Rejection is a refusal decided before any upstream was involved.
@@ -177,6 +181,15 @@ type Candidate struct {
 	SupportsStreaming       bool
 	SupportsFunctionCalling bool
 	MaxOutput               int
+
+	// Identity fields: which model, candidate, and provider destination
+	// this option is. Deliberately after the request-scoped knobs: a
+	// payload whose effects outlive the request — a task a caller polls
+	// later — snapshots these; request-scoped modalities never read them.
+	ModelID            uint
+	CandidateID        uint
+	ProviderID         uint
+	DestinationVersion int
 }
 
 // CandidateVerdict is a modality's answer to whether one candidate can serve
@@ -235,6 +248,13 @@ type UpstreamCall struct {
 	// the provider's own base URL: the payload names a path within the
 	// provider it was already talking to, same as ever.
 	OriginRelative bool
+	// Headers are extra request headers the dialect this payload speaks
+	// requires beyond transport and credentials — a task-mode switch an
+	// upstream gates its endpoint on, not a value the egress codec could
+	// know. Applied after the codec's own headers and the content type,
+	// with the same last-word authority: the payload knows what its body
+	// is asking for.
+	Headers map[string]string
 }
 
 // ErrorEnvelope is an upstream failure translated into what the caller is

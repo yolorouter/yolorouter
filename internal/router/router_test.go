@@ -766,3 +766,38 @@ func TestImageEditsRouteReachesGatewayWithValidKey(t *testing.T) {
 		t.Fatalf("expected the gateway's model-not-found answer, got %d, body: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestVideosRouteReachesGatewayWithValidKey proves POST /v1/videos is
+// registered on the protected /v1 group and dispatches into the gateway
+// handler — the official SDK's mandatory multipart shape, no less, since
+// that is the body real callers arrive with. No model is configured, so
+// Service.Handle's "model does not exist" answer is the proof of arrival,
+// exactly as the edits route test above argues it.
+func TestVideosRouteReachesGatewayWithValidKey(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedAPIKey(t, db, "sk-yr-videos-route")
+	r, err := New(testDeps(t, db))
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", "wan2.7-t2v")
+	_ = mw.WriteField("prompt", "a calico cat playing a piano on stage")
+	_ = mw.WriteField("seconds", "8")
+	_ = mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(buf.Bytes()))
+	req.Header.Set("X-Api-Key", "sk-yr-videos-route")
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code == http.StatusUnauthorized || w.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("expected the request to reach the gateway handler (not rejected at auth/routing), got %d, body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "model does not exist") {
+		t.Fatalf("expected the gateway's model-not-found answer, got %d, body: %s", w.Code, w.Body.String())
+	}
+}

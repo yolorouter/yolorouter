@@ -20,6 +20,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/internal/service/provider"
 	"github.com/yolorouter/yolorouter/internal/service/providerclient"
+	"github.com/yolorouter/yolorouter/internal/service/videotask"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/database"
 	"github.com/yolorouter/yolorouter/pkg/logger"
@@ -315,6 +316,14 @@ func runServe(ctx context.Context, args []string) error {
 	// and the server is still fully usable.
 	probeQueue.Start(ctx)
 	probeQueue.RecoverPendingInBackground()
+
+	// The video task reaper: a minute-tick sweep that expires non-terminal
+	// tasks past their zombie horizon. It asks no upstream anything, so it
+	// is safe to run before any video dialect is wired (the nil-querier
+	// service answers every poll with "not wired" and the sweep still
+	// works); it dies with serve's ctx like the probe queue above.
+	videoTaskSvc := videotask.NewService(app.DB, nil)
+	videoTaskSvc.StartReaper(ctx, time.Minute)
 
 	serveErrCh := make(chan error, 1)
 	go func() {

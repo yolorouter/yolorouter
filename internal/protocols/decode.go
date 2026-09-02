@@ -17,6 +17,12 @@ const (
 	// its "codec" is the parse in internal/protocols/images and the
 	// modality's own passthrough.
 	ProtocolImages ProtocolID = "images"
+	// ProtocolVideos is the OpenAI Videos job family (POST /v1/videos):
+	// submit returns a job resource the caller polls, so unlike every
+	// other ingress protocol the request that admits a payload and the
+	// requests that observe its outcome are different HTTP calls. Its
+	// shapes live in internal/protocols/videos.
+	ProtocolVideos ProtocolID = "videos"
 )
 
 // RequestDecoder decodes a protocol-specific request JSON into IR.

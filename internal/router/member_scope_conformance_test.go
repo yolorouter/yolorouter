@@ -58,6 +58,9 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/analytics/compress-stats",
 		"/api/admin/analytics/cache-stats",
 		"/api/admin/analytics/concise-output-projection",
+		// The video task list is an operator-wide view across every
+		// caller's tasks; there is no member-scoped reading of it.
+		"/api/admin/video-tasks",
 		"/api/admin/users",
 	}
 

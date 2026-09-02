@@ -419,6 +419,12 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.GET("/request-logs/:requestId", handler.GetRequestLogDetail(requestLogSvc))
 	protected.GET("/request-logs/:requestId/body/stream", handler.GetRequestLogBodyStream(requestLogSvc, bodiesDir))
 
+	// Video tasks: read-only admin window over the task domain. The task
+	// row is its own lifecycle record and billing evidence; refreshes
+	// happen on the caller-facing poll path, never as a side effect of an
+	// admin read.
+	protected.GET("/video-tasks", handler.GetVideoTasks(db))
+
 	// M7: System info + update check (GET /api/admin/system/version). Read-only
 	// and session-protected like the other admin endpoints. VersionService
 	// resolves its repo from updateCfg + the compiled-in default (see
@@ -500,6 +506,15 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// layers match on (IngressProtocol) and the egress path on
 	// OpenAI-compatible providers.
 	v1.POST("/images/edits", gateway.PostChatCompletions(relaySvc))
+	// The videos create call rides the same chain: auth, body cap, and the
+	// audit trail all apply before the video modality's door parses the
+	// job submit. The path is relative to this /v1 group for the same
+	// reason the edits path is. The job resource GETs are task-domain
+	// reads (ownership + lazy poll), not relay requests, but they ride the
+	// same group for the same auth chain a caller presented at submit.
+	v1.POST("/videos", gateway.PostChatCompletions(relaySvc))
+	v1.GET("/videos/:id", gateway.GetVideoResource(relaySvc))
+	v1.GET("/videos/:id/content", gateway.GetVideoContent(relaySvc))
 	// Model discovery: GET /v1/models and GET /v1/models/:model are
 	// read-only and bypass Service (no provider fan-out, no spend).
 	// They reuse the same APIKeyAuth + body-cap chain the relay POSTs above

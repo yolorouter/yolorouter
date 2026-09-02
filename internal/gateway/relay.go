@@ -20,10 +20,12 @@ import (
 	"github.com/yolorouter/yolorouter/internal/decision"
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/gateway/circuit"
+	"github.com/yolorouter/yolorouter/internal/gateway/video/wan"
 	"github.com/yolorouter/yolorouter/internal/loopback"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/repository"
+	"github.com/yolorouter/yolorouter/internal/service/videotask"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
@@ -135,6 +137,12 @@ type Service struct {
 	// admin model view (the per-candidate binding counts).
 	bindings *BindingRegistry
 
+	// videoTasks is the video task domain: the poll-side state machine the
+	// job resource routes read through, and the store the video modality's
+	// delivery persists accepted jobs into (via the package-level
+	// videoTasks sink, which NewService points at this same service).
+	videoTasks *videotask.Service
+
 	// secondaryFetch is the shared client for downloading responses an upstream
 	// referred to rather than returned. Built once, on first use: a transport
 	// per request would pool connections nobody ever reuses or closes.
@@ -215,7 +223,7 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 	if gatewayCfg.KeyRateLimitCooldown <= 0 {
 		gatewayCfg.KeyRateLimitCooldown = config.DefaultKeyRateLimitCooldown
 	}
-	return &Service{
+	svc := &Service{
 		db:               db,
 		secrets:          secrets,
 		client:           NewUpstreamClient(allowPrivate, gatewayCfg.HeaderTimeout, gatewayCfg.ConnectTimeout, gatewayCfg.TLSHandshakeTimeout),
@@ -229,6 +237,26 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 		keyPool:  newKeyPool(time.Now),
 		bindings: NewBindingRegistry(time.Now),
 	}
+	// The video task domain and its wan poller hang off the service's own
+	// db/secrets/client, and the modality's delivery-side sink points at
+	// the same instance so a job persisted at submit and a job polled at
+	// GET share one state machine.
+	taskDomain := videotask.NewService(db, &wan.Querier{
+		DB: db, Secrets: secrets,
+		Client: upstreamDoer{client: svc.client},
+	})
+	svc.videoTasks = taskDomain
+	videoTasks = taskDomain
+	return svc
+}
+
+// upstreamDoer adapts the gateway's upstream client to the wan querier's
+// Doer — the same transport rules (private-network gating, timeouts),
+// one method name apart.
+type upstreamDoer struct{ client *UpstreamClient }
+
+func (d upstreamDoer) Do(req *http.Request) (*http.Response, error) {
+	return d.client.SendUpstreamRequest(req)
 }
 
 // Bindings exposes the sticky-binding registry so the assembly layer can
@@ -463,6 +491,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 		Path:        c.Request.URL.Path,
 		ContentType: c.GetHeader("Content-Type"),
 		Body:        admitBody,
+		APIKeyID:    rc.apiKeyID,
 	})
 	if rej != nil {
 		s.rejectRequest(c, rc, rej.Status, rej.ErrorType, rej.Message, rej.FailReason, rej.Fault, start)
@@ -928,6 +957,15 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 			EgressProtocol:    egress.Protocol,
 			Passthrough:       egress.Passthrough,
 			BaseURL:           egress.BaseURL,
+			// Identity fields for payloads whose effects outlive the
+			// request: a video task row snapshots which model, candidate,
+			// and provider destination it was submitted through, so a
+			// later poll can resolve the same upstream without re-routing.
+			// Request-scoped modalities ignore them.
+			ModelID:            cand.ModelID,
+			CandidateID:        cand.ID,
+			ProviderID:         provider.ID,
+			DestinationVersion: int(provider.DestinationVersion),
 			// Unprobed reads as unsupported rather than supported: a capability
 			// nobody has confirmed is one a modality must not be told it has.
 			SupportsStreaming:       cand.SupportsStreaming != nil && *cand.SupportsStreaming,
@@ -1538,6 +1576,12 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	// header that is about transport and credentials.
 	if call.ContentType != "" {
 		req.Header.Set("Content-Type", call.ContentType)
+	}
+	// Dialect-required headers come after the codec's and the content
+	// type's, with the same payload-knows-its-body authority: a task-mode
+	// switch an upstream gates its endpoint on is not a transport concern.
+	for k, v := range call.Headers {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := s.client.SendUpstreamRequest(req)

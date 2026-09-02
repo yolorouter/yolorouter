@@ -73,6 +73,9 @@ type createCandidateRequest struct {
 	// here would be a second copy of it.
 	BillingMode       string                 `json:"billing_mode"`
 	ImagePricingTiers *imagePricingTiersBody `json:"image_pricing_tiers"`
+	// VideoPricingTiers is the per-second table a video-mode candidate
+	// requires; same validation-home rule as the image table.
+	VideoPricingTiers *videoPricingTiersBody `json:"video_pricing_tiers"`
 }
 
 // imagePricingTiersBody is the wire form of a per-image price table, mapped
@@ -100,6 +103,29 @@ func (b *imagePricingTiersBody) toModel() *model.ImagePricingTiers {
 	return &model.ImagePricingTiers{Mode: b.Mode, Tiers: tiers, DefaultPrice: b.DefaultPrice}
 }
 
+// videoPricingTiersBody is the wire form of a per-second video price
+// table — the exact shape the shared admin frontend's editor emits.
+type videoPricingTiersBody struct {
+	Tiers []videoPricingTierBody `json:"tiers"`
+}
+
+type videoPricingTierBody struct {
+	Resolution    string  `json:"resolution"`
+	PurchasePrice float64 `json:"purchase_price"`
+	SellPrice     float64 `json:"sell_price"`
+}
+
+func (b *videoPricingTiersBody) toModel() *model.VideoPricingTiers {
+	if b == nil {
+		return nil
+	}
+	tiers := make([]model.VideoPricingTier, 0, len(b.Tiers))
+	for _, t := range b.Tiers {
+		tiers = append(tiers, model.VideoPricingTier{Resolution: t.Resolution, PurchasePrice: t.PurchasePrice, SellPrice: t.SellPrice})
+	}
+	return &model.VideoPricingTiers{Tiers: tiers}
+}
+
 type updateCandidateRequest struct {
 	ProviderModelName string   `json:"provider_model_name" binding:"max=200"`
 	InputPrice        float64  `json:"input_price" binding:"min=0"`
@@ -116,6 +142,7 @@ type updateCandidateRequest struct {
 	// which owns the vocabulary.
 	BillingMode       *string                `json:"billing_mode"`
 	ImagePricingTiers *imagePricingTiersBody `json:"image_pricing_tiers"`
+	VideoPricingTiers *videoPricingTiersBody `json:"video_pricing_tiers"`
 }
 
 type candidateReorderRequest struct {
@@ -300,6 +327,7 @@ func PostModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice,
 			MaxOutput: req.MaxOutput, ManagementStatus: req.ManagementStatus,
 			BillingMode: req.BillingMode, ImagePricingTiers: req.ImagePricingTiers.toModel(),
+			VideoPricingTiers: req.VideoPricingTiers.toModel(),
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
@@ -324,6 +352,7 @@ func PatchModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice, MaxOutput: req.MaxOutput,
 			ManagementStatus: req.ManagementStatus,
 			BillingMode:      req.BillingMode, ImagePricingTiers: req.ImagePricingTiers.toModel(),
+			VideoPricingTiers: req.VideoPricingTiers.toModel(),
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)

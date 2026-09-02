@@ -293,11 +293,12 @@ func UpdateModelCandidate(db *gorm.DB, id uint, providerModelName string, inputP
 // them — must not have to carry its columns through their signatures. Run
 // inside the same transaction as the field update when both fire: one edit,
 // one rollback.
-func UpdateModelCandidateBilling(db *gorm.DB, id uint, billingMode, imagePricingTiers string, now time.Time) error {
+func UpdateModelCandidateBilling(db *gorm.DB, id uint, billingMode, imagePricingTiers, videoPricingTiers string, now time.Time) error {
 	return db.Model(&model.ModelCandidate{}).Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"billing_mode":        billingMode,
 			"image_pricing_tiers": imagePricingTiers,
+			"video_pricing_tiers": videoPricingTiers,
 			"updated_at":          now,
 		}).Error
 }

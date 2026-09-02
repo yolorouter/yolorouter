@@ -1,0 +1,501 @@
+package gateway
+
+// The video vertical, end to end against a scripted wan upstream: submit
+// through the gateway's own Handle, poll through the job resource route,
+// download through the content proxy. Everything the tickets before this
+// one built — the door, the task domain, the dialect — has to hold hands
+// here for any of these to pass.
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/testutil"
+	ycrypto "github.com/yolorouter/yolorouter/pkg/crypto"
+)
+
+// wanUpstream is a scriptable DashScope task upstream: submits return a
+// fresh task id, and each task id has a queue of poll answers it serves
+// in order.
+type wanUpstream struct {
+	mu sync.Mutex
+	// submits is the queue of submit outcomes; nil entries mean a plain
+	// acceptance. Exhausted or nil → plain acceptance.
+	submits []string // JSON error body to return instead, "" = accept
+	// tasks maps task id → queue of poll response bodies.
+	tasks map[string][]string
+	// media serves /media/* verbatim with the given content type.
+	media map[string]string
+	// recorded requests
+	lastSubmitBody []byte
+	lastSubmitPath string
+	lastAsyncHdr   string
+	lastAuthHeader string
+	lastQueryPath  string
+	submitHits     int
+	queryHits      int
+}
+
+func newWanUpstream() *wanUpstream {
+	return &wanUpstream{tasks: map[string][]string{}, media: map[string]string{}}
+}
+
+func (u *wanUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	switch {
+	case r.URL.Path == "/api/v1/services/aigc/video-generation/video-synthesis":
+		u.submitHits++
+		u.lastSubmitPath = r.URL.Path
+		u.lastAsyncHdr = r.Header.Get("X-DashScope-Async")
+		u.lastAuthHeader = r.Header.Get("Authorization")
+		buf := &bytes.Buffer{}
+		_, _ = buf.ReadFrom(r.Body)
+		u.lastSubmitBody = buf.Bytes()
+		if len(u.submits) > 0 {
+			errBody := u.submits[0]
+			u.submits = u.submits[1:]
+			if errBody != "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(errBody))
+				return
+			}
+		}
+		id := fmt.Sprintf("up-task-%d", u.submitHits)
+		_, _ = w.Write([]byte(`{"output":{"task_id":"` + id + `","task_status":"PENDING"},"request_id":"r-1"}`))
+	case strings.HasPrefix(r.URL.Path, "/api/v1/tasks/"):
+		u.queryHits++
+		u.lastQueryPath = r.URL.Path
+		id := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+		queue := u.tasks[id]
+		if len(queue) == 0 {
+			_, _ = w.Write([]byte(`{"output":{"task_status":"UNKNOWN"}}`))
+			return
+		}
+		body := queue[0]
+		u.tasks[id] = queue[1:]
+		_, _ = w.Write([]byte(body))
+	case strings.HasPrefix(r.URL.Path, "/media/"):
+		body, ok := u.media[r.URL.Path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte(body))
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// videoRig is the video vertical's fixture.
+type videoRig struct {
+	svc      *Service
+	db       *gorm.DB
+	key      *model.APIKey
+	upstream *wanUpstream
+	server   *httptest.Server
+	modelID  uint
+}
+
+func newVideoRig(t *testing.T, providerModel string) *videoRig {
+	t.Helper()
+	rig := &videoRig{upstream: newWanUpstream()}
+	rig.server = httptest.NewServer(rig.upstream)
+	t.Cleanup(rig.server.Close)
+
+	// The DashScope gate matches by hostname; a local test server never
+	// carries the real one, so the gate is overridden to this rig's base —
+	// the same override the images vertical uses.
+	prev := isDashScopeBase
+	isDashScopeBase = func(baseURL string) bool { return baseURL == rig.server.URL }
+	t.Cleanup(func() { isDashScopeBase = prev })
+
+	rig.db = testutil.NewSQLiteDB(t)
+	rig.svc = newSvc(t, rig.db)
+	p := createProvider(t, rig.db, "video-provider", rig.server.URL)
+	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-video-up", "video-key", 1, true)
+	m := createModelAndCandidate(t, rig.db, p, "video-model", providerModel, false, false, 1)
+	setImageOutputModalities(t, rig.db, m.ID, `["video"]`)
+	rig.modelID = m.ID
+	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	return rig
+}
+
+func (r *videoRig) submit(t *testing.T, body string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	c, w := newCtxPath("/v1/videos", []byte(body))
+	c.Set("request_id", "req-video-e2e")
+	c.Set(BodiesDirContextKey, t.TempDir())
+	r.svc.Handle(c, r.key)
+	return c, w
+}
+
+// poll drives the job resource route the way the router would, for the
+// rig's caller key or a foreign one.
+func (r *videoRig) poll(t *testing.T, key *model.APIKey, jobID string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/"+jobID, nil)
+	c.Params = gin.Params{{Key: "id", Value: jobID}}
+	c.Set(gatewayAPIKeyKey, key)
+	c.Set("request_id", "req-video-poll")
+	GetVideoResource(r.svc)(c)
+	return w
+}
+
+func (r *videoRig) content(t *testing.T, jobID string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/"+jobID+"/content", nil)
+	c.Params = gin.Params{{Key: "id", Value: jobID}}
+	c.Set(gatewayAPIKeyKey, r.key)
+	c.Set("request_id", "req-video-content")
+	GetVideoContent(r.svc)(c)
+	return w
+}
+
+// agePoll pulls the poll throttle back so a second observation can happen
+// in the same test without sleeping the interval.
+func (r *videoRig) agePoll(t *testing.T, jobID string) {
+	t.Helper()
+	// Read-then-write through gorm rather than raw SQL: the claim's
+	// compare-and-set matches the stored stamp by value, and a raw
+	// datetime() string would not round-trip to the same bytes gorm binds.
+	var task model.VideoTask
+	if err := r.db.Where("id = ?", jobID).First(&task).Error; err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	if task.LastPolledAt == nil {
+		t.Fatal("fixture bug: aging a task that was never polled")
+	}
+	aged := task.LastPolledAt.Add(-10 * time.Second)
+	if err := r.db.Model(&model.VideoTask{}).Where("id = ?", jobID).Update("last_polled_at", aged).Error; err != nil {
+		t.Fatalf("age poll stamp: %v", err)
+	}
+}
+
+func jobIDOf(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var doc struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil || doc.ID == "" {
+		t.Fatalf("no job id in submit answer: %d %s", w.Code, w.Body.String())
+	}
+	return doc.ID
+}
+
+func TestVideoSubmitAndPollEndToEnd(t *testing.T) {
+	rig := newVideoRig(t, "wan2.7-t2v")
+	rig.upstream.tasks["up-task-1"] = []string{
+		`{"output":{"task_status":"RUNNING"},"usage":{}}`,
+		`{"output":{"task_status":"SUCCEEDED","video_url":"` + rig.server.URL + `/media/v.mp4"},"usage":{"duration":8,"video_count":1}}`,
+	}
+	rig.upstream.media["/media/v.mp4"] = "mp4-bytes-here"
+
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"a calico cat at a piano","seconds":8,"size":"1024x1792"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Status  string `json:"status"`
+		Size    string `json:"size"`
+		Seconds string `json:"seconds"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("submit answer is not a job resource: %v", err)
+	}
+	if created.Object != "video" || created.Status != "queued" || created.Size != "1024x1792" || created.Seconds != "8" {
+		t.Fatalf("submit answer shape wrong: %s", w.Body.String())
+	}
+	jobID := created.ID
+	if !strings.HasPrefix(jobID, "vid_") {
+		t.Fatalf("job id must be gateway-minted, got %q", jobID)
+	}
+
+	// The submit reached the upstream in the native dialect: the async
+	// header, the bearer, and the mapped axes.
+	if rig.upstream.lastAsyncHdr != "enable" {
+		t.Fatalf("submit must carry X-DashScope-Async: enable, got %q", rig.upstream.lastAsyncHdr)
+	}
+	if !strings.HasPrefix(rig.upstream.lastAuthHeader, "Bearer ") {
+		t.Fatalf("submit must carry bearer auth, got %q", rig.upstream.lastAuthHeader)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+		t.Fatalf("submit body is not JSON: %v", err)
+	}
+	if sent["model"] != "wan2.7-t2v" {
+		t.Fatalf("submit model = %v, want the candidate's provider name", sent["model"])
+	}
+	params := sent["parameters"].(map[string]any)
+	if params["resolution"] != "1080P" || params["ratio"] != "9:16" || params["duration"] != float64(8) {
+		t.Fatalf("size/seconds mapping wrong: %v", params)
+	}
+	input := sent["input"].(map[string]any)
+	if input["prompt"] != "a calico cat at a piano" {
+		t.Fatalf("wan2.7 family carries the flat input.prompt, got %v", input)
+	}
+	if _, ok := input["media"]; ok {
+		t.Fatalf("a text-only submit carries no media array, got %v", input)
+	}
+
+	// The task row exists in pending with the sanitized snapshot.
+	var task model.VideoTask
+	if err := rig.db.Where("id = ?", jobID).First(&task).Error; err != nil {
+		t.Fatalf("task row missing: %v", err)
+	}
+	if task.Status != model.VideoTaskPending || task.ProviderTaskID != "up-task-1" || task.APIKeyID != rig.key.ID {
+		t.Fatalf("task row wrong: %+v", task)
+	}
+	if !strings.Contains(task.RequestSnapshot, "calico cat") {
+		t.Fatalf("snapshot must keep the prompt: %q", task.RequestSnapshot)
+	}
+
+	// Poll 1: in_progress. Poll 2 (throttle aged): completed.
+	w = rig.poll(t, rig.key, jobID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("poll 1 status = %d, body %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"in_progress"`) {
+		t.Fatalf("poll 1 must show in_progress: %s", w.Body.String())
+	}
+	rig.agePoll(t, jobID)
+	w = rig.poll(t, rig.key, jobID)
+	if !strings.Contains(w.Body.String(), `"completed"`) || !strings.Contains(w.Body.String(), `"completed_at"`) {
+		t.Fatalf("poll 2 must show completed with a timestamp: %s", w.Body.String())
+	}
+	var completedDoc struct {
+		CompletedAt *int64 `json:"completed_at"`
+		ExpiresAt   *int64 `json:"expires_at"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &completedDoc); err != nil || completedDoc.CompletedAt == nil || completedDoc.ExpiresAt == nil {
+		t.Fatalf("a completed job must carry both timestamps: %s", w.Body.String())
+	}
+	// The wire's expires_at is the upstream result URL's own 24h window.
+	if *completedDoc.ExpiresAt-*completedDoc.CompletedAt != 24*3600 {
+		t.Fatalf("expires_at must be completed_at + 24h, got %d..%d", *completedDoc.CompletedAt, *completedDoc.ExpiresAt)
+	}
+	if rig.upstream.queryHits != 2 {
+		t.Fatalf("two due polls must mean two upstream queries, got %d", rig.upstream.queryHits)
+	}
+
+	// Content: the upstream's bytes, proxied.
+	w = rig.content(t, jobID)
+	if w.Code != http.StatusOK || w.Body.String() != "mp4-bytes-here" {
+		t.Fatalf("content proxy wrong: %d %q", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Header().Get("Content-Type"), "video/mp4") {
+		t.Fatalf("content type must be forwarded, got %q", w.Header().Get("Content-Type"))
+	}
+
+	// The submit left exactly one request log row — the polls and the
+	// content download are task-domain reads, not relay requests.
+	var logCount int64
+	rig.db.Model(&model.RequestLog{}).Where("model_name = ?", "video-model").Count(&logCount)
+	if logCount != 1 {
+		t.Fatalf("a submit and its polls must leave one request log row, got %d", logCount)
+	}
+}
+
+func TestVideoContentWithDeadUpstreamURLIsNotFound(t *testing.T) {
+	rig := newVideoRig(t, "wan2.7-t2v")
+	// The result URL points at a path this upstream does not serve: the
+	// caller's download is a miss, not a hang or a gateway error.
+	rig.upstream.tasks["up-task-1"] = []string{
+		`{"output":{"task_status":"SUCCEEDED","video_url":"` + rig.server.URL + `/media/gone.mp4"},"usage":{"duration":4}}`,
+	}
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+	jobID := jobIDOf(t, w)
+	rig.poll(t, rig.key, jobID)
+	if w := rig.content(t, jobID); w.Code != http.StatusNotFound {
+		t.Fatalf("a dead upstream result URL must 404, got %d", w.Code)
+	}
+}
+
+func TestVideoLegacyFamilySubmitsFlatForm(t *testing.T) {
+	rig := newVideoRig(t, "wan2.6-t2v")
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"legacy shape","size":"1280x720"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit status = %d, body %s", w.Code, w.Body.String())
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+		t.Fatalf("submit body: %v", err)
+	}
+	input := sent["input"].(map[string]any)
+	if _, ok := input["img_url"]; ok {
+		t.Fatalf("a text-only submit must not carry img_url: %v", input)
+	}
+	if input["prompt"] != "legacy shape" {
+		t.Fatalf("legacy family carries the flat prompt field, got %v", input)
+	}
+	params := sent["parameters"].(map[string]any)
+	if params["resolution"] != "720P" || params["ratio"] != "16:9" || params["duration"] != float64(4) {
+		t.Fatalf("default size/seconds mapping wrong: %v", params)
+	}
+}
+
+func TestVideoReferenceImageReachesUpstream(t *testing.T) {
+	rig := newVideoRig(t, "wan2.6-i2v")
+	body := `{"model":"video-model","prompt":"animate this","input_reference":{"image_url":"data:image/png;base64,QUJD"}}`
+	_, w := rig.submit(t, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit status = %d, body %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(string(rig.upstream.lastSubmitBody), "data:image/png;base64,QUJD") {
+		t.Fatalf("the reference image must reach the upstream: %s", rig.upstream.lastSubmitBody)
+	}
+	// And the audit snapshot must not keep the pixels.
+	jobID := jobIDOf(t, w)
+	var task model.VideoTask
+	_ = rig.db.Where("id = ?", jobID).First(&task).Error
+	if strings.Contains(task.RequestSnapshot, "QUJD") {
+		t.Fatalf("the snapshot must redact reference pixels: %q", task.RequestSnapshot)
+	}
+}
+
+func TestVideoFailurePathsRenderThroughErrorChannel(t *testing.T) {
+	cases := []struct {
+		name string
+		// upstream poll answer after a successful submit
+		poll       string
+		wantStatus string
+		wantCode   string
+	}{
+		{
+			name:       "failed carries the upstream's error",
+			poll:       `{"output":{"task_status":"FAILED","code":"InvalidParameter","message":"prompt too short"},"usage":{}}`,
+			wantStatus: "failed", wantCode: "InvalidParameter",
+		},
+		{
+			name:       "cancelled maps to failed with the gateway's code",
+			poll:       `{"output":{"task_status":"CANCELED"},"usage":{}}`,
+			wantStatus: "failed", wantCode: "task_cancelled",
+		},
+		{
+			name:       "unknown maps to expired, rendered as failed",
+			poll:       `{"output":{"task_status":"UNKNOWN"},"usage":{}}`,
+			wantStatus: "failed", wantCode: "task_expired",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVideoRig(t, "wan2.7-t2v")
+			rig.upstream.tasks["up-task-1"] = []string{tc.poll}
+			_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("submit status = %d, body %s", w.Code, w.Body.String())
+			}
+			jobID := jobIDOf(t, w)
+			w = rig.poll(t, rig.key, jobID)
+			var res struct {
+				Status string `json:"status"`
+				Error  *struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+				t.Fatalf("poll answer: %v (%s)", err, w.Body.String())
+			}
+			if res.Status != tc.wantStatus || res.Error == nil || res.Error.Code != tc.wantCode {
+				t.Fatalf("rendering wrong: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestVideoOwnershipIsANotFound(t *testing.T) {
+	rig := newVideoRig(t, "wan2.7-t2v")
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+	jobID := jobIDOf(t, w)
+	now := time.Now().UTC()
+	foreign := &model.APIKey{KeyHash: ycrypto.HashToken("sk-yr-video-foreign"), KeyPrefix: "sk-yr-video-foreign", Status: model.APIKeyStatusActive, CreatedAt: now, UpdatedAt: now}
+	if err := rig.db.Create(foreign).Error; err != nil {
+		t.Fatalf("seed foreign key: %v", err)
+	}
+	w = rig.poll(t, foreign, jobID)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("a foreign key must read 404, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestVideoContentBeforeCompletionIsNotFound(t *testing.T) {
+	rig := newVideoRig(t, "wan2.7-t2v")
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+	jobID := jobIDOf(t, w)
+	if w := rig.content(t, jobID); w.Code != http.StatusNotFound {
+		t.Fatalf("content on a pending job must 404, got %d", w.Code)
+	}
+}
+
+func TestVideoSubmitFailoverToSecondCandidate(t *testing.T) {
+	rig := newVideoRig(t, "wan2.7-t2v")
+	// A second provider whose submits fail; the candidate ordering puts it
+	// first, so the gateway must fail over to the healthy one.
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"code":"InternalError","message":"broken"}`))
+	}))
+	t.Cleanup(broken.Close)
+	brokenProvider := createProvider(t, rig.db, "video-broken", broken.URL)
+	createProviderKey(t, rig.db, rig.svc.secrets, brokenProvider.ID, "sk-video-broken", "broken-key", 1, true)
+	var healthy model.Provider
+	if err := rig.db.Where("name = ?", "video-provider").First(&healthy).Error; err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", rig.modelID).Update("sort_order", 2).Error; err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	now := time.Now().UTC()
+	brokenCand := &model.ModelCandidate{
+		ModelID: rig.modelID, ProviderID: brokenProvider.ID, ProviderModelName: "wan2.7-t2v",
+		InputPrice: 1, OutputPrice: 2, MaxOutput: 4096,
+		ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: 1,
+		VerificationStatus: model.ModelVerificationStatusPassed, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := rig.db.Create(brokenCand).Error; err != nil {
+		t.Fatalf("seed broken candidate: %v", err)
+	}
+
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"failover me"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit must fail over to the healthy candidate, got %d %s", w.Code, w.Body.String())
+	}
+	if rig.upstream.submitHits != 1 {
+		t.Fatalf("the healthy upstream must have received the submit, hits=%d", rig.upstream.submitHits)
+	}
+}
+
+func TestVideoBusinessRefusalIsAnsweredNotFailedOver(t *testing.T) {
+	rig := newVideoRig(t, "wan2.7-t2v")
+	// A 400 from the upstream is classified by the kernel; what must NOT
+	// happen is a success. The kernel's aggregation answers the caller.
+	rig.upstream.submits = []string{`{"code":"InvalidApiKey","message":"bad key"}`}
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+	if w.Code == http.StatusOK {
+		t.Fatalf("a refused submit must not answer 200, body %s", w.Body.String())
+	}
+	var taskCount int64
+	rig.db.Model(&model.VideoTask{}).Count(&taskCount)
+	if taskCount != 0 {
+		t.Fatalf("a refused submit must leave no task row, got %d", taskCount)
+	}
+}
