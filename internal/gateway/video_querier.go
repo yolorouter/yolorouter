@@ -23,9 +23,10 @@ import (
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 )
 
-// videoDoer is the HTTP surface the poller needs; *http.Client and the
-// gateway's own client both satisfy it through one adapter.
-type videoDoer interface {
+// taskDoer is the HTTP surface both task pollers (the video querier and
+// the kling image poller) need; *http.Client and the gateway's own client
+// both satisfy it through one adapter.
+type taskDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
@@ -36,7 +37,7 @@ type videoDoer interface {
 type videoTaskQuerier struct {
 	db      *gorm.DB
 	secrets crypto.SecretBox
-	client  videoDoer
+	client  taskDoer
 }
 
 // videoPollTimeout bounds one task query. A poll is a cheap status read;
@@ -65,7 +66,7 @@ func (q *videoTaskQuerier) QueryTask(ctx context.Context, task model.VideoTask) 
 		}, nil
 	}
 
-	plaintext, err := q.keyFor(ctx, provider)
+	plaintext, err := authorizedTaskKey(ctx, q.db, q.secrets, provider)
 	if err != nil {
 		return videotask.QueryResult{}, err
 	}
@@ -73,12 +74,16 @@ func (q *videoTaskQuerier) QueryTask(ctx context.Context, task model.VideoTask) 
 	if isArkBase(provider.BaseURL) {
 		return q.pollArk(ctx, provider, task, plaintext)
 	}
+	if isKlingBase(provider.BaseURL) {
+		return q.pollKling(ctx, provider, task, plaintext)
+	}
 	return q.pollDashScope(ctx, provider, task, plaintext)
 }
 
 // pollDashScope asks the dashscope task route and normalizes its answer.
 func (q *videoTaskQuerier) pollDashScope(ctx context.Context, provider model.Provider, task model.VideoTask, plaintext string) (videotask.QueryResult, error) {
-	obs, biz, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID, videos.DashScopeTaskPathPrefix, "dashscope",
+	obs, biz, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID,
+		func(id string) string { return videos.DashScopeTaskPathPrefix + id }, "dashscope",
 		func(body []byte) (taskObservation, *videos.Refusal, error) {
 			parsed, biz, perr := videos.ParseDashScopeTaskResponse(body)
 			return taskObservation{Status: parsed.Status, VideoURL: parsed.VideoURL, UsageSecs: parsed.UsageSecs, ErrorCode: parsed.ErrorCode, ErrorMessage: parsed.ErrorMessage}, refusal(biz), perr
@@ -96,9 +101,37 @@ func (q *videoTaskQuerier) pollDashScope(ctx context.Context, provider model.Pro
 	return obs.result(), nil
 }
 
+// pollKling asks the kling task query route and normalizes its answer.
+func (q *videoTaskQuerier) pollKling(ctx context.Context, provider model.Provider, task model.VideoTask, plaintext string) (videotask.QueryResult, error) {
+	obs, biz, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID,
+		videos.KlingTaskRoute, "kling",
+		func(body []byte) (taskObservation, *videos.Refusal, error) {
+			parsed, biz, perr := videos.ParseKlingTaskResponse(body)
+			return taskObservation{Status: parsed.Status, VideoURL: parsed.VideoURL, UsageSecs: parsed.UsageSecs, ErrorCode: parsed.ErrorCode, ErrorMessage: parsed.ErrorMessage}, klingRefusal(biz), perr
+		})
+	if err != nil {
+		return videotask.QueryResult{}, err
+	}
+	if biz != nil {
+		// A business refusal inside a 200: the same terminal reading the
+		// dashscope poll gives one.
+		return videotask.QueryResult{
+			Status: model.VideoTaskFailed, ErrorCode: biz.Code, ErrorMessage: biz.Message,
+		}, nil
+	}
+	// The delivered duration string is the billable seconds; a completion
+	// that arrives without one still bills the task's echo of what was
+	// asked — the same stance the ark poll takes.
+	if obs.UsageSecs == 0 {
+		obs.UsageSecs = task.Seconds
+	}
+	return obs.result(), nil
+}
+
 // pollArk asks the Ark task route and normalizes its answer.
 func (q *videoTaskQuerier) pollArk(ctx context.Context, provider model.Provider, task model.VideoTask, plaintext string) (videotask.QueryResult, error) {
-	obs, _, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID, videos.ArkTaskPathPrefix, "ark",
+	obs, _, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID,
+		func(id string) string { return videos.ArkTaskPathPrefix + id }, "ark",
 		func(body []byte) (taskObservation, *videos.Refusal, error) {
 			parsed, perr := videos.ParseArkTaskResponse(body)
 			return taskObservation{Status: parsed.Status, VideoURL: parsed.VideoURL, UsageSecs: parsed.UsageSecs, ErrorCode: parsed.ErrorCode, ErrorMessage: parsed.ErrorMessage}, nil, perr
@@ -144,39 +177,64 @@ func refusal(biz *videos.DashScopeBizError) *videos.Refusal {
 	return &videos.Refusal{Code: biz.Code, Message: biz.Message}
 }
 
+// klingRefusal adapts the kling parse's own refusal type the same way.
+func klingRefusal(biz *videos.KlingBizError) *videos.Refusal {
+	if biz == nil {
+		return nil
+	}
+	return &videos.Refusal{Code: biz.Code, Message: biz.Message}
+}
+
 // getTask is the GET-and-read skeleton every task dialect shares: one
 // bounded, time-boxed, bearer-authenticated status read against the
-// provider's origin, handed to the dialect's parser. The two vendors'
-// polls differed only in route and parser; a third would have copied the
-// skeleton again.
-func (q *videoTaskQuerier) getTask(ctx context.Context, provider model.Provider, plaintext, taskID, pathPrefix, vendor string,
+// provider's origin, handed to the dialect's parser. The route is a
+// builder rather than a prefix because the dialects do not agree on the
+// shape — the first two append the id to a path, kling carries it as a
+// query parameter — and the skeleton takes no side in that.
+func (q *videoTaskQuerier) getTask(ctx context.Context, provider model.Provider, plaintext, taskID string,
+	route func(taskID string) string, vendor string,
 	parse func(body []byte) (taskObservation, *videos.Refusal, error),
 ) (taskObservation, *videos.Refusal, error) {
-	pollCtx, cancel := context.WithTimeout(ctx, videoPollTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(pollCtx, http.MethodGet,
-		videos.Origin(provider.BaseURL)+pathPrefix+taskID, nil)
+	body, err := fetchTaskBounded(ctx, q.client, videos.Origin(provider.BaseURL)+route(taskID), plaintext, vendor)
 	if err != nil {
 		return taskObservation{}, nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+plaintext)
-	resp, err := q.client.Do(req)
-	if err != nil {
-		return taskObservation{}, nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body := videos.ReadTaskBounded(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return taskObservation{}, nil, fmt.Errorf("%s task query status %d: %.200s", vendor, resp.StatusCode, body)
 	}
 	return parse(body)
 }
 
-// keyFor picks a key authorized for the provider's current destination.
-// The first authorized key wins: a poll is a read, any working key asks
-// it equally well, and spreading polls across a pool buys nothing.
-func (q *videoTaskQuerier) keyFor(ctx context.Context, provider model.Provider) (string, error) {
-	keys, err := repository.ListProviderKeysByProvider(q.db.WithContext(ctx), provider.ID)
+// fetchTaskBounded performs the one bounded status read both task pollers
+// share — the video querier and the kling image poller — so the transport
+// half of a poll (timeout, bearer, bounded body, status gate) exists once.
+func fetchTaskBounded(ctx context.Context, client taskDoer, url, plaintext, vendor string) ([]byte, error) {
+	pollCtx, cancel := context.WithTimeout(ctx, videoPollTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(pollCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body := videos.ReadTaskBounded(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s task query status %d: %.200s", vendor, resp.StatusCode, body)
+	}
+	return body, nil
+}
+
+// authorizedTaskKey picks a key authorized for the provider's current
+// destination — the one selection rule both task pollers (the video
+// querier and the kling image poller) share. Verification status is
+// deliberately not consulted: a task in flight was submitted with a key
+// that passed at the time, and a later retest downgrade must not orphan
+// the poll that settles its bill. The first authorized key wins: a poll
+// is a read, any working key asks it equally well, and spreading polls
+// across a pool buys nothing.
+func authorizedTaskKey(ctx context.Context, db *gorm.DB, secrets crypto.SecretBox, provider model.Provider) (string, error) {
+	keys, err := repository.ListProviderKeysByProvider(db.WithContext(ctx), provider.ID)
 	if err != nil {
 		return "", err
 	}
@@ -188,7 +246,7 @@ func (q *videoTaskQuerier) keyFor(ctx context.Context, provider model.Provider) 
 		if k.AuthorizedDestinationVersion != provider.DestinationVersion {
 			continue
 		}
-		plaintext, derr := q.secrets.Decrypt(k.EncryptedKey)
+		plaintext, derr := secrets.Decrypt(k.EncryptedKey)
 		if derr != nil {
 			continue
 		}

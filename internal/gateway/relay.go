@@ -246,6 +246,13 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 	})
 	svc.videoTasks = taskDomain
 	videoTasks = taskDomain
+	// The Kling image dialect's delivery-side task driver hangs off the
+	// same db/secrets/client triple, for the same reason the video
+	// poller does: one transport rule set, one key-resolution rule.
+	klingImagePoll = &klingImagePoller{
+		db: db, secrets: secrets,
+		client: upstreamDoer{client: svc.client},
+	}
 	return svc
 }
 

@@ -649,6 +649,10 @@ var isDashScopeBase = images.IsDashScopeBase
 // real hostname.
 var isArkBase = videos.IsArkBase
 
+// isKlingBase is videos.IsKlingBase, overridable in tests for the same
+// reason isArkBase is.
+var isKlingBase = videos.IsKlingBase
+
 // TestImageGeneration probes a mapping the way an image request actually
 // reaches the provider: the images endpoint on the provider's base, a
 // minimal prompt. A DashScope-compatible base is the exception the
@@ -658,6 +662,9 @@ var isArkBase = videos.IsArkBase
 // same way; asking the OpenAI-shaped images path there would measure a 404
 // no routed request would ever hit.
 func (c *HTTPProviderClient) TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
+	if isKlingBase(baseURL) {
+		return c.testKlingImageGeneration(ctx, baseURL, apiKey, model)
+	}
 	if isDashScopeBase(baseURL) {
 		if isEditShapedModel(model) {
 			return c.testDashScopeImageEdit(ctx, baseURL, apiKey, model)

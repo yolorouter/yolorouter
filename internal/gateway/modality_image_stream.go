@@ -225,7 +225,7 @@ func (p *imagePayload) settleImageStream(tools DeliveryTools, state *imageStream
 			return fact.Undelivered(http.StatusInternalServerError, fact.VerdictSettled, fact.FaultGateway,
 				"commit_failed: "+err.Error(), err)
 		}
-		return p.clientWriteFailure(http.StatusOK, err)
+		return fact.Truncated(http.StatusOK, 499, fact.FaultClient, "client_write_timeout", err)
 
 	case errors.Is(err, bufio.ErrTooLong):
 		return fact.Truncated(tools.Client.CommittedStatus(), http.StatusOK, fact.FaultUpstream,

@@ -2,7 +2,7 @@
 
 # Yolorouter
 
-**让 Claude Code（或任何 AI CLI）跑在任意供应商上——免费、自托管的单二进制 LLM 网关：四种协议任意进出、多供应商自动 failover、上游 Key 容量池、多用户管理后台内嵌。**
+**让 Claude Code（或任何 AI CLI）跑在任意供应商上——免费、自托管的单二进制 LLM 网关：四种对话协议任意进出，外加 OpenAI 图片与视频 API、多供应商自动 failover、上游 Key 容量池、多用户管理后台内嵌。**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/yolorouter/yolorouter/actions/workflows/ci.yml/badge.svg)](https://github.com/yolorouter/yolorouter/actions/workflows/ci.yml)
@@ -42,6 +42,7 @@
 - **上游 Key 容量池** —— 每个供应商配一个 Key 池，负载按轮询分摊到全部 Key。被限流的 Key 会按其 `Retry-After` 窗口自动冷却避让（后续请求优先走健康 Key）；认证失败、额度不可用的 Key 直接摘除，待重测通过后回池。
 - **一键批量导入模型** —— 添加供应商后，网关自动拉取其真实上游模型目录，勾选想要的模型即可一次导入。每个导入的映射会在后台对真实上游探测验证，通过的自动启用；失败的保留诊断信息，可一键重测。命中内置价目表的模型自动预填价格。
 - **模型别名** —— 调用方用稳定的对外名；每个供应商候选把它映射到该供应商实际接受的模型 id。保存候选映射时会真实探测一次上游，配错的模型名在配置阶段就暴露，而不是等到半夜出故障。
+- **图片与视频生成** —— 对话之外同时服务 OpenAI Images 与 Videos API。图片按实际交付张数走质量×尺寸价格表计费（或按 token）；视频是任务方言——`POST /v1/videos` 返回可轮询的任务，完成首次被观测到时按秒×分辨率档价一次性结算，Key 预算把每个在途任务的定价上界计入预留。原生 API 非 OpenAI 形状的供应商按其方言直连：DashScope（wan 视频、qwen-image）、火山方舟（Seedance 视频、Seedream 图片）、可灵（`kling-3.0` 系视频、`kling-v3` 图片、多参考图的 Omni 家族——调用方的 `image_list` 等可灵原生字段原样透传）。媒体单模型账号的 Key，在 chat 探测无法服务该模型时改经真实媒体探测验证。
 - **视觉回退** —— 让纯文本模型也能"看图"。在后台把模型标记为不支持图片并指定一个视觉模型后，请求里的图片会先由视觉模型转成文字描述再转发，调用方无感知，四种接入协议都支持；没配视觉模型时，图片会被替换成明确的占位说明，而不是让上游直接报错。
 - **流式做对了** —— Key 切换与 failover 都发生在首字节抵达客户端**之前**；一旦开始流式，供应商即被锁定，绝不把两个供应商的内容拼进同一个响应。
 - **为推理模型调过的超时** —— 七个互相独立、可配置的阶段，而不是一刀切的总超时，所以"想了八分钟才吐第一个 token"的模型不会被中途掐断。
@@ -170,13 +171,24 @@ Windows 上，用管理员身份运行 PowerShell 会装成开机自启的系统
 | `POST /v1/responses` | OpenAI Responses | `Authorization: Bearer`、`X-Api-Key` |
 | `POST /v1/messages` | Anthropic Messages | `Authorization: Bearer`、`X-Api-Key` |
 | `POST /v1/images/generations` | OpenAI Images（图片生成） | `Authorization: Bearer`、`X-Api-Key` |
+| `POST /v1/images/edits` | OpenAI Images（图片编辑） | `Authorization: Bearer`、`X-Api-Key` |
+| `POST /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content` | OpenAI Videos（任务方言） | `Authorization: Bearer`、`X-Api-Key` |
 | `POST /v1beta/models/{model}:generateContent`<br>`POST /v1beta/models/{model}:streamGenerateContent` | Gemini | `x-goog-api-key`、`?key=`、`Authorization: Bearer`、`X-Api-Key` |
 | `GET /v1/models`、`GET /v1/models/{model}` | 模型发现 | `Authorization: Bearer`、`X-Api-Key` |
 
 图片入口只服务于在后台声明了**图片**输出模态的模型。OpenAI 兼容供应商原样透传；
-供应商地址在 DashScope 域名下的，经由其原生图片端点服务（只返回图片 URL——请求
-`b64_json` 的候选会被逐一拒绝）。图片模型按候选声明的口径计费：按实际交付张数走
-质量×尺寸价格表，或按 token 用量；请求没有交付图片则不计费。
+DashScope 与可灵域名的供应商经由其原生任务方言服务，同步应答为 OpenAI 形状（只返回
+图片 URL——请求 `b64_json` 的候选会被逐一拒绝）。图片模型按候选声明的口径计费：按
+实际交付张数走质量×尺寸价格表，或按 token 用量；请求没有交付图片则不计费。图片编辑
+接收 OpenAI multipart 上传；DashScope 上参考图重编码进原生方言（该方言无 mask 字段，
+携带 mask 的请求对其候选拒绝），`gpt-image-*` 系模型以命名 SSE 事件流式吐出渐进分图。
+
+视频入口是任务方言：`POST /v1/videos` 提交生成并返回任务资源，调用方经
+`GET /v1/videos/{id}` 轮询、从 `GET /v1/videos/{id}/content` 下载成片；OpenAI 官方 SDK
+无改动可用（`create_and_poll` 自带轮询）。结算一次性发生——完成首次被观测到时，按
+上游实际交付的秒数 × 请求尺寸对应的分辨率档计价；失败、取消、过期任务零计费。视频
+上游均为任务制方言（DashScope wan、方舟 Seedance、可灵新版端点）；已受理的任务绝不
+重投其他候选——上游受理即渲染、即产生成本，无论调用方最终是否被计费。
 
 请求里的 `model` 是你在后台配置的**对外名**。Yolorouter 会挑选供应商候选、替换成真实的
 上游模型 id，并在返回时保持你的对外名不变。
@@ -184,9 +196,9 @@ Windows 上，用管理员身份运行 PowerShell 会装成开机自启的系统
 > **已知限制**：Responses 入口的 `input_image` 条目，在请求需要翻译成另一种出口协议时
 > 会被丢弃，只有文本被传递。同协议透传不受影响，另外三个入口的图片内容翻译正常。
 >
-> **图片生成说明**：`/v1/images/generations` 不支持 `stream`（`stream: true` 会收到明确的
-> 400）；`/v1/images/edits` 暂未提供。返回的图片 URL 来自上游，时效由上游决定——
-> Yolorouter 不转存图片字节。
+> **媒体说明**：图片 `stream` 是 `gpt-image-*` 家族的能力——其他家族的流式请求收到
+> 400。返回的图片与视频 URL 均来自上游、时效由上游决定（Yolorouter 只代理、不转存）；
+> 视频任务没有取消面——已接线的任务方言均未暴露取消能力。
 
 ### 让现有 SDK 和工具直接指过来
 

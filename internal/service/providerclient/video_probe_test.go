@@ -5,6 +5,8 @@ package providerclient
 // answers — not when a render finishes inside the probe's budget.
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -146,5 +148,57 @@ func TestVideoGenerationProbePassesOnArkBase(t *testing.T) {
 	}
 	if res.Outcome != TestSuccess {
 		t.Fatalf("an ark submit+query round trip must pass, got %+v", res)
+	}
+}
+
+func TestVideoGenerationProbePassesOnKlingBase(t *testing.T) {
+	// A local server is no vendor by hostname; the kling gate flips on
+	// and the others off so the kling branch is exercised against a live
+	// stub.
+	prevKling := isKlingBase
+	isKlingBase = func(string) bool { return true }
+	prevArk := isArkBase
+	isArkBase = func(string) bool { return false }
+	t.Cleanup(func() {
+		isKlingBase = prevKling
+		isArkBase = prevArk
+	})
+
+	var submitBody []byte
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/text-to-video/kling-3.0-turbo":
+			buf, _ := io.ReadAll(r.Body)
+			submitBody = buf
+			_, _ = w.Write([]byte(`{"code":0,"message":"SUCCEED","data":{"id":"893605","status":"submitted"}}`))
+		case r.URL.Path == "/tasks" && r.URL.Query().Get("task_ids") == "893605":
+			_, _ = w.Write([]byte(`{"code":0,"data":[{"id":"893605","status":"processing"}]}`))
+		default:
+			t.Errorf("unexpected probe path %s", r.URL.RequestURI())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer srv.Close()
+
+	res, err := c.TestVideoGeneration(t.Context(), srv.URL, "sk-test", "kling-3.0-turbo")
+	if err != nil {
+		t.Fatalf("probe errored: %v", err)
+	}
+	if res.Outcome != TestSuccess {
+		t.Fatalf("a kling submit+query round trip must pass, got %+v", res)
+	}
+	// The probe's ask is the cheapest clip the dialect can request — a
+	// probe task renders and bills for real.
+	var sent struct {
+		Settings struct {
+			Duration int `json:"duration"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(submitBody, &sent); err != nil {
+		t.Fatalf("probe submit body: %v", err)
+	}
+	if sent.Settings.Duration != 3 {
+		t.Fatalf("the kling probe must ask for the 3-second floor, got %d", sent.Settings.Duration)
 	}
 }

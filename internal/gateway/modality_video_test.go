@@ -305,3 +305,25 @@ func TestVideoAdmitBudgetPrecheckStaysSilentWhenUnsure(t *testing.T) {
 		t.Fatalf("the payload must be admitted")
 	}
 }
+
+func TestVideoPayloadKlingWhitelistVerdicts(t *testing.T) {
+	payload, rej := admitVideo(t, "application/json", videoJSON(t, map[string]any{"model": "m", "prompt": "p"}))
+	if rej != nil {
+		t.Fatalf("admit refused: %+v", rej)
+	}
+	prev := isKlingBase
+	isKlingBase = func(string) bool { return true }
+	t.Cleanup(func() { isKlingBase = prev })
+	// The model name rides in the submit path, so a name without an
+	// endpoint would dial a route that does not exist — refused per
+	// candidate, the same shape the wan family gate takes.
+	v := payload.Supports(Candidate{ProviderModelName: "kling-2.6", BaseURL: "https://api-beijing.klingai.com"})
+	if v.OK || v.Reason != klingModelUnsupported {
+		t.Fatalf("a model off the endpoint list must be refused with its own reason, got %+v", v)
+	}
+	for _, name := range []string{"kling-3.0", "kling-3.0-turbo"} {
+		if v := payload.Supports(Candidate{ProviderModelName: name, BaseURL: "https://api-beijing.klingai.com"}); !v.OK {
+			t.Fatalf("endpoint-listed model %q must be supported, got %+v", name, v)
+		}
+	}
+}

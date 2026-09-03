@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,6 +51,15 @@ const dashScopeURLsOnlyReason = "dashscope serves image URLs only and cannot ans
 // A package variable so tests can point the dialect at their fake upstream;
 // production never reassigns it.
 var isDashScopeBase = images.IsDashScopeBase
+
+// klingImageURLsOnlyReason and friends are the per-candidate refusals a
+// Kling base earns on the shapes its dialect cannot serve.
+const (
+	klingImageURLsOnlyReason = "kling serves image URLs only and cannot answer a b64_json request"
+	klingImageEditsReason    = "the kling image dialect serves generations only in this build"
+	klingImageModelReason    = "model not on the kling image endpoint list this dialect encodes"
+	klingImageNoStreamReason = "the kling native dialect does not stream images"
+)
 
 // imageRequestBudget caps one image-generation exchange. Generation is slow
 // in a way chat is not — a high-quality render legitimately takes minutes —
@@ -248,6 +259,22 @@ func (p *imagePayload) Supports(cand Candidate) CandidateVerdict {
 			Reason: dashScopeURLsOnlyReason,
 		}
 	}
+	// The Kling dialect serves the generation half only, from a whitelist
+	// the 2026-09-15 retirement leaves one mainline model on, answering
+	// with URLs — the same shapes a DashScope candidate refuses, in the
+	// Kling dialect's own words.
+	if isKlingBase(cand.BaseURL) {
+		switch {
+		case p.responseFormat() == "b64_json":
+			return CandidateVerdict{OK: false, Reason: klingImageURLsOnlyReason}
+		case p.isEdit():
+			return CandidateVerdict{OK: false, Reason: klingImageEditsReason}
+		case !images.KlingImageModelSupported(cand.ProviderModelName):
+			return CandidateVerdict{OK: false, Reason: klingImageModelReason}
+		case p.streamAsked():
+			return CandidateVerdict{OK: false, Reason: klingImageNoStreamReason}
+		}
+	}
 	if p.isEdit() && isDashScopeBase(cand.BaseURL) {
 		if p.edit.Mask != nil {
 			return CandidateVerdict{
@@ -298,6 +325,21 @@ func (p *imagePayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 	p.cand = cand
 	if p.isEdit() {
 		return p.prepareEditUpstream(cand)
+	}
+	if isKlingBase(cand.BaseURL) {
+		// The kling-native extension fields ride along from the caller's
+		// own body — the dialect branch of the passthrough promise.
+		body, err := images.EncodeKlingImageRequest(p.req.Prompt, cand.ProviderModelName, p.req.N, p.req.Size,
+			images.ParseKlingNativeFields(p.body))
+		if err != nil {
+			return nil, fmt.Errorf("encode kling image request: %w", err)
+		}
+		return &UpstreamCall{
+			Path:           images.KlingImageSubmitPathFor(cand.ProviderModelName),
+			Body:           body,
+			ContentType:    "application/json",
+			OriginRelative: true,
+		}, nil
 	}
 	if isDashScopeBase(cand.BaseURL) {
 		body, err := images.EncodeRequest(p.req.Prompt, cand.ProviderModelName, p.req.N, p.req.Size)
@@ -395,6 +437,17 @@ func (p *imagePayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 		return fact.HandedOn(fact.FaultUpstream, "response_too_large", nil)
 	}
 
+	// A Kling answer is the first half of a task conversation: the delivery
+	// drives it to the terminal task here and shapes the OpenAI answer from
+	// what the task delivered. The poll runs on its own bounded budget,
+	// deliberately decoupled from the caller's connection — the accepted
+	// task renders and bills upstream whether or not the caller waits, so
+	// settlement must observe completion (the video task domain's own
+	// caller-lifetime-contexts-are-wrong-scope stance).
+	if isKlingBase(p.cand.BaseURL) {
+		return p.deliverKling(tools, body)
+	}
+
 	// A DashScope answer arrives in the dialect's own shape and becomes the
 	// OpenAI shape the caller asked in. A business error arrives with HTTP
 	// 200 and a code: the request itself was refused, so it is answered, not
@@ -422,20 +475,102 @@ func (p *imagePayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 	tools.Capture.Upstream(body)
 	p.delivered = delivered
 
-	tools.Client.Inject(http.Header{"Content-Type": {"application/json"}})
-	if cerr := tools.Client.Commit(resp.StatusCode); cerr != nil {
-		return fact.Undelivered(http.StatusInternalServerError, fact.VerdictSettled, fact.FaultGateway,
-			"commit_failed: "+cerr.Error(), cerr)
-	}
-	if _, werr := tools.Client.Write(delivered); werr != nil {
-		return p.clientWriteFailure(resp.StatusCode, werr)
-	}
-	// A few KB of JSON can sit entirely inside net/http's buffer; only the
-	// flush tells the truth about whether the caller received anything.
-	if ferr := tools.Client.Flush(); ferr != nil {
-		return p.clientWriteFailure(resp.StatusCode, ferr)
+	if failed := commitJSONAnswer(tools, resp.StatusCode, delivered); failed != nil {
+		return *failed
 	}
 	return fact.Succeeded(resp.StatusCode)
+}
+
+// deliverKling answers a Kling generation: the submit's 200 carried a task
+// id, the poller drives that task to its terminal state, and the caller
+// receives either the OpenAI images shape built from the task's URLs or
+// the refusal the task produced. Everything after the accepted submit is
+// settled here — the task is rendering and billing upstream, so handing a
+// poll failure back to the attempt loop would buy the caller a second
+// billable task, not a second chance.
+func (p *imagePayload) deliverKling(tools DeliveryTools, submitBody []byte) fact.Delivery {
+	taskID, biz, err := images.ParseKlingImageSubmitResponse(submitBody)
+	if err != nil {
+		// The submit answered HTTP 200, so the task was most likely
+		// accepted and is billing upstream already — a decode failure here
+		// settles as an upstream error rather than handing back to the
+		// attempt loop, whose re-submit would buy a second billable task.
+		tools.Capture.Upstream(submitBody)
+		return p.settleKlingUpstreamError(tools, "kling_submit_decode: "+err.Error(), err)
+	}
+	if biz != nil {
+		tools.Capture.Upstream(submitBody)
+		return p.deliverKlingRefusal(tools, biz.Code, biz.Message)
+	}
+	if klingImagePoll == nil {
+		// The task is in flight upstream; this deployment cannot drive it
+		// to settlement. Settled, for the same re-submit reason as above.
+		tools.Capture.Upstream(submitBody)
+		return p.settleKlingUpstreamError(tools, "kling image poller is not wired", nil)
+	}
+	task, finalBody, biz, perr := klingImagePoll.Poll(context.Background(), p.cand.ProviderID, p.cand.DestinationVersion, taskID,
+		images.KlingImageTaskPathPrefixFor(p.cand.ProviderModelName))
+	if perr != nil {
+		// No terminal body arrived; the submit answer is the only
+		// upstream evidence this delivery has.
+		tools.Capture.Upstream(submitBody)
+		return p.settleKlingUpstreamError(tools, "kling_image_poll: "+perr.Error(), perr)
+	}
+	// The terminal task body is the upstream response this delivery is
+	// decided by — it carries the task id, the delivered URLs, the
+	// deduction, and the refusal reason, everything the submit answer
+	// holds and more — so it is what the audit trail records; capture is
+	// an assignment, so the two halves cannot both live in one row.
+	tools.Capture.Upstream(finalBody)
+	if biz != nil {
+		return p.deliverKlingRefusal(tools, biz.Code, biz.Message)
+	}
+	if task.Failed {
+		return p.deliverKlingRefusal(tools, "kling_task_failed", task.StatusMsg)
+	}
+	if len(task.ImageURLs) == 0 {
+		return p.settleKlingUpstreamError(tools, "kling task succeeded without images", nil)
+	}
+	converted, cerr := images.EncodeKlingImagesOpenAI(task.ImageURLs)
+	if cerr != nil {
+		return p.settleKlingUpstreamError(tools, "kling answer marshal: "+cerr.Error(), cerr)
+	}
+	p.delivered = converted
+	if failed := commitJSONAnswer(tools, http.StatusOK, converted); failed != nil {
+		return *failed
+	}
+	return fact.Succeeded(http.StatusOK)
+}
+
+// deliverKlingRefusal answers a refusal with the OpenAI error shape served
+// as 422: the caller's request was rejected, not the provider's — the same
+// verdict the DashScope refusal path settles by.
+func (p *imagePayload) deliverKlingRefusal(tools DeliveryTools, code, message string) fact.Delivery {
+	if message == "" {
+		message = "kling refused the request"
+	}
+	rendered := fmt.Sprintf("kling error %s: %s", code, message)
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{"message": rendered, "type": "invalid_request_error", "code": code},
+	})
+	if failed := commitJSONAnswer(tools, http.StatusUnprocessableEntity, body); failed != nil {
+		return *failed
+	}
+	return fact.Rejected(http.StatusUnprocessableEntity, fact.FaultClient, "kling_business_error",
+		errors.New(code+": "+message))
+}
+
+// settleKlingUpstreamError reports a post-acceptance failure to the caller
+// as a settled upstream error: the accepted task is billing upstream, so
+// this delivery must end here rather than fail over.
+func (p *imagePayload) settleKlingUpstreamError(tools DeliveryTools, reason string, err error) fact.Delivery {
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{"message": reason, "type": "upstream_error", "code": "upstream_error"},
+	})
+	if failed := commitJSONAnswer(tools, http.StatusBadGateway, body); failed != nil {
+		return *failed
+	}
+	return fact.Undelivered(http.StatusBadGateway, fact.VerdictSettled, fact.FaultUpstream, reason, err)
 }
 
 // deliverDashScopeRefusal answers a business refusal with the dialect's own
@@ -452,19 +587,12 @@ func (p *imagePayload) deliverDashScopeRefusal(tools DeliveryTools, upstreamBody
 			"commit_failed: "+cerr.Error(), cerr)
 	}
 	if _, werr := tools.Client.Write(body); werr != nil {
-		return p.clientWriteFailure(http.StatusUnprocessableEntity, werr)
+		return fact.Truncated(http.StatusUnprocessableEntity, 499, fact.FaultClient, "client_write_timeout", werr)
 	}
 	if ferr := tools.Client.Flush(); ferr != nil {
-		return p.clientWriteFailure(http.StatusUnprocessableEntity, ferr)
+		return fact.Truncated(http.StatusUnprocessableEntity, 499, fact.FaultClient, "client_write_timeout", ferr)
 	}
 	return fact.Rejected(http.StatusUnprocessableEntity, fact.FaultClient, "dashscope_business_error", err)
-}
-
-// clientWriteFailure reports a caller who stopped receiving after the
-// response was committed: served the status they got, settled as 499,
-// because the bytes never landed.
-func (p *imagePayload) clientWriteFailure(served int, err error) fact.Delivery {
-	return fact.Truncated(served, 499, fact.FaultClient, "client_write_timeout", err)
 }
 
 // FinalizeUsage states the billable quantities of the settled delivery:

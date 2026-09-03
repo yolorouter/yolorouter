@@ -34,9 +34,11 @@ type wanUpstream struct {
 	// acceptance. Exhausted or nil → plain acceptance.
 	submits []string // JSON error body to return instead, "" = accept
 	// tasks maps task id → queue of poll response bodies (dashscope
-	// route); arkTasks the same for the ark route.
-	tasks    map[string][]string
-	arkTasks map[string][]string
+	// route); arkTasks the same for the ark route; klingTasks for the
+	// kling query route.
+	tasks      map[string][]string
+	arkTasks   map[string][]string
+	klingTasks map[string][]string
 	// media serves /media/* verbatim with the given content type.
 	media map[string]string
 	// recorded requests
@@ -50,7 +52,7 @@ type wanUpstream struct {
 }
 
 func newWanUpstream() *wanUpstream {
-	return &wanUpstream{tasks: map[string][]string{}, arkTasks: map[string][]string{}, media: map[string]string{}}
+	return &wanUpstream{tasks: map[string][]string{}, arkTasks: map[string][]string{}, klingTasks: map[string][]string{}, media: map[string]string{}}
 }
 
 func (u *wanUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +112,30 @@ func (u *wanUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body := queue[0]
 		u.tasks[id] = queue[1:]
 		_, _ = w.Write([]byte(body))
+	case strings.HasPrefix(r.URL.Path, "/text-to-video/") || strings.HasPrefix(r.URL.Path, "/image-to-video/"):
+		u.submitHits++
+		u.lastSubmitPath = r.URL.Path
+		u.lastAsyncHdr = r.Header.Get("X-DashScope-Async")
+		u.lastAuthHeader = r.Header.Get("Authorization")
+		buf := &bytes.Buffer{}
+		_, _ = buf.ReadFrom(r.Body)
+		u.lastSubmitBody = buf.Bytes()
+		id := fmt.Sprintf("kling-task-%d", u.submitHits)
+		_, _ = w.Write([]byte(`{"code":0,"message":"SUCCEED","data":{"id":"` + id + `","status":"submitted"}}`))
+	case r.URL.Path == "/tasks":
+		u.queryHits++
+		// The kling query carries its id as a query parameter; the full
+		// request URI is what an assertion on that spelling needs.
+		u.lastQueryPath = r.URL.RequestURI()
+		u.lastAuthHeader = r.Header.Get("Authorization")
+		id := r.URL.Query().Get("task_ids")
+		queue := u.klingTasks[id]
+		if len(queue) == 0 {
+			_, _ = w.Write([]byte(`{"code":0,"data":[{"id":"` + id + `","status":"processing"}]}`))
+			return
+		}
+		u.klingTasks[id] = queue[1:]
+		_, _ = w.Write([]byte(queue[0]))
 	case strings.HasPrefix(r.URL.Path, "/media/"):
 		body, ok := u.media[r.URL.Path]
 		if !ok {
@@ -168,6 +194,21 @@ func newVideoArkRig(t *testing.T, providerModel string) *videoRig {
 	isDashScopeBase = func(string) bool { return false }
 	t.Cleanup(func() {
 		isArkBase = prevArk
+		isDashScopeBase = prevDS
+	})
+	return rig
+}
+
+// newVideoKlingRig is the rig on the kling dialect: same fake upstream,
+// the kling gate flipped on and the other two off.
+func newVideoKlingRig(t *testing.T, providerModel string) *videoRig {
+	rig := newVideoRig(t, providerModel)
+	prevKling := isKlingBase
+	isKlingBase = func(baseURL string) bool { return baseURL == rig.server.URL }
+	prevDS := isDashScopeBase
+	isDashScopeBase = func(string) bool { return false }
+	t.Cleanup(func() {
+		isKlingBase = prevKling
 		isDashScopeBase = prevDS
 	})
 	return rig
@@ -761,6 +802,205 @@ func TestArkVideoReferenceAndFailurePaths(t *testing.T) {
 			}
 			if res.Status != tc.wantStatus || res.Error == nil || res.Error.Code != tc.wantCode {
 				t.Fatalf("rendering wrong: %s", w.Body.String())
+			}
+			if spent := rig.keySpent(t); spent != 0 {
+				t.Fatalf("a %s task must bill nothing, spent=%d", tc.wantStatus, spent)
+			}
+		})
+	}
+}
+
+func TestKlingVideoSubmitAndPollEndToEnd(t *testing.T) {
+	rig := newVideoKlingRig(t, "kling-3.0-turbo")
+	rig.priceVideo(t, 0.8, nil)
+	rig.upstream.klingTasks["kling-task-1"] = []string{
+		`{"code":0,"data":[{"id":"kling-task-1","status":"processing"}]}`,
+		`{"code":0,"data":[{"id":"kling-task-1","status":"succeeded","outputs":[{"type":"video","url":"` + rig.server.URL + `/media/v.mp4","duration":"8"}]}]}`,
+	}
+	rig.upstream.media["/media/v.mp4"] = "kling-mp4-bytes"
+
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"a lantern festival at night","seconds":8,"size":"1024x1792"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("kling submit status = %d, body %s", w.Code, w.Body.String())
+	}
+	// The submit reached the upstream in the new-design shape: the model
+	// rides in the path, settings carries the mapped axes with the stated
+	// aspect ratio of a text-only ask, and there is no options block and
+	// no async header.
+	if rig.upstream.lastSubmitPath != "/text-to-video/kling-3.0-turbo" {
+		t.Fatalf("submit path = %q, want the version-in-path route", rig.upstream.lastSubmitPath)
+	}
+	if rig.upstream.lastAsyncHdr != "" {
+		t.Fatalf("the kling dialect carries no async header, got %q", rig.upstream.lastAsyncHdr)
+	}
+	if !strings.HasPrefix(rig.upstream.lastAuthHeader, "Bearer ") {
+		t.Fatalf("submit must carry the single-key bearer, got %q", rig.upstream.lastAuthHeader)
+	}
+	var sent struct {
+		Prompt   string `json:"prompt"`
+		Settings struct {
+			Resolution  string `json:"resolution"`
+			AspectRatio string `json:"aspect_ratio"`
+			Duration    int    `json:"duration"`
+		} `json:"settings"`
+		Contents any `json:"contents"`
+		Options  any `json:"options"`
+	}
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+		t.Fatalf("kling submit body: %v", err)
+	}
+	if sent.Prompt != "a lantern festival at night" {
+		t.Fatalf("prompt must ride the flat field, got %q", sent.Prompt)
+	}
+	if sent.Settings.Resolution != "1080p" || sent.Settings.AspectRatio != "9:16" || sent.Settings.Duration != 8 {
+		t.Fatalf("settings knobs wrong: %s", rig.upstream.lastSubmitBody)
+	}
+	if sent.Contents != nil || sent.Options != nil {
+		t.Fatalf("a text-only submit carries neither contents nor options: %s", rig.upstream.lastSubmitBody)
+	}
+
+	jobID := jobIDOf(t, w)
+	w = rig.poll(t, rig.key, jobID)
+	if !strings.Contains(w.Body.String(), `"in_progress"`) {
+		t.Fatalf("kling poll 1 must show in_progress: %s", w.Body.String())
+	}
+	// The query asked the one-route shape: the id as a query parameter.
+	if !strings.HasPrefix(rig.upstream.lastQueryPath, "/tasks?task_ids=kling-task-1") {
+		t.Fatalf("the kling poll must carry the task id as task_ids, got %q", rig.upstream.lastQueryPath)
+	}
+	rig.agePoll(t, jobID)
+	w = rig.poll(t, rig.key, jobID)
+	if !strings.Contains(w.Body.String(), `"completed"`) {
+		t.Fatalf("kling poll 2 must show completed: %s", w.Body.String())
+	}
+	// Settlement rides the delivered-duration string: 8s × 0.8 = 6,400,000.
+	if spent := rig.keySpent(t); spent != 6_400_000 {
+		t.Fatalf("kling settlement must charge the delivered seconds once, spent=%d", spent)
+	}
+	w = rig.content(t, jobID)
+	if w.Code != http.StatusOK || w.Body.String() != "kling-mp4-bytes" {
+		t.Fatalf("kling content proxy wrong: %d %q", w.Code, w.Body.String())
+	}
+}
+
+func TestKlingVideoReferenceRidesContents(t *testing.T) {
+	rig := newVideoKlingRig(t, "kling-3.0")
+	body := `{"model":"video-model","prompt":"animate this","input_reference":{"image_url":"https://example.test/first.png"}}`
+	_, w := rig.submit(t, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit %d %s", w.Code, w.Body.String())
+	}
+	// The reference's presence is the endpoint family.
+	if rig.upstream.lastSubmitPath != "/image-to-video/kling-3.0" {
+		t.Fatalf("a referenced submit must ride the image-to-video route, got %q", rig.upstream.lastSubmitPath)
+	}
+	var sent struct {
+		Contents []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+			URL  string `json:"url"`
+		} `json:"contents"`
+		Settings struct {
+			AspectRatio string `json:"aspect_ratio"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+		t.Fatalf("body: %v (%s)", err, rig.upstream.lastSubmitBody)
+	}
+	if len(sent.Contents) != 2 || sent.Contents[0].Type != "prompt" || sent.Contents[0].Text != "animate this" ||
+		sent.Contents[1].Type != "first_frame" || sent.Contents[1].URL != "https://example.test/first.png" {
+		t.Fatalf("contents shape wrong: %s", rig.upstream.lastSubmitBody)
+	}
+	if sent.Settings.AspectRatio != "" {
+		t.Fatalf("a referenced submit must let the frame decide the aspect: %s", rig.upstream.lastSubmitBody)
+	}
+}
+
+func TestKlingVideoReferenceStripsDataURIToBareBase64(t *testing.T) {
+	rig := newVideoKlingRig(t, "kling-3.0")
+	pixels := "cGxhaW4tcGl4ZWxz"
+	body := `{"model":"video-model","prompt":"animate this","input_reference":{"image_url":"data:image/png;base64,` + pixels + `"}}`
+	_, w := rig.submit(t, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(string(rig.upstream.lastSubmitBody), `"url":"`+pixels+`"`) {
+		t.Fatalf("a data-URI reference must reach the upstream as bare base64: %s", rig.upstream.lastSubmitBody)
+	}
+	if strings.Contains(string(rig.upstream.lastSubmitBody), "data:image") {
+		t.Fatalf("the data: prefix must not survive: %s", rig.upstream.lastSubmitBody)
+	}
+}
+
+// A present-but-empty input_reference is the text generation it is: the
+// endpoint choice follows content, in lockstep with the encoded body.
+func TestKlingEmptyReferenceRidesTextRoute(t *testing.T) {
+	rig := newVideoKlingRig(t, "kling-3.0")
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"empty ref","input_reference":{}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit %d %s", w.Code, w.Body.String())
+	}
+	if rig.upstream.lastSubmitPath != "/text-to-video/kling-3.0" {
+		t.Fatalf("an empty reference must ride the text route, got %q", rig.upstream.lastSubmitPath)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if _, ok := sent["contents"]; ok {
+		t.Fatalf("an empty reference must encode the text shape: %s", rig.upstream.lastSubmitBody)
+	}
+}
+
+func TestKlingFailurePaths(t *testing.T) {
+	for _, tc := range []struct {
+		name, poll, wantStatus, wantCode string
+	}{
+		{
+			name:       "failed carries the upstream's message",
+			poll:       `{"code":0,"data":[{"id":"k","status":"failed","message":"content risk control"}]}`,
+			wantStatus: "failed", wantCode: "kling_task_failed",
+		},
+		{
+			name:       "an unknown task id is the empty data array",
+			poll:       `{"code":0,"message":"SUCCEED","data":[]}`,
+			wantStatus: "failed", wantCode: "task_expired",
+		},
+		{
+			name:       "the old API's succeed spelling is not a status",
+			poll:       `{"code":0,"data":[{"id":"k","status":"succeed"}]}`,
+			wantStatus: "in_progress", wantCode: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVideoKlingRig(t, "kling-3.0")
+			rig.priceVideo(t, 0.8, nil)
+			// An undocumented status word is a decode error, not a task
+			// verdict: the task keeps its state, so that case asserts the
+			// poll stays in_progress rather than rendering an error.
+			if tc.wantStatus == "in_progress" {
+				rig.upstream.klingTasks["kling-task-1"] = []string{
+					`{"code":0,"data":[{"id":"k","status":"processing"}]}`,
+					tc.poll,
+				}
+			} else {
+				rig.upstream.klingTasks["kling-task-1"] = []string{tc.poll}
+			}
+			_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("submit %d %s", w.Code, w.Body.String())
+			}
+			jobID := jobIDOf(t, w)
+			rig.poll(t, rig.key, jobID)
+			if tc.wantStatus == "in_progress" {
+				rig.agePoll(t, jobID)
+			}
+			w = rig.poll(t, rig.key, jobID)
+			if !strings.Contains(w.Body.String(), `"`+tc.wantStatus+`"`) {
+				t.Fatalf("rendering wrong: %s", w.Body.String())
+			}
+			if tc.wantCode != "" && !strings.Contains(w.Body.String(), tc.wantCode) {
+				t.Fatalf("error code missing: %s", w.Body.String())
 			}
 			if spent := rig.keySpent(t); spent != 0 {
 				t.Fatalf("a %s task must bill nothing, spent=%d", tc.wantStatus, spent)

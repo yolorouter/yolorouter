@@ -154,16 +154,26 @@ const (
 	// openAIVideoUnsupported is the verdict for a candidate on a base
 	// neither task dialect speaks: proxying an OpenAI-shaped video
 	// upstream is not a thing this build does.
-	openAIVideoUnsupported = "video tasks are served through the dashscope and ark native dialects in this build"
+	openAIVideoUnsupported = "video tasks are served through the dashscope, ark, and kling native dialects in this build"
 	// wanFamilyUnsupported is the verdict for a DashScope candidate whose
 	// provider model is not a wan video family the dialect can encode.
 	wanFamilyUnsupported = "model not in a wan video family the dashscope dialect encodes"
+	// klingModelUnsupported is the verdict for a Kling candidate whose
+	// provider model is not on the new-design endpoint list: the model
+	// name rides in the submit path, so a name without an endpoint would
+	// dial a route that does not exist.
+	klingModelUnsupported = "model not on the kling new-design endpoint list this dialect encodes"
 )
 
 // isArkBase is videos.IsArkBase, overridable in tests for the same
 // reason isDashScopeBase is: a local httptest server never carries the
 // real hostname, and the branch needs exercising against a live stub.
 var isArkBase = videos.IsArkBase
+
+// isKlingBase is videos.IsKlingBase, overridable in tests for the same
+// reason isArkBase is. One package, one spelling: both the video and the
+// images modality's kling branches route on this detector.
+var isKlingBase = videos.IsKlingBase
 
 func (p *videoPayload) Supports(cand Candidate) CandidateVerdict {
 	switch {
@@ -175,6 +185,10 @@ func (p *videoPayload) Supports(cand Candidate) CandidateVerdict {
 	case isDashScopeBase(cand.BaseURL):
 		if videos.DashScopeModelFamily(cand.ProviderModelName) == videos.DashScopeFamilyNone {
 			return CandidateVerdict{OK: false, Reason: wanFamilyUnsupported}
+		}
+	case isKlingBase(cand.BaseURL):
+		if !videos.KlingModelSupported(cand.ProviderModelName) {
+			return CandidateVerdict{OK: false, Reason: klingModelUnsupported}
 		}
 	default:
 		return CandidateVerdict{OK: false, Reason: openAIVideoUnsupported}
@@ -250,6 +264,37 @@ func (p *videoPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 		}
 		body = encoded
 		call.Path = videos.ArkSubmitPath
+	case isKlingBase(cand.BaseURL):
+		resolution, ratio, ok := videos.MapKlingSize(p.effectiveSize())
+		if !ok {
+			// The door validated the vocabulary; this is unreachable
+			// defense against the shared table drifting.
+			p.submitErr = fmt.Errorf("size %q has no kling mapping", p.effectiveSize())
+			return nil, p.submitErr
+		}
+		submit := videos.KlingSubmitRequest{
+			Model: cand.ProviderModelName, Prompt: p.req.Prompt,
+			Resolution: resolution, Ratio: ratio, Duration: p.effectiveSeconds(),
+		}
+		// Two slots, not attachReference's three: the kling dialect has no
+		// content-type slot — its bare-base64 payload carries none.
+		if ref := p.req.InputReference; ref != nil {
+			submit.RefURL = ref.ImageURL
+			if ref.File != nil {
+				submit.RefData = ref.File.Data
+			}
+		}
+		encoded, err := videos.EncodeKlingSubmit(submit)
+		if err != nil {
+			p.submitErr = err
+			return nil, err
+		}
+		body = encoded
+		// The endpoint family follows the reference's content, judged by
+		// the same helper the encoder's body shape answers from — a
+		// present-but-empty reference is the text generation it is, on
+		// both sides of the wire.
+		call.Path = videos.KlingSubmitPath(cand.ProviderModelName, videos.KlingReferenced(p.req.InputReference))
 	default:
 		resolution, ratio, ok := videos.MapDashScopeSize(p.effectiveSize())
 		if !ok {
@@ -379,6 +424,10 @@ func parseVideoSubmitResponse(baseURL string, body []byte) (string, *videos.Refu
 		}
 		return id, nil, err
 	}
+	if isKlingBase(baseURL) {
+		id, biz, err := videos.ParseKlingSubmitResponse(body)
+		return id, klingRefusal(biz), err
+	}
 	id, biz, err := videos.ParseDashScopeSubmitResponse(body)
 	if biz != nil {
 		return id, &videos.Refusal{Code: biz.Code, Message: biz.Message}, nil
@@ -400,30 +449,11 @@ func (p *videoPayload) deliverNativeRefusal(tools DeliveryTools, upstreamBody []
 	return fact.Rejected(http.StatusUnprocessableEntity, fact.FaultClient, "video_business_error", errors.New(bizErr.Code+": "+bizErr.Message))
 }
 
-// writeVideoJSON is the commit→write→flush handshake every video answer
-// shares. It owns the failure deliveries — a commit that cannot happen, a
-// write the caller never received — and reports nil when the body went
-// out whole, leaving the success verdict to the caller: a delivered job
-// resource and a delivered refusal settle differently, and the tail that
-// writes them must not be the thing that decides that. Extracted because
-// it was four copies of the same handshake in two functions; the images
-// modality keeps its own clientWriteFailure for the same reason.
+// writeVideoJSON hands the video answers' handshake to the gateway-wide
+// commitJSONAnswer — kept as a thin alias so the video call sites keep
+// their modality-local spelling.
 func writeVideoJSON(tools DeliveryTools, status int, body []byte) *fact.Delivery {
-	tools.Client.Inject(http.Header{"Content-Type": {"application/json"}})
-	if cerr := tools.Client.Commit(status); cerr != nil {
-		d := fact.Undelivered(http.StatusInternalServerError, fact.VerdictSettled, fact.FaultGateway,
-			"commit_failed: "+cerr.Error(), cerr)
-		return &d
-	}
-	if _, werr := tools.Client.Write(body); werr != nil {
-		d := fact.Truncated(status, 499, fact.FaultClient, "client_write_timeout", werr)
-		return &d
-	}
-	if ferr := tools.Client.Flush(); ferr != nil {
-		d := fact.Truncated(status, 499, fact.FaultClient, "client_write_timeout", ferr)
-		return &d
-	}
-	return nil
+	return commitJSONAnswer(tools, status, body)
 }
 
 // NormalizeUpstreamError is not on the video path: the kernel's own

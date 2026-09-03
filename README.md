@@ -2,7 +2,7 @@
 
 # Yolorouter
 
-**Run Claude Code (or any AI CLI) on any provider — a free, self-hosted LLM gateway in one binary that speaks four wire protocols, fails over across providers, pools upstream keys, and ships with a multi-user admin console.**
+**Run Claude Code (or any AI CLI) on any provider — a free, self-hosted LLM gateway in one binary that speaks the four chat wire protocols plus the OpenAI Images and Videos APIs, fails over across providers, pools upstream keys, and ships with a multi-user admin console.**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/yolorouter/yolorouter/actions/workflows/ci.yml/badge.svg)](https://github.com/yolorouter/yolorouter/actions/workflows/ci.yml)
@@ -46,6 +46,7 @@ the box; switch to PostgreSQL when you want it.
 - **Upstream key pool.** Give each provider a pool of upstream keys and load spreads across it round-robin. A rate-limited key is benched for its `Retry-After` window (later requests walk healthier keys first); unauthorized or quota-exhausted keys are taken out until a retest passes.
 - **One-click model import.** After you add a provider, the gateway fetches its live model catalogue — tick the models you want and import them all at once. Every imported mapping is verified against the real upstream in the background and auto-enabled when it passes; failures keep their diagnostic for a one-click retest. Suggested prices come from a community-maintained [price catalog](https://github.com/yolorouter/price-catalog) that refreshes daily, so most models arrive pre-priced.
 - **Model aliasing.** Callers request a stable public name; each provider candidate maps it to whatever model id that provider actually expects. Candidate mappings are probed against the real upstream when you save them, so a typo is caught at configuration time, not at 3 a.m.
+- **Image & video generation.** The OpenAI Images and Videos APIs are served beside chat. Images bill per delivered image through a quality×size price table (or by tokens); videos are a job dialect — `POST /v1/videos` returns a pollable job, settlement charges per second against a resolution-tiered table when completion is observed, and a key's budget reserves every in-flight job's priced bound. Providers whose native media APIs are not OpenAI-shaped are spoken natively: DashScope (wan video, qwen-image), Volcengine Ark (Seedance video, Seedream images), and Kling (`kling-3.0`-family video, `kling-v3` images, and the multi-reference Omni pair — caller-side kling-native fields like `image_list` ride through verbatim). Keys on media-only accounts are verified through real media probes when a chat probe cannot serve the model.
 - **Vision fallback.** Let text-only models "see". Mark a model as unable to read images and pick a vision model in the console; images in incoming requests are described by the vision model and forwarded as text, transparently to the caller, on every ingress protocol. With no vision model configured, images degrade to a clear placeholder instead of an upstream error.
 - **Streaming done right.** Key rotation and failover happen *before* the first byte reaches the client; once streaming starts, the provider is locked in. Content from two providers is never stitched into one response.
 - **Timeouts tuned for reasoning models.** Seven independent, configurable phases instead of one wall clock, so a model that thinks for eight minutes before emitting a token isn't killed mid-thought.
@@ -178,15 +179,33 @@ protocol that provider natively speaks.
 | `POST /v1/responses` | OpenAI Responses | `Authorization: Bearer`, `X-Api-Key` |
 | `POST /v1/messages` | Anthropic Messages | `Authorization: Bearer`, `X-Api-Key` |
 | `POST /v1/images/generations` | OpenAI Images (generation) | `Authorization: Bearer`, `X-Api-Key` |
+| `POST /v1/images/edits` | OpenAI Images (edit) | `Authorization: Bearer`, `X-Api-Key` |
+| `POST /v1/videos`, `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content` | OpenAI Videos (job dialect) | `Authorization: Bearer`, `X-Api-Key` |
 | `POST /v1beta/models/{model}:generateContent`<br>`POST /v1beta/models/{model}:streamGenerateContent` | Gemini | `x-goog-api-key`, `?key=`, `Authorization: Bearer`, `X-Api-Key` |
 | `GET /v1/models`, `GET /v1/models/{model}` | Model discovery | `Authorization: Bearer`, `X-Api-Key` |
 
 The images ingress serves models declared with the **image** output modality in
-the console. OpenAI-compatible providers are passed through as-is; providers on a
-DashScope host are served through its native image endpoint (URL answers only —
-a `b64_json` request is refused per candidate). Image models bill either per
-delivered image through a quality×size price table or by token counts, whichever
-the candidate declares, and a request that delivered nothing bills nothing.
+the console. OpenAI-compatible providers are passed through as-is; providers on
+a DashScope or Kling host are served through their native task dialects,
+answered synchronously in the OpenAI shape (URL answers only — a `b64_json`
+request is refused per candidate). Image models bill either per delivered image
+through a quality×size price table or by token counts, whichever the candidate
+declares, and a request that delivered nothing bills nothing. Edits take the
+OpenAI multipart upload; on a DashScope host the reference images re-encode
+into the native dialect (a mask upload is refused there — the dialect has no
+field for it), and `gpt-image-*` models stream progressive partials as named
+SSE events.
+
+The videos ingress is a job dialect: `POST /v1/videos` submits a generation and
+returns a job resource the caller polls at `GET /v1/videos/{id}`, downloading
+the finished clip from `GET /v1/videos/{id}/content`. The official OpenAI SDK
+works unchanged (`create_and_poll` drives the loop). Settlement happens once,
+when completion is first observed, charging the seconds the upstream actually
+delivered against the resolution tier the request's size maps to — failed,
+cancelled, and expired jobs bill nothing. Video upstreams are task dialects
+(DashScope wan, Ark Seedance, Kling new-design endpoints); submitted jobs are
+never re-submitted to another candidate, because an accepted task renders at
+the operator's cost whether or not the caller is ever billed.
 
 The `model` in every request is the **public name** you configured. Yolorouter picks
 a provider candidate, swaps in the real upstream model id, and keeps your public
@@ -197,10 +216,11 @@ name in the response.
 > forwarded. Same-protocol passthrough is unaffected, and image content translates
 > correctly on the other three ingresses.
 >
-> **Image generation notes**: `stream` is not supported on
-> `/v1/images/generations` (a `stream: true` request is refused with a clear 400);
-> `/v1/images/edits` is not served yet. Returned image URLs come from the upstream
-> and follow the upstream's expiry — Yolorouter does not rehost image bytes.
+> **Media notes**: image `stream` is a `gpt-image-*` family capability — other
+> families answer a streaming ask with 400. Returned image and video URLs come
+> from the upstream and follow the upstream's expiry (Yolorouter proxies, never
+> rehosts); video jobs have no cancellation surface — none of the wired task
+> dialects exposes one.
 
 ### Point existing SDKs and tools at it
 
