@@ -37,6 +37,11 @@ type VideoTask struct {
 	// the old destination issued — the change hook expires them).
 	ProviderTaskID     string `gorm:"type:varchar(128);not null;default:''" json:"provider_task_id"`
 	DestinationVersion int    `gorm:"not null;default:1" json:"destination_version"`
+	// RequestID names the request_logs row this task's submit wrote, so
+	// settlement can back-fill that row's cost minutes or days after the
+	// request itself ended. Empty on tasks created before the column
+	// existed — those settle without a projection, exactly as before.
+	RequestID string `gorm:"type:varchar(64);not null;default:''" json:"request_id"`
 
 	Status       string `gorm:"type:varchar(20);not null;default:'pending';index" json:"status"`
 	ErrorCode    string `gorm:"type:varchar(50);not null;default:''" json:"error_code"`

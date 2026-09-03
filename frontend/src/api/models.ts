@@ -11,10 +11,12 @@ export interface ModelCandidate {
   cache_write_price: number | null
   cache_read_price: number | null
   max_output: number
-  /** What settlement prices this candidate in: "token" (default) or "image". */
+  /** What settlement prices this candidate in: "token" (default), "image", or "video". */
   billing_mode: BillingMode
   /** The per-image price table, null when the candidate does not bill per image. */
   image_pricing_tiers: ImagePricingTiers | null
+  /** The per-second video price table, null when the candidate does not bill per video. */
+  video_pricing_tiers: VideoPricingTiers | null
   // Whether the last probe confirmed the capability: true when it did, null when
   // it did not. Informational only — routing ignores these. A false can still
   // arrive from a row written by an older build.
@@ -42,10 +44,11 @@ export interface ModelCandidate {
 /** How the gateway orders a model's candidate chain: which candidate leads. */
 export type SchedulingMode = 'failover' | 'balanced'
 
-/** What settlement prices a row in: token prices or the per-image tier table.
- * Mirrors the Go vocabulary (model.BillingModeToken / BillingModeImage) — the
+/** What settlement prices a row in: token prices, the per-image tier table,
+ * or the per-second video tier table. Mirrors the Go vocabulary
+ * (model.BillingModeToken / BillingModeImage / BillingModeVideo) — the
  * backend normalizes every stored value onto it. */
-export type BillingMode = 'token' | 'image'
+export type BillingMode = 'token' | 'image' | 'video'
 
 export interface Model {
   id: number
@@ -81,6 +84,22 @@ export interface ImagePricingTiers {
   default_price?: number | null
 }
 
+/** One row of a per-second video price table: what one delivered second
+ *  costs at this resolution tier. An empty resolution is the generic tier
+ *  that answers any resolution no named tier matches. */
+export interface VideoPricingTier {
+  resolution: string
+  purchase_price: number
+  sell_price: number
+}
+
+/** A candidate's per-second video price table, when it bills per video.
+ * The shape is exactly what the backend stores — no mode slot, no default
+ * price: the generic tier's own row is the video table's default. */
+export interface VideoPricingTiers {
+  tiers: VideoPricingTier[]
+}
+
 export interface CreateCandidateInput {
   provider_id: number
   provider_model_name: string
@@ -92,6 +111,7 @@ export interface CreateCandidateInput {
   management_status?: number
   billing_mode?: BillingMode
   image_pricing_tiers?: ImagePricingTiers | null
+  video_pricing_tiers?: VideoPricingTiers | null
 }
 
 export interface UpdateCandidateInput {
@@ -104,6 +124,7 @@ export interface UpdateCandidateInput {
   management_status?: number
   billing_mode?: BillingMode
   image_pricing_tiers?: ImagePricingTiers | null
+  video_pricing_tiers?: VideoPricingTiers | null
 }
 
 // ProbeReport is one probe's result. `ran: false` means the probe was skipped
@@ -433,6 +454,7 @@ export interface ProviderCandidate {
   // table settles "image" rows (the token slots are inert there).
   billing_mode: BillingMode
   image_pricing_tiers: ImagePricingTiers | null
+  video_pricing_tiers: VideoPricingTiers | null
   max_output: number
   management_status: number
   verification_status: number

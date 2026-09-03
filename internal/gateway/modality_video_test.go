@@ -9,12 +9,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
+	"github.com/yolorouter/yolorouter/internal/service/videotask"
 )
 
 func admitVideo(t *testing.T, contentType string, body []byte) (Payload, *Rejection) {
@@ -240,5 +244,64 @@ func TestVideoAdmitNilContextSafety(t *testing.T) {
 	})
 	if rej != nil {
 		t.Fatalf("valid create refused: %+v", rej)
+	}
+}
+
+// stubVideoStore scripts PrecheckBudget's answer so the door's budget
+// hook can be exercised without a whole task service.
+type stubVideoStore struct {
+	precheckErr error
+}
+
+func (s *stubVideoStore) Create(context.Context, *model.VideoTask, time.Time) error {
+	return nil
+}
+
+func (s *stubVideoStore) PrecheckBudget(context.Context, uint, string, string, int) error {
+	return s.precheckErr
+}
+
+func withVideoStore(t *testing.T, store videoTaskStore) {
+	t.Helper()
+	prev := videoTasks
+	videoTasks = store
+	t.Cleanup(func() { videoTasks = prev })
+}
+
+func TestVideoAdmitBudgetPrecheckRefuses(t *testing.T) {
+	withVideoStore(t, &stubVideoStore{precheckErr: &videotask.BudgetExceededError{
+		Limit: 1_000_000, Spent: 0, InFlight: 0, Ask: 2_800_000,
+	}})
+	_, rej := admitVideo(t, "application/json", videoJSON(t, map[string]any{
+		"model": "sora-2", "prompt": "a calico cat at a piano",
+	}))
+	if rej == nil {
+		t.Fatalf("a certain budget overflow must be refused at the door")
+	}
+	if rej.Status != http.StatusTooManyRequests || rej.ErrorType != errTypeInsufficientQuota {
+		t.Fatalf("the refusal must be a quota-shaped 429, got %+v", rej)
+	}
+	if rej.FailReason != "video_budget_exceeded" {
+		t.Fatalf("the refusal must keep the budget fail reason, got %q", rej.FailReason)
+	}
+	if !strings.Contains(rej.Message, "limit 1000000") || !strings.Contains(rej.Message, "this task 2800000") {
+		t.Fatalf("the refusal must carry the arithmetic, got %q", rej.Message)
+	}
+}
+
+func TestVideoAdmitBudgetPrecheckStaysSilentWhenUnsure(t *testing.T) {
+	// A precheck that cannot say — any error that is not a budget
+	// refusal — must not refuse the call: the exact gate still runs in
+	// Create, and turning an unsure read into a refusal would trade
+	// certain orphan renders for possible ones.
+	withVideoStore(t, &stubVideoStore{precheckErr: errors.New("transient read")})
+	payload, rej := admitVideo(t, "application/json", videoJSON(t, map[string]any{
+		"model": "sora-2", "prompt": "a calico cat at a piano",
+	}))
+	if rej != nil {
+		t.Fatalf("an unsure precheck must not refuse, got %+v", rej)
+	}
+	if payload == nil {
+		t.Fatalf("the payload must be admitted")
 	}
 }

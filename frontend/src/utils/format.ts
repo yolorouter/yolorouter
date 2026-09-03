@@ -33,3 +33,11 @@ export function callerDisplay(username: string, keyPrefix: string): string {
 export function ccsProfileName(identity?: string): string {
   return `YoloRouter${identity ? ` - ${identity}` : ''}`
 }
+
+// Hand-entered yuan amounts (price tables typed by an operator) round to 4
+// decimals: that only strips float noise like 0.30000000000000004, never a
+// price someone meant. One formatter serves the image and video tables,
+// whose inputs are the same hand-typed yuan values.
+export function formatYuan(value: number): string {
+  return String(Math.round(value * 10000) / 10000)
+}

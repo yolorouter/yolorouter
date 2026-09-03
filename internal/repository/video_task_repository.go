@@ -206,3 +206,19 @@ func ChargeVideoTask(db *gorm.DB, taskID string, micros int64, now time.Time) (b
 	})
 	return applied, err
 }
+
+// UpdateRequestLogCostByRequestID back-fills the request_logs row a video
+// submit wrote with the cost its settlement decided, minutes or days
+// after the request itself ended — the projection that puts video bills
+// into the same analytics every per-request bill already feeds. A miss
+// (no row, or a task created before the column existed, whose request_id
+// is empty) is not an error: the charge itself already landed, and the
+// projection is best-effort by design.
+func UpdateRequestLogCostByRequestID(db *gorm.DB, requestID string, micros int64) error {
+	if requestID == "" {
+		return nil
+	}
+	return db.Model(&model.RequestLog{}).
+		Where("request_id = ?", requestID).
+		Updates(map[string]any{"cost_micros": micros, "cost_known": true}).Error
+}

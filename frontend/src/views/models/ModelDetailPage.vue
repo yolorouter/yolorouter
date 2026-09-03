@@ -94,7 +94,7 @@ import { isTestSuccess } from '../../utils/testOutcomeDisplay'
 import { modelCostDetailLocation } from '../../utils/modelCostLocation'
 import { modalityBadge, modalityBadgeLabel } from '../../utils/modalityBadge'
 import { candidatePriceLines } from '../../utils/candidatePriceLines'
-import { getModelImpact, type Model, type ModelCandidate, type ModelImpact } from '../../api/models'
+import { getModelImpact, type BillingMode, type Model, type ModelCandidate, type ModelImpact } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import CandidateEditModal from '../../components/models/CandidateEditModal.vue'
@@ -105,6 +105,18 @@ import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { useClientPagination } from '../../composables/useClientPagination'
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
 import { useIsMobile } from '../../composables/useIsMobile.ts'
+
+// The mode tag the billing column leads with: label and tag color keyed to
+// the same billing-mode vocabulary, one table instead of two parallel
+// ternary cascades drifting apart. Image and video carry their own tier
+// tables; token reads the per-million slots — colors keep the three
+// distinct at a glance.
+function billingModeTag(mode: BillingMode): { labelKey: string; tagType: 'info' | 'success' | 'default' } {
+  if (mode === 'image') return { labelKey: 'models.billingPerImage', tagType: 'info' }
+  if (mode === 'video') return { labelKey: 'models.billingPerVideo', tagType: 'success' }
+  return { labelKey: 'models.billingPerToken', tagType: 'default' }
+}
+
 const { t, te } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -369,11 +381,8 @@ const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => {
       key: 'billing_price',
       minWidth: 150,
       render: (row) => {
-        const modeTag = h(
-          NTag,
-          { size: 'tiny', bordered: false, type: row.billing_mode === 'image' ? 'info' : 'default' },
-          { default: () => t(row.billing_mode === 'image' ? 'models.billingPerImage' : 'models.billingPerToken') },
-        )
+        const tag = billingModeTag(row.billing_mode)
+        const modeTag = h(NTag, { size: 'tiny', bordered: false, type: tag.tagType }, { default: () => t(tag.labelKey) })
         return h('div', { style: 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;' }, [modeTag, ...candidatePriceLines(row, t)])
       },
     },

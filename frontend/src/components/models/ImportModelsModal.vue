@@ -299,9 +299,13 @@ function priceInput(row: ImportRow, field: 'inputPrice' | 'outputPrice' | 'cache
 // The modality column: a per-row declaration of what the imported model
 // produces, defaulting to text and preselected by name for known image
 // families. Inert on "added" rows — the server derives an existing model's
-// modality and billing from the model row it already has.
+// modality and billing from the model row it already has. Video is
+// deliberately absent: an import cannot fill the per-second price table a
+// video candidate needs, so a video model is created (and priced) through
+// the model dialog and candidate editor, not here — offering the choice
+// would silently import a text model.
 const modalityOptions = computed<SelectOption[]>(() => [
-  ...outputModalityOptions(t),
+  ...outputModalityOptions(t).filter((option) => option.value !== 'video'),
   { label: t('models.importModalityBoth'), value: 'both' },
 ])
 

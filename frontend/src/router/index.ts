@@ -57,6 +57,12 @@ export const router = createRouter({
         { path: 'about', component: SystemInfoPage },
       ],
     },
+    // The catch-all: an unknown path used to render the layout with an
+    // empty router-view — a blank page that looks broken. Every real
+    // surface lives under an authenticated layout, so sending unknown
+    // paths to the home page (and letting the auth guard take it from
+    // there) matches what the operator meant by the URL.
+    { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
 

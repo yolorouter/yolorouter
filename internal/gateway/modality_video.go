@@ -46,7 +46,7 @@ func (videoModality) ID() ModalityID { return ModalityVideo }
 // for them to drift.
 func (videoModality) Limits() TransferLimits { return TransferLimits{} }
 
-func (videoModality) Admit(_ context.Context, in Ingress) (Payload, *Rejection) {
+func (videoModality) Admit(ctx context.Context, in Ingress) (Payload, *Rejection) {
 	req, err := videos.ParseCreateRequest(in.ContentType, in.Body)
 	if err != nil {
 		message := "invalid request body"
@@ -95,7 +95,27 @@ func (videoModality) Admit(_ context.Context, in Ingress) (Payload, *Rejection) 
 			Fault:      fact.FaultClient,
 		}
 	}
-	return &videoPayload{body: in.Body, contentType: in.ContentType, apiKeyID: in.APIKeyID, req: req}, nil
+	payload := &videoPayload{body: in.Body, contentType: in.ContentType, apiKeyID: in.APIKeyID, req: req}
+	// The budget pre-gate: a create call every enabled candidate would
+	// price past the key's ceiling is refused here, before anything is
+	// dialled — once a provider task is submitted it renders at the
+	// operator's cost whether or not the caller is ever billed. Only a
+	// certain refusal answers; every other failure of the precheck
+	// (unreadable tables, a transient read error) stays silent because
+	// the exact gate in Create still runs.
+	if videoTasks != nil {
+		if err := videoTasks.PrecheckBudget(ctx, in.APIKeyID, req.Model, payload.effectiveSize(), payload.effectiveSeconds()); err != nil {
+			var budget *videotask.BudgetExceededError
+			if errors.As(err, &budget) {
+				return nil, &Rejection{
+					Status: http.StatusTooManyRequests, ErrorType: errTypeInsufficientQuota,
+					Message: budget.Error(), FailReason: failVideoBudgetExceeded,
+					Fault: fact.FaultClient,
+				}
+			}
+		}
+	}
+	return payload, nil
 }
 
 // videoPayload is one create call: the caller's bytes as they arrived,
@@ -124,6 +144,11 @@ func (p *videoPayload) Routing() RoutingIntent {
 // gate needs is computed from the request's own seconds and the
 // candidate's tier table on the task path, not from this view.
 func (p *videoPayload) EstimateCost(PricingView) CostEstimate { return CostEstimate{} }
+
+// failVideoBudgetExceeded is the fail reason both budget refusals of this
+// modality carry — the door's certain precheck and Create's exact gate —
+// so analytics keeps one spelling however a caller hit the ceiling.
+const failVideoBudgetExceeded = "video_budget_exceeded"
 
 const (
 	// openAIVideoUnsupported is the verdict for a candidate on a base
@@ -253,6 +278,13 @@ func (p *videoPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 // a narrow seam so the modality stays testable without a whole service.
 type videoTaskStore interface {
 	Create(ctx context.Context, task *model.VideoTask, now time.Time) error
+	// PrecheckBudget is the create call's budget gate asked before any
+	// upstream submit: a certain refusal (every enabled candidate's
+	// estimate breaks the key's ceiling) is answered here so no provider
+	// task renders that the caller would never be billed for. Its verdict
+	// is advisory — the exact gate still runs in Create, where the routed
+	// candidate's own price decides.
+	PrecheckBudget(ctx context.Context, apiKeyID uint, modelName, size string, seconds int) error
 }
 
 // videoTasks is the delivery-side task store, wired by NewService and
@@ -304,6 +336,7 @@ func (p *videoPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 		ProviderModelName:  p.cand.ProviderModelName,
 		ProviderTaskID:     taskID,
 		DestinationVersion: p.cand.DestinationVersion,
+		RequestID:          tools.RequestID,
 		RequestSnapshot:    p.SanitizeForLog(BodyClientRequest, p.contentType, p.body),
 		Size:               p.effectiveSize(), Seconds: p.effectiveSeconds(),
 	}
@@ -322,7 +355,7 @@ func (p *videoPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 			if failed := writeVideoJSON(tools, http.StatusTooManyRequests, body); failed != nil {
 				return *failed
 			}
-			return fact.Rejected(http.StatusTooManyRequests, fact.FaultClient, "video_budget_exceeded", budget)
+			return fact.Rejected(http.StatusTooManyRequests, fact.FaultClient, failVideoBudgetExceeded, budget)
 		}
 		return fact.HandedOn(fact.FaultGateway, "persist video task: "+err.Error(), err)
 	}

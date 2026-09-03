@@ -1,5 +1,7 @@
+import { formatYuan } from './format'
 import { isUnpriced } from './importProgress'
 import type { ImagePricingTiers, ProviderCandidate } from '../api/models'
+import { videoPriceLines } from './videoPriceSummary'
 
 // What a list column can show for an image-billed mapping's price: the tier
 // table compressed to a min..max per delivered image. Null when no price is
@@ -25,18 +27,20 @@ export function imagePriceSummary(tiers: ImagePricingTiers | null): ImagePriceSu
 }
 
 // The unpriced badge follows the billing mode: an image-billed mapping is
-// unpriced when no tier is configured, a token-billed one when every price
-// slot is zero — the mapping's own token slots are meaningless in image mode.
+// unpriced when no tier is configured, a video-billed one when no video
+// tier is, and a token-billed one when every price slot is zero — the
+// mapping's own token slots are meaningless in the other modes.
 export function candidateUnpriced(
-  row: Pick<ProviderCandidate, 'billing_mode' | 'image_pricing_tiers'> &
+  row: Pick<ProviderCandidate, 'billing_mode' | 'image_pricing_tiers' | 'video_pricing_tiers'> &
     Pick<ProviderCandidate, 'input_price' | 'output_price' | 'cache_write_price' | 'cache_read_price'>,
 ): boolean {
   if (row.billing_mode === 'image') return imagePriceSummary(row.image_pricing_tiers) === null
+  if (row.billing_mode === 'video') return videoPriceLines(row.video_pricing_tiers).length === 0
   return isUnpriced(row)
 }
 
-// Prices are small yuan amounts entered by hand; rounding to 4 decimals
-// only strips float noise like 0.30000000000000004.
+// Prices are small yuan amounts entered by hand; formatYuan strips only
+// float noise. Kept as its own name for the image tables' call sites.
 export function formatImagePrice(value: number): string {
-  return String(Math.round(value * 10000) / 10000)
+  return formatYuan(value)
 }

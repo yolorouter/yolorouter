@@ -43,6 +43,7 @@ describe('candidateUnpriced', () => {
   const tokenRow = {
     billing_mode: 'token' as const,
     image_pricing_tiers: null,
+    video_pricing_tiers: null,
     input_price: 0,
     output_price: 0,
     cache_write_price: null,
@@ -69,6 +70,17 @@ describe('candidateUnpriced', () => {
       candidateUnpriced({
         ...imageRow,
         image_pricing_tiers: tiers({ default_price: 0.25 }),
+      }),
+    ).toBe(false)
+  })
+
+  it('judges video-billed rows by the per-second tier table', () => {
+    const videoRow = { ...tokenRow, billing_mode: 'video' as const, input_price: 0.3, output_price: 1.2 }
+    expect(candidateUnpriced(videoRow)).toBe(true)
+    expect(
+      candidateUnpriced({
+        ...videoRow,
+        video_pricing_tiers: { tiers: [{ resolution: '720P', purchase_price: 0.6, sell_price: 0.7 }] },
       }),
     ).toBe(false)
   })

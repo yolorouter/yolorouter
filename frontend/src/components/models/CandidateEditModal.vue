@@ -146,13 +146,48 @@
           {{ t(tierErrorKey) }}
         </n-alert>
       </div>
+      <div v-if="form.billingMode === 'video'" class="tiers-section">
+        <div class="tiers-section__head">
+          <span class="tiers-section__label">{{ t('models.videoTiers') }}</span>
+          <n-button size="small" @click="addVideoTier">{{ t('models.videoTierAdd') }}</n-button>
+        </div>
+        <!-- One row per resolution tier: sell price is what a caller pays
+             per delivered second, purchase price the operator's own cost
+             reference. A resolution left empty is the generic tier that
+             answers any resolution no named tier matches — the video
+             table's own default, which is why there is no separate default
+             field. -->
+        <div v-for="(tier, i) in form.videoTiers" :key="i" class="tier-row tier-row--video">
+          <n-input v-model:value="tier.resolution" :placeholder="t('models.videoTierResolution')" />
+          <n-input-number
+            v-model:value="tier.purchase_price"
+            :min="0"
+            :placeholder="t('models.videoTierPurchase')"
+            style="width: 100%"
+          />
+          <n-input-number
+            v-model:value="tier.sell_price"
+            :min="0"
+            :placeholder="t('models.videoTierSell')"
+            style="width: 100%"
+          />
+          <n-button quaternary size="small" :aria-label="t('models.videoTierRemove')" @click="removeVideoTier(i)">
+            ✕
+          </n-button>
+        </div>
+        <n-alert v-if="tierErrorKey" type="warning" style="margin-top: 4px">
+          {{ t(tierErrorKey) }}
+        </n-alert>
+      </div>
     </n-form>
 
     <!-- Rendered in place rather than as a toast: this one blocks saving, so it
-         has to stay on screen until the operator answers it. -->
-    <n-alert v-if="priceUnresolvedKey" type="warning" style="margin-top: 4px">
+         has to stay on screen until the operator answers it. Only the token
+         mode's own prices can be unresolved — the per-M slots are inert under
+         the image and video tables. -->
+    <n-alert v-if="blockingPriceKey" type="warning" style="margin-top: 4px">
       <div class="price-alert">
-        <span>{{ t(priceUnresolvedKey) }}</span>
+        <span>{{ t(blockingPriceKey) }}</span>
         <n-button text type="primary" size="small" @click="keepUnresolvedPrices">
           {{ t('models.priceKeepAnyway') }}
         </n-button>
@@ -196,7 +231,7 @@
             <template #trigger>
               <n-button
                 :loading="savingDisabled"
-                :disabled="submitting || priceUnresolvedKey !== null"
+                :disabled="submitting || blockingPriceKey !== null"
                 @click="onSaveAnywayDisabled"
               >
                 {{ t('models.saveAnywayDisabled') }}
@@ -204,7 +239,7 @@
             </template>
             {{ t('models.saveAnywayDisabled_tip') }}
           </n-tooltip>
-          <n-tooltip :disabled="priceUnresolvedKey === null" trigger="hover" placement="top">
+          <n-tooltip :disabled="blockingPriceKey === null" trigger="hover" placement="top">
             <template #trigger>
               <!-- A disabled <button> fires no hover events, so the tooltip
                    hangs off a wrapper span: without it the greyed-out Save has
@@ -213,14 +248,14 @@
                 <n-button
                   type="primary"
                   :loading="submitting"
-                  :disabled="savingDisabled || priceUnresolvedKey !== null"
+                  :disabled="savingDisabled || blockingPriceKey !== null"
                   @click="onSave"
                 >
                   {{ basicFailedBlockingSave ? t('models.retry') : t('models.save') }}
                 </n-button>
               </span>
             </template>
-            {{ priceUnresolvedKey ? t(priceUnresolvedKey) : '' }}
+            {{ blockingPriceKey ? t(blockingPriceKey) : '' }}
           </n-tooltip>
         </template>
       </n-space>
@@ -264,6 +299,7 @@ import type {
   ModelCandidate,
   ProbeReport,
   SuggestedPrice,
+  VideoPricingTier,
 } from '../../api/models'
 import { suggestCandidatePrice } from '../../api/models'
 import { CANDIDATE_STATUS_DISABLED, CANDIDATE_STATUS_ENABLED } from '../../api/candidateStatus'
@@ -336,11 +372,13 @@ const form = reactive({
   billingMode: 'token' as BillingMode,
   imageTiers: [] as ImagePricingTier[],
   imageDefaultPrice: null as number | null,
+  videoTiers: [] as VideoPricingTier[],
 })
 
 const billingModeOptions = computed(() => [
   { label: t('models.billingModeToken'), value: 'token' },
   { label: t('models.billingModeImage'), value: 'image' },
+  { label: t('models.billingModeVideo'), value: 'video' },
 ])
 
 function addTier() {
@@ -351,16 +389,41 @@ function removeTier(index: number) {
   form.imageTiers.splice(index, 1)
 }
 
-// tierErrorKey holds an i18n key while the image declaration cannot price a
-// request — no tier, no default — or a price is negative. Blocking is local:
-// the server re-validates, this exists so the operator never has to round-trip
-// to learn the table is empty.
+function addVideoTier() {
+  form.videoTiers.push({ resolution: '', purchase_price: 0, sell_price: 0 })
+}
+
+function removeVideoTier(index: number) {
+  form.videoTiers.splice(index, 1)
+}
+
+// tierErrorKey holds an i18n key while the active price declaration cannot
+// be saved — an image table with nothing to price a request with, a video
+// table without a single tier, or a negative price in either. Blocking is
+// local: the server re-validates, this exists so the operator never has to
+// round-trip to learn the table is empty.
 const tierErrorKey = computed<string | null>(() => {
-  if (form.billingMode !== 'image') return null
-  const hasTier = form.imageTiers.length > 0
-  const hasDefault = form.imageDefaultPrice !== null
-  if (!hasTier && !hasDefault) return 'models.imageTiersEmpty'
-  if (form.imageTiers.some((tier) => tier.price < 0)) return 'models.imageTierNegative'
+  if (form.billingMode === 'image') {
+    const hasTier = form.imageTiers.length > 0
+    const hasDefault = form.imageDefaultPrice !== null
+    if (!hasTier && !hasDefault) return 'models.imageTiersEmpty'
+    if (form.imageTiers.some((tier) => tier.price < 0)) return 'models.imageTierNegative'
+    return null
+  }
+  if (form.billingMode === 'video') {
+    // No generic-default escape hatch here: the video table has no default
+    // field, so an empty table is a video candidate with nothing to price
+    // any second with, which the server refuses outright.
+    if (form.videoTiers.length === 0) return 'models.videoTiersEmpty'
+    if (
+      form.videoTiers.some(
+        (tier) => tier.sell_price < 0 || tier.purchase_price < 0,
+      )
+    ) {
+      return 'models.videoTierNegative'
+    }
+    return null
+  }
   return null
 })
 
@@ -396,6 +459,16 @@ let pricesDescribeAnotherPair = false
 // these numbers feed cost accounting and API-key budgets, and a warning that
 // scrolls away in a toast is no protection for someone who already clicked Save.
 const priceUnresolvedKey = ref<string | null>(null)
+
+// The unresolved-price report that applies right now: it guards the token
+// mode's own prices, and under the image and video tables the per-M slots
+// price nothing — an unresolved look-up says nothing about the declaration
+// being saved. Null when there is nothing to show or the mode prices by
+// table; the alert, both disabled flags, and the save guard all read this
+// one fold, so the mode test exists once and the key travels with it.
+const blockingPriceKey = computed<string | null>(() =>
+  form.billingMode === 'token' ? priceUnresolvedKey.value : null,
+)
 
 // Bound instead of v-model so an edit is recorded as it happens. NInputNumber
 // suppresses its own update when the value would not change, so focusing a
@@ -769,12 +842,23 @@ watch(
       form.cacheReadPrice = props.editingCandidate.cache_read_price
       form.maxOutput = props.editingCandidate.max_output
       form.enabled = props.editingCandidate.management_status === CANDIDATE_STATUS_ENABLED
-      form.billingMode = props.editingCandidate.billing_mode === 'image' ? 'image' : 'token'
+      form.billingMode =
+        props.editingCandidate.billing_mode === 'image' || props.editingCandidate.billing_mode === 'video'
+          ? props.editingCandidate.billing_mode
+          : 'token'
       const stored = props.editingCandidate.image_pricing_tiers
       form.imageTiers = stored
         ? stored.tiers.map((tier) => ({ quality: tier.quality, size: tier.size, price: tier.price }))
         : []
       form.imageDefaultPrice = stored?.default_price ?? null
+      const storedVideo = props.editingCandidate.video_pricing_tiers
+      form.videoTiers = storedVideo
+        ? storedVideo.tiers.map((tier) => ({
+            resolution: tier.resolution,
+            purchase_price: tier.purchase_price,
+            sell_price: tier.sell_price,
+          }))
+        : []
       statusTouched.value = false
       // The stored prices already describe this pair, so opening the dialog is
       // not a reason to re-price it. Only a change from here is.
@@ -853,6 +937,16 @@ function candidatePayload() {
             mode: 'per_image',
             tiers: form.imageTiers.map((tier) => ({ ...tier })),
             default_price: form.imageDefaultPrice ?? null,
+          }
+        : null,
+    video_pricing_tiers:
+      form.billingMode === 'video'
+        ? {
+            tiers: form.videoTiers.map((tier) => ({
+              resolution: tier.resolution,
+              purchase_price: tier.purchase_price,
+              sell_price: tier.sell_price,
+            })),
           }
         : null,
   }
@@ -960,8 +1054,8 @@ async function onSave() {
     // is sent until the operator answers the alert. Reported as a toast too:
     // the alert lives in the scrollable modal body and can be off-screen, and a
     // spinner that just stops with no explanation reads as a broken button.
-    if (priceUnresolvedKey.value) {
-      message.warning(t(priceUnresolvedKey.value))
+    if (blockingPriceKey.value) {
+      message.warning(t(blockingPriceKey.value))
       return
     }
     if (tierErrorKey.value) {
@@ -1084,6 +1178,12 @@ async function onSaveAnywayDisabled() {
   grid-template-columns: 1fr 1fr 1fr auto;
   gap: 8px;
   align-items: center;
+}
+
+/* The video table's row carries two price slots (purchase + sell) beside
+   the resolution, so its columns run narrower than the image row's. */
+.tier-row--video {
+  grid-template-columns: 1fr 1.2fr 1.2fr auto;
 }
 
 /* Read-only context: which outward model this candidate is being mapped to.

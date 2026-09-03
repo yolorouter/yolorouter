@@ -60,6 +60,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it answers, `RUNNING` included — a render outlasting the probe budget
   is a healthy mapping, not a broken one.
 
+- Video costs in analytics. Each video job keeps the request id of its
+  submit, and settlement back-fills that request log row's cost when the
+  charge lands — minutes or days later, reaper-reconciled jobs included —
+  so dashboards and cost stats read video bills from the same rows every
+  per-request bill already feeds. Jobs created before the column existed
+  settle exactly as before, without a projection.
+
+- Video pricing in the admin console. Video models badge as video in the
+  model list, the output-modality pickers offer the video option (and
+  keep it exclusive, as the server's vocabulary defines it), a
+  video-billed candidate renders its billing as per-second with one line
+  per resolution tier, and the candidate editor gains the per-second
+  price table (resolution, cost, price) with the same local guards the
+  server applies.
+
 ### Changed
 
 - The price-catalog refresh pipeline moved to its own data repository
@@ -68,6 +83,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seed is refreshed once per release instead of daily.
 
 ### Fixed
+
+- The video budget gate now runs before anything is dialled. It used to
+  live in the task create — after the upstream submit — so an
+  over-budget submit was refused with 429 while the provider rendered
+  the job anyway, at the operator's cost, as an orphan nobody could poll
+  or download. The door now pre-checks with the cheapest estimate across
+  the model's enabled video candidates (same arithmetic, same error
+  shape) and refuses only when every candidate breaks the ceiling; the
+  exact gate at task create remains the authority for the routed
+  candidate's own price. Refusals the precheck is certain of no longer
+  reach the attempt loop at all — the path whose side effect had logged a
+  budget rejection with a contradictory `conn_error` outcome beside a 200
+  (the exact gate can still refuse there, by design, in the windows the
+  precheck stays deliberately silent).
+
+- Unknown admin paths no longer render a blank page: they redirect to
+  the home page, where the auth guard takes over.
 
 - Cache prices in the price catalog now deserialize: the JSON keys were
   camelCase while the Go reader expects snake_case, so `cache_write` /

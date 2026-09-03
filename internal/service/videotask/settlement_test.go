@@ -7,6 +7,7 @@ package videotask
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ type pricedFixture struct {
 	svc       *Service
 	apiKey    *model.APIKey
 	candidate *model.ModelCandidate
+	extra     int
 }
 
 func newPricedFixture(t *testing.T, sellPrice float64, limitMicros *int64) *pricedFixture {
@@ -295,5 +297,196 @@ func TestBudgetReservesForUnsettledCompletions(t *testing.T) {
 	}
 	if budget.InFlight != 4_000_000 {
 		t.Fatalf("reservation must count the unbilled completion, got %+v", budget)
+	}
+}
+
+// addCandidate seeds one more candidate on the fixture's model — on its
+// own provider, because the table is unique per (model, provider) — so a
+// precheck table can price differently per candidate.
+func (f *pricedFixture) addCandidate(t *testing.T, sellPrice float64, enabled bool, billing string) {
+	t.Helper()
+	now := time.Now().UTC()
+	provider := &model.Provider{
+		Name: fmt.Sprintf("video-priced-extra-%s-%v", billing, sellPrice), ProviderType: "openai",
+		BaseURL: "https://up2.test", DestinationVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := f.db.Create(provider).Error; err != nil {
+		t.Fatalf("seed extra provider: %v", err)
+	}
+	tiers := ""
+	if billing == model.BillingModeVideo {
+		var err error
+		tiers, err = model.MarshalVideoPricingTiers(&model.VideoPricingTiers{Tiers: []model.VideoPricingTier{
+			{Resolution: "720P", PurchasePrice: 0, SellPrice: sellPrice},
+		}})
+		if err != nil {
+			t.Fatalf("marshal tiers: %v", err)
+		}
+	}
+	status := model.ModelCandidateStatusDisabled
+	if enabled {
+		status = model.ModelCandidateStatusEnabled
+	}
+	f.extra++
+	cand := &model.ModelCandidate{
+		ModelID: f.candidate.ModelID, ProviderID: provider.ID, ProviderModelName: "wan2.7-t2v-alt",
+		BillingMode: billing, VideoPricingTiers: tiers,
+		ManagementStatus: status, SortOrder: f.extra + 1,
+		VerificationStatus: model.ModelVerificationStatusPassed, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := f.db.Create(cand).Error; err != nil {
+		t.Fatalf("seed extra candidate: %v", err)
+	}
+}
+
+func TestPrecheckBudgetRefusesCertainOverflow(t *testing.T) {
+	limit := int64(1_000_000) // a 4s task at 0.5/s asks 2M — no candidate fits
+	f := newPricedFixture(t, 0.5, &limit)
+	err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4)
+	var budget *BudgetExceededError
+	if !errors.As(err, &budget) {
+		t.Fatalf("the precheck must refuse a certain overflow, got %v", err)
+	}
+	if budget.Limit != 1_000_000 || budget.Spent != 0 || budget.InFlight != 0 || budget.Ask != 2_000_000 {
+		t.Fatalf("the refusal must carry the numbers, got %+v", budget)
+	}
+}
+
+func TestPrecheckBudgetCheapestCandidateDecides(t *testing.T) {
+	// The cheapest estimate decides the precheck: one candidate that
+	// fits means the call is not certainly over, and the exact gate in
+	// Create still holds whichever candidate actually routes.
+	limit := int64(1_000_000)
+	f := newPricedFixture(t, 0.5, &limit)                // 4s at 0.5 asks 2M
+	f.addCandidate(t, 0.2, true, model.BillingModeVideo) // 4s at 0.2 asks 800k
+	if err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4); err != nil {
+		t.Fatalf("a candidate that fits means the precheck must stay silent, got %v", err)
+	}
+
+	// Tighten past even the cheapest: now the refusal reports the
+	// cheapest ask, not the routed candidate's one.
+	tight := int64(500_000)
+	f.db.Model(&model.APIKey{}).Where("id = ?", f.apiKey.ID).Update("budget_limit_micros", tight)
+	err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4)
+	var budget *BudgetExceededError
+	if !errors.As(err, &budget) {
+		t.Fatalf("the precheck must refuse once every candidate breaks the ceiling, got %v", err)
+	}
+	if budget.Ask != 800_000 {
+		t.Fatalf("the refusal must carry the cheapest ask, got %+v", budget)
+	}
+}
+
+func TestPrecheckBudgetIgnoresDisabledAndNonVideoCandidates(t *testing.T) {
+	// A disabled cheap candidate or a token-billed one is not a price
+	// this call could ever be charged at — only enabled video tables
+	// count, exactly the candidates the router could pick.
+	limit := int64(1_000_000)
+	f := newPricedFixture(t, 0.5, &limit) // enabled video, asks 2M
+	f.addCandidate(t, 0.1, false, model.BillingModeVideo)
+	f.addCandidate(t, 0.05, true, model.BillingModeToken)
+	err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4)
+	var budget *BudgetExceededError
+	if !errors.As(err, &budget) {
+		t.Fatalf("only enabled video candidates may price the precheck, got %v", err)
+	}
+	if budget.Ask != 2_000_000 {
+		t.Fatalf("the ask must come from the enabled video table, got %+v", budget)
+	}
+}
+
+func TestPrecheckBudgetSilentWhenItCannotPrice(t *testing.T) {
+	// An unknown model, and a resolution no enabled table prices, are
+	// both "cannot say" — the precheck never shadows routing's own
+	// answer or the exact gate in Create with a coarser refusal.
+	limit := int64(1)
+	f := newPricedFixture(t, 0.5, &limit)
+	if err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "no-such-model", "720x1280", 4); err != nil {
+		t.Fatalf("an unknown model must pass silently, got %v", err)
+	}
+	f.db.Model(&model.ModelCandidate{}).Where("id = ?", f.candidate.ID).
+		Updates(map[string]any{"billing_mode": model.BillingModeToken, "video_pricing_tiers": ""})
+	if err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4); err != nil {
+		t.Fatalf("an unpriced table must pass silently, got %v", err)
+	}
+}
+
+func TestSettlementProjectsCostOntoRequestLog(t *testing.T) {
+	// The submit request wrote its audit row with cost unknown; the
+	// completion's charge must reach that same row, so the video bill
+	// lands in the analytics per-request bills already feed. A task
+	// without a request id (pre-column history) settles without a
+	// projection, and a second observation of the same completion must
+	// not move the number again.
+	f := newPricedFixture(t, 0.5, nil)
+	now := time.Now()
+	log := &model.RequestLog{RequestID: "req-1", APIKeyID: &f.apiKey.ID, ModelName: "video-priced", StatusCode: 200}
+	if err := f.db.Create(log).Error; err != nil {
+		t.Fatalf("seed request log: %v", err)
+	}
+	task := f.task(8)
+	task.RequestID = "req-1"
+	if err := f.svc.Create(context.Background(), task, now); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	f.svc.querier = &stubQuerier{answers: []QueryResult{
+		{Status: model.VideoTaskCompleted, ResultURL: "https://v", UsageSeconds: 8},
+	}}
+	if _, err := f.svc.Get(context.Background(), f.apiKey.ID, task.ID, now.Add(time.Second)); err != nil {
+		t.Fatalf("poll to completion: %v", err)
+	}
+	var row model.RequestLog
+	if err := f.db.Where("request_id = ?", "req-1").First(&row).Error; err != nil {
+		t.Fatalf("reload request log: %v", err)
+	}
+	// 8 observed seconds at the 0.5 yuan/s submit-time snapshot.
+	if row.CostMicros != 4_000_000 || !row.CostKnown {
+		t.Fatalf("the charge must project onto the request row, got cost=%d known=%v", row.CostMicros, row.CostKnown)
+	}
+}
+
+func TestSettlementSkipsProjectionWithoutRequestID(t *testing.T) {
+	f := newPricedFixture(t, 0.5, nil)
+	now := time.Now()
+	task := f.task(8)
+	if err := f.svc.Create(context.Background(), task, now); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if task.RequestID != "" {
+		t.Fatalf("fixture task must carry no request id for this test")
+	}
+	f.svc.querier = &stubQuerier{answers: []QueryResult{
+		{Status: model.VideoTaskCompleted, ResultURL: "https://v", UsageSeconds: 8},
+	}}
+	if _, err := f.svc.Get(context.Background(), f.apiKey.ID, task.ID, now.Add(time.Second)); err != nil {
+		t.Fatalf("poll to completion: %v", err)
+	}
+	if f.spent(t) != 4_000_000 {
+		t.Fatalf("the charge itself must still land, got %d", f.spent(t))
+	}
+}
+
+func TestPrecheckBudgetSilentWhileAnUnpricedCandidateCouldRoute(t *testing.T) {
+	// A refusal at the door is only honest when EVERY enabled video
+	// candidate would break the ceiling. One whose table does not price
+	// this resolution — if routed — skips Create's gate entirely and bills
+	// nothing, so while it exists the call was not necessarily over budget
+	// and the precheck must stay silent.
+	limit := int64(1_000_000)
+	f := newPricedFixture(t, 0.5, &limit) // enabled, prices 720P at 2M for 4s
+	f.addCandidate(t, 0, true, model.BillingModeVideo)
+	f.db.Model(&model.ModelCandidate{}).
+		Where("provider_model_name = ?", "wan2.7-t2v-alt").
+		Update("video_pricing_tiers", "")
+	if err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4); err != nil {
+		t.Fatalf("an unpriced enabled candidate makes the refusal uncertain, got %v", err)
+	}
+	// With the unpriced candidate gone, every priced one exceeds and the
+	// certain refusal returns.
+	f.db.Where("provider_model_name = ?", "wan2.7-t2v-alt").Delete(&model.ModelCandidate{})
+	err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4)
+	var budget *BudgetExceededError
+	if !errors.As(err, &budget) || budget.Ask != 2_000_000 {
+		t.Fatalf("without the unpriced candidate the refusal must be certain, got %v", err)
 	}
 }

@@ -113,12 +113,30 @@ func (e *BudgetExceededError) Error() string {
 	return fmt.Sprintf("video budget exceeded: limit %d, spent %d, in-flight %d, this task %d", e.Limit, e.Spent, e.InFlight, e.Ask)
 }
 
+// unitMicros resolves one candidate's per-second sell price for a size, in
+// micros — the single pricing hunk both the create-time snapshot and the
+// door's precheck read, so the two can never disagree on the math.
+// Unpriced returns ok=false: a candidate with no table for this resolution
+// bills nothing and reserves nothing, the same "unpriced is not free, it is
+// unknown" reading the image settlement takes.
+func unitMicros(cand *model.ModelCandidate, size string) (int64, bool) {
+	if model.NormalizeBillingMode(cand.BillingMode) != model.BillingModeVideo {
+		return 0, false
+	}
+	resolution, _, ok := videos.MapDashScopeSize(size)
+	if !ok {
+		return 0, false
+	}
+	price, ok := model.ParseVideoPricingTiers(cand.VideoPricingTiers).ResolveSellPrice(resolution)
+	if !ok || price < 0 {
+		return 0, false
+	}
+	return int64(math.Round(price * microsPerYuan)), true
+}
+
 // priceMicros resolves what one accepted task costs at submit time: the
-// candidate's own per-second tier price, read through the
-// size-to-resolution map, multiplied by the seconds the caller asked for.
-// Unpriced returns ok=false — a candidate with no table for this
-// resolution bills nothing and reserves nothing, the same "unpriced is
-// not free, it is unknown" reading the image settlement takes.
+// routed candidate's own per-second tier price (unitMicros) multiplied by
+// the seconds the caller asked for.
 func (s *Service) priceMicros(ctx context.Context, task *model.VideoTask) (int64, bool, error) {
 	cand, err := repository.FindModelCandidateByID(s.db.WithContext(ctx), task.CandidateID)
 	if err != nil {
@@ -132,18 +150,8 @@ func (s *Service) priceMicros(ctx context.Context, task *model.VideoTask) (int64
 		}
 		return 0, false, err
 	}
-	if model.NormalizeBillingMode(cand.BillingMode) != model.BillingModeVideo {
-		return 0, false, nil
-	}
-	resolution, _, ok := videos.MapDashScopeSize(task.Size)
-	if !ok {
-		return 0, false, nil
-	}
-	price, ok := model.ParseVideoPricingTiers(cand.VideoPricingTiers).ResolveSellPrice(resolution)
-	if !ok || price < 0 {
-		return 0, false, nil
-	}
-	return int64(math.Round(price * microsPerYuan)), true, nil
+	unit, priced := unitMicros(cand, task.Size)
+	return unit, priced, nil
 }
 
 // Create records one accepted task: priced at the submit-time tier (the
@@ -169,11 +177,70 @@ func (s *Service) Create(ctx context.Context, task *model.VideoTask, now time.Ti
 	} else if priced {
 		ask := unit * int64(task.Seconds)
 		task.EstimatedMicros = ask
-		if err := s.checkBudget(ctx, task, ask); err != nil {
+		if err := s.checkBudget(ctx, task.APIKeyID, ask); err != nil {
 			return err
 		}
 	}
 	return repository.CreateVideoTask(s.db.WithContext(ctx), task)
+}
+
+// PrecheckBudget answers whether a create call could pass the budget gate
+// at all, asked before anything is submitted upstream: the cheapest
+// estimate across the model's enabled video candidates is held against
+// the key's limit with the same arithmetic Create's gate later holds the
+// routed candidate's exact one. A refusal here is certain — every
+// candidate's estimate breaks the ceiling — so the caller is turned away
+// before an upstream render exists that nobody would be billed for. Any
+// other outcome is advisory: the authoritative gate stays in Create,
+// where the winning candidate's own price decides, so a model whose
+// candidates price differently (or a race between two submits) is still
+// caught there rather than slipping through this coarser read.
+func (s *Service) PrecheckBudget(ctx context.Context, apiKeyID uint, modelName, size string, seconds int) error {
+	m, err := repository.FindModelByName(s.db.WithContext(ctx), modelName)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Routing will answer a name it cannot resolve; a precheck
+			// cannot price a model that does not exist, and refusing here
+			// would shadow that answer with a budget-shaped one.
+			return nil
+		}
+		return err
+	}
+	cands, err := repository.ListModelCandidatesByModelID(s.db.WithContext(ctx), m.ID)
+	if err != nil {
+		return err
+	}
+	minAsk := int64(-1)
+	// An enabled video candidate this resolution does not price, if routed,
+	// skips Create's gate entirely (unpriced bills and reserves nothing) —
+	// so while one exists the refusal is not certain, and the door stays
+	// silent rather than refusing a call that might have been free.
+	unpricedEnabled := false
+	for i := range cands {
+		cand := &cands[i]
+		if cand.ManagementStatus != model.ModelCandidateStatusEnabled {
+			continue
+		}
+		if model.NormalizeBillingMode(cand.BillingMode) != model.BillingModeVideo {
+			continue
+		}
+		unit, priced := unitMicros(cand, size)
+		if !priced {
+			unpricedEnabled = true
+			continue
+		}
+		ask := unit * int64(seconds)
+		if minAsk < 0 || ask < minAsk {
+			minAsk = ask
+		}
+	}
+	if minAsk < 0 || unpricedEnabled {
+		// No enabled candidate prices this resolution — or one does not, so
+		// nothing is certain: either way there is no number to hold the
+		// caller to, the same leniency Create's gate takes.
+		return nil
+	}
+	return s.checkBudget(ctx, apiKeyID, minAsk)
 }
 
 // checkBudget is the submit-time upper bound: what the key has spent,
@@ -181,15 +248,15 @@ func (s *Service) Create(ctx context.Context, task *model.VideoTask, now time.Ti
 // cost, against the limit. Exact because a video's seconds and tier price
 // are both known at submit — the one billing shape that can promise its
 // bound. Unpriced tasks skip the gate: there is no number to hold.
-func (s *Service) checkBudget(ctx context.Context, task *model.VideoTask, ask int64) error {
-	key, err := repository.FindAPIKeyByID(s.db.WithContext(ctx), task.APIKeyID)
+func (s *Service) checkBudget(ctx context.Context, apiKeyID uint, ask int64) error {
+	key, err := repository.FindAPIKeyByID(s.db.WithContext(ctx), apiKeyID)
 	if err != nil {
 		return err
 	}
 	if key.BudgetLimitMicros == nil || *key.BudgetLimitMicros <= 0 {
 		return nil
 	}
-	inFlight, err := repository.SumInFlightVideoEstimated(s.db.WithContext(ctx), task.APIKeyID)
+	inFlight, err := repository.SumInFlightVideoEstimated(s.db.WithContext(ctx), apiKeyID)
 	if err != nil {
 		return err
 	}
@@ -322,15 +389,25 @@ func (s *Service) settle(ctx context.Context, task *model.VideoTask, now time.Ti
 		unit := task.EstimatedMicros / int64(task.Seconds)
 		micros = int64(task.UsageSeconds) * unit
 	}
-	if _, err := repository.ChargeVideoTask(s.db.WithContext(ctx), task.ID, micros, now); err != nil {
+	applied, err := repository.ChargeVideoTask(s.db.WithContext(ctx), task.ID, micros, now)
+	if err != nil {
 		// A settlement failure is logged by nobody on purpose: the row is
 		// still unbilled, and the next poll's completion re-runs this —
 		// the CAS is the retry. A sweeper-side reconciliation pass can be
 		// added if a deployment ever shows unbilled completed rows.
 		return
 	}
+	if !applied {
+		return
+	}
 	task.Billed = true
 	task.BilledMicros = micros
+	// The charge decided; project it onto the request row the submit
+	// wrote so video bills reach the analytics per-request bills already
+	// feed. Best-effort on purpose: the projection failing must never
+	// roll back or re-run the charge itself, and the next completion
+	// observation does not come — billed rows are settled for good.
+	_ = repository.UpdateRequestLogCostByRequestID(s.db.WithContext(ctx), task.RequestID, micros)
 }
 
 // terminalUpdate is the service-side spelling of a terminal transition's
