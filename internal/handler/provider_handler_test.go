@@ -88,6 +88,10 @@ func (alwaysSuccessClient) TestImageGeneration(ctx context.Context, baseURL, api
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
+func (alwaysSuccessClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
 func (alwaysSuccessClient) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
@@ -126,6 +130,10 @@ func (modelNotFoundClient) TestImageGeneration(ctx context.Context, baseURL, api
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
+func (modelNotFoundClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
 func (modelNotFoundClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3}, nil
 }
@@ -148,6 +156,10 @@ func (modelNotFoundClient) ListModels(ctx context.Context, proto protocols.Proto
 type erroringClient struct{}
 
 func (erroringClient) TestImageGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
+func (erroringClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
@@ -1722,16 +1734,4 @@ func TestDeleteProviderFreesNameWithoutAdoptingOldHistory(t *testing.T) {
 	if n := countWhere(t, db, "request_logs", "provider_id = ?", newID); n != 0 {
 		t.Fatalf("old history was adopted by the recreated provider")
 	}
-}
-
-func (alwaysSuccessClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
-	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
-}
-
-func (modelNotFoundClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
-	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
-}
-
-func (erroringClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
-	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }

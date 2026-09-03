@@ -35,9 +35,11 @@ type Fake struct {
 	SideEffect func()
 	// PerTarget canned responses keyed by "<proto>|<baseURL>".
 	PerTarget map[string]TargetResponse
-	// PerTestType canned responses keyed by "basic" / "streaming" /
-	// "function_calling", for tests that need the three probes to disagree.
-	// Falls back to Result/Err when a probe has no entry.
+	// PerTestType canned responses keyed by probe kind — "basic" /
+	// "streaming" / "function_calling" / "image" / "video" — for tests
+	// that need the probes to disagree (the key-verification fallbacks
+	// read "basic" against "video"/"image"). Falls back to Result/Err when
+	// a probe has no entry.
 	PerTestType map[string]TargetResponse
 	// callsByTestType counts invocations per probe kind, letting a test
 	// assert that a probe was skipped rather than merely that it failed.
@@ -79,7 +81,7 @@ func (f *Fake) record(testType string, proto protocols.ProtocolID, baseURL, mode
 }
 
 // CallCountFor reports how many times the given probe kind ("basic" /
-// "streaming" / "function_calling") was invoked.
+// "streaming" / "function_calling" / "image" / "video") was invoked.
 func (f *Fake) CallCountFor(testType string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

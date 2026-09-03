@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -3365,5 +3366,154 @@ func TestProviderImpactCountsKeysAndCandidates(t *testing.T) {
 	}
 	if idleImpact.CandidateCount != 0 {
 		t.Errorf("idle CandidateCount = %d, want 0", idleImpact.CandidateCount)
+	}
+}
+
+// The video-dialect fallback of key verification: a video-only upstream
+// account answers the chat probe with ModelNotFound (model gating happens
+// past auth, so the credential itself already authenticated), and the
+// verification retries through the video task dialect instead of leaving
+// the key permanently unverifiable.
+func TestKeyPreviewFallsBackToVideoDialectOnModelNotOpen(t *testing.T) {
+	svc, _, client := newTestProviderService(t)
+	client.PerTestType = map[string]providerclienttest.TargetResponse{
+		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"video": {Result: providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 40}},
+	}
+
+	result, perTarget, err := svc.TestKeyPreview(context.Background(), "https://ark.cn-beijing.volces.com/api/v3", "ark-video-only", "doubao-seedance-2-0-260128", "", "")
+	if err != nil {
+		t.Fatalf("TestKeyPreview failed: %v", err)
+	}
+	if result.Outcome != providerclient.TestSuccess {
+		t.Fatalf("the video fallback must verify the key, got outcome %d detail %q", result.Outcome, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "video task dialect") {
+		t.Fatalf("the verdict must say which shape decided it, got %q", result.Detail)
+	}
+	if result.DurationMs < 40 {
+		t.Fatalf("the recorded duration must cover both probes, got %d", result.DurationMs)
+	}
+	if client.CallCountFor("video") != 1 {
+		t.Fatalf("exactly one video probe must run, got %d", client.CallCountFor("video"))
+	}
+	if len(perTarget) != 1 || perTarget[0].Detail != result.Detail {
+		t.Fatalf("the per-target breakdown must carry the fallback's verdict, got %+v", perTarget)
+	}
+}
+
+// The second live shape: an OPENED video model asked to chat answers with
+// an upstream error (Ark's chat endpoint returns 500 InternalServiceError
+// for a video model), which must fall back to the video dialect just like
+// the cold-model shape does.
+func TestKeyPreviewFallsBackToVideoDialectOnChatUpstreamError(t *testing.T) {
+	svc, _, client := newTestProviderService(t)
+	client.PerTestType = map[string]providerclienttest.TargetResponse{
+		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestUpstreamError}},
+		"video": {Result: providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 40}},
+	}
+
+	result, _, err := svc.TestKeyPreview(context.Background(), "https://ark.cn-beijing.volces.com/api/v3", "ark-video-only", "doubao-seedance-2-0-mini-260615", "", "")
+	if err != nil {
+		t.Fatalf("TestKeyPreview failed: %v", err)
+	}
+	if result.Outcome != providerclient.TestSuccess {
+		t.Fatalf("the video fallback must verify the key, got outcome %d detail %q", result.Outcome, result.Detail)
+	}
+	if client.CallCountFor("video") != 1 {
+		t.Fatalf("exactly one video probe must run, got %d", client.CallCountFor("video"))
+	}
+}
+
+// A model that is not activated for ANY dialect keeps the chat verdict:
+// the fallback replaces the answer only when it passes.
+func TestKeyPreviewVideoFallbackDoesNotMaskATrueModelNotOpen(t *testing.T) {
+	svc, _, client := newTestProviderService(t)
+	client.PerTestType = map[string]providerclienttest.TargetResponse{
+		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"video": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"image": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+	}
+
+	result, _, err := svc.TestKeyPreview(context.Background(), "https://ark.cn-beijing.volces.com/api/v3", "ark-cold", "doubao-seedance-2-0-260128", "", "")
+	if err != nil {
+		t.Fatalf("TestKeyPreview failed: %v", err)
+	}
+	if result.Outcome != providerclient.TestModelNotFound {
+		t.Fatalf("an unopened model must stay model-not-found, got %d", result.Outcome)
+	}
+}
+
+// The image-only twin: an account that opened a Seedream-class image
+// model and no chat model verifies through the image probe — the video
+// fallback runs first (and fails harmlessly), the image fallback decides.
+func TestKeyPreviewFallsBackToImageDialectForImageOnlyAccounts(t *testing.T) {
+	svc, _, client := newTestProviderService(t)
+	client.PerTestType = map[string]providerclienttest.TargetResponse{
+		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestUpstreamError, DurationMs: 20}},
+		"video": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound, DurationMs: 15}},
+		"image": {Result: providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 60}},
+	}
+
+	result, perTarget, err := svc.TestKeyPreview(context.Background(), "https://ark.cn-beijing.volces.com/api/v3", "ark-image-only", "doubao-seedream-4-5-251128", "", "")
+	if err != nil {
+		t.Fatalf("TestKeyPreview failed: %v", err)
+	}
+	if result.Outcome != providerclient.TestSuccess {
+		t.Fatalf("the image fallback must verify the key, got outcome %d detail %q", result.Outcome, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "image probe") {
+		t.Fatalf("the verdict must say which shape decided it, got %q", result.Detail)
+	}
+	if result.DurationMs < 95 {
+		t.Fatalf("the recorded duration must cover chat, the failed video probe, and the image probe, got %d", result.DurationMs)
+	}
+	if client.CallCountFor("video") != 1 || client.CallCountFor("image") != 1 {
+		t.Fatalf("video then image must both have run, got video=%d image=%d", client.CallCountFor("video"), client.CallCountFor("image"))
+	}
+	if len(perTarget) != 1 || perTarget[0].Detail != result.Detail {
+		t.Fatalf("the per-target breakdown must carry the fallback's verdict, got %+v", perTarget)
+	}
+}
+
+// A transport-level refusal from the fallback probe itself is swallowed —
+// the chat verdict stands and the verification does not abort, matching the
+// "every other outcome keeps the chat's own answer" rule.
+func TestKeyPreviewVideoProbeTransportErrorKeepsChatVerdict(t *testing.T) {
+	svc, _, client := newTestProviderService(t)
+	client.PerTestType = map[string]providerclienttest.TargetResponse{
+		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestUpstreamError, DurationMs: 20}},
+		"video": {Err: errors.New("client refused the call")},
+		"image": {Err: errors.New("client refused the call")},
+	}
+
+	result, _, err := svc.TestKeyPreview(context.Background(), "https://ark.cn-beijing.volces.com/api/v3", "ark-x", "some-model", "", "")
+	if err != nil {
+		t.Fatalf("a refused fallback probe must not abort the verification: %v", err)
+	}
+	if result.Outcome != providerclient.TestUpstreamError {
+		t.Fatalf("the chat verdict must stand, got %d", result.Outcome)
+	}
+}
+
+// The fallback is scoped to video-dialect bases: an ordinary OpenAI-shaped
+// host answering ModelNotFound is a wrong model name, and probing it with a
+// video submit would measure an endpoint no routed request would ever hit.
+func TestKeyPreviewNoVideoFallbackOnOrdinaryBases(t *testing.T) {
+	svc, _, client := newTestProviderService(t)
+	client.PerTestType = map[string]providerclienttest.TargetResponse{
+		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"video": {Result: providerclient.TestResult{Outcome: providerclient.TestSuccess}},
+	}
+
+	result, _, err := svc.TestKeyPreview(context.Background(), "https://api.openai.com/v1", "sk-x", "no-such-model", "", "")
+	if err != nil {
+		t.Fatalf("TestKeyPreview failed: %v", err)
+	}
+	if result.Outcome != providerclient.TestModelNotFound {
+		t.Fatalf("a non-video base keeps its own verdict, got %d", result.Outcome)
+	}
+	if client.CallCountFor("video") != 0 {
+		t.Fatalf("no video probe may run against an ordinary base, got %d", client.CallCountFor("video"))
 	}
 }

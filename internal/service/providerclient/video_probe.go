@@ -22,6 +22,19 @@ import (
 // cheap, short clip at the smallest documented duration.
 const videoProbePrompt = "a red balloon drifting across a plain sky"
 
+// MediaDialectBase reports whether a base URL is one the media dialects
+// speak — the same dispatch TestVideoGeneration routes on, so a caller
+// gating on it can never drift from the probe's own routing. Key
+// verification uses it to gate BOTH media fallbacks (video, then image):
+// these are the vendors whose one base serves chat, image, and video
+// dialects side by side, which is what makes a chat-shaped refusal here
+// ambiguous — a wrong model name on an ordinary OpenAI-compatible host is
+// just a wrong model name, and probing it with a billable render would
+// measure nothing a routed request ever hits.
+func MediaDialectBase(baseURL string) bool {
+	return isArkBase(baseURL) || isDashScopeBase(baseURL)
+}
+
 // TestVideoGeneration probes a video mapping the way a video request
 // reaches the provider: a submit through the task dialect the base
 // speaks, then one query. A base neither dialect serves has no video

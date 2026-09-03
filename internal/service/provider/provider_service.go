@@ -713,6 +713,45 @@ func (s *ProviderService) verifyTargets(ctx context.Context, targets []providerp
 		if err != nil {
 			return providerclient.TestResult{}, nil, err
 		}
+		// A media-dialect base whose chat probe cannot serve the model may
+		// simply be an account that never opened a chat model — video-only
+		// and image-only both occur. The credential has already
+		// authenticated (the refusal happens past auth), and the other
+		// things that base and model can do together are the media
+		// dialects. Two chat shapes reach here in practice, and the
+		// trigger is deliberately broad: a cold model answers
+		// ModelNotFound, and an opened media model asked to chat answers
+		// with an upstream error (Ark returns 500 InternalServiceError for
+		// exactly this) — indistinguishable from any other 5xx, which is
+		// the price of covering the shape a real account actually hits.
+		// The video probe runs first, then the image probe: each is one
+		// real billable upstream call, so both only run when the chat
+		// shape said the model is not served there. Only a PASSING probe
+		// replaces the chat verdict: every other outcome keeps the chat's
+		// own answer, which already named the real problem (and a
+		// transport-level refusal from the fallback itself is swallowed
+		// the same way — the chat verdict stands).
+		if (result.Outcome == providerclient.TestModelNotFound || result.Outcome == providerclient.TestUpstreamError) && providerclient.MediaDialectBase(tgt.URL) {
+			chatMs := result.DurationMs
+			// The video probe's own clock keeps running into the image
+			// arm's total when it ran and failed — the recorded duration
+			// is what the verification round actually spent upstream.
+			spentMs := chatMs
+			if video, verr := s.client.TestVideoGeneration(ctx, tgt.URL, plaintext, testModel); verr == nil && video.Outcome == providerclient.TestSuccess {
+				video.Detail = "chat probe cannot serve this model; verified through the video task dialect (submit + task query)"
+				video.DurationMs += chatMs
+				result = video
+			} else {
+				if verr == nil {
+					spentMs += video.DurationMs
+				}
+				if img, ierr := s.client.TestImageGeneration(ctx, tgt.URL, plaintext, testModel); ierr == nil && img.Outcome == providerclient.TestSuccess {
+					img.Detail = "chat probe cannot serve this model; verified through the image probe (one real generation)"
+					img.DurationMs += spentMs
+					result = img
+				}
+			}
+		}
 		perTarget = append(perTarget, KeyTestTargetResult{
 			Proto:      string(tgt.Proto),
 			Outcome:    int(result.Outcome),

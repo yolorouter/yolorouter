@@ -82,10 +82,14 @@ type TestResult struct {
 	IsModelScoped bool
 	// Detail is a concise, admin-facing diagnostic string for a failed test:
 	// the HTTP status plus the upstream's own error message when present
-	// (e.g. `HTTP 401: invalid api key`). Empty on success. It is surfaced
-	// only in the provider setup UI to help an operator tell apart a bad key
-	// from a wrong model from a blocked address — never returned to end
-	// users, so echoing the upstream message here is intentional.
+	// (e.g. `HTTP 401: invalid api key`). Empty on success, with one
+	// deliberate exception: the key-verification media fallbacks stamp a
+	// passing result with the note of which probe shape decided it, because
+	// an operator reading "verified" deserves to know the chat probe was
+	// not the one that said so. It is surfaced only in the provider setup
+	// UI to help an operator tell apart a bad key from a wrong model from a
+	// blocked address — never returned to end users, so echoing the
+	// upstream message here is intentional.
 	Detail string
 }
 
@@ -129,8 +133,11 @@ type ProviderClient interface {
 	// task conversation a routed request runs: a submit the upstream
 	// accepts (task id back) and one query it answers — completion is not
 	// waited for, a render outlasting the probe budget is a healthy
-	// mapping, not a broken one. DashScope hosts only; this build wires
-	// no OpenAI-dialect video upstream.
+	// mapping, not a broken one. Serves the two native task dialects
+	// (DashScope wan, Volcengine Ark); other bases refuse rather than
+	// measuring an endpoint no routed request would hit. Key
+	// verification reuses it as the first media fallback for a
+	// media-dialect base whose chat probe cannot serve the model.
 	TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
 	// ListModels fetches the upstream model catalogue for a credential
 	// (openai/anthropic/responses: GET /v1/models; gemini: GET /v1beta/models),
