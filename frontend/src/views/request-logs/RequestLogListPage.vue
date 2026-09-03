@@ -212,8 +212,9 @@ import { listProviders, type Provider } from '../../api/providers'
 import { listAPIKeys, toAPIKeyOptions, type APIKey } from '../../api/apiKeys'
 import { useUserOptions } from '../../composables/useUserOptions'
 import { displayMessage } from '../../api/client'
-import { formatMicros } from '../../utils/money'
+import { formatMicros, fromMicros } from '../../utils/money'
 import { formatImagePrice } from '../../utils/imagePriceSummary'
+import { formatYuan } from '../../utils/format'
 import { columnTitle } from '../../utils/columnTitle'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
@@ -764,15 +765,25 @@ function tokenRow(label: string, value: number) {
 }
 
 // The usage cell renders one billing unit per row: a per-image settlement
-// reads "count × unit price"; everything else keeps the vertical token
+// reads "count × unit price", a settled video job "seconds × unit price"
+// (the settlement write stamps seconds and cost together, so the unit
+// price is their quotient); everything else keeps the vertical token
 // breakdown. An unpriced image row carries no snapshot (and usually no
-// token counts), so it lands on the same '-' as any unmeasured row.
+// token counts), so it lands on the same '-' as any unmeasured row — as
+// does a video row whose settlement has not landed yet.
 function usageCell(row: RequestLogRow) {
   if (row.image_count > 0 && row.image_unit_price != null) {
     return h(
       'span',
       { style: 'font-variant-numeric: tabular-nums; font-size:12px; white-space:nowrap;' },
       t('requestLogs.usageImageLine', { n: row.image_count, price: formatImagePrice(row.image_unit_price) }),
+    )
+  }
+  if (row.usage_seconds > 0) {
+    return h(
+      'span',
+      { style: 'font-variant-numeric: tabular-nums; font-size:12px; white-space:nowrap;' },
+      t('requestLogs.usageVideoLine', { n: row.usage_seconds, price: formatYuan(fromMicros(row.cost_micros) / row.usage_seconds) }),
     )
   }
   const lines = []

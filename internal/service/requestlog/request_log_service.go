@@ -83,8 +83,12 @@ type RequestLogListItem struct {
 	ImageUnitPrice *float64 `json:"image_unit_price"`
 	CostMicros     int64    `json:"cost_micros"`
 	CostKnown      bool     `json:"cost_known"`
-	FailReason     *string  `json:"fail_reason"`
-	Attempts       int      `json:"attempts"`
+	// UsageSeconds is the video settlement digest's usage half — the
+	// delivered seconds a completed video job ran (see the model column).
+	// 0 on every non-video row.
+	UsageSeconds int     `json:"usage_seconds"`
+	FailReason   *string `json:"fail_reason"`
+	Attempts     int     `json:"attempts"`
 	// KeySwitches / Failovers split the row's retries into their two kinds —
 	// rotating keys within one provider versus moving to another provider —
 	// derived from the per-attempt detail with the same walk the provider
@@ -126,6 +130,8 @@ type RequestLogDetail struct {
 	CacheReadTokens  int    `json:"cache_read_tokens"`
 	CostMicros       int64  `json:"cost_micros"`
 	CostKnown        bool   `json:"cost_known"`
+	// UsageSeconds — same digest as the list rows (video delivered seconds).
+	UsageSeconds int `json:"usage_seconds"`
 	// Price snapshot passthrough: the four unit prices the row was billed
 	// with, or all nil for rows that predate the snapshot or could not be
 	// priced — the detail page renders that absence as "no snapshot".
@@ -259,6 +265,7 @@ func (s *RequestLogService) toListItems(rows []model.RequestLog) ([]RequestLogLi
 			CacheReadTokens:    r.CacheReadTokens,
 			ImageCount:         imageCount,
 			ImageUnitPrice:     imageUnitPrice,
+			UsageSeconds:       r.UsageSeconds,
 			CostMicros:         r.CostMicros,
 			CostKnown:          r.CostKnown,
 			FailReason:         r.FailReason,
@@ -384,6 +391,7 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 		CacheReadTokens:        row.CacheReadTokens,
 		CostMicros:             row.CostMicros,
 		CostKnown:              row.CostKnown,
+		UsageSeconds:           row.UsageSeconds,
 		SettledInputPrice:      row.SettledInputPrice,
 		SettledOutputPrice:     row.SettledOutputPrice,
 		SettledCacheWritePrice: row.SettledCacheWritePrice,
@@ -558,19 +566,25 @@ func lookupName(id *uint, names map[uint]string) string {
 }
 
 // csvUsageCells renders the usage columns of the CSV as one billing unit per
-// row: a token row emits billing_unit=token with empty image columns; a
+// row: a token row emits billing_unit=token with empty digest columns; a
 // per-image row emits billing_unit=image, its delivered count, and the price
 // one image cost (the price guard is belt and braces for hand-edited data —
-// the DTO guarantees count>0 implies price).
+// the DTO guarantees count>0 implies price); a settled video row emits
+// billing_unit=video with its delivered seconds in usage_seconds. The image
+// arm leads in both renderers — a row settles in one unit, so the order is
+// unobservable today and stays aligned between here and the UI cell.
 func csvUsageCells(it RequestLogListItem) []string {
-	if it.ImageCount <= 0 {
-		return []string{"token", "", ""}
+	if it.ImageCount > 0 {
+		price := ""
+		if it.ImageUnitPrice != nil {
+			price = strconv.FormatFloat(*it.ImageUnitPrice, 'f', -1, 64)
+		}
+		return []string{"image", strconv.Itoa(it.ImageCount), price, ""}
 	}
-	price := ""
-	if it.ImageUnitPrice != nil {
-		price = strconv.FormatFloat(*it.ImageUnitPrice, 'f', -1, 64)
+	if it.UsageSeconds > 0 {
+		return []string{"video", "", "", strconv.Itoa(it.UsageSeconds)}
 	}
-	return []string{"image", strconv.Itoa(it.ImageCount), price}
+	return []string{"token", "", "", ""}
 }
 
 // DeriveStatusClass mirrors repository.applyStatusClass's SQL WHERE
@@ -613,7 +627,7 @@ func csvHeaderRow() []string {
 		"is_stream", "key_switches", "failovers", "final_provider_model", "duration_ms",
 		"input_tokens", "output_tokens",
 		"cache_write_tokens", "cache_read_tokens",
-		"billing_unit", "image_count", "image_unit_price",
+		"billing_unit", "image_count", "image_unit_price", "usage_seconds",
 		"cost_micros", "cost_known", "fail_reason",
 	}
 }

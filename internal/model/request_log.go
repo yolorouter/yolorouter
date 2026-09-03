@@ -81,6 +81,13 @@ type RequestLog struct {
 	// volume metric reports sum; the snapshot above is the bill's
 	// explanation, and only exists when a price resolved.
 	ImageCount int `gorm:"column:image_count" json:"image_count"`
+	// UsageSeconds is the video settlement digest's usage half: the
+	// delivered seconds a completed video job actually ran, stamped by the
+	// same settlement write that back-fills CostMicros (the image
+	// settlement's counterpart is ImageCount). 0 on token rows, image
+	// rows, and pre-column rows — the usage figures then stay the token
+	// counts, so one row always reads in a single billing unit.
+	UsageSeconds int `gorm:"column:usage_seconds" json:"usage_seconds"`
 	// Source marks who initiated the request: "" = a normal caller request,
 	// "vision_fallback" = an image-description sub-call the gateway made on
 	// behalf of the request named by ParentRequestID. Sub-calls are separate

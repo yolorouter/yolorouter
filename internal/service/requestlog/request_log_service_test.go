@@ -236,6 +236,20 @@ func TestGetRequestLogDetailCarriesPriceSnapshot(t *testing.T) {
 		r.SettledCacheReadPrice = &cr
 	})
 	testutil.SeedRequestLog(t, db, "req-pre-snapshot", now, nil)
+	// A settled video row rides along: the detail page's video-duration
+	// row reads the usage half of the settlement digest.
+	testutil.SeedRequestLog(t, db, "req-video-settled", now, func(r *model.RequestLog) {
+		r.UsageSeconds = 4
+		r.CostMicros = 2_800_000
+		r.CostKnown = true
+	})
+	videoDetail, err := svc.GetRequestLogDetail("req-video-settled")
+	if err != nil {
+		t.Fatalf("GetRequestLogDetail(video): %v", err)
+	}
+	if videoDetail.UsageSeconds != 4 {
+		t.Errorf("video detail UsageSeconds = %d, want 4", videoDetail.UsageSeconds)
+	}
 
 	detail, err := svc.GetRequestLogDetail("req-snapshotted")
 	if err != nil {
@@ -302,10 +316,11 @@ func TestImageUsageDigest(t *testing.T) {
 
 func ptrFloat(v float64) *float64 { return &v }
 
-// TestListRowsCarryImageUsage: a per-image settled row surfaces its digest on
-// the list DTO (count + unit price) and renders one billing unit in the CSV;
-// a token row keeps its token figures and reads billing_unit=token.
-func TestListRowsCarryImageUsage(t *testing.T) {
+// TestListRowsCarryUsageDigest: a per-image settled row surfaces its digest
+// on the list DTO (count + unit price), a settled video row its seconds, and
+// each renders one billing unit in the CSV; a token row keeps its token
+// figures and reads billing_unit=token.
+func TestListRowsCarryUsageDigest(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := NewRequestLogService(db)
 	now := time.Now().UTC()
@@ -322,6 +337,13 @@ func TestListRowsCarryImageUsage(t *testing.T) {
 	if err := repository.CreateRequestLog(db, &tokenRow); err != nil {
 		t.Fatalf("seed token row: %v", err)
 	}
+	// A settled video row: the settlement projection stamps cost and the
+	// delivered seconds together; the token counts stay zero.
+	videoRow := model.RequestLog{RequestID: "req-video", ModelName: "seedance-2-0", StatusCode: 200,
+		Attempts: 1, CreatedAt: now, CostMicros: 2_800_000, CostKnown: true, UsageSeconds: 4}
+	if err := repository.CreateRequestLog(db, &videoRow); err != nil {
+		t.Fatalf("seed video row: %v", err)
+	}
 
 	items, _, err := svc.ListRequestLogs(&repository.RequestLogFilter{Page: 1, PageSize: 10})
 	if err != nil {
@@ -336,8 +358,12 @@ func TestListRowsCarryImageUsage(t *testing.T) {
 		t.Fatalf("image row digest: count=%d price=%v, want 2 and 0.25", img.ImageCount, img.ImageUnitPrice)
 	}
 	txt := byID["req-text"]
-	if txt.ImageCount != 0 || txt.ImageUnitPrice != nil {
-		t.Fatalf("token row digest: count=%d price=%v, want 0 and nil", txt.ImageCount, txt.ImageUnitPrice)
+	if txt.ImageCount != 0 || txt.ImageUnitPrice != nil || txt.UsageSeconds != 0 {
+		t.Fatalf("token row digest: count=%d price=%v seconds=%d, want 0, nil and 0", txt.ImageCount, txt.ImageUnitPrice, txt.UsageSeconds)
+	}
+	vid := byID["req-video"]
+	if vid.UsageSeconds != 4 || vid.ImageCount != 0 {
+		t.Fatalf("video row digest: seconds=%d count=%d, want 4 and 0", vid.UsageSeconds, vid.ImageCount)
 	}
 
 	// CSV: the usage columns line up with their header and carry one billing
@@ -352,8 +378,8 @@ func TestListRowsCarryImageUsage(t *testing.T) {
 		t.Fatalf("csv header missing %q: %v", name, header)
 		return -1
 	}
-	unit, count, price := col("billing_unit"), col("image_count"), col("image_unit_price")
-	if unit < 0 || count < 0 || price < 0 {
+	unit, count, price, seconds := col("billing_unit"), col("image_count"), col("image_unit_price"), col("usage_seconds")
+	if unit < 0 || count < 0 || price < 0 || seconds < 0 {
 		t.Fatalf("usage columns not all present: %v", header)
 	}
 	for _, it := range items {
@@ -367,8 +393,12 @@ func TestListRowsCarryImageUsage(t *testing.T) {
 				t.Fatalf("image csv cells: %q %q %q", rec[unit], rec[count], rec[price])
 			}
 		case "req-text":
-			if rec[unit] != "token" || rec[count] != "" || rec[price] != "" {
-				t.Fatalf("token csv cells: %q %q %q", rec[unit], rec[count], rec[price])
+			if rec[unit] != "token" || rec[count] != "" || rec[price] != "" || rec[seconds] != "" {
+				t.Fatalf("token csv cells: %q %q %q %q", rec[unit], rec[count], rec[price], rec[seconds])
+			}
+		case "req-video":
+			if rec[unit] != "video" || rec[seconds] != "4" || rec[count] != "" || rec[price] != "" {
+				t.Fatalf("video csv cells: %q %q %q %q", rec[unit], rec[count], rec[price], rec[seconds])
 			}
 		}
 	}

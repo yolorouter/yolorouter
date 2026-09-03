@@ -134,6 +134,9 @@
           <NDescriptionsItem :label="t('requestLogs.fieldCacheReadTokens')">
             {{ detail.cache_read_tokens.toLocaleString() }}
           </NDescriptionsItem>
+          <NDescriptionsItem v-if="detail.usage_seconds > 0" :label="t('requestLogs.fieldVideoSeconds')">
+            {{ detail.usage_seconds.toLocaleString() }}
+          </NDescriptionsItem>
           <NDescriptionsItem :label="t('requestLogs.fieldCost')" :span="2">
             <span v-if="detail.cost_known" class="cost-cell">{{ formatMicros(detail.cost_micros) }} {{ t('requestLogs.currencyUnit') }}</span>
             <NTag v-else size="small" :bordered="false" type="default">{{ t('requestLogs.costUnknown') }}</NTag>

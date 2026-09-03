@@ -402,12 +402,14 @@ func (s *Service) settle(ctx context.Context, task *model.VideoTask, now time.Ti
 	}
 	task.Billed = true
 	task.BilledMicros = micros
-	// The charge decided; project it onto the request row the submit
-	// wrote so video bills reach the analytics per-request bills already
-	// feed. Best-effort on purpose: the projection failing must never
-	// roll back or re-run the charge itself, and the next completion
-	// observation does not come — billed rows are settled for good.
-	_ = repository.UpdateRequestLogCostByRequestID(s.db.WithContext(ctx), task.RequestID, micros)
+	// The charge decided; project the settlement digest — cost plus the
+	// delivered seconds — onto the request row the submit wrote, so video
+	// bills reach the analytics per-request bills already feed and the
+	// usage column reads in the billing unit the row settled in. Best-
+	// effort on purpose: the projection failing must never roll back or
+	// re-run the charge itself, and the next completion observation does
+	// not come — billed rows are settled for good.
+	_ = repository.UpdateRequestLogVideoSettlement(s.db.WithContext(ctx), task.RequestID, micros, task.UsageSeconds)
 }
 
 // terminalUpdate is the service-side spelling of a terminal transition's

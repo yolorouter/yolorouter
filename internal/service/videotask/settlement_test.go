@@ -443,6 +443,11 @@ func TestSettlementProjectsCostOntoRequestLog(t *testing.T) {
 	if row.CostMicros != 4_000_000 || !row.CostKnown {
 		t.Fatalf("the charge must project onto the request row, got cost=%d known=%v", row.CostMicros, row.CostKnown)
 	}
+	// The usage half of the digest lands in the same write: the row then
+	// reads in the billing unit it settled in.
+	if row.UsageSeconds != 8 {
+		t.Fatalf("the delivered seconds must project with the charge, got %d", row.UsageSeconds)
+	}
 }
 
 func TestSettlementSkipsProjectionWithoutRequestID(t *testing.T) {

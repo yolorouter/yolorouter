@@ -46,6 +46,8 @@ export interface RequestLogRow {
   cache_read_tokens: number
   /** Delivered-image count from the per-image settlement snapshot; 0 = the row settled in tokens (or went unpriced). */
   image_count: number
+  /** Delivered seconds of a settled video job; 0 on every non-video row (the usage column then reads tokens). */
+  usage_seconds: number
   /** Price of one delivered image from the same snapshot; null when image_count is 0. */
   image_unit_price: number | null
   cost_micros: number
