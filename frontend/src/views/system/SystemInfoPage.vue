@@ -85,7 +85,7 @@
       <div class="about-footer">
         <nav class="about-links">
           <a href="https://github.com/yolorouter/yolorouter" target="_blank" rel="noopener noreferrer">GitHub</a>
-          <a href="https://yolorouter.com/help?utm_source=oss-console&utm_medium=about" target="_blank" rel="noopener noreferrer">{{ t('system.docs') }}</a>
+          <a href="https://yolorouter.com/docs?utm_source=oss-console&utm_medium=about" target="_blank" rel="noopener noreferrer">{{ t('system.docs') }}</a>
           <a href="https://github.com/yolorouter/yolorouter/releases" target="_blank" rel="noopener noreferrer">{{ t('system.changelog') }}</a>
           <a href="https://github.com/yolorouter/yolorouter/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">Apache-2.0</a>
         </nav>

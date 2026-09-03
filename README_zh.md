@@ -158,7 +158,7 @@ Windows 上，用管理员身份运行 PowerShell 会装成开机自启的系统
 真实上游探测验证，通过的自动启用。最后签发 API Key 即可开始调用。
 
 → **完整安装说明（全平台，含从源码构建）：**
-[yolorouter.com/help?p=self-hosted/installation](https://yolorouter.com/help?p=self-hosted/installation&utm_source=oss-readme&utm_medium=repo)
+[yolorouter.com/docs/self-hosted/installation](https://yolorouter.com/docs/self-hosted/installation?utm_source=oss-readme&utm_medium=repo)
 
 ## 协议
 
@@ -225,7 +225,7 @@ claude
 
 → **各协议的完整请求示例，以及 19 个 agent 工具的接入指南**
 （Claude Code、Cursor、Codex CLI、Cherry Studio、Gemini CLI、opencode……）：
-[yolorouter.com/help](https://yolorouter.com/help?utm_source=oss-readme&utm_medium=repo)
+[yolorouter.com/docs](https://yolorouter.com/docs?utm_source=oss-readme&utm_medium=repo)
 
 ## 调度模式
 
@@ -257,17 +257,17 @@ claude
 多少是一个能看到的数字，不是感觉。
 
 → **细节与调优：**
-[yolorouter.com/help?p=self-hosted/configuration](https://yolorouter.com/help?p=self-hosted/configuration&utm_source=oss-readme&utm_medium=repo)
+[yolorouter.com/docs/self-hosted/configuration](https://yolorouter.com/docs/self-hosted/configuration?utm_source=oss-readme&utm_medium=repo)
 
 ## 文档
 
 | 主题 | 链接 |
 | --- | --- |
-| 安装（全平台、从源码构建） | [安装](https://yolorouter.com/help?p=self-hosted/installation&utm_source=oss-readme&utm_medium=repo) |
-| `config.yaml` 全字段与 CLI | [配置](https://yolorouter.com/help?p=self-hosted/configuration&utm_source=oss-readme&utm_medium=repo) |
-| 升级、回滚、卸载 | [升级与卸载](https://yolorouter.com/help?p=self-hosted/updating&utm_source=oss-readme&utm_medium=repo) |
-| 分层结构、协议 IR、存储 | [架构](https://yolorouter.com/help?p=self-hosted/architecture&utm_source=oss-readme&utm_medium=repo) |
-| API 参考与模型列表 | [文档首页](https://yolorouter.com/help?utm_source=oss-readme&utm_medium=repo) |
+| 安装（全平台、从源码构建） | [安装](https://yolorouter.com/docs/self-hosted/installation?utm_source=oss-readme&utm_medium=repo) |
+| `config.yaml` 全字段与 CLI | [配置](https://yolorouter.com/docs/self-hosted/configuration?utm_source=oss-readme&utm_medium=repo) |
+| 升级、回滚、卸载 | [升级与卸载](https://yolorouter.com/docs/self-hosted/updating?utm_source=oss-readme&utm_medium=repo) |
+| 分层结构、协议 IR、存储 | [架构](https://yolorouter.com/docs/self-hosted/architecture?utm_source=oss-readme&utm_medium=repo) |
+| API 参考与模型列表 | [文档首页](https://yolorouter.com/docs?utm_source=oss-readme&utm_medium=repo) |
 | 钉钉 / 飞书登录接入 | [钉钉 / 飞书登录](docs/dingtalk-feishu-login_zh.md) |
 
 自托管需要你自己准备各家上游供应商的 API Key。如果你不想一家家去注册和充值，
