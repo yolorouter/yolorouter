@@ -46,7 +46,15 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: go test
-        run: go test ./...
+        # The Windows runners run the same suite 5-15x slower than linux
+        # ones (Defender scans every spawn and file op; the package
+        # binaries run in parallel and contend for one disk), so the
+        # heaviest packages (gateway, handler) sit near the default 10m
+        # per-package budget and tip over on busy runners — twice in three
+        # days, each time with a dump showing only benign waiters (log
+        # rotators, sql pool) and a rerun passing. A hang still fails, 10
+        # minutes later; a load-shaped flake stops failing the build.
+        run: go test ./... -timeout 20m
 
   # Every other test in the suite runs on SQLite, so migrations/postgres was
   # reaching production without ever being executed: a typo, an unsupported
