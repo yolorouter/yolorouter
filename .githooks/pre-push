@@ -32,4 +32,35 @@ echo "==> github-push gate: golangci-lint + go build (mirrors ci.yml)" >&2
 golangci-lint run
 go build ./...
 GOOS=windows GOARCH=amd64 go build ./...
+
+# Seed freshness check: the embedded price-catalog seed is frozen between
+# releases, but every push to the public repo is a chance to catch it drifting
+# too far behind the live catalog. Compares the `prices` payload (updated_at is
+# excluded — the data repo bumps it daily even when prices are unchanged).
+# Best-effort: an unreachable endpoint warns and lets the push through.
+SEED="internal/pricecatalog/catalog.json"
+LIVE_URL="https://prices.yolorouter.com/catalog.json"
+LIVE_TMP="$(mktemp -t price-seed)"
+trap 'rm -f "$LIVE_TMP"' EXIT
+if curl -fsSL -m 15 "$LIVE_URL" -o "$LIVE_TMP"; then
+  if python3 - "$SEED" "$LIVE_TMP" <<'PY'
+import json, sys
+def prices(p):
+    with open(p) as f:
+        return json.load(f)["prices"]
+sys.exit(0 if prices(sys.argv[1]) == prices(sys.argv[2]) else 1)
+PY
+  then
+    : # seed matches live — nothing to do
+  else
+    cp "$LIVE_TMP" "$SEED"
+    echo "!! embedded price seed is stale — updated $SEED from $LIVE_URL" >&2
+    go test ./internal/pricecatalog/... || echo "!! seed test FAILED — fix before pushing (see yolorouter-release-seed skill)" >&2
+    echo "   commit the refreshed seed, then push again" >&2
+    exit 1
+  fi
+else
+  echo "==> warn: $LIVE_URL unreachable — skipped the seed freshness check" >&2
+fi
+
 echo "==> gate passed" >&2
