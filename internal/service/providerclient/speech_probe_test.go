@@ -56,9 +56,7 @@ func TestSpeechGenerationProbeSendsTheOpenAIShape(t *testing.T) {
 // A dialect whose probe voice is empty (the vendor applies its own default)
 // must omit the field rather than send a name nobody chose.
 func TestSpeechGenerationProbeOmitsVoiceWhereTheDialectDefaults(t *testing.T) {
-	previous := speechDialectFor
-	speechDialectFor = func(string) audio.Dialect { return audio.DialectZhipu }
-	t.Cleanup(func() { speechDialectFor = previous })
+	withSpeechDialect(t, audio.DialectZhipu)
 
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		body := readAll(t, r)
@@ -184,4 +182,83 @@ func withMiniMaxSpeechBase(t *testing.T, serverURL string) {
 	previous := isMiniMaxSpeechBase
 	isMiniMaxSpeechBase = func(baseURL string) bool { return baseURL == serverURL }
 	t.Cleanup(func() { isMiniMaxSpeechBase = previous })
+}
+
+// A 200 that announces audio passes on the announced type alone (see
+// parseSpeechProbeResponse): a body past the bounded read must not turn a
+// long synthesized answer into an upstream error.
+func TestSpeechGenerationProbePassesOnAudioBiggerThanTheReadCap(t *testing.T) {
+	bigAudio := make([]byte, providerClientMaxBodyBytes+4096)
+	for i := range bigAudio {
+		bigAudio[i] = byte(i)
+	}
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(bigAudio)
+	})
+	defer srv.Close()
+
+	res, err := c.TestSpeechGeneration(t.Context(), srv.URL, "sk-test", "glm-tts")
+	if err != nil {
+		t.Fatalf("probe errored: %v", err)
+	}
+	if res.Outcome != TestSuccess {
+		t.Fatalf("oversized audio answer classified %+v, want success", res)
+	}
+}
+
+// The SiliconFlow dialect's probe voice is a model-prefixed preset (an
+// omitted voice is the upstream's 400 code 20052, a bare name its 20047), so
+// the probe must carry that exact string, not an omitted or bare voice.
+func TestSpeechGenerationProbeSendsTheSiliconFlowPrefixedVoice(t *testing.T) {
+	withSpeechDialect(t, audio.DialectSiliconFlow)
+
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		body := readAll(t, r)
+		if !strings.Contains(body, "\"voice\":\"FunAudioLLM/CosyVoice2-0.5B:alex\"") {
+			t.Errorf("probe body %s does not carry the dialect's model-prefixed voice", body)
+		}
+		if !strings.Contains(body, "\"response_format\":\"mp3\"") {
+			t.Errorf("probe body %s does not state the dialect's own default format", body)
+		}
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("x"))
+	})
+	defer srv.Close()
+
+	if _, err := c.TestSpeechGeneration(t.Context(), srv.URL, "sk-test", "cosyvoice"); err != nil {
+		t.Fatalf("probe errored: %v", err)
+	}
+}
+
+// An unannounced 200 is NOT trusted: the probe has nothing to re-announce
+// (unlike the modality's delivery rule, which re-announces from the request's
+// effective format), so it must prove itself through the body paths and be
+// refused when no dialect parser vouches for it.
+func TestSpeechGenerationProbeRefusesAnUnannounced200(t *testing.T) {
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "")
+		_, _ = w.Write([]byte("some-bytes"))
+	})
+	defer srv.Close()
+
+	res, err := c.TestSpeechGeneration(t.Context(), srv.URL, "sk-test", "glm-tts")
+	if err != nil {
+		t.Fatalf("probe errored: %v", err)
+	}
+	if res.Outcome != TestUpstreamError {
+		t.Fatalf("unannounced 200 classified %+v, want upstream error", res)
+	}
+	if !strings.Contains(res.Detail, "carries no audio") {
+		t.Errorf("refusal detail %q does not name the missing audio", res.Detail)
+	}
+}
+
+// withSpeechDialect pins the probe's dialect seam for one test — the same
+// override shape withMiniMaxSpeechBase pins the base-host gate.
+func withSpeechDialect(t *testing.T, d audio.Dialect) {
+	t.Helper()
+	previous := speechDialectFor
+	speechDialectFor = func(string) audio.Dialect { return d }
+	t.Cleanup(func() { speechDialectFor = previous })
 }

@@ -79,22 +79,30 @@ func (c *HTTPProviderClient) TestSpeechGeneration(ctx context.Context, baseURL, 
 }
 
 // parseSpeechProbeResponse is the shared verdict over one speech probe
-// answer: a non-200 goes through the standard classification; a 200 passes
-// when it announces audio (or bare octets, the modality's own leniency);
-// anything else is handed to the dialect's body parser when it has one and
-// refused otherwise — a JSON error envelope wearing a success status is
-// the provider failing, not the mapping working.
+// answer: a 200 that announces audio, or announces bare octets, passes on
+// the announced type alone — the body IS the synthesized audio, easily a few
+// hundred KB (Zhipu's ~4s wav is ~200KB, live 2026-09-05) and well past the
+// probe's bounded read, so a probe that slurped it to "verify" would misread
+// every long answer as an upstream error. The acceptance is deliberately
+// stricter than the modality's delivery rule, which also re-announces an
+// empty content type from the request's effective format: a probe has
+// nothing to re-announce, so an unannounced 200 must prove itself through
+// the body paths below instead of being trusted. A non-200 goes through the
+// standard classification; a 200 that carries anything else is handed to the
+// dialect's body parser when it has one and refused otherwise — a JSON error
+// envelope wearing a success status is the provider failing, not the mapping
+// working.
 func parseSpeechProbeResponse(resp *http.Response, duration int64, model string, parseBody func([]byte) error) (TestResult, error) {
+	ct := resp.Header.Get("Content-Type")
+	if resp.StatusCode == http.StatusOK && (strings.HasPrefix(ct, "audio/") || ct == "application/octet-stream") {
+		return TestResult{Outcome: TestSuccess, DurationMs: duration}, nil
+	}
 	body, ok := readBoundedBody(resp)
 	if !ok {
 		return TestResult{Outcome: TestUpstreamError, DurationMs: duration}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		return classifyResponse(protocols.ProtocolOpenAI, resp, body, model, duration), nil
-	}
-	ct := resp.Header.Get("Content-Type")
-	if strings.HasPrefix(ct, "audio/") || ct == "application/octet-stream" {
-		return TestResult{Outcome: TestSuccess, DurationMs: duration}, nil
 	}
 	if parseBody != nil {
 		if err := parseBody(body); err != nil {

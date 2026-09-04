@@ -45,11 +45,14 @@ var (
 		DefaultFormat: "mp3",
 		Meter:         utf8ByteMeter,
 		MeterLabel:    "utf8_bytes",
-		// The probe omits the voice: the preset-voice vocabulary is the
-		// vendor's own and unverified against this build; an omitted voice
-		// either applies their default or answers a readable refusal the
-		// probe reports as-is.
-		ProbeVoice: "",
+		// Preset voices are model-prefixed and required: live 2026-09-05,
+		// an omitted voice answers 400 code 20052 ("Voice or reference
+		// audio should be set") and a bare name answers 20047 ("Invalid
+		// voice") — only a Model:voice pair dials, so the probe carries
+		// one known-good preset. The prefix travels across the vendor's
+		// TTS family: MOSS-TTSD-v0.5 accepts the CosyVoice-prefixed voice
+		// and passes the probe with it (live 2026-09-05).
+		ProbeVoice: "FunAudioLLM/CosyVoice2-0.5B:alex",
 	}
 	// DialectZhipu: wav and pcm only, wav the default an unspecified caller
 	// gets — announcing the OpenAI default mp3 there would promise bytes
