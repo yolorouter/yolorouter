@@ -124,4 +124,27 @@ describe('ApiAccessPanel', () => {
     expect(bodyText()).toContain(`${GATEWAY}/v1/images/generations`)
     wrapper.unmount()
   })
+
+  it('lands the modal on the protocol of the clicked row', async () => {
+    const wrapper = mountPanel()
+    await vi.waitFor(() => expect(wrapper.text()).toContain(GATEWAY))
+    const buttons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('.endpoint-row__example'),
+    )
+    expect(buttons).toHaveLength(3)
+
+    buttons[1]!.click()
+    await nextTick()
+    await nextTick()
+    expect(bodyText()).toContain(`curl ${GATEWAY}/v1/messages`)
+    expect(bodyText()).toContain('x-api-key: <API Key>')
+
+    // Reopen via the Gemini row without closing first: the landing tab
+    // follows the click, not the previous open.
+    buttons[2]!.click()
+    await nextTick()
+    await nextTick()
+    expect(bodyText()).toContain(`curl ${GATEWAY}/v1beta/models/<model>:generateContent`)
+    wrapper.unmount()
+  })
 })

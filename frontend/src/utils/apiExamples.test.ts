@@ -33,8 +33,10 @@ describe('buildExampleCatalog', () => {
       'openai-images-edits',
       'openai-videos',
       'openai-models',
+      'anthropic-chat',
+      'gemini-chat',
+      'openai-responses',
     ])
-    expect(catalog.every((g) => g.protocol === 'openai')).toBe(true)
   })
 
   it('exposes the OpenAI chat group for the openai protocol with the full language matrix', () => {
@@ -133,7 +135,7 @@ describe('OpenAI capability groups', () => {
     const group = groupById('openai-videos')
     expect(group.languages.map((l) => l.language)).toEqual(['curl', 'python', 'node'])
     for (const lang of group.languages) {
-      expect(lang.snippets.map((s) => `${s.step} ${s.kind}`)).toEqual([
+      expect(lang.snippets.map((s) => `${s.tag} ${s.kind}`)).toEqual([
         'submit request',
         'submit response',
         'poll request',
@@ -171,6 +173,71 @@ describe('OpenAI capability groups', () => {
     expect(codeOf(group, 'python')).toContain('client.models.list()')
     expect(codeOf(group, 'node')).toContain('client.models.list()')
     expect(group.languages[0].snippets[1].code).toContain('output_modalities')
+  })
+})
+
+describe('Anthropic / Gemini / Responses groups', () => {
+  it('serves /v1/messages with X-Api-Key and the Messages wire shape', () => {
+    const group = groupById('anthropic-chat')
+    expect(group.protocol).toBe('anthropic')
+    expect(group.languages.map((l) => l.language)).toEqual(['curl', 'python', 'node'])
+    for (const lang of group.languages) {
+      expect(
+        lang.snippets.map((s) => `${s.streaming ? 'stream ' : ''}${s.kind}`),
+      ).toEqual(['request', 'response', 'stream request', 'stream response'])
+      expect(lang.snippets.map((s) => s.code).join('\n')).toContain('max_tokens')
+      // The Anthropic SDK and Claude Code never send Authorization — the
+      // key rides X-Api-Key, so the samples teach that spelling.
+      expect(lang.snippets[0].code).not.toContain('Authorization')
+    }
+    expect(group.languages[0].snippets[0].code).toContain(`curl ${ENDPOINT}/v1/messages`)
+    expect(group.languages[0].snippets[0].code).toContain('x-api-key: <API Key>')
+    expect(group.languages[0].snippets[3].code).toContain('event: message_stop')
+    expect(codeOf(group, 'python')).toContain(`base_url="${ENDPOINT}"`)
+    expect(codeOf(group, 'node')).toContain(`baseURL: '${ENDPOINT}'`)
+  })
+
+  it('serves generateContent on /v1beta with the Gemini-only credential', () => {
+    const group = groupById('gemini-chat')
+    expect(group.protocol).toBe('gemini')
+    expect(codeOf(group, 'curl')).toContain(
+      `curl ${ENDPOINT}/v1beta/models/<model>:generateContent`,
+    )
+    expect(codeOf(group, 'curl')).toContain('x-goog-api-key: <API Key>')
+    // The sample teaches the Gemini credential spelling, not Bearer.
+    expect(codeOf(group, 'curl')).not.toContain('Authorization')
+    expect(codeOf(group, 'curl')).not.toContain('x-api-key')
+    expect(codeOf(group, 'python')).toContain('genai.Client(')
+    expect(codeOf(group, 'python')).toContain(`"base_url": "${ENDPOINT}"`)
+    expect(codeOf(group, 'node')).toContain('GoogleGenAI')
+    expect(group.languages[0].snippets[1].code).toContain('candidates')
+  })
+
+  it('serves the Responses API in plain, streaming and function-calling variants', () => {
+    const group = groupById('openai-responses')
+    expect(group.protocol).toBe('openai')
+    for (const lang of group.languages) {
+      expect(
+        lang.snippets.map((s) => `${s.tag ?? '-'} ${s.streaming ? 'stream ' : ''}${s.kind}`),
+      ).toEqual([
+        '- request',
+        '- response',
+        '- stream request',
+        '- stream response',
+        'tools request',
+        'tools response',
+      ])
+    }
+    // Only curl spells the full path; SDK samples point the client at the
+    // base URL and let it append the route.
+    expect(group.languages[0].snippets[0].code).toContain(`${ENDPOINT}/v1/responses`)
+    expect(codeOf(group, 'python')).toContain(`base_url="${ENDPOINT}/v1"`)
+    expect(codeOf(group, 'node')).toContain(`baseURL: '${ENDPOINT}/v1'`)
+    expect(group.languages[0].snippets[0].code).toContain('Authorization: Bearer <API Key>')
+    expect(group.languages[0].snippets[2].code).toContain('"stream": true')
+    expect(group.languages[0].snippets[3].code).toContain('event: response.output_text.delta')
+    expect(group.languages[0].snippets[4].code).toContain('"name": "get_weather"')
+    expect(group.languages[0].snippets[5].code).toContain('"type": "function_call"')
   })
 })
 

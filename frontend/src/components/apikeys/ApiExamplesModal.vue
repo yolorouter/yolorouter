@@ -151,6 +151,9 @@ const GROUP_LABEL_KEYS: Record<string, string> = {
   'openai-images-edits': 'apiKeys.exampleGroupImageEditing',
   'openai-videos': 'apiKeys.exampleGroupVideo',
   'openai-models': 'apiKeys.exampleGroupModels',
+  'anthropic-chat': 'apiKeys.exampleGroupAnthropicChat',
+  'gemini-chat': 'apiKeys.exampleGroupGeminiChat',
+  'openai-responses': 'apiKeys.exampleGroupResponses',
 }
 
 function groupLabel(id: string): string {
@@ -169,10 +172,11 @@ function languageLabel(language: ExampleLanguage): string {
   return t(LANGUAGE_LABEL_KEYS[language])
 }
 
-const STEP_LABEL_KEYS: Record<NonNullable<ExampleSnippet['step']>, string> = {
-  submit: 'apiKeys.exampleStepSubmit',
-  poll: 'apiKeys.exampleStepPoll',
-  download: 'apiKeys.exampleStepDownload',
+const TAG_LABEL_KEYS: Record<NonNullable<ExampleSnippet['tag']>, string> = {
+  submit: 'apiKeys.exampleTagSubmit',
+  poll: 'apiKeys.exampleTagPoll',
+  download: 'apiKeys.exampleTagDownload',
+  tools: 'apiKeys.exampleTagTools',
 }
 
 function snippetLabel(snippet: ExampleSnippet): string {
@@ -183,7 +187,7 @@ function snippetLabel(snippet: ExampleSnippet): string {
     : snippet.kind === 'response'
       ? t('apiKeys.exampleResponse')
       : t('apiKeys.exampleRequest')
-  return snippet.step ? `${t(STEP_LABEL_KEYS[snippet.step])} · ${base}` : base
+  return snippet.tag ? `${t(TAG_LABEL_KEYS[snippet.tag])} · ${base}` : base
 }
 
 // Requests highlight in their language's grammar (curl as bash); response

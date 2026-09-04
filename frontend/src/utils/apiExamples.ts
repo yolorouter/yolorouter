@@ -19,13 +19,16 @@ export type ExampleLanguage = 'curl' | 'python' | 'node' | 'go'
 // The chat group also ships Go; every other group serves these three.
 type CoreLanguage = Exclude<ExampleLanguage, 'go'>
 
+const CORE_LANGUAGES: CoreLanguage[] = ['curl', 'python', 'node']
+
 export interface ExampleSnippet {
   kind: 'request' | 'response'
   // SSE flavour of the request or response.
   streaming: boolean
-  // Multi-step flows (video submit / poll / download) tag which step a
-  // request or its response belongs to; single-step groups leave it out.
-  step?: 'submit' | 'poll' | 'download'
+  // Which part of a flow or which variant of the sample this is: the video
+  // lifecycle steps (submit / poll / download), or the function-calling
+  // variant of a Responses request. Single-variant groups leave it out.
+  tag?: 'submit' | 'poll' | 'download' | 'tools'
   code: string
 }
 
@@ -358,6 +361,7 @@ const MODELS_RESPONSE = `{
 // the shared response shape.
 function singleRequestGroup(
   id: string,
+  protocol: ExampleProtocol,
   ctx: SampleContext,
   requests: Record<CoreLanguage, string>,
   response: string,
@@ -368,7 +372,7 @@ function singleRequestGroup(
   ]
   return {
     id,
-    protocol: 'openai',
+    protocol,
     languages: [
       { language: 'curl', snippets: snippets(requests.curl) },
       { language: 'python', snippets: snippets(`${pythonSdkSetup(ctx)}\n\n${requests.python}`) },
@@ -379,7 +383,7 @@ function singleRequestGroup(
 
 function imagesGenerationsGroup(ctx: SampleContext): ExampleGroup {
   const { endpoint, key } = ctx
-  return singleRequestGroup('openai-images-generations', ctx, {
+  return singleRequestGroup('openai-images-generations', 'openai', ctx, {
     curl: `curl ${openAIBaseUrlOf(endpoint)}/images/generations \\
   -H "Authorization: Bearer ${cred(key)}" \\
   -H "Content-Type: application/json" \\
@@ -406,7 +410,7 @@ console.log(image.data[0]?.url ?? image.data[0]?.b64_json?.slice(0, 32))`,
 
 function imagesEditsGroup(ctx: SampleContext): ExampleGroup {
   const { endpoint, key } = ctx
-  return singleRequestGroup('openai-images-edits', ctx, {
+  return singleRequestGroup('openai-images-edits', 'openai', ctx, {
     curl: `curl ${openAIBaseUrlOf(endpoint)}/images/edits \\
   -H "Authorization: Bearer ${cred(key)}" \\
   -F "model=${IMAGE_MODEL_PLACEHOLDER}" \\
@@ -469,16 +473,16 @@ const VIDEO_STEP_SAMPLES: Record<
 function videoSnippets(language: CoreLanguage, ctx: SampleContext): ExampleSnippet[] {
   const { submit, poll, download } = VIDEO_STEP_SAMPLES[language](ctx)
   return [
-    { kind: 'request', streaming: false, step: 'submit', code: submit },
-    { kind: 'response', streaming: false, step: 'submit', code: VIDEO_SUBMIT_RESPONSE },
-    { kind: 'request', streaming: false, step: 'poll', code: poll },
-    { kind: 'response', streaming: false, step: 'poll', code: VIDEO_POLL_RESPONSE },
-    { kind: 'request', streaming: false, step: 'download', code: download },
+    { kind: 'request', streaming: false, tag: 'submit', code: submit },
+    { kind: 'response', streaming: false, tag: 'submit', code: VIDEO_SUBMIT_RESPONSE },
+    { kind: 'request', streaming: false, tag: 'poll', code: poll },
+    { kind: 'response', streaming: false, tag: 'poll', code: VIDEO_POLL_RESPONSE },
+    { kind: 'request', streaming: false, tag: 'download', code: download },
   ]
 }
 
 function videosGroup(ctx: SampleContext): ExampleGroup {
-  const languages: CoreLanguage[] = ['curl', 'python', 'node']
+  const languages = CORE_LANGUAGES
   return {
     id: 'openai-videos',
     protocol: 'openai',
@@ -491,7 +495,7 @@ function videosGroup(ctx: SampleContext): ExampleGroup {
 
 function modelsGroup(ctx: SampleContext): ExampleGroup {
   const { endpoint, key } = ctx
-  return singleRequestGroup('openai-models', ctx, {
+  return singleRequestGroup('openai-models', 'openai', ctx, {
     curl: `curl ${openAIBaseUrlOf(endpoint)}/models -H "Authorization: Bearer ${cred(key)}"`,
     python: `for model in client.models.list():
     print(model.id, model.output_modalities)`,
@@ -502,6 +506,380 @@ for await (const model of page) {
   }, MODELS_RESPONSE)
 }
 
+// --- Anthropic-native chat (/v1/messages) --------------------------------
+//
+// The gateway takes the key in X-Api-Key — the Anthropic SDK and Claude
+// Code never send Authorization — and speaks the Messages wire shape
+// (max_tokens required). The SDK base URL is the bare endpoint: the SDK
+// appends /v1/messages itself.
+
+const ANTHROPIC_RESPONSE = `{
+  "id": "msg_...",
+  "type": "message",
+  "role": "assistant",
+  "model": "${MODEL_PLACEHOLDER}",
+  "content": [{"type": "text", "text": "Hello! How can I help you today?"}],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 8, "output_tokens": 9}
+}`
+
+const ANTHROPIC_STREAM_RESPONSE = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_...","role":"assistant"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
+
+event: message_stop
+data: {"type":"message_stop"}`
+
+function anthropicCurlRequest(ctx: SampleContext, streaming: boolean): string {
+  const body = streaming
+    ? `{
+    "model": "${MODEL_PLACEHOLDER}",
+    "max_tokens": 200,
+    "messages": [{"role": "user", "content": "Count to 5."}],
+    "stream": true
+  }`
+    : `{
+    "model": "${MODEL_PLACEHOLDER}",
+    "max_tokens": 200,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }`
+  return `curl ${ctx.endpoint}/v1/messages \\
+  -H "x-api-key: ${cred(ctx.key)}" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '${body}'`
+}
+
+function anthropicPythonSetup(ctx: SampleContext): string {
+  return `from anthropic import Anthropic
+
+client = Anthropic(
+    api_key="${cred(ctx.key)}",
+    base_url="${ctx.endpoint}",
+)`
+}
+
+function anthropicPythonRequest(ctx: SampleContext, streaming: boolean): string {
+  const body = streaming
+    ? `with client.messages.stream(
+    model="${MODEL_PLACEHOLDER}",
+    max_tokens=200,
+    messages=[{"role": "user", "content": "Count to 5."}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)`
+    : `message = client.messages.create(
+    model="${MODEL_PLACEHOLDER}",
+    max_tokens=200,
+    messages=[{"role": "user", "content": "Explain quantum computing in one sentence."}],
+)
+print(message.content[0].text)`
+  return `${anthropicPythonSetup(ctx)}\n\n${body}`
+}
+
+function anthropicNodeSetup(ctx: SampleContext): string {
+  return `import Anthropic from '@anthropic-ai/sdk'
+
+const client = new Anthropic({
+  apiKey: '${cred(ctx.key)}',
+  baseURL: '${ctx.endpoint}',
+})`
+}
+
+function anthropicNodeRequest(ctx: SampleContext, streaming: boolean): string {
+  const body = streaming
+    ? `const stream = await client.messages.create({
+  model: '${MODEL_PLACEHOLDER}',
+  max_tokens: 200,
+  messages: [{ role: 'user', content: 'Count to 5.' }],
+  stream: true,
+})
+for await (const event of stream) {
+  if (event.type === 'content_block_delta') {
+    process.stdout.write(event.delta.text ?? '')
+  }
+}`
+    : `const message = await client.messages.create({
+  model: '${MODEL_PLACEHOLDER}',
+  max_tokens: 200,
+  messages: [{ role: 'user', content: 'Explain quantum computing in one sentence.' }],
+})
+console.log(message.content[0].text)`
+  return `${anthropicNodeSetup(ctx)}\n\n${body}`
+}
+
+const ANTHROPIC_REQUESTS: Record<
+  CoreLanguage,
+  (ctx: SampleContext, streaming: boolean) => string
+> = {
+  curl: anthropicCurlRequest,
+  python: anthropicPythonRequest,
+  node: anthropicNodeRequest,
+}
+
+function anthropicLanguage(language: CoreLanguage, ctx: SampleContext): LanguageExamples {
+  const request = (streaming: boolean): string => ANTHROPIC_REQUESTS[language](ctx, streaming)
+  return {
+    language,
+    snippets: [
+      { kind: 'request', streaming: false, code: request(false) },
+      { kind: 'response', streaming: false, code: ANTHROPIC_RESPONSE },
+      { kind: 'request', streaming: true, code: request(true) },
+      { kind: 'response', streaming: true, code: ANTHROPIC_STREAM_RESPONSE },
+    ],
+  }
+}
+
+function anthropicChatGroup(ctx: SampleContext): ExampleGroup {
+  const languages = CORE_LANGUAGES
+  return {
+    id: 'anthropic-chat',
+    protocol: 'anthropic',
+    languages: languages.map((language) => anthropicLanguage(language, ctx)),
+  }
+}
+
+// --- Gemini-native chat (/v1beta) ----------------------------------------
+//
+// Gemini clients spell the key as x-goog-api-key (or ?key=) — that
+// spelling is accepted on this ingress only — and the path carries the
+// action suffix. The SDK base URL is the bare endpoint; the SDK appends
+// /v1beta/models/{model}:generateContent itself.
+
+const GEMINI_RESPONSE = `{
+  "candidates": [
+    {
+      "content": {"role": "model", "parts": [{"text": "Hello! How can I help you today?"}]},
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {"promptTokenCount": 8, "candidatesTokenCount": 9}
+}`
+
+function geminiChatGroup(ctx: SampleContext): ExampleGroup {
+  const curl = `curl ${geminiBaseUrlOf(ctx.endpoint)}/models/${MODEL_PLACEHOLDER}:generateContent \\
+  -H "x-goog-api-key: ${cred(ctx.key)}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "contents": [{"role": "user", "parts": [{"text": "Hello!"}]}]
+  }'`
+  const python = `from google import genai
+
+client = genai.Client(
+    api_key="${cred(ctx.key)}",
+    http_options={"base_url": "${ctx.endpoint}"},
+)
+
+response = client.models.generate_content(
+    model="${MODEL_PLACEHOLDER}",
+    contents="Explain quantum computing in one sentence.",
+)
+print(response.text)`
+  const node = `import { GoogleGenAI } from '@google/genai'
+
+const ai = new GoogleGenAI({
+  apiKey: '${cred(ctx.key)}',
+  httpOptions: { baseUrl: '${ctx.endpoint}' },
+})
+
+const response = await ai.models.generateContent({
+  model: '${MODEL_PLACEHOLDER}',
+  contents: 'Explain quantum computing in one sentence.',
+})
+console.log(response.text)`
+  return singleRequestGroup('gemini-chat', 'gemini', ctx, { curl, python, node }, GEMINI_RESPONSE)
+}
+
+// --- OpenAI Responses API (/v1/responses) ---------------------------------
+//
+// Three variants: plain, streaming (SSE response events), and the
+// function-calling flavour whose response carries a function_call output.
+
+const RESPONSES_RESPONSE = `{
+  "id": "resp_...",
+  "object": "response",
+  "model": "${MODEL_PLACEHOLDER}",
+  "status": "completed",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [{"type": "output_text", "text": "Bonjour !"}]
+    }
+  ],
+  "usage": {"input_tokens": 12, "output_tokens": 4}
+}`
+
+const RESPONSES_STREAM_RESPONSE = `event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Bonjour"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_...","status":"completed"}}`
+
+const RESPONSES_TOOLS_RESPONSE = `{
+  "id": "resp_...",
+  "object": "response",
+  "model": "${MODEL_PLACEHOLDER}",
+  "status": "completed",
+  "output": [
+    {
+      "type": "function_call",
+      "name": "get_weather",
+      "arguments": "{\\"city\\": \\"Tokyo\\"}",
+      "call_id": "call_..."
+    }
+  ]
+}`
+
+function responsesCurlRequest(ctx: SampleContext, variant: 'plain' | 'streaming' | 'tools'): string {
+  const body =
+    variant === 'tools'
+      ? `{
+    "model": "${MODEL_PLACEHOLDER}",
+    "input": "What is the weather in Tokyo?",
+    "tools": [
+      {
+        "type": "function",
+        "name": "get_weather",
+        "description": "Get the current weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": {"city": {"type": "string"}}
+        }
+      }
+    ]
+  }`
+      : variant === 'streaming'
+        ? `{
+    "model": "${MODEL_PLACEHOLDER}",
+    "input": [{"role": "user", "content": "Count to 5."}],
+    "stream": true
+  }`
+        : `{
+    "model": "${MODEL_PLACEHOLDER}",
+    "input": "Say hello in French."
+  }`
+  return `curl ${openAIBaseUrlOf(ctx.endpoint)}/responses \\
+  -H "Authorization: Bearer ${cred(ctx.key)}" \\
+  -H "Content-Type: application/json" \\
+  -d '${body}'`
+}
+
+function responsesPythonRequest(ctx: SampleContext, variant: 'plain' | 'streaming' | 'tools'): string {
+  const body =
+    variant === 'tools'
+      ? `response = client.responses.create(
+    model="${MODEL_PLACEHOLDER}",
+    input="What is the weather in Tokyo?",
+    tools=[{
+        "type": "function",
+        "name": "get_weather",
+        "description": "Get the current weather for a city",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+    }],
+)
+for item in response.output:
+    if item.type == "function_call":
+        print(item.name, item.arguments)`
+      : variant === 'streaming'
+        ? `stream = client.responses.create(
+    model="${MODEL_PLACEHOLDER}",
+    input=[{"role": "user", "content": "Count to 5."}],
+    stream=True,
+)
+for event in stream:
+    if event.type == "response.output_text.delta":
+        print(event.delta, end="", flush=True)`
+        : `response = client.responses.create(
+    model="${MODEL_PLACEHOLDER}",
+    input="Say hello in French.",
+)
+print(response.output_text)`
+  return `${pythonSdkSetup(ctx)}\n\n${body}`
+}
+
+function responsesNodeRequest(ctx: SampleContext, variant: 'plain' | 'streaming' | 'tools'): string {
+  const body =
+    variant === 'tools'
+      ? `const response = await client.responses.create({
+  model: '${MODEL_PLACEHOLDER}',
+  input: 'What is the weather in Tokyo?',
+  tools: [
+    {
+      type: 'function',
+      name: 'get_weather',
+      description: 'Get the current weather for a city',
+      parameters: { type: 'object', properties: { city: { type: 'string' } } },
+    },
+  ],
+})
+for (const item of response.output) {
+  if (item.type === 'function_call') {
+    console.log(item.name, item.arguments)
+  }
+}`
+      : variant === 'streaming'
+        ? `const stream = await client.responses.create({
+  model: '${MODEL_PLACEHOLDER}',
+  input: [{ role: 'user', content: 'Count to 5.' }],
+  stream: true,
+})
+for await (const event of stream) {
+  if (event.type === 'response.output_text.delta') {
+    process.stdout.write(event.delta ?? '')
+  }
+}`
+        : `const response = await client.responses.create({
+  model: '${MODEL_PLACEHOLDER}',
+  input: 'Say hello in French.',
+})
+console.log(response.output_text)`
+  return `${nodeSdkSetup(ctx)}\n\n${body}`
+}
+
+const RESPONSES_REQUESTS: Record<
+  CoreLanguage,
+  (ctx: SampleContext, variant: 'plain' | 'streaming' | 'tools') => string
+> = {
+  curl: responsesCurlRequest,
+  python: responsesPythonRequest,
+  node: responsesNodeRequest,
+}
+
+function responsesGroup(ctx: SampleContext): ExampleGroup {
+  const languages = CORE_LANGUAGES
+  return {
+    id: 'openai-responses',
+    protocol: 'openai',
+    languages: languages.map((language) => ({
+      language,
+      snippets: [
+        {
+          kind: 'request',
+          streaming: false,
+          code: RESPONSES_REQUESTS[language](ctx, 'plain'),
+        },
+        { kind: 'response', streaming: false, code: RESPONSES_RESPONSE },
+        {
+          kind: 'request',
+          streaming: true,
+          code: RESPONSES_REQUESTS[language](ctx, 'streaming'),
+        },
+        { kind: 'response', streaming: true, code: RESPONSES_STREAM_RESPONSE },
+        {
+          kind: 'request',
+          streaming: false,
+          tag: 'tools',
+          code: RESPONSES_REQUESTS[language](ctx, 'tools'),
+        },
+        { kind: 'response', streaming: false, tag: 'tools', code: RESPONSES_TOOLS_RESPONSE },
+      ],
+    })),
+  }
+}
+
 export function buildExampleCatalog(options: ExampleCatalogOptions): ExampleGroup[] {
   return [
     chatGroup(options),
@@ -509,5 +887,8 @@ export function buildExampleCatalog(options: ExampleCatalogOptions): ExampleGrou
     imagesEditsGroup(options),
     videosGroup(options),
     modelsGroup(options),
+    anthropicChatGroup(options),
+    geminiChatGroup(options),
+    responsesGroup(options),
   ]
 }
