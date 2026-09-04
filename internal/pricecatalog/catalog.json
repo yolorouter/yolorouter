@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-02",
+  "updated_at": "2026-09-03",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
@@ -118,6 +118,12 @@
       }
     },
     "api.siliconflow.cn": {
+      "zai-org/GLM-5.3": {
+        "input": 6,
+        "output": 28,
+        "cache_write": null,
+        "cache_read": null
+      },
       "deepseek-ai/DeepSeek-V4-Flash": {
         "input": 1,
         "output": 2,
