@@ -181,6 +181,7 @@ protocol that provider natively speaks.
 | `POST /v1/images/generations` | OpenAI Images (generation) | `Authorization: Bearer`, `X-Api-Key` |
 | `POST /v1/images/edits` | OpenAI Images (edit) | `Authorization: Bearer`, `X-Api-Key` |
 | `POST /v1/videos`, `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content` | OpenAI Videos (job dialect) | `Authorization: Bearer`, `X-Api-Key` |
+| `POST /v1/audio/speech` | OpenAI Speech | `Authorization: Bearer`, `X-Api-Key` |
 | `POST /v1beta/models/{model}:generateContent`<br>`POST /v1beta/models/{model}:streamGenerateContent` | Gemini | `x-goog-api-key`, `?key=`, `Authorization: Bearer`, `X-Api-Key` |
 | `GET /v1/models`, `GET /v1/models/{model}` | Model discovery | `Authorization: Bearer`, `X-Api-Key` |
 
@@ -214,6 +215,28 @@ time-limited (the vendor states no duration), so download or re-host
 promptly. Video generation on MiniMax bills the pay-as-you-go balance (Token
 Plan subscriptions, credit packs, and the Hailuo video resource packs do not
 cover the H3 models).
+
+The speech ingress serves models declared with the **audio** output modality:
+one JSON request in the OpenAI shape — `model`, `input`, and `voice` required,
+optional `response_format` (`mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`) and
+`speed` — binary audio out, forwarded as it arrives. Most bases are spoken to
+in the OpenAI speech shape itself; three hosts carry their own dialect —
+SiliconFlow (`mp3/opus/wav/pcm`, `mp3` the default, billed per UTF-8 byte of
+input), Zhipu (`wav/pcm` only, `wav` the default an unspecified caller gets),
+and MiniMax (the `t2a_v2` endpoint: `mp3/pcm/wav/flac/opus` with `mp3` the
+default, voice and speed inside `voice_setting`, audio arriving hex-encoded
+in a JSON envelope the gateway decodes). Candidates bill per million counted
+characters, metered in the settling provider's own counting rule — at MiniMax
+the envelope's own `usage_characters` prices the bill when present — so the
+same model behind different providers' candidates may meter the same text
+differently; the request log's usage detail names the meter each bill used.
+A speech request never fails over to another provider: the voice is the
+caller's own choice and voices do not travel between vendors, so a failure is
+an error the caller can act on, not a different voice. Input length limits
+are the upstream's (MiniMax 10,000 characters, Zhipu 1,024) and answered with
+the upstream's own error; `instructions` and `stream_format` are refused at
+the door — none of the wired dialects serves them, and silently dropping a
+field the caller set would let them believe it took effect.
 
 The `model` in every request is the **public name** you configured. Yolorouter picks
 a provider candidate, swaps in the real upstream model id, and keeps your public

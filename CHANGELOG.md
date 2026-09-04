@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Speech generation (TTS) behind the OpenAI Speech API: `POST
+  /v1/audio/speech` answers with binary audio forwarded as it arrives,
+  with the header commitment held until the first validated byte. Most
+  bases are spoken to in the OpenAI speech shape; SiliconFlow, Zhipu, and
+  MiniMax carry their own dialects (MiniMax through the `t2a_v2` endpoint,
+  its hex-encoded envelope decoded on arrival). Candidates bill per
+  million counted characters in the settling provider's own counting rule
+  (MiniMax bills the envelope's own `usage_characters` when present), the
+  door pre-checks a key's budget ceiling before dialling, and a speech
+  request never fails over to another provider — the voice is the
+  caller's own choice and voices do not travel between vendors. The
+  speech probe verifies audio candidates (and speech-only test models on
+  ordinary bases) with one short synthesis; models declare audio output,
+  bulk-imported audio rows land audio-billed with a single price, and the
+  admin surface shows the modality badge, the character-price column, and
+  the request log's counted characters with the meter they were counted
+  in.
+
 - API examples behind the access-info card. The API Keys page's access
   panel now shows one base-URL row per entry protocol — OpenAI
   (`/v1`), Anthropic (bare) and the new Gemini (`/v1beta`) row — each

@@ -173,6 +173,7 @@ Windows 上，用管理员身份运行 PowerShell 会装成开机自启的系统
 | `POST /v1/images/generations` | OpenAI Images（图片生成） | `Authorization: Bearer`、`X-Api-Key` |
 | `POST /v1/images/edits` | OpenAI Images（图片编辑） | `Authorization: Bearer`、`X-Api-Key` |
 | `POST /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content` | OpenAI Videos（任务方言） | `Authorization: Bearer`、`X-Api-Key` |
+| `POST /v1/audio/speech` | OpenAI Speech | `Authorization: Bearer`、`X-Api-Key` |
 | `POST /v1beta/models/{model}:generateContent`<br>`POST /v1beta/models/{model}:streamGenerateContent` | Gemini | `x-goog-api-key`、`?key=`、`Authorization: Bearer`、`X-Api-Key` |
 | `GET /v1/models`、`GET /v1/models/{model}` | 模型发现 | `Authorization: Bearer`、`X-Api-Key` |
 
@@ -193,6 +194,22 @@ DashScope 与可灵域名的供应商经由其原生任务方言服务，同步�
 `MiniMax-H3` 的大尺寸档位对应 2K 输出；任务上游仅可查 7 天，超窗的未终态任务按过期零计费；成片链接
 限时（官方未载明时长），请及时下载或转存。MiniMax 的视频生成走**按量余额**计费（Token Plan 订阅、
 积分包与海螺视频资源包均不覆盖 H3 系模型）。
+
+语音入口服务声明了 **audio** 输出模态的模型：一个 OpenAI 形状的 JSON 请求——
+`model`、`input`、`voice` 必填，`response_format`（`mp3`、`opus`、`aac`、`flac`、
+`wav`、`pcm`）与 `speed` 可选——返回二进制音频，边到达边转发。多数基座按 OpenAI
+Speech 原形对话；三个域名有自己的方言——SiliconFlow（`mp3/opus/wav/pcm`，默认
+`mp3`，按输入的 UTF-8 字节计费）、智谱（仅 `wav/pcm`，未指定格式的调用方默认
+`wav`）、MiniMax（`t2a_v2` 端点：`mp3/pcm/wav/flac/opus` 默认 `mp3`，voice 与
+speed 落在 `voice_setting`，音频以 hex 编码藏在 JSON 信封里、网关解码后转发）。
+候选按每百万计费字符计价，计费量按中标供应商自身的计数口径计量——MiniMax 在
+信封携带 `usage_characters` 时以它为准——因此同一模型挂不同厂商候选时，同一段
+文本可能计出不同的量；请求日志的用量明细会标明每笔账用的口径。语音请求绝不
+跨供应商降级：音色是调用方点名的，而音色不跨厂商通用——失败就是调用方可以
+据以行动的错误，而不是换了一个声音。输入长度上限归上游（MiniMax 同步 1 万
+字符、智谱 1024），超限收到上游自己的报错；`instructions` 与 `stream_format`
+在门口即被拒绝——已接方言均不支持，而静默丢弃调用方设置的字段会让他们误以为
+它生效了。
 
 请求里的 `model` 是你在后台配置的**对外名**。Yolorouter 会挑选供应商候选、替换成真实的
 上游模型 id，并在返回时保持你的对外名不变。
