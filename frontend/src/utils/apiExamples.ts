@@ -16,10 +16,16 @@
 export type ExampleProtocol = 'openai' | 'anthropic' | 'gemini'
 export type ExampleLanguage = 'curl' | 'python' | 'node' | 'go'
 
+// The chat group also ships Go; every other group serves these three.
+type CoreLanguage = Exclude<ExampleLanguage, 'go'>
+
 export interface ExampleSnippet {
   kind: 'request' | 'response'
   // SSE flavour of the request or response.
   streaming: boolean
+  // Multi-step flows (video submit / poll / download) tag which step a
+  // request or its response belongs to; single-step groups leave it out.
+  step?: 'submit' | 'poll' | 'download'
   code: string
 }
 
@@ -50,6 +56,8 @@ type SampleContext = ExampleCatalogOptions
 
 const API_KEY_PLACEHOLDER = '<API Key>'
 const MODEL_PLACEHOLDER = '<model>'
+const IMAGE_MODEL_PLACEHOLDER = '<image model>'
+const VIDEO_MODEL_PLACEHOLDER = '<video model>'
 
 // The protocol base-URL shapes of the access panel, in one place so the
 // panel rows, the samples, and the tests all agree on how each ecosystem's
@@ -125,7 +133,7 @@ for chunk in stream:
 print(response.choices[0].message.content)`
 }
 
-function pythonChatSetup(ctx: SampleContext): string {
+function pythonSdkSetup(ctx: SampleContext): string {
   const { endpoint, key } = ctx
   return `from openai import OpenAI
 
@@ -157,7 +165,7 @@ for await (const chunk of stream) {
 console.log(response.choices[0].message.content)`
 }
 
-function nodeChatSetup(ctx: SampleContext): string {
+function nodeSdkSetup(ctx: SampleContext): string {
   const { endpoint, key } = ctx
   return `import OpenAI from 'openai'
 
@@ -201,7 +209,7 @@ if err != nil {
 fmt.Println(resp.Choices[0].Message.Content)`
 }
 
-function goChatSetup(ctx: SampleContext): string {
+function goSdkSetup(ctx: SampleContext): string {
   const { endpoint, key } = ctx
   return `client := openai.NewClient(
     option.WithAPIKey("${cred(key)}"),
@@ -243,22 +251,24 @@ data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":
 
 data: [DONE]`
 
+// Per-language request builders, keyed by language: a new group extends a
+// record instead of growing another switch on the same type. Every request
+// block is self-contained — the modal shows request and streaming side by
+// side as separate copyable snippets, so each carries its own client setup
+// instead of assuming the block above it.
+const CHAT_REQUEST_SAMPLES: Record<
+  ExampleLanguage,
+  (ctx: SampleContext, streaming: boolean) => string
+> = {
+  curl: (ctx, streaming) => curlChatRequest(ctx, streaming),
+  python: (ctx, streaming) => `${pythonSdkSetup(ctx)}\n\n${pythonChatRequest(streaming)}`,
+  node: (ctx, streaming) => `${nodeSdkSetup(ctx)}\n\n${nodeChatRequest(streaming)}`,
+  go: (ctx, streaming) =>
+    `package main\n\n${goChatImports()}\n\nfunc main() {\n    ${goSdkSetup(ctx)}\n\n${goChatRequest(streaming)}\n}`,
+}
+
 function chatLanguage(language: ExampleLanguage, ctx: SampleContext): LanguageExamples {
-  // Every request block is self-contained — the modal shows request and
-  // streaming side by side as separate copyable snippets, so each carries
-  // its own client setup instead of assuming the block above it.
-  const request = (streaming: boolean): string => {
-    switch (language) {
-      case 'curl':
-        return curlChatRequest(ctx, streaming)
-      case 'python':
-        return `${pythonChatSetup(ctx)}\n\n${pythonChatRequest(streaming)}`
-      case 'node':
-        return `${nodeChatSetup(ctx)}\n\n${nodeChatRequest(streaming)}`
-      case 'go':
-        return `package main\n\n${goChatImports()}\n\nfunc main() {\n    ${goChatSetup(ctx)}\n\n${goChatRequest(streaming)}\n}`
-    }
-  }
+  const request = (streaming: boolean): string => CHAT_REQUEST_SAMPLES[language](ctx, streaming)
   return {
     language,
     snippets: [
@@ -279,6 +289,225 @@ function chatGroup(ctx: SampleContext): ExampleGroup {
   }
 }
 
+// --- OpenAI-compatible image generation ----------------------------------
+//
+// Bodies mirror the docs site's self-hosted image page. Every upstream
+// delivers one flavour per entry; the response sample shows both field
+// positions side by side so a reader knows where the image lands either
+// way, and the request samples repeat the point where they read it.
+
+const IMAGES_RESPONSE = `{
+  "created": 1759000000,
+  "data": [
+    {"url": "https://upstream.example.com/image.png"},
+    {"b64_json": "iVBORw0KGgoAAAANSUhEUg..."}
+  ]
+}`
+
+function imageResultLoop(): string {
+  return `# data[] carries url or b64_json depending on the upstream.
+for item in image.data:
+    print(item.url or item.b64_json[:32] + "...")`
+}
+
+// --- OpenAI-compatible video jobs ----------------------------------------
+//
+// The Videos API is submit / poll / download; status is the four-value
+// vocabulary queued / in_progress / completed / failed, and the finished
+// clip is only downloadable until the job's expires_at passes.
+
+const VIDEO_SUBMIT_RESPONSE = `{
+  "id": "vid_...",
+  "object": "video",
+  "status": "queued",
+  "model": "${VIDEO_MODEL_PLACEHOLDER}",
+  "created_at": 1759000000
+}`
+
+const VIDEO_POLL_RESPONSE = `{
+  "id": "vid_...",
+  "object": "video",
+  "status": "completed",
+  "model": "${VIDEO_MODEL_PLACEHOLDER}",
+  "created_at": 1759000000,
+  "completed_at": 1759000120,
+  "expires_at": 1759086400
+}`
+
+// --- OpenAI-compatible model listing -------------------------------------
+
+const MODELS_RESPONSE = `{
+  "object": "list",
+  "data": [
+    {
+      "id": "${MODEL_PLACEHOLDER}",
+      "object": "model",
+      "owned_by": "yolorouter",
+      "output_modalities": ["text"]
+    },
+    {
+      "id": "${IMAGE_MODEL_PLACEHOLDER}",
+      "object": "model",
+      "owned_by": "yolorouter",
+      "output_modalities": ["image"]
+    }
+  ]
+}`
+
+// The bread-and-butter layout: one copy-ready request per language plus
+// the shared response shape.
+function singleRequestGroup(
+  id: string,
+  ctx: SampleContext,
+  requests: Record<CoreLanguage, string>,
+  response: string,
+): ExampleGroup {
+  const snippets = (request: string): ExampleSnippet[] => [
+    { kind: 'request', streaming: false, code: request },
+    { kind: 'response', streaming: false, code: response },
+  ]
+  return {
+    id,
+    protocol: 'openai',
+    languages: [
+      { language: 'curl', snippets: snippets(requests.curl) },
+      { language: 'python', snippets: snippets(`${pythonSdkSetup(ctx)}\n\n${requests.python}`) },
+      { language: 'node', snippets: snippets(`${nodeSdkSetup(ctx)}\n\n${requests.node}`) },
+    ],
+  }
+}
+
+function imagesGenerationsGroup(ctx: SampleContext): ExampleGroup {
+  const { endpoint, key } = ctx
+  return singleRequestGroup('openai-images-generations', ctx, {
+    curl: `curl ${openAIBaseUrlOf(endpoint)}/images/generations \\
+  -H "Authorization: Bearer ${cred(key)}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${IMAGE_MODEL_PLACEHOLDER}",
+    "prompt": "a cat",
+    "size": "1024x1024"
+  }'`,
+    python: `image = client.images.generate(
+    model="${IMAGE_MODEL_PLACEHOLDER}",
+    prompt="a cat",
+    size="1024x1024",
+)
+${imageResultLoop()}`,
+    node: `const image = await client.images.generate({
+  model: '${IMAGE_MODEL_PLACEHOLDER}',
+  prompt: 'a cat',
+  size: '1024x1024',
+})
+// data[] carries url or b64_json depending on the upstream.
+console.log(image.data[0]?.url ?? image.data[0]?.b64_json?.slice(0, 32))`,
+  }, IMAGES_RESPONSE)
+}
+
+function imagesEditsGroup(ctx: SampleContext): ExampleGroup {
+  const { endpoint, key } = ctx
+  return singleRequestGroup('openai-images-edits', ctx, {
+    curl: `curl ${openAIBaseUrlOf(endpoint)}/images/edits \\
+  -H "Authorization: Bearer ${cred(key)}" \\
+  -F "model=${IMAGE_MODEL_PLACEHOLDER}" \\
+  -F prompt="make the background pure white" \\
+  -F size=1024x1024 \\
+  -F image=@input.png`,
+    python: `image = client.images.edit(
+    model="${IMAGE_MODEL_PLACEHOLDER}",
+    prompt="make the background pure white",
+    image=open("input.png", "rb"),
+)
+${imageResultLoop()}`,
+    node: `import fs from 'node:fs'
+
+const image = await client.images.edit({
+  model: '${IMAGE_MODEL_PLACEHOLDER}',
+  prompt: 'make the background pure white',
+  image: fs.createReadStream('input.png'),
+})
+console.log(image.data[0]?.url ?? image.data[0]?.b64_json?.slice(0, 32))`,
+  }, IMAGES_RESPONSE)
+}
+
+// The video lifecycle per language, same record-driven shape as the chat
+// requests: each entry builds that language's submit / poll / download
+// snippets. The SDK steps continue the submit step's client and job
+// variables — noted in-code — rather than repeating the setup.
+const VIDEO_STEP_SAMPLES: Record<
+  CoreLanguage,
+  (ctx: SampleContext) => { submit: string; poll: string; download: string }
+> = {
+  curl: (ctx) => {
+    const base = openAIBaseUrlOf(ctx.endpoint)
+    return {
+      submit: `curl ${base}/videos \\
+  -H "Authorization: Bearer ${cred(ctx.key)}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${VIDEO_MODEL_PLACEHOLDER}",
+    "prompt": "a lantern festival at night",
+    "seconds": 4,
+    "size": "720x1280"
+  }'`,
+      poll: `# Poll until status is completed or failed.\ncurl ${base}/videos/vid_... -H "Authorization: Bearer ${cred(ctx.key)}"`,
+      download: `# Download the finished clip before expires_at passes.\ncurl ${base}/videos/vid_.../content \\\n  -H "Authorization: Bearer ${cred(ctx.key)}" \\\n  -o clip.mp4`,
+    }
+  },
+  python: (ctx) => ({
+    submit: `${pythonSdkSetup(ctx)}\n\nimport time\n\nvideo = client.videos.create(\n    model="${VIDEO_MODEL_PLACEHOLDER}",\n    prompt="a lantern festival at night",\n    seconds=4,\n    size="720x1280",\n)\nprint(video.id, video.status)`,
+    poll: `# Continues from the submit step's client and video.\nwhile video.status not in ("completed", "failed"):\n    time.sleep(5)\n    video = client.videos.retrieve(video.id)\nprint(video.status)`,
+    download: `content = client.videos.content(video.id)\ncontent.write_to_file("clip.mp4")`,
+  }),
+  node: (ctx) => ({
+    submit: `${nodeSdkSetup(ctx)}\n\nconst video = await client.videos.create({\n  model: '${VIDEO_MODEL_PLACEHOLDER}',\n  prompt: 'a lantern festival at night',\n  seconds: 4,\n  size: '720x1280',\n})\nconsole.log(video.id, video.status)`,
+    poll: `// Continues from the submit step's client and video.\nlet job = await client.videos.retrieve(video.id)\nwhile (job.status !== 'completed' && job.status !== 'failed') {\n  await new Promise((resolve) => setTimeout(resolve, 5000))\n  job = await client.videos.retrieve(video.id)\n}\nconsole.log(job.status)`,
+    download: `import fs from 'node:fs'\n\nconst response = await client.videos.content(video.id)\nfs.writeFileSync('clip.mp4', Buffer.from(await response.arrayBuffer()))`,
+  }),
+}
+
+function videoSnippets(language: CoreLanguage, ctx: SampleContext): ExampleSnippet[] {
+  const { submit, poll, download } = VIDEO_STEP_SAMPLES[language](ctx)
+  return [
+    { kind: 'request', streaming: false, step: 'submit', code: submit },
+    { kind: 'response', streaming: false, step: 'submit', code: VIDEO_SUBMIT_RESPONSE },
+    { kind: 'request', streaming: false, step: 'poll', code: poll },
+    { kind: 'response', streaming: false, step: 'poll', code: VIDEO_POLL_RESPONSE },
+    { kind: 'request', streaming: false, step: 'download', code: download },
+  ]
+}
+
+function videosGroup(ctx: SampleContext): ExampleGroup {
+  const languages: CoreLanguage[] = ['curl', 'python', 'node']
+  return {
+    id: 'openai-videos',
+    protocol: 'openai',
+    languages: languages.map((language) => ({
+      language,
+      snippets: videoSnippets(language, ctx),
+    })),
+  }
+}
+
+function modelsGroup(ctx: SampleContext): ExampleGroup {
+  const { endpoint, key } = ctx
+  return singleRequestGroup('openai-models', ctx, {
+    curl: `curl ${openAIBaseUrlOf(endpoint)}/models -H "Authorization: Bearer ${cred(key)}"`,
+    python: `for model in client.models.list():
+    print(model.id, model.output_modalities)`,
+    node: `const page = await client.models.list()
+for await (const model of page) {
+  console.log(model.id, model.output_modalities)
+}`,
+  }, MODELS_RESPONSE)
+}
+
 export function buildExampleCatalog(options: ExampleCatalogOptions): ExampleGroup[] {
-  return [chatGroup(options)]
+  return [
+    chatGroup(options),
+    imagesGenerationsGroup(options),
+    imagesEditsGroup(options),
+    videosGroup(options),
+    modelsGroup(options),
+  ]
 }

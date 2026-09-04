@@ -147,6 +147,10 @@ watch(
 // to spot the moment a group is added without its key.
 const GROUP_LABEL_KEYS: Record<string, string> = {
   'openai-chat': 'apiKeys.exampleGroupChat',
+  'openai-images-generations': 'apiKeys.exampleGroupImageGeneration',
+  'openai-images-edits': 'apiKeys.exampleGroupImageEditing',
+  'openai-videos': 'apiKeys.exampleGroupVideo',
+  'openai-models': 'apiKeys.exampleGroupModels',
 }
 
 function groupLabel(id: string): string {
@@ -165,13 +169,21 @@ function languageLabel(language: ExampleLanguage): string {
   return t(LANGUAGE_LABEL_KEYS[language])
 }
 
+const STEP_LABEL_KEYS: Record<NonNullable<ExampleSnippet['step']>, string> = {
+  submit: 'apiKeys.exampleStepSubmit',
+  poll: 'apiKeys.exampleStepPoll',
+  download: 'apiKeys.exampleStepDownload',
+}
+
 function snippetLabel(snippet: ExampleSnippet): string {
-  if (snippet.kind === 'response') {
-    return snippet.streaming
+  const base = snippet.streaming
+    ? snippet.kind === 'response'
       ? t('apiKeys.exampleStreamResponse')
-      : t('apiKeys.exampleResponse')
-  }
-  return snippet.streaming ? t('apiKeys.exampleStreamRequest') : t('apiKeys.exampleRequest')
+      : t('apiKeys.exampleStreamRequest')
+    : snippet.kind === 'response'
+      ? t('apiKeys.exampleResponse')
+      : t('apiKeys.exampleRequest')
+  return snippet.step ? `${t(STEP_LABEL_KEYS[snippet.step])} · ${base}` : base
 }
 
 // Requests highlight in their language's grammar (curl as bash); response

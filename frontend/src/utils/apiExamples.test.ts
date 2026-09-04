@@ -25,6 +25,18 @@ function requestOf(group: ExampleGroup, language: string, streaming = false): st
 }
 
 describe('buildExampleCatalog', () => {
+  it('exposes the OpenAI capability groups in display order', () => {
+    const catalog = buildExampleCatalog({ endpoint: ENDPOINT })
+    expect(catalog.map((g) => g.id)).toEqual([
+      'openai-chat',
+      'openai-images-generations',
+      'openai-images-edits',
+      'openai-videos',
+      'openai-models',
+    ])
+    expect(catalog.every((g) => g.protocol === 'openai')).toBe(true)
+  })
+
   it('exposes the OpenAI chat group for the openai protocol with the full language matrix', () => {
     const group = chatGroup()
     expect(group.protocol).toBe('openai')
@@ -77,6 +89,88 @@ describe('buildExampleCatalog', () => {
         expect(snippet.code).not.toContain('<API Key>')
       }
     }
+  })
+})
+
+function groupById(id: string, key?: string): ExampleGroup {
+  const catalog = buildExampleCatalog({ endpoint: ENDPOINT, key })
+  const group = catalog.find((g) => g.id === id)
+  if (!group) throw new Error(`group ${id} missing from catalog`)
+  return group
+}
+
+function codeOf(group: ExampleGroup, language: string): string {
+  const lang = group.languages.find((l) => l.language === language)
+  if (!lang) throw new Error(`language ${language} missing from group`)
+  return lang.snippets.map((s) => s.code).join('\n\n')
+}
+
+describe('OpenAI capability groups', () => {
+  it('serves images generations with the response shape beside every language', () => {
+    const group = groupById('openai-images-generations')
+    expect(group.languages.map((l) => l.language)).toEqual(['curl', 'python', 'node'])
+    for (const lang of group.languages) {
+      expect(lang.snippets.map((s) => s.kind)).toEqual(['request', 'response'])
+    }
+    // Only curl spells the full path; SDK samples point the client at the
+    // base URL and let it append the route.
+    expect(group.languages[0].snippets[0].code).toContain(`${ENDPOINT}/v1/images/generations`)
+    expect(group.languages[0].snippets[0].code).toContain('Authorization: Bearer <API Key>')
+    expect(codeOf(group, 'python')).toContain(`base_url="${ENDPOINT}/v1"`)
+    expect(codeOf(group, 'node')).toContain(`baseURL: '${ENDPOINT}/v1'`)
+    expect(group.languages[0].snippets[1].code).toContain('"url"')
+  })
+
+  it('serves images edits as multipart with the reference image attached', () => {
+    const group = groupById('openai-images-edits')
+    expect(codeOf(group, 'curl')).toContain(`${ENDPOINT}/v1/images/edits`)
+    expect(codeOf(group, 'curl')).toContain('-F image=@input.png')
+    expect(codeOf(group, 'python')).toContain('client.images.edit(')
+    expect(codeOf(group, 'node')).toContain("fs.createReadStream('input.png')")
+  })
+
+  it('walks the video job lifecycle with the real path and fields', () => {
+    const group = groupById('openai-videos')
+    expect(group.languages.map((l) => l.language)).toEqual(['curl', 'python', 'node'])
+    for (const lang of group.languages) {
+      expect(lang.snippets.map((s) => `${s.step} ${s.kind}`)).toEqual([
+        'submit request',
+        'submit response',
+        'poll request',
+        'poll response',
+        'download request',
+      ])
+      const all = lang.snippets.map((s) => s.code).join('\n')
+      // The gateway's real contract: seconds/size, never duration/resolution.
+      // curl spells the JSON fields; the SDKs use their own keyword syntax.
+      if (lang.language === 'curl') {
+        expect(all).toContain('"seconds": 4')
+        expect(all).toContain('"size": "720x1280"')
+      } else if (lang.language === 'python') {
+        expect(all).toContain('seconds=4')
+        expect(all).toContain('size="720x1280"')
+      } else {
+        expect(all).toContain('seconds: 4')
+        expect(all).toContain(`size: '720x1280'`)
+      }
+      expect(all).not.toContain('duration')
+      expect(all).not.toContain('resolution')
+    }
+    const curl = codeOf(group, 'curl')
+    expect(curl).toContain(`${ENDPOINT}/v1/videos \\`)
+    expect(curl).toContain(`${ENDPOINT}/v1/videos/vid_... -H`)
+    expect(curl).toContain(`${ENDPOINT}/v1/videos/vid_.../content`)
+    expect(group.languages[0].snippets[1].code).toContain('"status": "queued"')
+    expect(group.languages[0].snippets[3].code).toContain('"status": "completed"')
+    expect(group.languages[0].snippets[3].code).toContain('"expires_at"')
+  })
+
+  it('lists models with their output modalities', () => {
+    const group = groupById('openai-models')
+    expect(codeOf(group, 'curl')).toContain(`curl ${ENDPOINT}/v1/models`)
+    expect(codeOf(group, 'python')).toContain('client.models.list()')
+    expect(codeOf(group, 'node')).toContain('client.models.list()')
+    expect(group.languages[0].snippets[1].code).toContain('output_modalities')
   })
 })
 

@@ -112,6 +112,16 @@ describe('ApiAccessPanel', () => {
     await nextTick()
     expect(copyToClipboard).toHaveBeenCalled()
     expect(copyToClipboard.mock.calls[0][0]).toContain(GATEWAY)
+
+    // Switching the outer group tab lands on that capability's samples.
+    const imageTab = Array.from(document.querySelectorAll('.n-tabs-tab')).find(
+      (el) => el.textContent?.trim() === en.apiKeys.exampleGroupImageGeneration,
+    )
+    expect(imageTab).toBeTruthy()
+    imageTab!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    await nextTick()
+    expect(bodyText()).toContain(`${GATEWAY}/v1/images/generations`)
     wrapper.unmount()
   })
 })
