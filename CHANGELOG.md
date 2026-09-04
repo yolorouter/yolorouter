@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- API examples behind the access-info card. The API Keys page's access
+  panel now shows one base-URL row per entry protocol — OpenAI
+  (`/v1`), Anthropic (bare) and the new Gemini (`/v1beta`) row — each
+  with an Examples button opening a modal of copy-ready samples: eight
+  capability groups (chat, image generation and editing, the video
+  submit/poll/download lifecycle, the model list, Anthropic-native and
+  Gemini-native chat, and the Responses API including function calling) in
+  curl, Python, Node and — for chat — Go, with syntax highlighting and
+  per-block copy. The create-key dialog's one-time plaintext step opens
+  the same modal as a nested dialog with the fresh key injected into
+  every sample.
+
 - Two more native video task dialects since 0.2.2: Kling (new-design
   endpoints, `kling-3.0` family — shipped in 0.2.2 but missing from its
   notes) and MiniMax (V2 API, `MiniMax-H3`/`MiniMax-H3-Max`), bringing
@@ -678,7 +690,8 @@ failover, and observe usage and cost.
 - Single binary with the web console embedded via `go:embed`; SQLite or PostgreSQL storage; upstream keys encrypted at rest (AES-256).
 - Self-update via the `update` command and update-check API.
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/yolorouter/yolorouter/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/yolorouter/yolorouter/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yolorouter/yolorouter/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/yolorouter/yolorouter/compare/v0.1.8...v0.1.9
