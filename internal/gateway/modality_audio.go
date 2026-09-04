@@ -24,10 +24,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
+	"github.com/yolorouter/yolorouter/internal/protocols/audio"
 )
 
 // ModalityAudio names the speech modality. The spelling is the model row's
@@ -197,6 +199,17 @@ var (
 		meter:         characterMeter,
 		meterLabel:    "characters",
 	}
+	// speechDialectMiniMax carries only the table half of the t2a_v2
+	// dialect — the format set and the meter — because its submit and
+	// answer shapes are its own rather than the OpenAI form; the encode and
+	// decode branch on the same base gate the video dialects use.
+	speechDialectMiniMax = speechDialect{
+		name:          "minimax",
+		formats:       map[string]bool{"mp3": true, "pcm": true, "wav": true, "flac": true, "opus": true},
+		defaultFormat: "mp3",
+		meter:         audio.MiniMaxMeter,
+		meterLabel:    "minimax_characters",
+	}
 )
 
 // baseHost strips a provider base URL to its bare lowercase hostname, the
@@ -216,28 +229,29 @@ func baseHost(baseURL string) string {
 	return strings.ToLower(strings.TrimSpace(baseURL))
 }
 
-// speechDialectFor picks the dialect a provider's base URL speaks. The
-// minimax base is refused by the caller of this table rather than mapped:
-// its speech endpoint is not the OpenAI shape and lands as its own dialect.
-// A package var for the same reason the video dialect gates are: a local
+// isMiniMaxSpeechBase is the speech side's minimax gate, overridable in
+// tests for the same reason every dialect gate is. Deliberately its own
+// detector rather than the video dialect's: same vendor and host, different
+// dialect family, and the encode/decode branches must agree with the table
+// below on every spelling of the base.
+var isMiniMaxSpeechBase = audio.MiniMaxSpeechBase
+
+// speechDialectFor picks the dialect a provider's base URL speaks. A
+// package var for the same reason the video dialect gates are: a local
 // test server never carries a real hostname, and the branch needs
 // exercising against a live stub.
 var speechDialectFor = func(baseURL string) speechDialect {
-	switch baseHost(baseURL) {
-	case "api.siliconflow.cn":
+	switch {
+	case isMiniMaxSpeechBase(baseURL):
+		return speechDialectMiniMax
+	case baseHost(baseURL) == "api.siliconflow.cn":
 		return speechDialectSiliconFlow
-	case "open.bigmodel.cn":
+	case baseHost(baseURL) == "open.bigmodel.cn":
 		return speechDialectZhipu
 	default:
 		return speechDialectOpenAI
 	}
 }
-
-// minimaxSpeechUnsupported is the verdict for a MiniMax-base candidate until
-// that vendor's speech dialect is wired: routing it through the OpenAI shape
-// would dial an endpoint that does not exist, so the gate keeps the failure
-// local and readable instead.
-const minimaxSpeechUnsupported = "the minimax speech dialect is not wired in this build"
 
 // audioPayload is one speech request: the parsed ask, and — once Supports
 // has chosen — the dialect that will encode it and the candidate it was
@@ -272,9 +286,6 @@ func (p *audioPayload) EstimateCost(PricingView) CostEstimate {
 }
 
 func (p *audioPayload) Supports(cand Candidate) CandidateVerdict {
-	if isMiniMaxBase(cand.BaseURL) {
-		return CandidateVerdict{OK: false, Reason: minimaxSpeechUnsupported}
-	}
 	dialect := speechDialectFor(cand.BaseURL)
 	if p.req.ResponseFormat != "" && !dialect.formats[p.req.ResponseFormat] {
 		return CandidateVerdict{OK: false, Reason: fmt.Sprintf(
@@ -330,6 +341,28 @@ func (p *audioPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 		p.prepareErr = fmt.Errorf("speech payload prepared for a candidate Supports did not approve")
 		return nil, p.prepareErr
 	}
+	// The t2a_v2 dialect has its own body and path; the OpenAI shape rides
+	// the provider's base path. Both answers are audio this gateway must
+	// forward as it arrives, so both declare progressive.
+	call := UpstreamCall{ContentType: "application/json", Progressive: true}
+	if isMiniMaxSpeechBase(cand.BaseURL) {
+		encoded, err := audio.EncodeMiniMaxSpeech(audio.MiniMaxSpeechRequest{
+			Model:        cand.ProviderModelName,
+			Text:         p.req.Input,
+			VoiceSetting: audio.MiniMaxVoiceSetting{VoiceID: p.req.Voice, Speed: p.req.Speed},
+			AudioSetting: audio.MiniMaxAudioSetting{Format: p.effectiveFormat()},
+		})
+		if err != nil {
+			p.prepareErr = err
+			return nil, err
+		}
+		// The path carries its own /v1 segment, so it hangs off the
+		// provider's origin rather than a versioned chat base.
+		call.Path = audio.MiniMaxSpeechPath
+		call.OriginRelative = true
+		call.Body = encoded
+		return &call, nil
+	}
 	encoded, err := json.Marshal(speechUpstreamRequest{
 		Model:          cand.ProviderModelName,
 		Input:          p.req.Input,
@@ -341,15 +374,72 @@ func (p *audioPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 		p.prepareErr = err
 		return nil, err
 	}
-	return &UpstreamCall{
-		Path:        "/audio/speech",
-		Body:        encoded,
-		ContentType: "application/json",
-		// The bytes are audio arriving over seconds: this response must be
-		// forwarded as it arrives whether or not the caller marked the
-		// request as streaming, which for speech they cannot.
-		Progressive: true,
-	}, nil
+	call.Path = "/audio/speech"
+	call.Body = encoded
+	return &call, nil
+}
+
+// deliverMiniMax reads one t2a_v2 answer whole (bounded), decodes it, and
+// hands the decoded bytes to the caller through the same late-commit shape
+// the stream pump uses. A business refusal inside the 200 is the caller's
+// own to act on — answered 422 with the vendor's code and message, like the
+// video dialects answer theirs.
+func (p *audioPayload) deliverMiniMax(tools DeliveryTools, usage *fact.UsageReported, resp *http.Response) fact.Delivery {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, tools.Limits.MaxResponseBytes+1))
+	if err != nil {
+		return deliverNoAudio(tools, "audio_read: "+err.Error())
+	}
+	if int64(len(body)) > tools.Limits.MaxResponseBytes {
+		return deliverNoAudio(tools, "response_too_large")
+	}
+	obs, refusal, perr := audio.ParseMiniMaxSpeechResponse(body)
+	if perr != nil {
+		return deliverNoAudio(tools, perr.Error())
+	}
+	if refusal != nil {
+		errBody, _ := json.Marshal(map[string]any{"error": map[string]string{
+			"code": strconv.Itoa(refusal.Code), "message": refusal.Message,
+		}})
+		if failed := commitJSONAnswer(tools, http.StatusUnprocessableEntity, errBody); failed != nil {
+			return *failed
+		}
+		return fact.Rejected(http.StatusUnprocessableEntity, fact.FaultClient,
+			"speech_business_error", errors.New(strconv.Itoa(refusal.Code)+": "+refusal.Message))
+	}
+	// The vendor's own count is the bill when it states one — the request's
+	// re-count is the estimate the pre-gate used, and the settlement
+	// corrects to the invoice's number (the same estimate-then-actual
+	// correction the chat path performs on tokens).
+	if obs.UsageStated {
+		usage.Count = obs.UsageChars
+		usage.Source = fact.UsageFromUpstream
+	}
+	format := obs.Format
+	if format == "" {
+		format = p.effectiveFormat()
+	}
+	return deliverAudioBuffer(tools, usage, speechContentType(format), obs.Audio)
+}
+
+// deliverAudioBuffer forwards one whole audio buffer under the late-commit
+// policy: headers go out with the first (only) write, so a buffer that turns
+// out empty is answered rather than committed as a silent success.
+func deliverAudioBuffer(tools DeliveryTools, usage *fact.UsageReported, contentType string, buf []byte) fact.Delivery {
+	if len(buf) == 0 {
+		return deliverNoAudio(tools, "empty_audio")
+	}
+	tools.Client.Inject(http.Header{"Content-Type": {contentType}})
+	if cerr := tools.Client.Commit(http.StatusOK); cerr != nil {
+		return fact.Undelivered(http.StatusInternalServerError, fact.VerdictSettled,
+			fact.FaultGateway, "commit_failed: "+cerr.Error(), cerr).WithUsage(usage)
+	}
+	if _, werr := tools.Client.Write(buf); werr != nil {
+		return fact.Truncated(http.StatusOK, 499, fact.FaultClient, "client_write", werr).WithUsage(usage)
+	}
+	if ferr := tools.Client.Flush(); ferr != nil {
+		return fact.Truncated(http.StatusOK, 499, fact.FaultClient, "client_flush", ferr).WithUsage(usage)
+	}
+	return fact.Succeeded(http.StatusOK).WithUsage(usage)
 }
 
 // speechContentType maps a response format to the content type the response
@@ -406,6 +496,13 @@ func (p *audioPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 		Source: fact.UsageFromRequest,
 		Count:  p.dialect.meter(p.req.Input),
 		Meter:  p.dialect.meterLabel,
+	}
+
+	// The t2a_v2 dialect answers with one JSON envelope whose audio is hex
+	// encoded — nothing to forward until the whole answer has arrived and
+	// been decoded, so the branch is its own rather than the stream pump's.
+	if isMiniMaxSpeechBase(p.cand.BaseURL) {
+		return p.deliverMiniMax(tools, usage, resp)
 	}
 
 	// A 200 that does not announce audio is the provider's error envelope
@@ -501,20 +598,31 @@ func (p *audioPayload) FinalizeUsage(d fact.Delivery) *fact.UsageReported {
 	return d.Usage
 }
 
-// LogPolicy keeps the two request bodies (both JSON text). The response
-// halves stay dropped: a progressive delivery's bytes live in the kernel's
-// stream capture file under its own cap, not in a text column, and a digest
-// rendered from a body nobody kept would be ceremony — the sanitizer below
-// still knows the shape should a future policy ask for one.
+// LogPolicy keeps the two request bodies (both JSON text) and renders the
+// upstream response: the kernel stores a failed upstream's error envelope
+// directly (the non-2xx wording lands in the audit body row), while a
+// refusal inside a 200 is answered to the caller and named in the fail
+// reason instead — its body never reaches the column a progressive
+// delivery keeps empty. The caller-facing half stays dropped — a
+// progressive delivery's bytes would otherwise land in the stream capture
+// file, and served audio is stored nowhere by design.
 func (p *audioPayload) LogPolicy() LogPolicy {
 	return LogPolicy{Store: map[BodyKind]BodyStorage{
-		BodyClientRequest:   BodyStoredRaw,
-		BodyUpstreamRequest: BodyStoredRaw,
+		BodyClientRequest:    BodyStoredRaw,
+		BodyUpstreamRequest:  BodyStoredRaw,
+		BodyUpstreamResponse: BodyStoredRendered,
 	}}
 }
 
 func (p *audioPayload) SanitizeForLog(k BodyKind, contentType string, body []byte) string {
 	if k == BodyClientRequest || k == BodyUpstreamRequest {
+		return string(body)
+	}
+	// An error envelope is text an operator reads; anything else is audio
+	// bytes, which become a length and a hash — same rule the content type
+	// would pick, stated on the bytes themselves because the renderer is
+	// invoked without one on the kernel's error path.
+	if json.Valid(body) {
 		return string(body)
 	}
 	sum := sha256.Sum256(body)

@@ -7,10 +7,12 @@ package gateway
 // dialect table overridden onto the local server.
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -409,21 +411,214 @@ func TestSpeechBudgetPrecheckRefusesBeforeDialling(t *testing.T) {
 	}
 }
 
-// The minimax base is refused by name until its own dialect lands: routing
-// it through the OpenAI shape would dial an endpoint that does not exist.
-func TestSpeechMiniMaxBaseRefusedUntilWired(t *testing.T) {
-	rig := newSpeechRig(t, 200)
-	prev := isMiniMaxBase
-	isMiniMaxBase = func(baseURL string) bool { return baseURL == rig.server.URL }
-	t.Cleanup(func() { isMiniMaxBase = prev })
+// overrideMiniMaxSpeechBase points the speech side's minimax gate at the
+// rig's local server, restoring the real one on cleanup.
+func overrideMiniMaxSpeechBase(t *testing.T, serverURL string) {
+	t.Helper()
+	prev := isMiniMaxSpeechBase
+	isMiniMaxSpeechBase = func(baseURL string) bool { return baseURL == serverURL }
+	t.Cleanup(func() { isMiniMaxSpeechBase = prev })
+}
+
+// The minimax rig: the base gate and the dialect table both pointed at the
+// local server, and the fake upstream answers in the t2a_v2 envelope with
+// hex-encoded audio. usageChars < 0 means the answer carries no extra_info.
+func newMiniMaxSpeechRig(t *testing.T, price float64, hexAudio string, usageChars int) *speechRig {
+	t.Helper()
+	rig := newSpeechRig(t, price)
+	rig.upstream.contentType = "application/json"
+	rig.upstream.body = minimaxSpeechBody(t, hexAudio, usageChars)
+	overrideMiniMaxSpeechBase(t, rig.server.URL)
+	overrideSpeechDialect(t, rig.server.URL, speechDialectMiniMax)
+	return rig
+}
+
+func minimaxSpeechBody(t *testing.T, hexAudio string, usageChars int) string {
+	t.Helper()
+	extra := ""
+	if usageChars >= 0 {
+		extra = `,"extra_info":{"usage_characters":` + strconv.Itoa(usageChars) + `}`
+	}
+	return `{"data":{"audio":"` + hexAudio + `","status":2}` + extra + `,"base_resp":{"status_code":0,"status_msg":""}}`
+}
+
+func hexEncode(t *testing.T, s string) string {
+	t.Helper()
+	return hex.EncodeToString([]byte(s))
+}
+
+// Happy path: hex decoded, bytes forwarded, announced by the echoed format,
+// and billed on the vendor's own usage_characters — the official number the
+// invoice would carry, not the gateway's re-count.
+func TestSpeechMiniMaxHexHappyPathBillsOfficialCharacters(t *testing.T) {
+	rig := newMiniMaxSpeechRig(t, 350, hexEncode(t, "ID3-minimax-audio"), 240)
+	w := rig.speak(t, `{"model":"speech-model","input":"任意文本","voice":"male-qn-qingse"}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "ID3-minimax-audio" {
+		t.Errorf("caller received %q, want the hex-decoded bytes", got)
+	}
+	if got := w.Header().Get("Content-Type"); got != "audio/mpeg" {
+		t.Errorf("Content-Type = %q, want audio/mpeg", got)
+	}
+
+	// The submit spoke the t2a_v2 shape: voice and speed inside
+	// voice_setting, format inside audio_setting.
+	sent := rig.upstream.lastBody(t)
+	voiceSetting, _ := sent["voice_setting"].(map[string]any)
+	if voiceSetting["voice_id"] != "male-qn-qingse" {
+		t.Errorf("voice_setting = %v, want the caller's voice in the vendor slot", sent["voice_setting"])
+	}
+	audioSetting, _ := sent["audio_setting"].(map[string]any)
+	if audioSetting["format"] != "mp3" {
+		t.Errorf("audio_setting = %v, want the dialect default mp3 stated", sent["audio_setting"])
+	}
+
+	// The bill follows the official count, meter named.
+	row := rig.latestLog(t)
+	if row.UsageCharacters != 240 {
+		t.Errorf("usage_characters = %d, want the vendor's 240 (not the re-count)", row.UsageCharacters)
+	}
+	if !row.CostKnown || row.CostMicros != 350*240 {
+		t.Errorf("settlement = known:%v micros:%d, want 84000 (official 240 at 350)", row.CostKnown, row.CostMicros)
+	}
+	if !strings.Contains(row.AudioPricingSnapshot, `"meter":"minimax_characters"`) || !strings.Contains(row.AudioPricingSnapshot, `"source":"upstream"`) {
+		t.Errorf("snapshot %s does not name the minimax meter and upstream source", row.AudioPricingSnapshot)
+	}
+}
+
+// Speed rides into voice_setting, not the top level.
+func TestSpeechMiniMaxSpeedRidesIntoVoiceSetting(t *testing.T) {
+	rig := newMiniMaxSpeechRig(t, 350, hexEncode(t, "x"), -1)
+	rig.speak(t, `{"model":"speech-model","input":"hi","voice":"v","speed":1.2}`)
+	sent := rig.upstream.lastBody(t)
+	voiceSetting, _ := sent["voice_setting"].(map[string]any)
+	if voiceSetting["speed"] != 1.2 {
+		t.Errorf("voice_setting.speed = %v, want 1.2 in the vendor slot", sent["voice_setting"])
+	}
+}
+
+// No usage_characters in the answer: the meter's own count prices the bill,
+// the same estimate the pre-gate used (CJK doubled, ASCII single).
+func TestSpeechMiniMaxFallsBackToMeterWhenUsageAbsent(t *testing.T) {
+	rig := newMiniMaxSpeechRig(t, 350, hexEncode(t, "x"), -1)
+	rig.speak(t, `{"model":"speech-model","input":"你a","voice":"v"}`)
+	row := rig.latestLog(t)
+	if row.UsageCharacters != 3 { // one CJK glyph as two, one ASCII as one
+		t.Errorf("usage_characters = %d, want the meter's 3", row.UsageCharacters)
+	}
+	if !strings.Contains(row.AudioPricingSnapshot, `"source":"request"`) {
+		t.Errorf("snapshot %s does not mark the count as request-derived", row.AudioPricingSnapshot)
+	}
+}
+
+// The format gate names the minimax set: flac serves, aac refuses.
+func TestSpeechMiniMaxFormatGate(t *testing.T) {
+	rig := newMiniMaxSpeechRig(t, 350, hexEncode(t, "x"), -1)
+	if w := rig.speak(t, `{"model":"speech-model","input":"hi","voice":"v","response_format":"flac"}`); w.Code != http.StatusOK {
+		t.Fatalf("flac status = %d, body %s", w.Code, w.Body.String())
+	}
+	audioSetting, _ := rig.upstream.lastBody(t)["audio_setting"].(map[string]any)
+	if audioSetting["format"] != "flac" {
+		t.Errorf("audio_setting = %v, want flac through", rig.upstream.lastBody(t)["audio_setting"])
+	}
+	w := rig.speak(t, `{"model":"speech-model","input":"hi","voice":"v","response_format":"aac"}`)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("aac status = %d, want the exhausted chain's 502", w.Code)
+	}
+	refusedCandidatesReason(t, rig, "the minimax speech dialect serves only mp3, opus, flac, wav, pcm")
+}
+
+// A business refusal inside the 200 is the caller's to act on: 422 with the
+// vendor's code and message, settled unbilled.
+func TestSpeechMiniMaxBusinessRefusalAnswered422(t *testing.T) {
+	rig := newSpeechRig(t, 350)
+	rig.upstream.contentType = "application/json"
+	rig.upstream.body = `{"data":{"audio":""},"base_resp":{"status_code":1004,"status_msg":"invalid api key"}}`
+	overrideMiniMaxSpeechBase(t, rig.server.URL)
+	overrideSpeechDialect(t, rig.server.URL, speechDialectMiniMax)
 
 	w := rig.speak(t, `{"model":"speech-model","input":"hi","voice":"v"}`)
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want the exhausted chain's 502", w.Code)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
 	}
-	refusedCandidatesReason(t, rig, "minimax speech dialect")
-	if rig.upstream.hitCount() != 0 {
-		t.Errorf("the unwired dialect was dialled %d times", rig.upstream.hitCount())
+	if !strings.Contains(w.Body.String(), "1004") || !strings.Contains(w.Body.String(), "invalid api key") {
+		t.Errorf("body %q does not carry the vendor's code and message", w.Body.String())
+	}
+	row := rig.latestLog(t)
+	if row.CostKnown && row.CostMicros != 0 {
+		t.Errorf("a refused synthesis settled micros=%d", row.CostMicros)
+	}
+	if row.UsageCharacters != 0 {
+		t.Errorf("usage_characters = %d on a refused synthesis", row.UsageCharacters)
+	}
+}
+
+// A non-2xx answer never reaches a delivery: the kernel classifies it, the
+// caller sees the safe status-only message, and the vendor's own wording
+// lands in the audit row through the rendered upstream body.
+func TestSpeechMiniMaxUpstreamErrorKeepsVendorWordingInAudit(t *testing.T) {
+	// 402 (balance) and 412 (parameter) both carry real statuses on this
+	// vendor; one kernel path classifies both, so both are pinned against
+	// the same assertions.
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{"402 balance", http.StatusPaymentRequired},
+		{"412 parameter", http.StatusPreconditionFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newSpeechRig(t, 350)
+			rig.upstream.status = tc.status
+			rig.upstream.contentType = "application/json"
+			rig.upstream.body = `{"error":{"message":"insufficient balance","type":"insufficient_balance_error"}}`
+			overrideMiniMaxSpeechBase(t, rig.server.URL)
+			overrideSpeechDialect(t, rig.server.URL, speechDialectMiniMax)
+			assertUpstreamErrorAudit(t, rig, tc.status)
+		})
+	}
+}
+
+func assertUpstreamErrorAudit(t *testing.T, rig *speechRig, status int) {
+	t.Helper()
+	w := rig.speak(t, `{"model":"speech-model","input":"hi","voice":"v"}`)
+	if w.Code == http.StatusOK {
+		t.Fatalf("a %d upstream answered 200", status)
+	}
+	if strings.Contains(w.Body.String(), "insufficient balance") {
+		t.Errorf("caller body %q carries the vendor's wording; the safe status message belongs there", w.Body.String())
+	}
+	var bodyRow model.RequestLogBody
+	if err := rig.db.Where("request_id = ?", rig.latestLog(t).RequestID).First(&bodyRow).Error; err != nil {
+		t.Fatalf("load body row: %v", err)
+	}
+	if !strings.Contains(bodyRow.UpstreamResponseBody, "insufficient balance") {
+		t.Errorf("audit upstream body %q lost the vendor's wording", bodyRow.UpstreamResponseBody)
+	}
+}
+
+// Estimate-then-actual: the pre-gate refuses on the meter's count, the
+// settlement bills the official count — and when they differ, the bill is
+// the official one. Here the official count exceeds the estimate, and the
+// settle column proves the correction happened.
+func TestSpeechMiniMaxSettlementCorrectsEstimateToOfficial(t *testing.T) {
+	// The meter says 3 (你a); the vendor's answer states 7. The door let it
+	// through (3 × 350 = 1050 fits a 2000 ceiling); the bill must be
+	// 7 × 350 = 2450, correcting to the invoice's number even past the
+	// ceiling the estimate cleared.
+	rig := newMiniMaxSpeechRig(t, 350, hexEncode(t, "x"), 7)
+	limit := int64(2000)
+	if err := rig.db.Model(&model.APIKey{}).Where("id = ?", rig.key.ID).
+		Update("budget_limit_micros", limit).Error; err != nil {
+		t.Fatalf("seed key budget: %v", err)
+	}
+	rig.speak(t, `{"model":"speech-model","input":"你a","voice":"v"}`)
+	row := rig.latestLog(t)
+	if row.UsageCharacters != 7 || row.CostMicros != 350*7 {
+		t.Errorf("settlement = chars %d micros %d, want the official 7 and 2450 — the estimate only gates the door", row.UsageCharacters, row.CostMicros)
 	}
 }
 
@@ -462,9 +657,8 @@ func TestSpeechCutMidStreamBillsAndSettlesTruncated(t *testing.T) {
 
 	provider := createProvider(t, rig.db, "cut-provider", cut.URL)
 	createProviderKey(t, rig.db, rig.svc.secrets, provider.ID, "sk-cut", "cut-key", 2, true)
-	// Point the model at the cutting provider through a fresh rig's chain:
-	// simplest is a second candidate — the walk only ever tries the head,
-	// so replace the head candidate's provider instead.
+	// The walk only ever tries the head candidate, so retarget the head's
+	// provider rather than appending.
 	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", rig.modelID).
 		Update("provider_id", provider.ID).Error; err != nil {
 		t.Fatalf("retarget candidate: %v", err)
