@@ -64,7 +64,6 @@ export default {
   endpointOpenAI: 'OpenAI-compatible',
   endpointAnthropic: 'Anthropic-compatible',
   endpointGemini: 'Gemini-compatible',
-  endpointExample: 'Example request',
   examplesButton: 'Examples',
   examplesTitle: 'API Examples',
   exampleGroupChat: 'Chat (OpenAI-compatible)',

@@ -90,9 +90,9 @@ const props = withDefaults(
     // Which base-URL row opened this modal — the outer tab lands on the
     // first group of that protocol.
     initialProtocol?: ExampleProtocol
-    // Real credential for samples. No caller passes it yet; the create-key
-    // dialog's one-time step is the intended consumer. Omitting it keeps
-    // the <API Key> placeholder in every sample.
+    // Real credential for samples: the create-key dialog's one-time
+    // plaintext step passes the fresh key so every sample runs as-is.
+    // Omitting it keeps the <API Key> placeholder in every sample.
     apiKey?: string
   }>(),
   { initialProtocol: 'openai', apiKey: undefined },

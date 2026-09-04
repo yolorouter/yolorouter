@@ -64,7 +64,6 @@ export default {
   endpointOpenAI: 'OpenAI 兼容',
   endpointAnthropic: 'Anthropic 兼容',
   endpointGemini: 'Gemini 兼容',
-  endpointExample: '调用示例',
   examplesButton: '示例',
   examplesTitle: '调用示例',
   exampleGroupChat: '对话（OpenAI 兼容）',

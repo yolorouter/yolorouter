@@ -81,14 +81,6 @@ function cred(key: string | undefined): string {
   return key ?? API_KEY_PLACEHOLDER
 }
 
-// The one-liner the create-key dialog shows next to a fresh key: same URL
-// and credential rules as the catalog's chat samples, compressed to a single
-// copy-pasteable line for that moment when the user just wants one command
-// that works.
-export function chatCurlOneLiner(ctx: SampleContext): string {
-  return `curl ${chatUrl(ctx.endpoint)} -H "Authorization: Bearer ${cred(ctx.key)}" -d '{"model":"${MODEL_PLACEHOLDER}","messages":[{"role":"user","content":"hi"}]}'`
-}
-
 // --- OpenAI-compatible chat completions ----------------------------------
 //
 // Sample bodies mirror the docs site's SDK page so the console and the docs

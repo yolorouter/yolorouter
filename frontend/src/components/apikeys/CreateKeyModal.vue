@@ -99,12 +99,18 @@
         </template>
       </n-input>
       <!-- Access info at the exact moment the user holds a fresh key: the
-           base URL it goes with, and a copy-ready request using this key
-           (safe to include — the plaintext is already on screen once-only
-           and never stored). -->
+           base URL it goes with, and a button into the examples modal with
+           this key already injected into every sample (safe to include —
+           the plaintext is already on screen once-only and never
+           stored). The samples themselves live behind the button so the
+           plaintext and the confirm action stay in view. -->
       <div class="endpoint-stack">
         <EndpointRow :label="t('apiKeys.endpointOpenAI')" :value="openAIBaseUrl" :pending="endpointPending" />
-        <EndpointRow :label="t('apiKeys.endpointExample')" :value="curlWithKey" :pending="endpointPending" wide />
+        <n-button size="small" class="examples-entry" :disabled="endpointPending" @click="showExamples = true">
+          <template #icon><BookOpen :size="14" /></template>
+          {{ t('apiKeys.examplesButton') }}
+        </n-button>
+        <ApiExamplesModal v-model:show="showExamples" :api-key="plaintext" />
       </div>
     </div>
     <template #footer>
@@ -121,6 +127,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NDatePicker, NRadio, NRadioGroup, useDialog, useMessage, type FormInst, type FormRules } from 'naive-ui'
+import { BookOpen } from '@lucide/vue'
 import { useApiKeysStore } from '../../store/apiKeys'
 import { useModelsStore } from '../../store/models'
 import { useAuthStore } from '../../store/auth'
@@ -130,6 +137,7 @@ import { toMicros } from '../../utils/money'
 import { modelIdsRule } from '../../utils/apiKeyValidators'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useGatewayEndpoint } from '../../composables/useGatewayEndpoint'
+import ApiExamplesModal from './ApiExamplesModal.vue'
 import EndpointRow from './EndpointRow.vue'
 import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
@@ -167,9 +175,9 @@ const plaintext = ref('')
 const copied = ref(false)
 
 // Access info shown on the plaintext step: the gateway base URL this key
-// goes with, and a copy-ready example request carrying the fresh key.
-const { openAIBaseUrl, curlExample, pending: endpointPending } = useGatewayEndpoint()
-const curlWithKey = computed(() => curlExample(plaintext.value))
+// goes with, and the examples modal carrying the fresh key in every sample.
+const { openAIBaseUrl, pending: endpointPending } = useGatewayEndpoint()
+const showExamples = ref(false)
 
 function initialForm() {
   return {
@@ -307,6 +315,7 @@ function reset() {
   Object.assign(form, initialForm())
   copied.value = false
   plaintext.value = ''
+  showExamples.value = false
 }
 </script>
 
@@ -316,13 +325,19 @@ function reset() {
 }
 
 /* The one-time plaintext step's access info: the endpoint this key goes
-   with, plus a copy-ready example request carrying it. Each row is an
+   with, plus the entry into the examples modal. Each row is an
    EndpointRow and owns its own layout — only the stacking is set here. */
 .endpoint-stack {
   margin-top: var(--space-3);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+/* Full-width so the entry reads as the step's secondary action rather
+   than a stray inline button. */
+.examples-entry {
+  width: 100%;
 }
 
 /* Group the rate/budget caps under a labelled divider so they read as one

@@ -13,7 +13,7 @@
 
 import { computed, type ComputedRef, ref, type Ref } from 'vue'
 import { getSystemEndpoint } from '../api/system'
-import { chatCurlOneLiner, geminiBaseUrlOf, openAIBaseUrlOf } from '../utils/apiExamples'
+import { geminiBaseUrlOf, openAIBaseUrlOf } from '../utils/apiExamples'
 
 // Module-scoped rather than per-caller, unlike most composables here: the
 // address is one process-wide fact, and several components ask for it on
@@ -74,22 +74,11 @@ const endpoint = computed(() => serverEndpoint.value || window.location.origin)
 const openAIBaseUrl = computed(() => openAIBaseUrlOf(endpoint.value))
 const geminiBaseUrl = computed(() => geminiBaseUrlOf(endpoint.value))
 
-// curlExample renders a copy-ready request carrying the given credential.
-// Callers pass a real key only where its plaintext is already on screen;
-// everywhere else the placeholder default stands in — it belongs with the
-// <model> placeholder rather than at the call site, both being properties of
-// the sample rather than of whoever asks for it. The sample text itself
-// lives in utils/apiExamples.ts with every other sample this console shows;
-// this wrapper only binds it to the resolved address.
-function curlExample(key?: string): string {
-  return chatCurlOneLiner({ endpoint: endpoint.value, key })
-}
 
 export function useGatewayEndpoint(): {
   endpoint: ComputedRef<string>
   openAIBaseUrl: ComputedRef<string>
   geminiBaseUrl: ComputedRef<string>
-  curlExample: (key?: string) => string
   pending: Ref<boolean>
 } {
   // load() must never throw synchronously: it is assigned to inFlight, and
@@ -100,5 +89,5 @@ export function useGatewayEndpoint(): {
   if (!resolved && !inFlight) {
     inFlight = load()
   }
-  return { endpoint, openAIBaseUrl, geminiBaseUrl, curlExample, pending }
+  return { endpoint, openAIBaseUrl, geminiBaseUrl, pending }
 }

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildExampleCatalog,
-  chatCurlOneLiner,
   geminiBaseUrlOf,
   openAIBaseUrlOf,
   type ExampleGroup,
@@ -83,12 +82,17 @@ describe('buildExampleCatalog', () => {
   })
 
   it('injects a real key into every request and leaves no placeholder behind', () => {
-    const group = chatGroup('sk-live-123')
-    for (const lang of group.languages) {
-      expect(requestOf(group, lang.language)).toContain('sk-live-123')
-      expect(requestOf(group, lang.language, true)).toContain('sk-live-123')
-      for (const snippet of lang.snippets) {
-        expect(snippet.code).not.toContain('<API Key>')
+    // Whole catalog: the create-key dialog hands the modal a fresh key and
+    // every copyable sample must run with it as-is. Continuation snippets
+    // (video poll/download) ride the submit step's client, so the key is
+    // asserted per language as a whole rather than per snippet.
+    const catalog = buildExampleCatalog({ endpoint: ENDPOINT, key: 'sk-live-123' })
+    for (const group of catalog) {
+      for (const lang of group.languages) {
+        for (const snippet of lang.snippets) {
+          expect(snippet.code).not.toContain('<API Key>')
+        }
+        expect(lang.snippets.map((s) => s.code).join('\n')).toContain('sk-live-123')
       }
     }
   })
@@ -248,14 +252,3 @@ describe('protocol base URLs', () => {
   })
 })
 
-describe('chatCurlOneLiner', () => {
-  it('renders the single-line copy-pasteable request the create-key dialog shows', () => {
-    expect(chatCurlOneLiner({ endpoint: ENDPOINT })).toBe(
-      `curl ${ENDPOINT}/v1/chat/completions -H "Authorization: Bearer <API Key>" -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'`,
-    )
-  })
-
-  it('carries the credential the caller holds on screen', () => {
-    expect(chatCurlOneLiner({ endpoint: ENDPOINT, key: 'sk-fresh' })).toContain('Bearer sk-fresh')
-  })
-})
