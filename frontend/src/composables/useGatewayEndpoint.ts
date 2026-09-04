@@ -13,6 +13,7 @@
 
 import { computed, type ComputedRef, ref, type Ref } from 'vue'
 import { getSystemEndpoint } from '../api/system'
+import { chatCurlOneLiner, geminiBaseUrlOf, openAIBaseUrlOf } from '../utils/apiExamples'
 
 // Module-scoped rather than per-caller, unlike most composables here: the
 // address is one process-wide fact, and several components ask for it on
@@ -66,37 +67,29 @@ const endpoint = computed(() => serverEndpoint.value || window.location.origin)
 
 // OpenAI-compatible clients call {base}/chat/completions, so they need the
 // /v1 suffix. Anthropic-compatible ones take the bare endpoint and append
-// /v1/messages themselves.
-const openAIBaseUrl = computed(() => `${endpoint.value}/v1`)
+// /v1/messages themselves, and Gemini-native ones call
+// {base}/v1beta/models/{model}:generateContent, so that family gets the
+// /v1beta suffix. Both suffix derivations live with the samples in
+// utils/apiExamples.ts so the panel rows and every sample agree.
+const openAIBaseUrl = computed(() => openAIBaseUrlOf(endpoint.value))
+const geminiBaseUrl = computed(() => geminiBaseUrlOf(endpoint.value))
 
 // curlExample renders a copy-ready request carrying the given credential.
 // Callers pass a real key only where its plaintext is already on screen;
-// everywhere else the placeholder default stands in — it belongs here with
-// the <model> placeholder rather than at the call site, both being
-// properties of the sample rather than of whoever asks for it.
-function curlExample(key = '<API Key>'): string {
-  return `curl ${openAIBaseUrl.value}/chat/completions -H "Authorization: Bearer ${key}" -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'`
-}
-
-// The image-generation twin of curlExample: same credential rules, aimed at
-// the images endpoint. The sample keeps an image-model placeholder so the
-// samples stay distinguishable at a glance.
-function imageCurlExample(key = '<API Key>'): string {
-  return `curl ${openAIBaseUrl.value}/images/generations -H "Authorization: Bearer ${key}" -d '{"model":"<image model>","prompt":"a cat"}'`
-}
-
-// The edits twin: multipart, because an edit carries pixels in, and -F keeps
-// the sample copy-pasteable next to a real file the caller names.
-function imageEditCurlExample(key = '<API Key>'): string {
-  return `curl ${openAIBaseUrl.value}/images/edits -H "Authorization: Bearer ${key}" -F model=<image model> -F prompt="add a red hat" -F image=@input.png`
+// everywhere else the placeholder default stands in — it belongs with the
+// <model> placeholder rather than at the call site, both being properties of
+// the sample rather than of whoever asks for it. The sample text itself
+// lives in utils/apiExamples.ts with every other sample this console shows;
+// this wrapper only binds it to the resolved address.
+function curlExample(key?: string): string {
+  return chatCurlOneLiner({ endpoint: endpoint.value, key })
 }
 
 export function useGatewayEndpoint(): {
   endpoint: ComputedRef<string>
   openAIBaseUrl: ComputedRef<string>
+  geminiBaseUrl: ComputedRef<string>
   curlExample: (key?: string) => string
-  imageCurlExample: (key?: string) => string
-  imageEditCurlExample: (key?: string) => string
   pending: Ref<boolean>
 } {
   // load() must never throw synchronously: it is assigned to inFlight, and
@@ -107,5 +100,5 @@ export function useGatewayEndpoint(): {
   if (!resolved && !inFlight) {
     inFlight = load()
   }
-  return { endpoint, openAIBaseUrl, curlExample, imageCurlExample, imageEditCurlExample, pending }
+  return { endpoint, openAIBaseUrl, geminiBaseUrl, curlExample, pending }
 }

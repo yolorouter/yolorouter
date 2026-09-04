@@ -12,6 +12,7 @@ export default {
   copy: 'Copy',
   copied: 'Copied',
   copyFailed: 'Copy failed, please select and copy manually',
+  close: 'Close',
   allAccounts: 'All accounts',
   confirm: 'Confirm',
   networkError: 'Network request failed, please check your connection',

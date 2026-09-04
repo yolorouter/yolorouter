@@ -14,14 +14,7 @@
          the same screen as the keys themselves — credentials and endpoint
          only make sense together, and this page is where users land once
          configuration is done. -->
-    <div class="section-card endpoint-panel">
-      <span class="endpoint-panel__title">{{ t('apiKeys.endpointTitle') }}</span>
-      <EndpointRow :label="t('apiKeys.endpointOpenAI')" :value="openAIBaseUrl" :pending="endpointPending" />
-      <EndpointRow :label="t('apiKeys.endpointAnthropic')" :value="gatewayEndpoint" :pending="endpointPending" />
-      <EndpointRow :label="t('apiKeys.endpointExample')" :value="curlSample" :pending="endpointPending" wide />
-      <EndpointRow :label="t('apiKeys.endpointImageExample')" :value="imageCurlSample" :pending="endpointPending" wide />
-      <EndpointRow :label="t('apiKeys.endpointEditExample')" :value="imageEditCurlSample" :pending="endpointPending" wide />
-    </div>
+    <ApiAccessPanel />
 
     <div class="filter-panel">
       <div class="filter-grid">
@@ -109,8 +102,7 @@ import { ccsProfileName } from '../../utils/format'
 import { useCCSwitchImport } from '../../composables/useCCSwitchImport'
 import { useUserOptions } from '../../composables/useUserOptions'
 import { copyToClipboard } from '../../utils/clipboard'
-import { useGatewayEndpoint } from '../../composables/useGatewayEndpoint'
-import EndpointRow from '../../components/apikeys/EndpointRow.vue'
+import ApiAccessPanel from '../../components/apikeys/ApiAccessPanel.vue'
 import { listModels, type Model } from '../../api/models'
 import { discoverGatewayModels, ERRCODE_KEY_PLAINTEXT_UNAVAILABLE, type APIKey } from '../../api/apiKeys'
 import PageHeader from '../../components/PageHeader.vue'
@@ -131,13 +123,6 @@ const authStore = useAuthStore()
 const { importToCCS } = useCCSwitchImport()
 const showCreate = ref(false)
 
-// Gateway access info panel. The sample request carries a placeholder
-// rather than a key — a real one only ever appears in the create modal's
-// one-time plaintext step.
-const { endpoint: gatewayEndpoint, openAIBaseUrl, curlExample, imageCurlExample, imageEditCurlExample, pending: endpointPending } = useGatewayEndpoint()
-const curlSample = computed(() => curlExample())
-const imageCurlSample = computed(() => imageCurlExample())
-const imageEditCurlSample = computed(() => imageEditCurlExample())
 const showEdit = ref(false)
 const editingId = ref<number | null>(null)
 const showCompress = ref(false)
@@ -562,21 +547,6 @@ const columns = computed<DataTableColumns<APIKey>>(() => [
 </script>
 
 <style scoped>
-/* The frame comes from .section-card; only the tighter padding this
-   compact panel wants is overridden here, the way the cost detail pages
-   do it. Each row is an EndpointRow. */
-.endpoint-panel {
-  padding: var(--space-3) var(--space-4);
-  margin-bottom: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.endpoint-panel__title {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--color-text-secondary);
-}
 :deep(.prefix-cell) {
   display: flex;
   align-items: center;
