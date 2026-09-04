@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -35,10 +36,20 @@ type wanUpstream struct {
 	submits []string // JSON error body to return instead, "" = accept
 	// tasks maps task id → queue of poll response bodies (dashscope
 	// route); arkTasks the same for the ark route; klingTasks for the
-	// kling query route.
-	tasks      map[string][]string
-	arkTasks   map[string][]string
-	klingTasks map[string][]string
+	// kling query route; minimaxTasks for the minimax query route.
+	tasks        map[string][]string
+	arkTasks     map[string][]string
+	klingTasks   map[string][]string
+	minimaxTasks map[string][]string
+	// minimaxSubmits queues submit refusals for the minimax route: a
+	// non-empty head is served as an error body with minimaxSubmitStatus;
+	// "" accepts. minimaxSubmitStatus is 0 (fall back to 402) between
+	// scripted refusals.
+	minimaxSubmits      []string
+	minimaxSubmitStatus int
+	// minimaxQueryErrors maps task id → error body served on the query
+	// route with status 400 (the vendor's window-exhausted answer).
+	minimaxQueryErrors map[string]string
 	// media serves /media/* verbatim with the given content type.
 	media map[string]string
 	// recorded requests
@@ -52,7 +63,7 @@ type wanUpstream struct {
 }
 
 func newWanUpstream() *wanUpstream {
-	return &wanUpstream{tasks: map[string][]string{}, arkTasks: map[string][]string{}, klingTasks: map[string][]string{}, media: map[string]string{}}
+	return &wanUpstream{tasks: map[string][]string{}, arkTasks: map[string][]string{}, klingTasks: map[string][]string{}, minimaxTasks: map[string][]string{}, minimaxQueryErrors: map[string]string{}, media: map[string]string{}}
 }
 
 func (u *wanUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +147,48 @@ func (u *wanUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		u.klingTasks[id] = queue[1:]
 		_, _ = w.Write([]byte(queue[0]))
+	case r.URL.Path == "/v2/video_generation":
+		u.submitHits++
+		u.lastSubmitPath = r.URL.Path
+		u.lastAuthHeader = r.Header.Get("Authorization")
+		buf := &bytes.Buffer{}
+		_, _ = buf.ReadFrom(r.Body)
+		u.lastSubmitBody = buf.Bytes()
+		if len(u.minimaxSubmits) > 0 {
+			errBody := u.minimaxSubmits[0]
+			u.minimaxSubmits = u.minimaxSubmits[1:]
+			if errBody != "" {
+				// This vendor carries refusals as real statuses, so the
+				// scripted refusal needs its own status, not the 400 the
+				// dashscope queue hardcodes.
+				status := u.minimaxSubmitStatus
+				if status == 0 {
+					status = http.StatusPaymentRequired
+				}
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(errBody))
+				return
+			}
+		}
+		id := fmt.Sprintf("mm-task-%d", u.submitHits)
+		_, _ = w.Write([]byte(`{"task_id":"` + id + `"}`))
+	case strings.HasPrefix(r.URL.Path, "/v2/query/video_generation/"):
+		u.queryHits++
+		u.lastQueryPath = r.URL.Path
+		u.lastAuthHeader = r.Header.Get("Authorization")
+		id := strings.TrimPrefix(r.URL.Path, "/v2/query/video_generation/")
+		if errBody, scripted := u.minimaxQueryErrors[id]; scripted {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(errBody))
+			return
+		}
+		queue := u.minimaxTasks[id]
+		if len(queue) == 0 {
+			_, _ = w.Write([]byte(`{"task":{"id":"` + id + `","status":"running"}}`))
+			return
+		}
+		u.minimaxTasks[id] = queue[1:]
+		_, _ = w.Write([]byte(queue[0]))
 	case strings.HasPrefix(r.URL.Path, "/media/"):
 		body, ok := u.media[r.URL.Path]
 		if !ok {
@@ -209,6 +262,21 @@ func newVideoKlingRig(t *testing.T, providerModel string) *videoRig {
 	isDashScopeBase = func(string) bool { return false }
 	t.Cleanup(func() {
 		isKlingBase = prevKling
+		isDashScopeBase = prevDS
+	})
+	return rig
+}
+
+// newVideoMiniMaxRig is the rig on the minimax dialect: same fake upstream,
+// the minimax gate flipped on and the dashscope gate off.
+func newVideoMiniMaxRig(t *testing.T, providerModel string) *videoRig {
+	rig := newVideoRig(t, providerModel)
+	prevMM := isMiniMaxBase
+	isMiniMaxBase = func(baseURL string) bool { return baseURL == rig.server.URL }
+	prevDS := isDashScopeBase
+	isDashScopeBase = func(string) bool { return false }
+	t.Cleanup(func() {
+		isMiniMaxBase = prevMM
 		isDashScopeBase = prevDS
 	})
 	return rig
@@ -1000,6 +1068,329 @@ func TestKlingFailurePaths(t *testing.T) {
 				t.Fatalf("rendering wrong: %s", w.Body.String())
 			}
 			if tc.wantCode != "" && !strings.Contains(w.Body.String(), tc.wantCode) {
+				t.Fatalf("error code missing: %s", w.Body.String())
+			}
+			if spent := rig.keySpent(t); spent != 0 {
+				t.Fatalf("a %s task must bill nothing, spent=%d", tc.wantStatus, spent)
+			}
+		})
+	}
+}
+
+func TestMiniMaxVideoSubmitAndPollEndToEnd(t *testing.T) {
+	rig := newVideoMiniMaxRig(t, "MiniMax-H3")
+	rig.priceVideo(t, 0.5, nil)
+	rig.upstream.minimaxTasks["mm-task-1"] = []string{
+		`{"task":{"id":"mm-task-1","status":"running"}}`,
+		`{"task":{"id":"mm-task-1","status":"succeeded","content":{"url":"` + rig.server.URL + `/media/v.mp4"},"resolution":"2K","duration":8,"usage":{"total_seconds":8,"input_seconds":0,"output_seconds":8,"input_image_count":0},"ratio":"9:16","task_type":"generation","modality":"video"}}`,
+	}
+	rig.upstream.media["/media/v.mp4"] = "minimax-mp4-bytes"
+
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"a paper lantern drifting up a stairwell","seconds":8,"size":"1024x1792"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("minimax submit status = %d, body %s", w.Code, w.Body.String())
+	}
+	// The submit reached the upstream in the V2 shape: one route, the model
+	// in the body, the content array carrying the prompt, the large door
+	// size riding at H3's 2K top with the stated ratio, and no watermark
+	// knob anywhere.
+	if rig.upstream.lastSubmitPath != "/v2/video_generation" {
+		t.Fatalf("submit path = %q, want the one V2 route", rig.upstream.lastSubmitPath)
+	}
+	if !strings.HasPrefix(rig.upstream.lastAuthHeader, "Bearer ") {
+		t.Fatalf("submit must carry the bearer key, got %q", rig.upstream.lastAuthHeader)
+	}
+	var sent struct {
+		Model   string `json:"model"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Resolution string `json:"resolution"`
+		Duration   int    `json:"duration"`
+		Ratio      string `json:"ratio"`
+		Watermark  any    `json:"aigc_watermark"`
+	}
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+		t.Fatalf("minimax submit body: %v (%s)", err, rig.upstream.lastSubmitBody)
+	}
+	if sent.Model != "MiniMax-H3" || len(sent.Content) != 1 || sent.Content[0].Type != "text" ||
+		sent.Content[0].Text != "a paper lantern drifting up a stairwell" {
+		t.Fatalf("content shape wrong: %s", rig.upstream.lastSubmitBody)
+	}
+	if sent.Resolution != "2K" || sent.Ratio != "9:16" || sent.Duration != 8 {
+		t.Fatalf("knobs wrong: %s", rig.upstream.lastSubmitBody)
+	}
+	if sent.Watermark != nil {
+		t.Fatalf("aigc_watermark must be omitted: %s", rig.upstream.lastSubmitBody)
+	}
+
+	jobID := jobIDOf(t, w)
+	w = rig.poll(t, rig.key, jobID)
+	if !strings.Contains(w.Body.String(), `"in_progress"`) {
+		t.Fatalf("minimax poll 1 must show in_progress: %s", w.Body.String())
+	}
+	// The query asked the path-append shape.
+	if rig.upstream.lastQueryPath != "/v2/query/video_generation/mm-task-1" {
+		t.Fatalf("the minimax poll must carry the task id in the path, got %q", rig.upstream.lastQueryPath)
+	}
+	rig.agePoll(t, jobID)
+	w = rig.poll(t, rig.key, jobID)
+	if !strings.Contains(w.Body.String(), `"completed"`) {
+		t.Fatalf("minimax poll 2 must show completed: %s", w.Body.String())
+	}
+	// Settlement rides the stated output seconds: 8 × 0.5 = 4,000,000.
+	if spent := rig.keySpent(t); spent != 4_000_000 {
+		t.Fatalf("minimax settlement must charge the output seconds once, spent=%d", spent)
+	}
+	w = rig.content(t, jobID)
+	if w.Code != http.StatusOK || w.Body.String() != "minimax-mp4-bytes" {
+		t.Fatalf("minimax content proxy wrong: %d %q", w.Code, w.Body.String())
+	}
+}
+
+func TestMiniMaxVideoReferenceRidesFirstFrame(t *testing.T) {
+	rig := newVideoMiniMaxRig(t, "MiniMax-H3")
+	body := `{"model":"video-model","prompt":"animate this","input_reference":{"image_url":"https://example.test/first.png"}}`
+	_, w := rig.submit(t, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit %d %s", w.Code, w.Body.String())
+	}
+	// One route for every capability — the reference changes the body, not
+	// the endpoint.
+	if rig.upstream.lastSubmitPath != "/v2/video_generation" {
+		t.Fatalf("the minimax dialect has one submit route, got %q", rig.upstream.lastSubmitPath)
+	}
+	var sent struct {
+		Content []struct {
+			Type     string `json:"type"`
+			Role     string `json:"role"`
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		} `json:"content"`
+		Ratio string `json:"ratio"`
+	}
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+		t.Fatalf("body: %v (%s)", err, rig.upstream.lastSubmitBody)
+	}
+	if len(sent.Content) != 2 || sent.Content[0].Type != "text" ||
+		sent.Content[1].Type != "image_url" || sent.Content[1].Role != "first_frame" ||
+		sent.Content[1].ImageURL.URL != "https://example.test/first.png" {
+		t.Fatalf("content shape wrong: %s", rig.upstream.lastSubmitBody)
+	}
+	if sent.Ratio != "" {
+		t.Fatalf("a referenced submit must let the frame decide the aspect: %s", rig.upstream.lastSubmitBody)
+	}
+}
+
+func TestMiniMaxReferenceDataURIIsNormalizedNotStripped(t *testing.T) {
+	rig := newVideoMiniMaxRig(t, "MiniMax-H3")
+	pixels := "cGxhaW4tcGl4ZWxz" + strings.Repeat("h6tF", 300)
+	body := `{"model":"video-model","prompt":"animate this","input_reference":{"image_url":"data:image/PNG;base64,` + pixels + `"}}`
+	_, w := rig.submit(t, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit %d %s", w.Code, w.Body.String())
+	}
+	// The dialect's spelling is the data URI itself — kept, with the media
+	// type token lowercased to the form the upstream documents.
+	if !strings.Contains(string(rig.upstream.lastSubmitBody), `"url":"data:image/png;base64,`+pixels+`"`) {
+		t.Fatalf("the data URI must ride whole with a lowercase media type: %.200s", rig.upstream.lastSubmitBody)
+	}
+	// No seconds stated means the door's default 4 — legal on H3, the one
+	// door value the duration gate refuses only for H3-Max.
+	var ask struct {
+		Duration int `json:"duration"`
+	}
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &ask); err != nil {
+		t.Fatalf("submit body: %v", err)
+	}
+	if ask.Duration != 4 {
+		t.Fatalf("the door default 4 seconds must ride H3 verbatim, got %d", ask.Duration)
+	}
+	// And neither audit surface keeps the pixels: the task's request
+	// snapshot and the stored upstream request body — the re-encoded native
+	// spelling is where a caller-side-only redactor would let them back in.
+	jobID := jobIDOf(t, w)
+	var task model.VideoTask
+	_ = rig.db.Where("id = ?", jobID).First(&task).Error
+	if strings.Contains(task.RequestSnapshot, pixels) {
+		t.Fatalf("the snapshot must redact reference pixels")
+	}
+	var logBody model.RequestLogBody
+	if err := rig.db.Where("request_id = ?", "req-video-e2e").First(&logBody).Error; err != nil {
+		t.Fatalf("the submit's log body row must exist: %v", err)
+	}
+	if strings.Contains(logBody.UpstreamRequestBody, pixels) {
+		t.Fatalf("the stored upstream request must redact reference pixels: %.160s", logBody.UpstreamRequestBody)
+	}
+}
+
+// The large door sizes ride at 2K on H3 but H3-Max has no 2K — they stay at
+// its 768P top.
+func TestMiniMaxH3MaxMapsLargeSizeToItsTop(t *testing.T) {
+	rig := newVideoMiniMaxRig(t, "MiniMax-H3-Max")
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"p","seconds":8,"size":"1792x1024"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit %d %s", w.Code, w.Body.String())
+	}
+	var sent struct {
+		Model      string `json:"model"`
+		Resolution string `json:"resolution"`
+		Duration   int    `json:"duration"`
+		Ratio      string `json:"ratio"`
+	}
+	if err := json.Unmarshal(rig.upstream.lastSubmitBody, &sent); err != nil {
+		t.Fatalf("body: %v (%s)", err, rig.upstream.lastSubmitBody)
+	}
+	if sent.Resolution != "768P" || sent.Ratio != "16:9" || sent.Duration != 8 {
+		t.Fatalf("h3-max knobs wrong: %s", rig.upstream.lastSubmitBody)
+	}
+}
+
+// The one model-dependent edge in the door's seconds vocabulary: a 4-second
+// ask on H3-Max is refused with the reason, before any upstream is dialled.
+// The refusal rides the candidate-gate channel — the same surface the kling
+// model gate answers through: the caller sees the exhausted-chain answer,
+// and the reason itself lands on the attempt record.
+func TestMiniMaxH3MaxRefusesFourSeconds(t *testing.T) {
+	rig := newVideoMiniMaxRig(t, "MiniMax-H3-Max")
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"p","seconds":4}`)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want the exhausted-chain 502; body = %s", w.Code, w.Body.String())
+	}
+	if rig.upstream.submitHits != 0 {
+		t.Fatalf("the gate must refuse before any upstream submit, hits=%d", rig.upstream.submitHits)
+	}
+	if spent := rig.keySpent(t); spent != 0 {
+		t.Fatalf("a refused submit must bill nothing, spent=%d", spent)
+	}
+	var log model.RequestLog
+	if err := rig.db.Where("request_id = ?", "req-video-e2e").First(&log).Error; err != nil {
+		t.Fatalf("the refused submit still writes its log row: %v", err)
+	}
+	if log.AttemptsDetail == nil || !strings.Contains(*log.AttemptsDetail, "h3-max generates 5 to 15 second clips") {
+		t.Fatalf("the duration reason must land on the attempt record, got %v", log.AttemptsDetail)
+	}
+}
+
+// This vendor's refusals ride real HTTP statuses: the kernel's own
+// classification answers the caller (the standing stance — the upstream
+// body can echo request fragments — keeps the vendor wording in the audit
+// row, not the caller face), and nothing is billed.
+func TestMiniMaxUpstreamRefusalSurfacesStatus(t *testing.T) {
+	cases := []struct {
+		name            string
+		status          int
+		errType         string
+		message         string
+		wantCallerWords string // empty = the status digits must appear
+	}{
+		{
+			name:    "insufficient balance answers its own 402",
+			status:  http.StatusPaymentRequired,
+			errType: "insufficient_balance_error",
+			message: "insufficient balance (1008)",
+		},
+		{
+			// A content-safety 422 additionally crosses the kernel's
+			// cross-protocol content inspection, which rewords the caller
+			// face to its vendor-neutral refusal — the caller never sees
+			// the vendor's wording, the audit row still keeps it.
+			name:            "sensitive content 422 reworded by the content inspection",
+			status:          http.StatusUnprocessableEntity,
+			errType:         "unprocessable_entity_error",
+			message:         "video description contains sensitive content (1026)",
+			wantCallerWords: "content inspection",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVideoMiniMaxRig(t, "MiniMax-H3")
+			rig.upstream.minimaxSubmits = []string{
+				`{"type":"error","error":{"type":"` + tc.errType + `","message":"` + tc.message + `","http_code":"` + strconv.Itoa(tc.status) + `"},"request_id":"r-1"}`,
+			}
+			rig.upstream.minimaxSubmitStatus = tc.status
+			_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+			if w.Code != tc.status {
+				t.Fatalf("status = %d, want the upstream's own %d; body = %s", w.Code, tc.status, w.Body.String())
+			}
+			wantWords := tc.wantCallerWords
+			if wantWords == "" {
+				wantWords = strconv.Itoa(tc.status)
+			}
+			if !strings.Contains(w.Body.String(), wantWords) {
+				t.Fatalf("the caller answer must carry %q: %s", wantWords, w.Body.String())
+			}
+			if spent := rig.keySpent(t); spent != 0 {
+				t.Fatalf("a refused submit must bill nothing, spent=%d", spent)
+			}
+			// The vendor's own wording lives on the audit row, not the
+			// caller face — the refusal arrived with a real status, and
+			// the kernel's standing stance keeps the body in storage.
+			var logBody model.RequestLogBody
+			if err := rig.db.Where("request_id = ?", "req-video-e2e").First(&logBody).Error; err != nil {
+				t.Fatalf("the refused submit's log body row must exist: %v", err)
+			}
+			if !strings.Contains(logBody.UpstreamResponseBody, tc.message) {
+				t.Fatalf("the vendor's message must land on the audit row, got %.200s", logBody.UpstreamResponseBody)
+			}
+		})
+	}
+}
+
+// A poll answered 400 "invalid task_id" — the vendor's spelling for a
+// task outside its 7-day query window — expires the task on sight,
+// unbilled, instead of limping pending until the zombie horizon.
+func TestMiniMaxWindowExhaustedPollExpiresUnbilled(t *testing.T) {
+	rig := newVideoMiniMaxRig(t, "MiniMax-H3")
+	rig.upstream.minimaxQueryErrors["mm-task-1"] = `{"type":"error","error":{"type":"bad_request_error","message":"invalid task_id","http_code":"400"},"request_id":"r-1"}`
+	_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit %d %s", w.Code, w.Body.String())
+	}
+	jobID := jobIDOf(t, w)
+	w = rig.poll(t, rig.key, jobID)
+	if !strings.Contains(w.Body.String(), `"failed"`) || !strings.Contains(w.Body.String(), "task_expired") {
+		t.Fatalf("a window-exhausted poll must render failed with task_expired, got %s", w.Body.String())
+	}
+	if spent := rig.keySpent(t); spent != 0 {
+		t.Fatalf("an expired task must bill nothing, spent=%d", spent)
+	}
+}
+
+func TestMiniMaxFailedAndCancelledTasksRenderUnbilled(t *testing.T) {
+	cases := []struct {
+		name       string
+		poll       string
+		wantStatus string
+		wantCode   string
+	}{
+		{
+			name:       "failed carries the vendor's error",
+			poll:       `{"task":{"id":"mm-task-1","status":"failed","error":{"code":"1026","message":"video description contains sensitive content"},"duration":4,"usage":{}}}`,
+			wantStatus: "failed", wantCode: "1026",
+		},
+		{
+			name:       "cancelled maps to failed with the gateway's code",
+			poll:       `{"task":{"id":"mm-task-1","status":"cancelled"}}`,
+			wantStatus: "failed", wantCode: "task_cancelled",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVideoMiniMaxRig(t, "MiniMax-H3")
+			rig.upstream.minimaxTasks["mm-task-1"] = []string{tc.poll}
+			_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("submit %d %s", w.Code, w.Body.String())
+			}
+			jobID := jobIDOf(t, w)
+			w = rig.poll(t, rig.key, jobID)
+			if !strings.Contains(w.Body.String(), `"`+tc.wantStatus+`"`) {
+				t.Fatalf("rendering wrong: %s", w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.wantCode) {
 				t.Fatalf("error code missing: %s", w.Body.String())
 			}
 			if spent := rig.keySpent(t); spent != 0 {

@@ -3517,3 +3517,29 @@ func TestKeyPreviewNoVideoFallbackOnOrdinaryBases(t *testing.T) {
 		t.Fatalf("no video probe may run against an ordinary base, got %d", client.CallCountFor("video"))
 	}
 }
+
+// The fallback on the minimax base: the same one host serves the
+// OpenAI-compatible chat dialect and the V2 video task dialect, so a video
+// mapping's chat-shaped ModelNotFound retries through the video dialect —
+// the fourth media base, gated by the same MediaDialectBase dispatch.
+func TestKeyPreviewFallsBackToVideoDialectOnMiniMaxBase(t *testing.T) {
+	svc, _, client := newTestProviderService(t)
+	client.PerTestType = map[string]providerclienttest.TargetResponse{
+		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"video": {Result: providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 40}},
+	}
+
+	result, _, err := svc.TestKeyPreview(context.Background(), "https://api.minimax.cn", "minimax-video", "MiniMax-H3", "", "")
+	if err != nil {
+		t.Fatalf("TestKeyPreview failed: %v", err)
+	}
+	if result.Outcome != providerclient.TestSuccess {
+		t.Fatalf("the video fallback must verify the key, got outcome %d detail %q", result.Outcome, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "video task dialect") {
+		t.Fatalf("the verdict must say which shape decided it, got %q", result.Detail)
+	}
+	if client.CallCountFor("video") != 1 {
+		t.Fatalf("exactly one video probe must run, got %d", client.CallCountFor("video"))
+	}
+}

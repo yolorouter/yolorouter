@@ -46,7 +46,7 @@ the box; switch to PostgreSQL when you want it.
 - **Upstream key pool.** Give each provider a pool of upstream keys and load spreads across it round-robin. A rate-limited key is benched for its `Retry-After` window (later requests walk healthier keys first); unauthorized or quota-exhausted keys are taken out until a retest passes.
 - **One-click model import.** After you add a provider, the gateway fetches its live model catalogue — tick the models you want and import them all at once. Every imported mapping is verified against the real upstream in the background and auto-enabled when it passes; failures keep their diagnostic for a one-click retest. Suggested prices come from a community-maintained [price catalog](https://github.com/yolorouter/price-catalog) that refreshes daily, so most models arrive pre-priced.
 - **Model aliasing.** Callers request a stable public name; each provider candidate maps it to whatever model id that provider actually expects. Candidate mappings are probed against the real upstream when you save them, so a typo is caught at configuration time, not at 3 a.m.
-- **Image & video generation.** The OpenAI Images and Videos APIs are served beside chat. Images bill per delivered image through a quality×size price table (or by tokens); videos are a job dialect — `POST /v1/videos` returns a pollable job, settlement charges per second against a resolution-tiered table when completion is observed, and a key's budget reserves every in-flight job's priced bound. Providers whose native media APIs are not OpenAI-shaped are spoken natively: DashScope (wan video, qwen-image), Volcengine Ark (Seedance video, Seedream images), and Kling (`kling-3.0`-family video, `kling-v3` images, and the multi-reference Omni pair — caller-side kling-native fields like `image_list` ride through verbatim). Keys on media-only accounts are verified through real media probes when a chat probe cannot serve the model.
+- **Image & video generation.** The OpenAI Images and Videos APIs are served beside chat. Images bill per delivered image through a quality×size price table (or by tokens); videos are a job dialect — `POST /v1/videos` returns a pollable job, settlement charges per second against a resolution-tiered table when completion is observed, and a key's budget reserves every in-flight job's priced bound. Providers whose native media APIs are not OpenAI-shaped are spoken natively: DashScope (wan video, qwen-image), Volcengine Ark (Seedance video, Seedream images), Kling (`kling-3.0`-family video, `kling-v3` images, and the multi-reference Omni pair — caller-side kling-native fields like `image_list` ride through verbatim), and MiniMax (`MiniMax-H3` / `MiniMax-H3-Max` video through the V2 task API — text-to-video and first-frame image-to-video; note H3-Max generates 5-to-15-second clips, so a 4-second ask is refused for that model; the same host serves the chat dialect, so key verification falls back to the video probe when the chat probe cannot serve the model). Keys on media-only accounts are verified through real media probes when a chat probe cannot serve the model.
 - **Vision fallback.** Let text-only models "see". Mark a model as unable to read images and pick a vision model in the console; images in incoming requests are described by the vision model and forwarded as text, transparently to the caller, on every ingress protocol. With no vision model configured, images degrade to a clear placeholder instead of an upstream error.
 - **Streaming done right.** Key rotation and failover happen *before* the first byte reaches the client; once streaming starts, the provider is locked in. Content from two providers is never stitched into one response.
 - **Timeouts tuned for reasoning models.** Seven independent, configurable phases instead of one wall clock, so a model that thinks for eight minutes before emitting a token isn't killed mid-thought.
@@ -203,9 +203,17 @@ works unchanged (`create_and_poll` drives the loop). Settlement happens once,
 when completion is first observed, charging the seconds the upstream actually
 delivered against the resolution tier the request's size maps to — failed,
 cancelled, and expired jobs bill nothing. Video upstreams are task dialects
-(DashScope wan, Ark Seedance, Kling new-design endpoints); submitted jobs are
-never re-submitted to another candidate, because an accepted task renders at
-the operator's cost whether or not the caller is ever billed.
+(DashScope wan, Ark Seedance, Kling new-design endpoints, MiniMax V2); submitted
+jobs are never re-submitted to another candidate, because an accepted task
+renders at the operator's cost whether or not the caller is ever billed. MiniMax
+notes: `MiniMax-H3-Max` accepts 5–15 second clips (a 4-second ask is refused
+with that reason), its largest outputs are 768P while `MiniMax-H3` rides the
+large door sizes up to 2K, and task queries are answerable for 7 days — beyond
+that a pending job expires unbilled — and finished-clip links are
+time-limited (the vendor states no duration), so download or re-host
+promptly. Video generation on MiniMax bills the pay-as-you-go balance (Token
+Plan subscriptions, credit packs, and the Hailuo video resource packs do not
+cover the H3 models).
 
 The `model` in every request is the **public name** you configured. Yolorouter picks
 a provider candidate, swaps in the real upstream model id, and keeps your public

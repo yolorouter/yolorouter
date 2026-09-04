@@ -128,6 +128,43 @@ var videoProbeDialects = []videoProbeDialect{{
 		_, _, err := videos.ParseKlingTaskResponse(body)
 		return err
 	},
+}, {
+	name:    "minimax",
+	matches: func(b string) bool { return isMiniMaxBase(b) },
+	build: func(model string) ([]byte, string, map[string]string, error) {
+		// The cheapest legal ask per model, because a probe task renders
+		// and bills for real: H3 floors at 4 seconds and 768P is its
+		// base tier, while H3-Max floors at 5 — the gateway's own
+		// duration gate refuses a 4-second H3-Max ask, and the probe
+		// must stay on the legal side of the gate it shares — and 480P
+		// is its cheapest tier. Internal asks, not the caller-facing
+		// vocabulary.
+		resolution, duration := "768P", 4
+		if model == videos.MiniMaxH3MaxModel {
+			resolution, duration = "480P", 5
+		}
+		body, err := videos.EncodeMiniMaxSubmit(videos.MiniMaxSubmitRequest{
+			Model: model, Prompt: videoProbePrompt, Resolution: resolution, Ratio: "16:9", Duration: duration,
+		})
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("encode minimax video probe: %w", err)
+		}
+		return body, videos.MiniMaxSubmitPath, nil, nil
+	},
+	parseSubmit: func(body []byte) (string, *videos.Refusal, error) {
+		// No refusal arm: this vendor carries refusals as real HTTP
+		// statuses, which the status gate above answers before this
+		// parser ever runs.
+		id, err := videos.ParseMiniMaxSubmitResponse(body)
+		return id, nil, err
+	},
+	taskURL: func(baseURL, taskID string) string {
+		return videos.Origin(baseURL) + videos.MiniMaxTaskRoute(taskID)
+	},
+	parseTask: func(body []byte) error {
+		_, err := videos.ParseMiniMaxTaskResponse(body)
+		return err
+	},
 }}
 
 // videoProbeDialectFor resolves a base to its row, nil when no wired
@@ -162,7 +199,7 @@ func MediaDialectBase(baseURL string) bool {
 func (c *HTTPProviderClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error) {
 	dialect := videoProbeDialectFor(baseURL)
 	if dialect == nil {
-		return TestResult{Outcome: TestUpstreamError, Detail: "video probing is wired for dashscope, ark, and kling bases in this build"}, nil
+		return TestResult{Outcome: TestUpstreamError, Detail: "video probing is wired for dashscope, ark, kling, and minimax bases in this build"}, nil
 	}
 	submitBody, submitPath, headers, err := dialect.build(model)
 	if err != nil {

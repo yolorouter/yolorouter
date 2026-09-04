@@ -653,6 +653,10 @@ var isArkBase = videos.IsArkBase
 // reason isArkBase is.
 var isKlingBase = videos.IsKlingBase
 
+// isMiniMaxBase is videos.IsMiniMaxBase, overridable in tests for the same
+// reason isArkBase is.
+var isMiniMaxBase = videos.IsMiniMaxBase
+
 // TestImageGeneration probes a mapping the way an image request actually
 // reaches the provider: the images endpoint on the provider's base, a
 // minimal prompt. A DashScope-compatible base is the exception the

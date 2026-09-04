@@ -202,3 +202,95 @@ func TestVideoGenerationProbePassesOnKlingBase(t *testing.T) {
 		t.Fatalf("the kling probe must ask for the 3-second floor, got %d", sent.Settings.Duration)
 	}
 }
+
+func TestVideoGenerationProbePassesOnMiniMaxBase(t *testing.T) {
+	// A local server is no vendor by hostname; the minimax gate flips on
+	// and the others off so the minimax branch is exercised against a live
+	// stub.
+	prevMM := isMiniMaxBase
+	isMiniMaxBase = func(string) bool { return true }
+	prevDS := isDashScopeBase
+	isDashScopeBase = func(string) bool { return false }
+	t.Cleanup(func() {
+		isMiniMaxBase = prevMM
+		isDashScopeBase = prevDS
+	})
+
+	var submitBody []byte
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v2/video_generation":
+			buf, _ := io.ReadAll(r.Body)
+			submitBody = buf
+			_, _ = w.Write([]byte(`{"task_id":"424010985738629"}`))
+		case "/v2/query/video_generation/424010985738629":
+			_, _ = w.Write([]byte(`{"task":{"id":"424010985738629","status":"running"}}`))
+		default:
+			t.Errorf("unexpected probe path %s", r.URL.RequestURI())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer srv.Close()
+
+	res, err := c.TestVideoGeneration(t.Context(), srv.URL, "sk-test", "MiniMax-H3")
+	if err != nil {
+		t.Fatalf("probe errored: %v", err)
+	}
+	if res.Outcome != TestSuccess {
+		t.Fatalf("a minimax submit+query round trip must pass, got %+v", res)
+	}
+	// The probe's ask is the cheapest legal clip for the model: H3 floors
+	// at 4 seconds and 768P is its base tier.
+	type probeAsk struct {
+		Resolution string `json:"resolution"`
+		Duration   int    `json:"duration"`
+	}
+	var sent probeAsk
+	if err := json.Unmarshal(submitBody, &sent); err != nil {
+		t.Fatalf("probe submit body: %v", err)
+	}
+	if sent.Resolution != "768P" || sent.Duration != 4 {
+		t.Fatalf("h3 probe must ask the cheapest legal clip, got %s", submitBody)
+	}
+
+	// H3-Max floors at 5 — the probe must stay on the legal side of the
+	// gateway's own duration gate — and 480P is its cheapest tier.
+	res, err = c.TestVideoGeneration(t.Context(), srv.URL, "sk-test", "MiniMax-H3-Max")
+	if err != nil {
+		t.Fatalf("h3-max probe errored: %v", err)
+	}
+	if res.Outcome != TestSuccess {
+		t.Fatalf("an h3-max round trip must pass, got %+v", res)
+	}
+	sent = probeAsk{}
+	if err := json.Unmarshal(submitBody, &sent); err != nil {
+		t.Fatalf("h3-max probe submit body: %v", err)
+	}
+	if sent.Resolution != "480P" || sent.Duration != 5 {
+		t.Fatalf("h3-max probe must ask its cheapest legal clip, got %s", submitBody)
+	}
+}
+
+// The refusals of this vendor ride real HTTP statuses: a 402 answer is
+// classified from its OpenAI-shaped body, not a 200-parser refusal arm.
+func TestVideoGenerationProbeClassifiesMiniMaxRefusal(t *testing.T) {
+	prevMM := isMiniMaxBase
+	isMiniMaxBase = func(string) bool { return true }
+	t.Cleanup(func() { isMiniMaxBase = prevMM })
+
+	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"insufficient_balance_error","message":"insufficient balance (1008)","http_code":"402"},"request_id":"r-1"}`))
+	})
+	defer srv.Close()
+
+	res, err := c.TestVideoGeneration(t.Context(), srv.URL, "sk-test", "MiniMax-H3")
+	if err != nil {
+		t.Fatalf("probe errored: %v", err)
+	}
+	if res.Outcome == TestSuccess {
+		t.Fatalf("a 402 submit must not pass, got %+v", res)
+	}
+}

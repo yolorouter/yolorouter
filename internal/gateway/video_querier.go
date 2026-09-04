@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -77,6 +78,9 @@ func (q *videoTaskQuerier) QueryTask(ctx context.Context, task model.VideoTask) 
 	if isKlingBase(provider.BaseURL) {
 		return q.pollKling(ctx, provider, task, plaintext)
 	}
+	if isMiniMaxBase(provider.BaseURL) {
+		return q.pollMiniMax(ctx, provider, task, plaintext)
+	}
 	return q.pollDashScope(ctx, provider, task, plaintext)
 }
 
@@ -124,6 +128,37 @@ func (q *videoTaskQuerier) pollKling(ctx context.Context, provider model.Provide
 	// asked — the same stance the ark poll takes.
 	if obs.UsageSecs == 0 {
 		obs.UsageSecs = task.Seconds
+	}
+	return obs.result(), nil
+}
+
+// pollMiniMax asks the minimax task query route and normalizes its
+// answer. No refusal arm and no querier-level seconds fallback: this
+// vendor carries refusals as real HTTP statuses (the transport's non-200
+// path answers them), and the duration-echo fallback lives in the
+// dialect's own parse — the echo rides in the same body as the usage,
+// unlike the kling and ark bodies the querier-level fallbacks patch.
+func (q *videoTaskQuerier) pollMiniMax(ctx context.Context, provider model.Provider, task model.VideoTask, plaintext string) (videotask.QueryResult, error) {
+	obs, _, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID,
+		videos.MiniMaxTaskRoute, "minimax",
+		func(body []byte) (taskObservation, *videos.Refusal, error) {
+			parsed, perr := videos.ParseMiniMaxTaskResponse(body)
+			return taskObservation{Status: parsed.Status, VideoURL: parsed.VideoURL, UsageSecs: parsed.UsageSecs, ErrorCode: parsed.ErrorCode, ErrorMessage: parsed.ErrorMessage}, nil, perr
+		})
+	if err != nil {
+		var httpErr *taskHTTPError
+		if errors.As(err, &httpErr) && httpErr.status == http.StatusBadRequest && strings.Contains(string(httpErr.body), "invalid task_id") {
+			// The vendor answers a task id outside its 7-day query window
+			// with 400 "invalid task_id" — the same reading the kling half
+			// gives its empty-data array: expired on sight and unbilled,
+			// not a poll error limping on until the zombie horizon.
+			return videotask.QueryResult{
+				Status:       model.VideoTaskExpired,
+				ErrorCode:    videos.ErrCodeTaskExpired,
+				ErrorMessage: "task id is unknown to the upstream (the minimax query window is 7 days)",
+			}, nil
+		}
+		return videotask.QueryResult{}, err
 	}
 	return obs.result(), nil
 }
@@ -220,9 +255,23 @@ func fetchTaskBounded(ctx context.Context, client taskDoer, url, plaintext, vend
 	defer func() { _ = resp.Body.Close() }()
 	body := videos.ReadTaskBounded(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s task query status %d: %.200s", vendor, resp.StatusCode, body)
+		return nil, &taskHTTPError{vendor: vendor, status: resp.StatusCode, body: body}
 	}
 	return body, nil
+}
+
+// taskHTTPError is a task poll's non-200 answer, kept as a type so the
+// one dialect that reads meaning in a particular status (minimax's
+// window-exhausted 400) can act on it; every other consumer keeps
+// treating it as the transport failure it always was, message included.
+type taskHTTPError struct {
+	vendor string
+	status int
+	body   []byte
+}
+
+func (e *taskHTTPError) Error() string {
+	return fmt.Sprintf("%s task query status %d: %.200s", e.vendor, e.status, e.body)
 }
 
 // authorizedTaskKey picks a key authorized for the provider's current

@@ -42,11 +42,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finished clips at `GET /v1/videos/{id}/content`); both body shapes — the
   official SDK's multipart and plain JSON — parse into one request, and
   the job status stays inside the SDK's strict four-value vocabulary with
-  internal retired states travelling as `failed` plus an error code. Two
-  task dialects are served natively, DashScope (wan families, split
-  request shapes) and Volcengine Ark (Seedance, uniform endpoint),
-  including reference images; other bases refuse per candidate, and a
-  submitted job is never re-submitted elsewhere.
+  internal retired states travelling as `failed` plus an error code. Four
+  task dialects are served natively — DashScope (wan families, split
+  request shapes), Volcengine Ark (Seedance, uniform endpoint), Kling
+  (new-design endpoints, `kling-3.0` family), and MiniMax (V2 API,
+  `MiniMax-H3`/`MiniMax-H3-Max`) — including reference images; other
+  bases refuse per candidate, and a submitted job is never re-submitted
+  elsewhere.
+
+- MiniMax video notes. The two models map the door sizes differently —
+  H3 rides the large sizes at its 2K top, H3-Max stays at 768P — and
+  H3-Max generates 5-to-15-second clips, so a 4-second ask is refused
+  for that model with that reason rather than silently rewritten.
+  MiniMax carries its refusals as real HTTP statuses in an OpenAI-shaped
+  body; the caller sees the status and the vendor's wording lives on the
+  audit row. Video generation on MiniMax bills the pay-as-you-go balance
+  only — subscriptions, credit packs, and the Hailuo resource packs do
+  not cover the H3 models. The video probe and the key-verification
+  media fallback cover the minimax base alongside ark, dashscope, and
+  kling.
 
 - Video settlement. Candidates declare per-second pricing in a
   resolution-tiered table; a submit prices its job at that instant

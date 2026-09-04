@@ -154,7 +154,7 @@ const (
 	// openAIVideoUnsupported is the verdict for a candidate on a base
 	// neither task dialect speaks: proxying an OpenAI-shaped video
 	// upstream is not a thing this build does.
-	openAIVideoUnsupported = "video tasks are served through the dashscope, ark, and kling native dialects in this build"
+	openAIVideoUnsupported = "video tasks are served through the dashscope, ark, kling, and minimax native dialects in this build"
 	// wanFamilyUnsupported is the verdict for a DashScope candidate whose
 	// provider model is not a wan video family the dialect can encode.
 	wanFamilyUnsupported = "model not in a wan video family the dashscope dialect encodes"
@@ -163,6 +163,15 @@ const (
 	// name rides in the submit path, so a name without an endpoint would
 	// dial a route that does not exist.
 	klingModelUnsupported = "model not on the kling new-design endpoint list this dialect encodes"
+	// minimaxModelUnsupported is the verdict for a MiniMax candidate whose
+	// provider model is outside the V2 endpoints' body enum — the upstream
+	// would refuse the name, so the gate keeps that answer local.
+	minimaxModelUnsupported = "model not on the minimax v2 endpoint enum this dialect encodes"
+	// minimaxDurationUnsupported is the verdict for the one model-dependent
+	// edge in the door's seconds vocabulary: MiniMax-H3-Max generates
+	// 5-to-15-second clips, so a 4-second ask is refused with the reason
+	// rather than rewritten into a clip the caller never chose.
+	minimaxDurationUnsupported = "h3-max generates 5 to 15 second clips; 4 seconds is not one it can make"
 )
 
 // isArkBase is videos.IsArkBase, overridable in tests for the same
@@ -174,6 +183,10 @@ var isArkBase = videos.IsArkBase
 // reason isArkBase is. One package, one spelling: both the video and the
 // images modality's kling branches route on this detector.
 var isKlingBase = videos.IsKlingBase
+
+// isMiniMaxBase is videos.IsMiniMaxBase, overridable in tests for the same
+// reason isArkBase is.
+var isMiniMaxBase = videos.IsMiniMaxBase
 
 func (p *videoPayload) Supports(cand Candidate) CandidateVerdict {
 	switch {
@@ -189,6 +202,18 @@ func (p *videoPayload) Supports(cand Candidate) CandidateVerdict {
 	case isKlingBase(cand.BaseURL):
 		if !videos.KlingModelSupported(cand.ProviderModelName) {
 			return CandidateVerdict{OK: false, Reason: klingModelUnsupported}
+		}
+	case isMiniMaxBase(cand.BaseURL):
+		if !videos.MiniMaxModelSupported(cand.ProviderModelName) {
+			return CandidateVerdict{OK: false, Reason: minimaxModelUnsupported}
+		}
+		// The door judged the seconds vocabulary once for every dialect;
+		// this judge is the one model-dependent edge in it — refused with
+		// a reason, never rewritten (a compat clamp would bill the caller
+		// for a clip they did not ask for, or deliver one they cannot
+		// predict).
+		if !videos.MiniMaxDurationSupported(cand.ProviderModelName, p.effectiveSeconds()) {
+			return CandidateVerdict{OK: false, Reason: minimaxDurationUnsupported}
 		}
 	default:
 		return CandidateVerdict{OK: false, Reason: openAIVideoUnsupported}
@@ -295,6 +320,31 @@ func (p *videoPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 		// present-but-empty reference is the text generation it is, on
 		// both sides of the wire.
 		call.Path = videos.KlingSubmitPath(cand.ProviderModelName, videos.KlingReferenced(p.req.InputReference))
+	case isMiniMaxBase(cand.BaseURL):
+		// The model rides in the body, so the size map needs it too: the
+		// two models agree on 768P but only H3 has the 2K top the large
+		// door sizes ride at.
+		resolution, ratio, ok := videos.MapMiniMaxSize(cand.ProviderModelName, p.effectiveSize())
+		if !ok {
+			// The door validated the vocabulary and Supports validated the
+			// model; this is unreachable defense against the tables drifting.
+			p.submitErr = fmt.Errorf("size %q has no minimax mapping for model %q", p.effectiveSize(), cand.ProviderModelName)
+			return nil, p.submitErr
+		}
+		submit := videos.MiniMaxSubmitRequest{
+			Model: cand.ProviderModelName, Prompt: p.req.Prompt,
+			Resolution: resolution, Ratio: ratio, Duration: p.effectiveSeconds(),
+		}
+		// All three slots: the dialect's data-URI spelling carries the
+		// content type inline, uploads keep theirs.
+		attachReference(&submit.RefURL, &submit.RefData, &submit.RefContentType, p.req.InputReference)
+		encoded, err := videos.EncodeMiniMaxSubmit(submit)
+		if err != nil {
+			p.submitErr = err
+			return nil, err
+		}
+		body = encoded
+		call.Path = videos.MiniMaxSubmitPath
 	default:
 		resolution, ratio, ok := videos.MapDashScopeSize(p.effectiveSize())
 		if !ok {
@@ -427,6 +477,13 @@ func parseVideoSubmitResponse(baseURL string, body []byte) (string, *videos.Refu
 	if isKlingBase(baseURL) {
 		id, biz, err := videos.ParseKlingSubmitResponse(body)
 		return id, klingRefusal(biz), err
+	}
+	if isMiniMaxBase(baseURL) {
+		// No refusal arm: this vendor carries refusals as real HTTP
+		// statuses, which never reach a 200-answer parser — the kernel's
+		// own classification answers those before a delivery runs.
+		id, err := videos.ParseMiniMaxSubmitResponse(body)
+		return id, nil, err
 	}
 	id, biz, err := videos.ParseDashScopeSubmitResponse(body)
 	if biz != nil {
