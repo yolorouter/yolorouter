@@ -50,6 +50,7 @@ func TestModelObjectsCarryOutputModalities(t *testing.T) {
 	}{
 		{"image-exclusive", `["image"]`, []string{"image"}},
 		{"text and image", `["text","image"]`, []string{"text", "image"}},
+		{"audio-exclusive", `["audio"]`, []string{"audio"}},
 		{"legacy empty", "", []string{"text"}},
 	}
 	for _, tc := range cases {

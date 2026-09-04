@@ -21,12 +21,17 @@ describe('modalityBadge', () => {
     expect(modalityBadge(['image', 'text'])).toEqual({ key: 'both' })
   })
 
+  it('badges audio', () => {
+    expect(modalityBadge(['audio'])).toEqual({ key: 'audio' })
+    expect(modalityBadge(['text', 'audio'])).toEqual({ key: 'audio' })
+  })
+
   it('badges video models as video', () => {
     expect(modalityBadge(['video'])).toEqual({ key: 'video' })
   })
 
   it('ignores unknown modality ids rather than guessing a badge', () => {
-    expect(modalityBadge(['audio'])).toBeNull()
-    expect(modalityBadge(['text', 'audio'])).toBeNull()
+    expect(modalityBadge(['not-a-modality'])).toBeNull()
+    expect(modalityBadge(['text', 'not-a-modality'])).toBeNull()
   })
 })

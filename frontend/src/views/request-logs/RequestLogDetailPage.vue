@@ -137,6 +137,12 @@
           <NDescriptionsItem v-if="detail.usage_seconds > 0" :label="t('requestLogs.fieldVideoSeconds')">
             {{ detail.usage_seconds.toLocaleString() }}
           </NDescriptionsItem>
+          <NDescriptionsItem v-if="detail.usage_characters > 0" :label="t('requestLogs.fieldSpeechCharacters')">
+            {{ detail.usage_characters.toLocaleString() }}
+            <span v-if="detail.usage_meter" class="candidate-muted">{{
+              t('requestLogs.usageMeterSuffix', { meter: detail.usage_meter })
+            }}</span>
+          </NDescriptionsItem>
           <NDescriptionsItem :label="t('requestLogs.fieldCost')" :span="2">
             <span v-if="detail.cost_known" class="cost-cell">{{ formatMicros(detail.cost_micros) }} {{ t('requestLogs.currencyUnit') }}</span>
             <NTag v-else size="small" :bordered="false" type="default">{{ t('requestLogs.costUnknown') }}</NTag>

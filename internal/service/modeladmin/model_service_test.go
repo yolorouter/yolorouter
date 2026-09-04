@@ -3828,3 +3828,98 @@ func TestSuggestCandidatePriceUsesAudioSeedSection(t *testing.T) {
 		t.Fatalf("audio suggestion carries token figures: %+v", got)
 	}
 }
+
+// An audio-only model's mapping probes through the speech shape: the basic
+// probe is one synthesis, and the chat capability probes never run — they
+// describe behaviours a speech model does not carry.
+func TestAudioExclusiveModelProbesThroughSpeechShape(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	pv := seedProviderWithBaseURL(t, providerService, "sf-audio", "https://api.siliconflow.cn/v1")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	now := time.Now().UTC()
+
+	modelView, err := svc.CreateModel(modeladmin.CreateModelInput{
+		Name: "cosyvoice", OutputModalities: []string{model.OutputModalityAudio},
+	}, now)
+	if err != nil {
+		t.Fatalf("CreateModel failed: %v", err)
+	}
+	// The candidate probe path is exercised through the public shape it
+	// shares with imports: one TestAndCreateCandidate round.
+	basicBefore := client.CallCountFor("basic")
+	created, err := svc.TestAndCreateCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
+		ProviderID: pv.ID, ProviderModelName: "FunAudioLLM/CosyVoice2-0.5B",
+	}, now)
+	if err != nil {
+		t.Fatalf("TestAndCreateCandidate failed: %v", err)
+	}
+	report := created.Report
+	if !report.Basic.Ran || report.Basic.Supported == nil || !*report.Basic.Supported {
+		t.Fatalf("speech-shaped basic probe did not run/pass: %+v", report.Basic)
+	}
+	if got := client.CallCountFor("speech"); got != 1 {
+		t.Errorf("speech probes = %d, want exactly one", got)
+	}
+	// The provider's own key verification spends the basic chat probes this
+	// fixture counts from; only the DELTA is the candidate probe's doing.
+	if got := client.CallCountFor("basic") - basicBefore; got != 0 {
+		t.Errorf("candidate probing spent %d chat probes, want none for an audio-only model", got)
+	}
+	if got := client.CallCountFor("speech"); got > 1 {
+		t.Errorf("speech probes = %d, the shape must not repeat the basic probe", got)
+	}
+}
+
+// The shape gate cuts both ways: a text model's candidate probing speaks
+// chat and never spends a speech probe — same base or not.
+func TestTextModelNeverTriggersSpeechProbe(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	pv := seedProviderWithBaseURL(t, providerService, "sf-text", "https://api.siliconflow.cn/v1")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	now := time.Now().UTC()
+
+	modelView, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "chat-model"}, now)
+	if err != nil {
+		t.Fatalf("CreateModel failed: %v", err)
+	}
+	if _, err := svc.TestAndCreateCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
+		ProviderID: pv.ID, ProviderModelName: "qwen3-30b",
+	}, now); err != nil {
+		t.Fatalf("TestAndCreateCandidate failed: %v", err)
+	}
+	if got := client.CallCountFor("speech"); got != 0 {
+		t.Errorf("a text model spent %d speech probes, want none", got)
+	}
+	if got := client.CallCountFor("basic"); got == 0 {
+		t.Error("a text model must verify through the chat probe")
+	}
+}
+
+// A bulk import of an audio-only row lands as an audio-billed candidate
+// carrying the row's single price, not the token slots.
+func TestImportAudioExclusiveRowBillsPerCharacter(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	prov := seedEnabledProviderForModelTest(t, providerService, "sf-audio-import")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+
+	price := 50.0
+	result, err := svc.ImportProviderModels(prov.ID, []modeladmin.ImportModelItem{
+		{ProviderModelName: "cosyvoice", AudioUnitPrice: &price, OutputModalities: []string{model.OutputModalityAudio}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("ImportProviderModels failed: %v", err)
+	}
+	if result.Created != 1 {
+		t.Fatalf("tally %+v", result)
+	}
+	var cand model.ModelCandidate
+	if err := db.Where("provider_model_name = ?", "cosyvoice").First(&cand).Error; err != nil {
+		t.Fatalf("load candidate: %v", err)
+	}
+	if model.NormalizeBillingMode(cand.BillingMode) != model.BillingModeAudio {
+		t.Fatalf("billing mode = %q, want audio", cand.BillingMode)
+	}
+	if cand.AudioUnitPrice == nil || *cand.AudioUnitPrice != 50 {
+		t.Fatalf("audio price = %v, want the imported 50", cand.AudioUnitPrice)
+	}
+}

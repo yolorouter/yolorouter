@@ -89,7 +89,7 @@ import { modelNameFormatRule } from '../../utils/modelValidators'
 import { useSchedulingModeOptions } from '../../utils/schedulingMode'
 import { MODEL_PRESET_GROUPS, type ModelPresetGroup } from '../../config/modelPresets'
 import { outputModalityOptions } from '../../utils/modalityOptions'
-import { useVideoModalityExclusivity } from '../../composables/useVideoModalityExclusivity'
+import { useModalityExclusivity } from '../../composables/useModalityExclusivity'
 import type { SchedulingMode } from '../../api/models'
 
 const props = defineProps<{ show: boolean }>()
@@ -119,7 +119,7 @@ const form = reactive<{ name: string; schedulingMode: SchedulingMode; outputModa
 })
 const selected = ref(new Set<string>())
 
-useVideoModalityExclusivity(form)
+useModalityExclusivity(form)
 
 const schedulingModeOptions = useSchedulingModeOptions()
 const modalityOptions = computed(() => outputModalityOptions(t))

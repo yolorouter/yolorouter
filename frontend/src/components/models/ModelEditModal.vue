@@ -58,7 +58,7 @@ import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { useSchedulingModeOptions } from '../../utils/schedulingMode'
 import { outputModalityOptions as buildOutputModalityOptions } from '../../utils/modalityOptions'
-import { useVideoModalityExclusivity } from '../../composables/useVideoModalityExclusivity'
+import { useModalityExclusivity } from '../../composables/useModalityExclusivity'
 import type { ImageInputChoice, Model, SchedulingMode } from '../../api/models'
 import { modelNameRule } from '../../utils/modelValidators'
 import { modelRenameContent } from '../../utils/impactSummary'
@@ -103,7 +103,7 @@ const schedulingModeOptions = useSchedulingModeOptions()
 
 const outputModalityOptions = computed(() => buildOutputModalityOptions(t))
 
-useVideoModalityExclusivity(form)
+useModalityExclusivity(form)
 
 function toImageInputChoice(v: boolean | null): ImageInputChoice {
   return v === null ? 'unknown' : v ? 'yes' : 'no'

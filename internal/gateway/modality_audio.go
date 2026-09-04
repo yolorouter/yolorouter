@@ -23,10 +23,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/protocols/audio"
@@ -70,23 +68,12 @@ type speechRequest struct {
 	StreamFormat   *string  `json:"stream_format"`
 }
 
-// speechFormats is the endpoint's own format vocabulary in canonical order —
-// the union every dialect narrows from, the order the door's refusal lists
-// them in, and the order a dialect's supported subset is named in. One
-// slice so the three spellings cannot drift apart.
-var speechFormats = []string{"mp3", "opus", "aac", "flac", "wav", "pcm"}
+// speechFormats and the membership test stay as named seams of the door —
+// the vocabulary check is admission policy (a caller typo), not dialect
+// knowledge — but derive from the shared table's one canonical order.
+var speechFormats = audio.Formats()
 
-// speechFormatVocabulary is speechFormats as the door's membership test. A
-// format outside it is a caller typo and is answered at the door; a format
-// inside it that the chosen dialect cannot serve is a per-candidate
-// refusal, one judgement later.
-var speechFormatVocabulary = func() map[string]bool {
-	m := make(map[string]bool, len(speechFormats))
-	for _, f := range speechFormats {
-		m[f] = true
-	}
-	return m
-}()
+var speechFormatVocabulary = audio.FormatVocabulary()
 
 func (audioModality) Admit(ctx context.Context, in Ingress) (Payload, *Rejection) {
 	var req speechRequest
@@ -153,81 +140,18 @@ func (audioModality) Admit(ctx context.Context, in Ingress) (Payload, *Rejection
 // carries, one spelling for analytics to group by.
 const failAudioBudgetExceeded = "audio_budget_exceeded"
 
-// speechDialect is how one provider family answers a speech request: which
-// response formats it serves and which one an unspecified caller gets, and
-// how it counts the characters it bills. The meter is the VENDOR's counting
-// rule, not a rune count — settlement bills what the vendor's own invoice
-// would count, and the same text meters differently per provider by design.
-type speechDialect struct {
-	name          string
-	formats       map[string]bool
-	defaultFormat string
-	meter         func(input string) int
-	// meterLabel names what the meter counts, in the snapshot's spelling —
-	// the bill's own account of which vendor rule priced it.
-	meterLabel string
-}
-
-func utf8ByteMeter(input string) int  { return len(input) }
-func characterMeter(input string) int { return utf8.RuneCountInString(input) }
+// speechDialect and the table behind speechDialectFor live in the audio
+// protocol package: the provider client's probes route by the same table
+// the gateway routes and bills by, and two private copies of it would be a
+// drift class, not a saving. The aliases keep this file's spelling.
+type speechDialect = audio.Dialect
 
 var (
-	speechDialectSiliconFlow = speechDialect{
-		name:          "siliconflow",
-		formats:       map[string]bool{"mp3": true, "opus": true, "wav": true, "pcm": true},
-		defaultFormat: "mp3",
-		// The vendor prices per UTF-8 byte of input, so bytes are what the
-		// meter counts — a rune count here would understate every CJK
-		// request against the invoice.
-		meter:      utf8ByteMeter,
-		meterLabel: "utf8_bytes",
-	}
-	speechDialectZhipu = speechDialect{
-		name:          "zhipu",
-		formats:       map[string]bool{"wav": true, "pcm": true},
-		defaultFormat: "wav",
-		meter:         characterMeter,
-		meterLabel:    "characters",
-	}
-	// speechDialectOpenAI is the default: every base this build does not
-	// know by name is spoken to in the OpenAI speech shape, whole format
-	// vocabulary and all.
-	speechDialectOpenAI = speechDialect{
-		name:          "openai",
-		formats:       speechFormatVocabulary,
-		defaultFormat: "mp3",
-		meter:         characterMeter,
-		meterLabel:    "characters",
-	}
-	// speechDialectMiniMax carries only the table half of the t2a_v2
-	// dialect — the format set and the meter — because its submit and
-	// answer shapes are its own rather than the OpenAI form; the encode and
-	// decode branch on the same base gate the video dialects use.
-	speechDialectMiniMax = speechDialect{
-		name:          "minimax",
-		formats:       map[string]bool{"mp3": true, "pcm": true, "wav": true, "flac": true, "opus": true},
-		defaultFormat: "mp3",
-		meter:         audio.MiniMaxMeter,
-		meterLabel:    "minimax_characters",
-	}
+	speechDialectSiliconFlow = audio.DialectSiliconFlow
+	speechDialectZhipu       = audio.DialectZhipu
+	speechDialectOpenAI      = audio.DialectOpenAI
+	speechDialectMiniMax     = audio.DialectMiniMax
 )
-
-// baseHost strips a provider base URL to its bare lowercase hostname, the
-// key the dialect table is keyed by. An unparseable base falls back to the
-// trimmed raw string, which simply matches nothing.
-func baseHost(baseURL string) string {
-	raw := strings.TrimSpace(baseURL)
-	if raw == "" {
-		return ""
-	}
-	if !strings.Contains(raw, "://") {
-		raw = "https://" + raw
-	}
-	if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
-		return strings.ToLower(u.Hostname())
-	}
-	return strings.ToLower(strings.TrimSpace(baseURL))
-}
 
 // isMiniMaxSpeechBase is the speech side's minimax gate, overridable in
 // tests for the same reason every dialect gate is. Deliberately its own
@@ -237,21 +161,10 @@ func baseHost(baseURL string) string {
 var isMiniMaxSpeechBase = audio.MiniMaxSpeechBase
 
 // speechDialectFor picks the dialect a provider's base URL speaks. A
-// package var for the same reason the video dialect gates are: a local
-// test server never carries a real hostname, and the branch needs
-// exercising against a live stub.
-var speechDialectFor = func(baseURL string) speechDialect {
-	switch {
-	case isMiniMaxSpeechBase(baseURL):
-		return speechDialectMiniMax
-	case baseHost(baseURL) == "api.siliconflow.cn":
-		return speechDialectSiliconFlow
-	case baseHost(baseURL) == "open.bigmodel.cn":
-		return speechDialectZhipu
-	default:
-		return speechDialectOpenAI
-	}
-}
+// package var over the shared table's decision: a local test server never
+// carries a real hostname, and the branch needs exercising against a live
+// stub.
+var speechDialectFor = audio.DialectFor
 
 // audioPayload is one speech request: the parsed ask, and — once Supports
 // has chosen — the dialect that will encode it and the candidate it was
@@ -287,9 +200,9 @@ func (p *audioPayload) EstimateCost(PricingView) CostEstimate {
 
 func (p *audioPayload) Supports(cand Candidate) CandidateVerdict {
 	dialect := speechDialectFor(cand.BaseURL)
-	if p.req.ResponseFormat != "" && !dialect.formats[p.req.ResponseFormat] {
+	if p.req.ResponseFormat != "" && !dialect.Formats[p.req.ResponseFormat] {
 		return CandidateVerdict{OK: false, Reason: fmt.Sprintf(
-			"the %s speech dialect serves only %s", dialect.name, dialectFormatList(dialect))}
+			"the %s speech dialect serves only %s", dialect.Name, dialectFormatList(dialect))}
 	}
 	p.dialect = &dialect
 	p.cand = &cand
@@ -299,15 +212,7 @@ func (p *audioPayload) Supports(cand Candidate) CandidateVerdict {
 // dialectFormatList renders a dialect's format set in the vocabulary's
 // canonical order, so the refusal names a stable list rather than whatever
 // order a map iteration happens to produce.
-func dialectFormatList(d speechDialect) string {
-	supported := make([]string, 0, len(d.formats))
-	for _, f := range speechFormats {
-		if d.formats[f] {
-			supported = append(supported, f)
-		}
-	}
-	return strings.Join(supported, ", ")
-}
+func dialectFormatList(d speechDialect) string { return audio.FormatList(d) }
 
 // effectiveFormat is the format this request will actually be served in: the
 // caller's explicit choice, or the dialect's own default when they sent
@@ -318,9 +223,9 @@ func (p *audioPayload) effectiveFormat() string {
 		return p.req.ResponseFormat
 	}
 	if p.dialect != nil {
-		return p.dialect.defaultFormat
+		return p.dialect.DefaultFormat
 	}
-	return speechDialectOpenAI.defaultFormat
+	return speechDialectOpenAI.DefaultFormat
 }
 
 // speechUpstreamRequest is the OpenAI speech body this gateway sends
@@ -494,8 +399,8 @@ func (p *audioPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 	usage := &fact.UsageReported{
 		Unit:   fact.UnitCharacter,
 		Source: fact.UsageFromRequest,
-		Count:  p.dialect.meter(p.req.Input),
-		Meter:  p.dialect.meterLabel,
+		Count:  p.dialect.Meter(p.req.Input),
+		Meter:  p.dialect.MeterLabel,
 	}
 
 	// The t2a_v2 dialect answers with one JSON envelope whose audio is hex

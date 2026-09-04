@@ -92,6 +92,10 @@ func (alwaysSuccessClient) TestVideoGeneration(ctx context.Context, baseURL, api
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
+func (alwaysSuccessClient) TestSpeechGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
 func (alwaysSuccessClient) TestStreamingCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
@@ -134,6 +138,12 @@ func (modelNotFoundClient) TestVideoGeneration(ctx context.Context, baseURL, api
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
+func (modelNotFoundClient) TestSpeechGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	// The client's whole identity: the model is not open anywhere, speech
+	// included — the fallback chain must not paper over it.
+	return providerclient.TestResult{Outcome: providerclient.TestModelNotFound}, nil
+}
+
 func (modelNotFoundClient) TestChatCompletion(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3}, nil
 }
@@ -160,6 +170,10 @@ func (erroringClient) TestImageGeneration(ctx context.Context, baseURL, apiKey, 
 }
 
 func (erroringClient) TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
+func (erroringClient) TestSpeechGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
@@ -1086,6 +1100,10 @@ func (c perProtocolClient) TestImageGeneration(ctx context.Context, _, _, _ stri
 }
 
 func (c perProtocolClient) TestVideoGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
+}
+
+func (c perProtocolClient) TestSpeechGeneration(ctx context.Context, _, _, _ string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
 }
 

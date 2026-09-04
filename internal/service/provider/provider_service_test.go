@@ -3430,9 +3430,10 @@ func TestKeyPreviewFallsBackToVideoDialectOnChatUpstreamError(t *testing.T) {
 func TestKeyPreviewVideoFallbackDoesNotMaskATrueModelNotOpen(t *testing.T) {
 	svc, _, client := newTestProviderService(t)
 	client.PerTestType = map[string]providerclienttest.TargetResponse{
-		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
-		"video": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
-		"image": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"basic":  {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"video":  {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"image":  {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"speech": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
 	}
 
 	result, _, err := svc.TestKeyPreview(context.Background(), "https://ark.cn-beijing.volces.com/api/v3", "ark-cold", "doubao-seedance-2-0-260128", "", "")
@@ -3482,9 +3483,10 @@ func TestKeyPreviewFallsBackToImageDialectForImageOnlyAccounts(t *testing.T) {
 func TestKeyPreviewVideoProbeTransportErrorKeepsChatVerdict(t *testing.T) {
 	svc, _, client := newTestProviderService(t)
 	client.PerTestType = map[string]providerclienttest.TargetResponse{
-		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestUpstreamError, DurationMs: 20}},
-		"video": {Err: errors.New("client refused the call")},
-		"image": {Err: errors.New("client refused the call")},
+		"basic":  {Result: providerclient.TestResult{Outcome: providerclient.TestUpstreamError, DurationMs: 20}},
+		"video":  {Err: errors.New("client refused the call")},
+		"image":  {Err: errors.New("client refused the call")},
+		"speech": {Err: errors.New("client refused the call")},
 	}
 
 	result, _, err := svc.TestKeyPreview(context.Background(), "https://ark.cn-beijing.volces.com/api/v3", "ark-x", "some-model", "", "")
@@ -3502,8 +3504,9 @@ func TestKeyPreviewVideoProbeTransportErrorKeepsChatVerdict(t *testing.T) {
 func TestKeyPreviewNoVideoFallbackOnOrdinaryBases(t *testing.T) {
 	svc, _, client := newTestProviderService(t)
 	client.PerTestType = map[string]providerclienttest.TargetResponse{
-		"basic": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
-		"video": {Result: providerclient.TestResult{Outcome: providerclient.TestSuccess}},
+		"basic":  {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"video":  {Result: providerclient.TestResult{Outcome: providerclient.TestSuccess}},
+		"speech": {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
 	}
 
 	result, _, err := svc.TestKeyPreview(context.Background(), "https://api.openai.com/v1", "sk-x", "no-such-model", "", "")
@@ -3541,5 +3544,63 @@ func TestKeyPreviewFallsBackToVideoDialectOnMiniMaxBase(t *testing.T) {
 	}
 	if client.CallCountFor("video") != 1 {
 		t.Fatalf("exactly one video probe must run, got %d", client.CallCountFor("video"))
+	}
+}
+
+// The speech fallback covers ordinary OpenAI-shaped bases too: an account
+// whose test model is speech-only (a chat probe answers ModelNotFound)
+// verifies through one short synthesis — the probe is cheap, and a host
+// without audio answers it with an unbilled miss rather than a bill.
+func TestKeyPreviewSpeechFallbackOnOrdinaryBases(t *testing.T) {
+	svc, _, client := newTestProviderService(t)
+	client.PerTestType = map[string]providerclienttest.TargetResponse{
+		"basic":  {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+		"speech": {Result: providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 30}},
+	}
+
+	result, _, err := svc.TestKeyPreview(context.Background(), "https://api.siliconflow.cn/v1", "sk-x", "FunAudioLLM/CosyVoice2-0.5B", "", "")
+	if err != nil {
+		t.Fatalf("TestKeyPreview failed: %v", err)
+	}
+	if result.Outcome != providerclient.TestSuccess {
+		t.Fatalf("the speech probe must verify the key, got outcome %d detail %q", result.Outcome, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "speech probe") {
+		t.Errorf("detail %q does not name the arm that verified", result.Detail)
+	}
+	if client.CallCountFor("video") != 0 {
+		t.Errorf("a non-media base must not spend billable media probes, video = %d", client.CallCountFor("video"))
+	}
+}
+
+// The speech arm covers every first-batch audio host: a chat probe that
+// cannot serve the model verifies through one short synthesis on the zhipu
+// base (same ordinary-base shape) and on the minimax base (a media base,
+// where the arm runs only after the billable video/image arms declined).
+func TestKeyPreviewSpeechFallbackCoversZhipuAndMiniMaxBases(t *testing.T) {
+	cases := []struct {
+		name string
+		base string
+	}{
+		{"zhipu", "https://open.bigmodel.cn/api/paas/v4"},
+		{"minimax", "https://api.minimax.cn/v1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, client := newTestProviderService(t)
+			client.PerTestType = map[string]providerclienttest.TargetResponse{
+				"basic":  {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+				"video":  {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+				"image":  {Result: providerclient.TestResult{Outcome: providerclient.TestModelNotFound}},
+				"speech": {Result: providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 40}},
+			}
+			result, _, err := svc.TestKeyPreview(context.Background(), tc.base, "sk-x", "speech-model", "", "")
+			if err != nil {
+				t.Fatalf("TestKeyPreview failed: %v", err)
+			}
+			if result.Outcome != providerclient.TestSuccess || !strings.Contains(result.Detail, "speech probe") {
+				t.Fatalf("the speech arm must verify on %s, got outcome %d detail %q", tc.name, result.Outcome, result.Detail)
+			}
+		})
 	}
 }

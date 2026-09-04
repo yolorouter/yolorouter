@@ -68,6 +68,8 @@ export default {
   col_usage_tip: '按计费单位显示：token 行逐行列出输入/输出/缓存读/缓存写；按张计费行显示「张数 × 单价」；按秒计费行显示「秒数 × 单价」',
   usageImageLine: '{n} 张 × {price}',
   usageVideoLine: '{n} 秒 × {price}',
+  usageMeterSuffix: '（按 {meter} 计）',
+  fieldSpeechCharacters: '语音字符数',
   fieldVideoSeconds: '视频时长（秒）',
   col_requestId: '请求 ID',
   col_requestId_tip: '本次请求的唯一标识，详情页以它为索引',

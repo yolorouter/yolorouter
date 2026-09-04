@@ -14,17 +14,19 @@ type Translator = (key: string) => string
 
 // The badge a model's output_modalities renders as: null = no badge (text
 // only). Input is the server's canonical list; order-insensitive.
-export function modalityBadge(modalities: string[]): { key: 'image' | 'both' | 'video' } | null {
+export function modalityBadge(modalities: string[]): { key: 'image' | 'both' | 'video' | 'audio' } | null {
   const hasText = modalities.includes('text')
   const hasImage = modalities.includes('image')
   if (modalities.includes('video')) return { key: 'video' }
+  if (modalities.includes('audio')) return { key: 'audio' }
   if (hasText && hasImage) return { key: 'both' }
   if (hasImage) return { key: 'image' }
   return null
 }
 
-export function modalityBadgeLabel(badge: { key: 'image' | 'both' | 'video' }, t: Translator): string {
+export function modalityBadgeLabel(badge: { key: 'image' | 'both' | 'video' | 'audio' }, t: Translator): string {
   if (badge.key === 'image') return t('models.modalityBadgeImage')
   if (badge.key === 'video') return t('models.modalityBadgeVideo')
+  if (badge.key === 'audio') return t('models.modalityBadgeAudio')
   return t('models.modalityBadgeBoth')
 }

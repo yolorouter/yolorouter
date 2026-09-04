@@ -38,6 +38,9 @@ type ImportModelItem struct {
 	CacheWritePrice   *float64
 	CacheReadPrice    *float64
 	MaxOutput         int
+	// AudioUnitPrice is the per-million-characters price an audio-only row
+	// carries in place of the token slots.
+	AudioUnitPrice *float64
 	// OutputModalities declares what the imported model produces. Optional:
 	// an empty list imports as text-only, the same default every model
 	// without a declaration gets. When the import CREATES the model the
@@ -252,12 +255,26 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 				if m.OutputImageExclusive() {
 					billingMode = model.BillingModeImage
 				}
+				// An audio-only model's mapping bills per character and
+				// carries the row's single price; the token slots stay
+				// inert under that mode. The exclusive helpers overlap only
+				// on a hand-written ["image","audio"] declaration (the
+				// pickers collapse exclusive ids to one); audio is checked
+				// last, so that shape lands audio — one mapping bills in
+				// one mode, and the declaration's owner should not have
+				// written two exclusive ids.
+				var audioPrice *float64
+				if m.OutputAudioExclusive() {
+					billingMode = model.BillingModeAudio
+					audioPrice = item.AudioUnitPrice
+				}
 				newCandidates = append(newCandidates, &model.ModelCandidate{
 					ModelID: m.ID, ProviderID: providerID, ProviderModelName: name,
 					InputPrice: item.InputPrice, OutputPrice: item.OutputPrice,
 					CacheWritePrice: item.CacheWritePrice, CacheReadPrice: item.CacheReadPrice,
 					MaxOutput:          item.MaxOutput,
 					BillingMode:        billingMode,
+					AudioUnitPrice:     audioPrice,
 					ManagementStatus:   model.ModelCandidateStatusDisabled,
 					VerificationStatus: model.ModelVerificationStatusUntested,
 					// The import's auto-enable promise, persisted so the queue

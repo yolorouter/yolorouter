@@ -810,6 +810,7 @@ const (
 	probeShapeChat probeShape = iota
 	probeShapeImage
 	probeShapeVideo
+	probeShapeAudio
 )
 
 func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, providerModelName string, shape probeShape) (CandidateTestReport, error) {
@@ -829,6 +830,8 @@ func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.P
 		basic, err = s.client.TestImageGeneration(ctx, baseURL, apiKey, providerModelName)
 	case probeShapeVideo:
 		basic, err = s.client.TestVideoGeneration(ctx, baseURL, apiKey, providerModelName)
+	case probeShapeAudio:
+		basic, err = s.client.TestSpeechGeneration(ctx, baseURL, apiKey, providerModelName)
 	default:
 		basic, err = s.client.TestChatCompletion(ctx, proto, baseURL, apiKey, providerModelName)
 	}
@@ -956,6 +959,8 @@ func (s *ModelService) probeCandidateMapping(ctx context.Context, modelID, provi
 			shape = probeShapeImage
 		case m.OutputVideoExclusive():
 			shape = probeShapeVideo
+		case m.OutputAudioExclusive():
+			shape = probeShapeAudio
 		}
 	}
 	return s.runCandidateProbes(ctx, providerproto.TypeOf(provider.ProviderType), provider.BaseURL, plaintext, providerModelName, shape)

@@ -18,7 +18,10 @@ type importModelItemRequest struct {
 	OutputPrice      float64  `json:"output_price" binding:"min=0"`
 	CacheWritePrice  *float64 `json:"cache_write_price" binding:"omitempty,min=0"`
 	CacheReadPrice   *float64 `json:"cache_read_price" binding:"omitempty,min=0"`
-	MaxOutput        int      `json:"max_output" binding:"min=0"`
+	// AudioUnitPrice is the per-million-characters price an audio-only row
+	// carries in place of the token slots.
+	AudioUnitPrice *float64 `json:"audio_unit_price" binding:"omitempty,min=0"`
+	MaxOutput      int      `json:"max_output" binding:"min=0"`
 }
 
 // The cap only guards against pathological payloads. It must comfortably hold
@@ -56,7 +59,8 @@ func PostProviderModelsImport(svc *modeladmin.ModelService, queue *modeladmin.Pr
 				OutputModalities:  it.OutputModalities,
 				InputPrice:        it.InputPrice, OutputPrice: it.OutputPrice,
 				CacheWritePrice: it.CacheWritePrice, CacheReadPrice: it.CacheReadPrice,
-				MaxOutput: it.MaxOutput,
+				AudioUnitPrice: it.AudioUnitPrice,
+				MaxOutput:      it.MaxOutput,
 			})
 		}
 		result, err := svc.ImportProviderModels(providerID, items, timeNow())

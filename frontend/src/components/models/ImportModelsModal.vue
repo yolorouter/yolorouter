@@ -283,6 +283,7 @@ function suggestionTag(row: ImportRow) {
 
 function priceInput(row: ImportRow, field: 'inputPrice' | 'outputPrice' | 'cacheWritePrice' | 'cacheReadPrice') {
   if (row.added) return h('span', { class: 'candidate-muted' }, '-')
+  if (row.modality === 'audio') return h('span', { class: 'candidate-muted' }, '—')
   return h(NInputNumber, {
     value: row[field],
     size: 'small',
@@ -292,6 +293,24 @@ function priceInput(row: ImportRow, field: 'inputPrice' | 'outputPrice' | 'cache
     disabled: rowBillsPerImage(row),
     'onUpdate:value': (v: number | null) => {
       row[field] = v
+    },
+  })
+}
+
+// The audio price column: the one price an audio row carries, editable only
+// where the row declares audio (every other modality shows a dash, the same
+// muting the token columns apply to audio rows).
+function audioPriceInput(row: ImportRow) {
+  if (row.added) return h('span', { class: 'candidate-muted' }, '-')
+  if (row.modality !== 'audio') return h('span', { class: 'candidate-muted' }, '—')
+  return h(NInputNumber, {
+    value: row.audioUnitPrice,
+    size: 'small',
+    min: 0,
+    showButton: false,
+    placeholder: '0',
+    'onUpdate:value': (v: number | null) => {
+      row.audioUnitPrice = v
     },
   })
 }
@@ -308,6 +327,8 @@ const modalityOptions = computed<SelectOption[]>(() => [
   ...outputModalityOptions(t).filter((option) => option.value !== 'video'),
   { label: t('models.importModalityBoth'), value: 'both' },
 ])
+// Video stays absent (a video row cannot carry its per-second table here);
+// audio is importable — one price column answers the whole declaration.
 
 function modalitySelect(row: ImportRow) {
   if (row.added) return h('span', { class: 'candidate-muted' }, '—')
@@ -367,6 +388,12 @@ const columns = computed<DataTableColumns<ImportRow>>(() => [
     key: 'cacheReadPrice',
     width: 110,
     render: (row) => priceInput(row, 'cacheReadPrice'),
+  },
+  {
+    title: columnTitle(t('models.audioUnitPrice'), t('models.audioUnitPrice_tip')),
+    key: 'audioUnitPrice',
+    width: 110,
+    render: (row) => audioPriceInput(row),
   },
 ])
 

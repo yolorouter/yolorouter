@@ -135,6 +135,13 @@ func (m Model) OutputImageExclusive() bool {
 	return !m.ServesOutputModality(OutputModalityText) && m.ServesOutputModality(OutputModalityImage)
 }
 
+// OutputAudioExclusive reports whether the model declares audio output and
+// nothing else — the shape whose mappings bill per character and whose
+// probes speak a speech dialect rather than a completion.
+func (m Model) OutputAudioExclusive() bool {
+	return !m.ServesOutputModality(OutputModalityText) && m.ServesOutputModality(OutputModalityAudio)
+}
+
 // CanonicalOutputModalities validates a declaration from the write path and
 // returns the JSON form the column stores. Rejects an empty list (a model
 // produces something), an unknown id (typos must not silently narrow

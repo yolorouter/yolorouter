@@ -75,7 +75,7 @@ func (s *Service) precheckAudioBudget(ctx context.Context, apiKeyID uint, modelN
 			unpricedEnabled = true
 			continue
 		}
-		ask := audioMicros(*cand.AudioUnitPrice, speechDialectFor(cand.Provider.BaseURL).meter(input))
+		ask := audioMicros(*cand.AudioUnitPrice, speechDialectFor(cand.Provider.BaseURL).Meter(input))
 		if ask < 0 {
 			// An absurd price overflowing the micros scale cannot be held
 			// against a ceiling; the settle path prices it unknown, and the

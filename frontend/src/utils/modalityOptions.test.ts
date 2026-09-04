@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { enforceVideoExclusivity, outputModalityOptions } from './modalityOptions'
+import { enforceExclusiveModalities, outputModalityOptions } from './modalityOptions'
 
 // The picker rule pair: the option list mirrors the server's stored
 // vocabulary, and the exclusivity watch keeps a video pick from coexisting
@@ -10,28 +10,37 @@ describe('outputModalityOptions', () => {
   it('lists exactly the server vocabulary, labels via i18n keys', () => {
     const t = (key: string) => `t(${key})`
     const options = outputModalityOptions(t)
-    expect(options.map((o) => o.value)).toEqual(['text', 'image', 'video'])
+    expect(options.map((o) => o.value)).toEqual(['text', 'image', 'video', 'audio'])
     expect(options.map((o) => o.label)).toEqual([
       't(models.outputModalityText)',
       't(models.outputModalityImage)',
       't(models.outputModalityVideo)',
+      't(models.outputModalityAudio)',
     ])
   })
 })
 
-describe('enforceVideoExclusivity', () => {
+describe('enforceExclusiveModalities', () => {
   it('leaves a declaration without video untouched', () => {
-    expect(enforceVideoExclusivity(['text'])).toEqual(['text'])
-    expect(enforceVideoExclusivity(['text', 'image'])).toEqual(['text', 'image'])
-    expect(enforceVideoExclusivity([])).toEqual([])
+    expect(enforceExclusiveModalities(['text'])).toEqual(['text'])
+    expect(enforceExclusiveModalities(['text', 'image'])).toEqual(['text', 'image'])
+    expect(enforceExclusiveModalities([])).toEqual([])
   })
 
   it('collapses video-plus-anything to video alone', () => {
-    expect(enforceVideoExclusivity(['text', 'video'])).toEqual(['video'])
-    expect(enforceVideoExclusivity(['video', 'image', 'text'])).toEqual(['video'])
+    expect(enforceExclusiveModalities(['text', 'video'])).toEqual(['video'])
+    expect(enforceExclusiveModalities(['video', 'image', 'text'])).toEqual(['video'])
+  })
+
+  it('keeps an audio-only declaration as-is', () => {
+    expect(enforceExclusiveModalities(['audio'])).toEqual(['audio'])
+  })
+
+  it('collapses audio-plus-anything to audio alone', () => {
+    expect(enforceExclusiveModalities(['text', 'image', 'audio'])).toEqual(['audio'])
   })
 
   it('keeps a video-only declaration as-is', () => {
-    expect(enforceVideoExclusivity(['video'])).toEqual(['video'])
+    expect(enforceExclusiveModalities(['video'])).toEqual(['video'])
   })
 })

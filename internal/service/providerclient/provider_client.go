@@ -29,6 +29,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/protocols"
+	"github.com/yolorouter/yolorouter/internal/protocols/audio"
 	"github.com/yolorouter/yolorouter/internal/protocols/images"
 	"github.com/yolorouter/yolorouter/internal/protocols/responses"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
@@ -139,6 +140,11 @@ type ProviderClient interface {
 	// verification reuses it as the first media fallback for a
 	// media-dialect base whose chat probe cannot serve the model.
 	TestVideoGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
+	// TestSpeechGeneration validates that baseURL+model can serve one
+	// speech synthesis — the probe shape an audio-only mapping verifies
+	// through, and the last fallback a chat probe that cannot serve the
+	// model tries on a key verification round.
+	TestSpeechGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
 	// ListModels fetches the upstream model catalogue for a credential
 	// (openai/anthropic/responses: GET /v1/models; gemini: GET /v1beta/models),
 	// used to populate the admin UI's test-model picker before a provider row
@@ -652,6 +658,11 @@ var isArkBase = videos.IsArkBase
 // isKlingBase is videos.IsKlingBase, overridable in tests for the same
 // reason isArkBase is.
 var isKlingBase = videos.IsKlingBase
+
+// isMiniMaxSpeechBase routes the speech probe's t2a arm; a var so a local
+// test server can carry the gate, the same reason every dialect gate here
+// is one.
+var isMiniMaxSpeechBase = audio.MiniMaxSpeechBase
 
 // isMiniMaxBase is videos.IsMiniMaxBase, overridable in tests for the same
 // reason isArkBase is.

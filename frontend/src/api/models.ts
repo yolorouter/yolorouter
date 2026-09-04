@@ -11,12 +11,14 @@ export interface ModelCandidate {
   cache_write_price: number | null
   cache_read_price: number | null
   max_output: number
-  /** What settlement prices this candidate in: "token" (default), "image", or "video". */
+  /** What settlement prices this candidate in: "token" (default), "image", "video", or "audio". */
   billing_mode: BillingMode
   /** The per-image price table, null when the candidate does not bill per image. */
   image_pricing_tiers: ImagePricingTiers | null
   /** The per-second video price table, null when the candidate does not bill per video. */
   video_pricing_tiers: VideoPricingTiers | null
+  /** The per-million-characters price, null when the candidate does not bill per character. */
+  audio_unit_price: number | null
   // Whether the last probe confirmed the capability: true when it did, null when
   // it did not. Informational only — routing ignores these. A false can still
   // arrive from a row written by an older build.
@@ -48,7 +50,7 @@ export type SchedulingMode = 'failover' | 'balanced'
  * or the per-second video tier table. Mirrors the Go vocabulary
  * (model.BillingModeToken / BillingModeImage / BillingModeVideo) — the
  * backend normalizes every stored value onto it. */
-export type BillingMode = 'token' | 'image' | 'video'
+export type BillingMode = 'token' | 'image' | 'video' | 'audio'
 
 export interface Model {
   id: number
@@ -112,6 +114,7 @@ export interface CreateCandidateInput {
   billing_mode?: BillingMode
   image_pricing_tiers?: ImagePricingTiers | null
   video_pricing_tiers?: VideoPricingTiers | null
+  audio_unit_price?: number | null
 }
 
 export interface UpdateCandidateInput {
@@ -125,6 +128,7 @@ export interface UpdateCandidateInput {
   billing_mode?: BillingMode
   image_pricing_tiers?: ImagePricingTiers | null
   video_pricing_tiers?: VideoPricingTiers | null
+  audio_unit_price?: number | null
 }
 
 // ProbeReport is one probe's result. `ran: false` means the probe was skipped
@@ -360,6 +364,8 @@ export interface SuggestedPrice {
   output_price: number
   cache_write_price: number | null
   cache_read_price: number | null
+  /** The per-million-characters suggestion an audio-billed mapping prefills from, in place of the token slots. */
+  audio_unit_price: number | null
   source: 'history' | 'seed' | ''
   // When the built-in catalog was last synced (YYYY-MM-DD), set only for
   // source 'seed'. The seed is a hand-compiled snapshot of vendor pricing, so

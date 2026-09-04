@@ -22,15 +22,18 @@ export interface ImportRow {
   outputPrice: number | null
   cacheWritePrice: number | null
   cacheReadPrice: number | null
+  // The single price an audio row carries in place of the token slots.
+  audioUnitPrice: number | null
 }
 
-export type ImportRowModality = 'text' | 'image' | 'both'
+export type ImportRowModality = 'text' | 'image' | 'both' | 'audio'
 
 // modalitiesFor maps the select's single value onto the declaration list the
 // request sends.
 export function modalitiesFor(modality: ImportRowModality): string[] {
   if (modality === 'image') return ['image']
   if (modality === 'both') return ['text', 'image']
+  if (modality === 'audio') return ['audio']
   return ['text']
 }
 
@@ -97,22 +100,29 @@ export function buildImportRows(
       // Their modality stays 'text' because the declaration column is inert
       // here — the server derives an existing model's billing from the model
       // row it already has, never from the re-queued submission.
-      rows.push({ name, added: true, unfinished, checked: false, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null })
+      rows.push({ name, added: true, unfinished, checked: false, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null, audioUnitPrice: null })
       continue
     }
     const suggestion = prices[name]
     const hasPrice = suggestion !== undefined && suggestion.source !== ''
+    // An audio suggestion is the audio signal: the seed catalog's audio
+    // section covers exactly the speech models, so a hit preselects the
+    // audio modality and prefills the one price the row carries — the
+    // name-heuristic image preselect works the same way, an override the
+    // admin can flip per row.
+    const isAudio = hasPrice && suggestion.audio_unit_price != null
     rows.push({
       name,
       added: false,
       unfinished: false,
       checked: hasPrice,
-      modality: suggestsImageOutput(name) ? 'image' : 'text',
+      modality: isAudio ? 'audio' : suggestsImageOutput(name) ? 'image' : 'text',
       priceSource: hasPrice ? suggestion.source : '',
-      inputPrice: hasPrice ? suggestion.input_price : null,
-      outputPrice: hasPrice ? suggestion.output_price : null,
-      cacheWritePrice: hasPrice ? suggestion.cache_write_price : null,
-      cacheReadPrice: hasPrice ? suggestion.cache_read_price : null,
+      inputPrice: hasPrice && !isAudio ? suggestion.input_price : null,
+      outputPrice: hasPrice && !isAudio ? suggestion.output_price : null,
+      cacheWritePrice: hasPrice && !isAudio ? suggestion.cache_write_price : null,
+      cacheReadPrice: hasPrice && !isAudio ? suggestion.cache_read_price : null,
+      audioUnitPrice: isAudio ? suggestion.audio_unit_price : null,
     })
   }
   return rows
@@ -158,5 +168,8 @@ export function toImportItems(rows: ImportRow[]): ImportModelItemInput[] {
       output_price: r.outputPrice ?? 0,
       cache_write_price: r.cacheWritePrice,
       cache_read_price: r.cacheReadPrice,
+      // Sent only where present: an absent price is the server's
+      // untouched-marker on a PATCH-shaped field.
+      audio_unit_price: r.audioUnitPrice ?? undefined,
     }))
 }

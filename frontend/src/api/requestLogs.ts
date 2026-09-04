@@ -48,6 +48,8 @@ export interface RequestLogRow {
   image_count: number
   /** Delivered seconds of a settled video job; 0 on every non-video row (the usage column then reads tokens). */
   usage_seconds: number
+  /** Billable characters a speech request counted, in the settling provider's own meter. */
+  usage_characters: number
   /** Price of one delivered image from the same snapshot; null when image_count is 0. */
   image_unit_price: number | null
   cost_micros: number
@@ -111,6 +113,8 @@ export interface ImagePricingSnapshot {
 }
 
 export interface RequestLogDetail extends RequestLogRow {
+  /** The counting rule the characters were metered under ("" when the row carries no audio snapshot). */
+  usage_meter: string
   attempts_detail: AttemptRecord[]
   // Price snapshot: the four unit prices (per million tokens) this row was
   // actually billed with, captured at settlement. All four are null together

@@ -126,3 +126,7 @@ func (f *Fake) TestStreamingCompletion(ctx context.Context, proto protocols.Prot
 func (f *Fake) TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return f.record("function_calling", proto, baseURL, model)
 }
+
+func (f *Fake) TestSpeechGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return f.record("speech", protocols.ProtocolOpenAI, baseURL, model)
+}

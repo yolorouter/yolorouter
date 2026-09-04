@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { buildImportRows, chunkByCap, isTransportableModelName, normalizeCatalogNames, toImportItems, type ImportRow } from './importRows'
 
-const price = (input: number, output: number, source: 'history' | 'seed') => ({
+const price = (input: number, output: number, source: 'history' | 'seed', audio: number | null = null) => ({
   input_price: input,
   output_price: output,
   cache_write_price: null,
   cache_read_price: null,
+  audio_unit_price: audio,
   source,
   catalog_updated_at: '',
 })
@@ -23,6 +24,19 @@ describe('buildImportRows', () => {
     const [priced, unpriced] = rows
     expect(priced).toMatchObject({ name: 'deepseek-v4', added: false, checked: true, priceSource: 'seed', inputPrice: 2, outputPrice: 8 })
     expect(unpriced).toMatchObject({ name: 'obscure-embedding', checked: false, priceSource: '', inputPrice: null, outputPrice: null })
+  })
+
+  it('preselects the audio modality and prefills its single price on an audio suggestion', () => {
+    const rows = buildImportRows(['speech-2.8-hd'], [], {
+      'speech-2.8-hd': price(0, 0, 'seed', 350),
+    })
+    expect(rows[0]).toMatchObject({
+      modality: 'audio',
+      checked: true,
+      inputPrice: null,
+      outputPrice: null,
+      audioUnitPrice: 350,
+    })
   })
 
   it('marks settled mappings as added and never checks them', () => {
@@ -105,13 +119,13 @@ describe('chunkByCap', () => {
 describe('toImportItems', () => {
   it('submits checked new rows and checked unfinished rows, defaulting blank prices to zero', () => {
     const rows: ImportRow[] = [
-      { name: 'a', added: false, unfinished: false, checked: true, modality: 'text', priceSource: 'seed', inputPrice: 2, outputPrice: 8, cacheWritePrice: 0.5, cacheReadPrice: null },
-      { name: 'b', added: false, unfinished: false, checked: true, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
-      { name: 'c', added: false, unfinished: false, checked: false, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
-      { name: 'd', added: true, unfinished: false, checked: false, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+      { name: 'a', added: false, unfinished: false, checked: true, modality: 'text', priceSource: 'seed', inputPrice: 2, outputPrice: 8, cacheWritePrice: 0.5, cacheReadPrice: null, audioUnitPrice: null },
+      { name: 'b', added: false, unfinished: false, checked: true, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null, audioUnitPrice: null },
+      { name: 'c', added: false, unfinished: false, checked: false, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null, audioUnitPrice: null },
+      { name: 'd', added: true, unfinished: false, checked: false, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null, audioUnitPrice: null },
       // A checked unfinished mapping goes in the payload: the server skips it
       // as existing but hands back its candidate id for requeueing.
-      { name: 'e', added: true, unfinished: true, checked: true, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+      { name: 'e', added: true, unfinished: true, checked: true, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null, audioUnitPrice: null },
     ]
     expect(toImportItems(rows)).toEqual([
       { provider_model_name: 'a', output_modalities: ['text'], input_price: 2, output_price: 8, cache_write_price: 0.5, cache_read_price: null },
@@ -138,9 +152,9 @@ describe('import modalities', () => {
 
   it('submits the row modality as the per-item declaration', () => {
     const rows: ImportRow[] = [
-      { name: 'img', added: false, unfinished: false, checked: true, modality: 'image', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
-      { name: 'both', added: false, unfinished: false, checked: true, modality: 'both', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
-      { name: 'txt', added: false, unfinished: false, checked: true, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null },
+      { name: 'img', added: false, unfinished: false, checked: true, modality: 'image', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null, audioUnitPrice: null },
+      { name: 'both', added: false, unfinished: false, checked: true, modality: 'both', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null, audioUnitPrice: null },
+      { name: 'txt', added: false, unfinished: false, checked: true, modality: 'text', priceSource: '', inputPrice: null, outputPrice: null, cacheWritePrice: null, cacheReadPrice: null, audioUnitPrice: null },
     ]
     expect(toImportItems(rows).map((i) => i.output_modalities)).toEqual([['image'], ['text', 'image'], ['text']])
   })

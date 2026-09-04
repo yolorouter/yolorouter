@@ -713,9 +713,9 @@ func (s *ProviderService) verifyTargets(ctx context.Context, targets []providerp
 		if err != nil {
 			return providerclient.TestResult{}, nil, err
 		}
-		// A media-dialect base whose chat probe cannot serve the model may
-		// simply be an account that never opened a chat model — video-only
-		// and image-only both occur. The credential has already
+		// A base whose chat probe cannot serve the model may simply be an
+		// account that never opened a chat model — video-only, image-only,
+		// and speech-only all occur. The credential has already
 		// authenticated (the refusal happens past auth), and the other
 		// things that base and model can do together are the media
 		// dialects. Two chat shapes reach here in practice, and the
@@ -724,32 +724,47 @@ func (s *ProviderService) verifyTargets(ctx context.Context, targets []providerp
 		// with an upstream error (Ark returns 500 InternalServiceError for
 		// exactly this) — indistinguishable from any other 5xx, which is
 		// the price of covering the shape a real account actually hits.
-		// The video probe runs first, then the image probe: each is one
-		// real billable upstream call, so both only run when the chat
-		// shape said the model is not served there. Only a PASSING probe
+		// The billable media probes (video, then image) only run on bases
+		// the media dialects speak; the speech probe closes the chain on
+		// ANY base — a few characters of synthesis when it lands, an
+		// unbilled 404 when the host has no audio. Only a PASSING probe
 		// replaces the chat verdict: every other outcome keeps the chat's
 		// own answer, which already named the real problem (and a
-		// transport-level refusal from the fallback itself is swallowed
-		// the same way — the chat verdict stands).
-		if (result.Outcome == providerclient.TestModelNotFound || result.Outcome == providerclient.TestUpstreamError) && providerclient.MediaDialectBase(tgt.URL) {
+		// transport-level refusal from a fallback itself is swallowed the
+		// same way — the chat verdict stands).
+		if result.Outcome == providerclient.TestModelNotFound || result.Outcome == providerclient.TestUpstreamError {
 			chatMs := result.DurationMs
-			// The video probe's own clock keeps running into the image
-			// arm's total when it ran and failed — the recorded duration
-			// is what the verification round actually spent upstream.
+			// The fallback probes' clocks keep running into the next arm's
+			// total — the recorded duration is what the verification round
+			// actually spent upstream. Each arm folds onto one shape: a
+			// passing probe replaces the chat verdict with its own account
+			// of how it verified; anything else hands the next arm the time
+			// it spent.
 			spentMs := chatMs
-			if video, verr := s.client.TestVideoGeneration(ctx, tgt.URL, plaintext, testModel); verr == nil && video.Outcome == providerclient.TestSuccess {
-				video.Detail = "chat probe cannot serve this model; verified through the video task dialect (submit + task query)"
-				video.DurationMs += chatMs
-				result = video
-			} else {
-				if verr == nil {
-					spentMs += video.DurationMs
+			tryArm := func(res providerclient.TestResult, err error, how string) bool {
+				if err != nil || res.Outcome != providerclient.TestSuccess {
+					if err == nil {
+						spentMs += res.DurationMs
+					}
+					return false
 				}
-				if img, ierr := s.client.TestImageGeneration(ctx, tgt.URL, plaintext, testModel); ierr == nil && img.Outcome == providerclient.TestSuccess {
-					img.Detail = "chat probe cannot serve this model; verified through the image probe (one real generation)"
-					img.DurationMs += spentMs
-					result = img
+				res.Detail = "chat probe cannot serve this model; verified through " + how
+				res.DurationMs += spentMs
+				result = res
+				return true
+			}
+			verified := false
+			if providerclient.MediaDialectBase(tgt.URL) {
+				res, err := s.client.TestVideoGeneration(ctx, tgt.URL, plaintext, testModel)
+				verified = tryArm(res, err, "the video task dialect (submit + task query)")
+				if !verified {
+					res, err = s.client.TestImageGeneration(ctx, tgt.URL, plaintext, testModel)
+					verified = tryArm(res, err, "the image probe (one real generation)")
 				}
+			}
+			if !verified {
+				res, err := s.client.TestSpeechGeneration(ctx, tgt.URL, plaintext, testModel)
+				tryArm(res, err, "the speech probe (one short synthesis)")
 			}
 		}
 		perTarget = append(perTarget, KeyTestTargetResult{

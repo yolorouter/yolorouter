@@ -51,7 +51,21 @@
           size="medium"
         />
       </n-form-item>
-      <div class="price-grid">
+      <!-- Under audio billing the single character price is the whole
+           declaration: the token grid is inert in that mode, so it hides
+           rather than showing four editable numbers settlement will never
+           read. -->
+      <n-form-item v-if="form.billingMode === 'audio'" path="audioUnitPrice">
+        <template #label>
+          <HelpLabel :tip="t('models.audioUnitPrice_tip')">{{ t('models.audioUnitPrice') }}</HelpLabel>
+        </template>
+        <n-input-number
+          v-model:value="form.audioUnitPrice"
+          :min="0"
+          style="width: 100%"
+        />
+      </n-form-item>
+      <div v-else class="price-grid">
       <n-form-item path="inputPrice">
         <template #label>
           <HelpLabel :tip="t('models.inputPrice_tip')">{{ t('models.inputPrice') }}</HelpLabel>
@@ -373,12 +387,14 @@ const form = reactive({
   imageTiers: [] as ImagePricingTier[],
   imageDefaultPrice: null as number | null,
   videoTiers: [] as VideoPricingTier[],
+  audioUnitPrice: null as number | null,
 })
 
 const billingModeOptions = computed(() => [
   { label: t('models.billingModeToken'), value: 'token' },
   { label: t('models.billingModeImage'), value: 'image' },
   { label: t('models.billingModeVideo'), value: 'video' },
+  { label: t('models.billingModeAudio'), value: 'audio' },
 ])
 
 function addTier() {
@@ -403,6 +419,10 @@ function removeVideoTier(index: number) {
 // local: the server re-validates, this exists so the operator never has to
 // round-trip to learn the table is empty.
 const tierErrorKey = computed<string | null>(() => {
+  if (form.billingMode === 'audio') {
+    if (form.audioUnitPrice !== null && form.audioUnitPrice < 0) return 'models.audioPriceNegative'
+    return null
+  }
   if (form.billingMode === 'image') {
     const hasTier = form.imageTiers.length > 0
     const hasDefault = form.imageDefaultPrice !== null
@@ -843,9 +863,12 @@ watch(
       form.maxOutput = props.editingCandidate.max_output
       form.enabled = props.editingCandidate.management_status === CANDIDATE_STATUS_ENABLED
       form.billingMode =
-        props.editingCandidate.billing_mode === 'image' || props.editingCandidate.billing_mode === 'video'
+        props.editingCandidate.billing_mode === 'image' ||
+        props.editingCandidate.billing_mode === 'video' ||
+        props.editingCandidate.billing_mode === 'audio'
           ? props.editingCandidate.billing_mode
           : 'token'
+      form.audioUnitPrice = props.editingCandidate.audio_unit_price ?? null
       const stored = props.editingCandidate.image_pricing_tiers
       form.imageTiers = stored
         ? stored.tiers.map((tier) => ({ quality: tier.quality, size: tier.size, price: tier.price }))
@@ -867,6 +890,7 @@ watch(
     } else {
       form.providerId = null
       form.providerModelName = ''
+      form.audioUnitPrice = null
       form.inputPrice = 0
       form.outputPrice = 0
       form.cacheWritePrice = null
@@ -949,6 +973,9 @@ function candidatePayload() {
             })),
           }
         : null,
+    // Sent under audio mode only: an absent field is the server's
+    // leave-untouched marker everywhere else.
+    audio_unit_price: form.billingMode === 'audio' ? (form.audioUnitPrice ?? undefined) : undefined,
   }
   if (props.editingCandidate && !statusTouched.value) return withBilling
   return {

@@ -86,9 +86,13 @@ type RequestLogListItem struct {
 	// UsageSeconds is the video settlement digest's usage half — the
 	// delivered seconds a completed video job ran (see the model column).
 	// 0 on every non-video row.
-	UsageSeconds int     `json:"usage_seconds"`
-	FailReason   *string `json:"fail_reason"`
-	Attempts     int     `json:"attempts"`
+	UsageSeconds int `json:"usage_seconds"`
+	// UsageCharacters is the speech settlement's usage half — the counted
+	// characters of a speech request in the settling candidate's own
+	// billing meter. 0 on every non-audio row.
+	UsageCharacters int     `json:"usage_characters"`
+	FailReason      *string `json:"fail_reason"`
+	Attempts        int     `json:"attempts"`
 	// KeySwitches / Failovers split the row's retries into their two kinds —
 	// rotating keys within one provider versus moving to another provider —
 	// derived from the per-attempt detail with the same walk the provider
@@ -132,6 +136,10 @@ type RequestLogDetail struct {
 	CostKnown        bool   `json:"cost_known"`
 	// UsageSeconds — same digest as the list rows (video delivered seconds).
 	UsageSeconds int `json:"usage_seconds"`
+	// UsageCharacters — same digest as the list rows (speech counted
+	// characters), with the meter the count was taken in.
+	UsageCharacters int    `json:"usage_characters"`
+	UsageMeter      string `json:"usage_meter"`
 	// Price snapshot passthrough: the four unit prices the row was billed
 	// with, or all nil for rows that predate the snapshot or could not be
 	// priced — the detail page renders that absence as "no snapshot".
@@ -266,6 +274,7 @@ func (s *RequestLogService) toListItems(rows []model.RequestLog) ([]RequestLogLi
 			ImageCount:         imageCount,
 			ImageUnitPrice:     imageUnitPrice,
 			UsageSeconds:       r.UsageSeconds,
+			UsageCharacters:    r.UsageCharacters,
 			CostMicros:         r.CostMicros,
 			CostKnown:          r.CostKnown,
 			FailReason:         r.FailReason,
@@ -392,6 +401,8 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 		CostMicros:             row.CostMicros,
 		CostKnown:              row.CostKnown,
 		UsageSeconds:           row.UsageSeconds,
+		UsageCharacters:        row.UsageCharacters,
+		UsageMeter:             audioUsageMeter(row.AudioPricingSnapshot),
 		SettledInputPrice:      row.SettledInputPrice,
 		SettledOutputPrice:     row.SettledOutputPrice,
 		SettledCacheWritePrice: row.SettledCacheWritePrice,
@@ -523,6 +534,19 @@ func imageUsageDigest(snapshot string) (int, *float64) {
 	return parsed.ActualN, &parsed.UnitPrice
 }
 
+// audioUsageMeter extracts the counting-rule label a character settlement
+// stored, so the detail view can say "counted how, per whom" beside the
+// count itself. Empty when the row has no audio snapshot.
+func audioUsageMeter(snapshot string) string {
+	var parsed struct {
+		Meter string `json:"meter"`
+	}
+	if snapshot == "" || json.Unmarshal([]byte(snapshot), &parsed) != nil {
+		return ""
+	}
+	return parsed.Meter
+}
+
 // fetchRelatedNames batch-loads provider_name / username for every
 // provider_id / user_id referenced in rows, via the shared namelookup
 // helpers. Returns two lookup maps keyed by id; rows whose provider/user
@@ -583,6 +607,9 @@ func csvUsageCells(it RequestLogListItem) []string {
 	}
 	if it.UsageSeconds > 0 {
 		return []string{"video", "", "", strconv.Itoa(it.UsageSeconds)}
+	}
+	if it.UsageCharacters > 0 {
+		return []string{"character", strconv.Itoa(it.UsageCharacters), "", ""}
 	}
 	return []string{"token", "", "", ""}
 }

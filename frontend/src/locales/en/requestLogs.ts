@@ -68,6 +68,8 @@ export default {
   col_usage_tip: 'Rendered in the row\'s billing unit: token rows list nonzero input/output/cache counts; per-image rows show delivered count × unit price; per-second video rows show delivered seconds × unit price',
   usageImageLine: '{n} × {price}',
   usageVideoLine: '{n} s × {price}',
+  usageMeterSuffix: ' (counted as {meter})',
+  fieldSpeechCharacters: 'Speech characters',
   fieldVideoSeconds: 'Video duration (s)',
   col_requestId: 'Request ID',
   col_requestId_tip: 'Unique id of this request; the detail page is keyed by it',
