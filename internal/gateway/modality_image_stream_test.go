@@ -33,7 +33,7 @@ func newGptImageRig(t *testing.T, answer func(w http.ResponseWriter, r *http.Req
 	t.Helper()
 	rig := newImageRigWith(t, answer)
 	m := createModelAndCandidate(t, rig.db, rig.provider, "gpt-image-1", "gpt-image-1", false, false, 2)
-	setImageOutputModalities(t, rig.db, m.ID, `["image"]`)
+	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
 		"billing_mode":        model.BillingModeImage,
 		"image_pricing_tiers": `{"mode":"per_image","default_price":0.02}`,

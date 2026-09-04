@@ -246,6 +246,10 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 	})
 	svc.videoTasks = taskDomain
 	videoTasks = taskDomain
+	// The speech door's budget pre-gate rides the same instance's db, and
+	// hangs off a package-level seam for the same reason videoTasks does:
+	// the modality is stateless and the door is not.
+	audioBudgetPrecheck = svc.precheckAudioBudget
 	// The Kling image dialect's delivery-side task driver hangs off the
 	// same db/secrets/client triple, for the same reason the video
 	// poller does: one transport rule set, one key-resolution rule.
@@ -530,6 +534,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	routing := adm.payload.Routing()
 	rc.originalModel = routing.Model
 	rc.isStream = routing.Stream
+	rc.noCrossProviderFailover = routing.NoCrossProviderFailover
 
 	// Every write to the caller slides a deadline forward, from the response
 	// object the delivery was handed rather than from a package-wide default,
@@ -764,6 +769,17 @@ func (s *Service) exhaustedBudget(rc *Exchange) bool {
 // time, and sends the upstream request; Key rotation and candidate failover
 // decisions come back from tryKeys.
 func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, candidates []model.ModelCandidate, start time.Time) {
+	// A no-failover payload serves from the first provider or fails: every
+	// later candidate is by construction a different provider (one mapping
+	// per provider and model), and a different provider would answer with
+	// something the caller did not name — for speech, a different voice.
+	// Truncating here, before a single iteration runs, keeps the head
+	// candidate's verdicts intact for the exhausted-chain terminal, which
+	// is what quotes them to the caller; an in-loop break between
+	// ClearVerdict and the attempt would wipe exactly those.
+	if rc.noCrossProviderFailover && len(candidates) > 1 {
+		candidates = candidates[:1]
+	}
 	// The ingress protocol is a property of the request path, not of any
 	// individual candidate — threaded through every candidate/key attempt
 	// below.

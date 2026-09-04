@@ -139,7 +139,7 @@ func TestImportProviderModelsSkipsInvalidModalityRow(t *testing.T) {
 	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
 
 	result, err := svc.ImportProviderModels(prov.ID, []modeladmin.ImportModelItem{
-		{ProviderModelName: "broken-row", OutputModalities: []string{"audio"}},
+		{ProviderModelName: "broken-row", OutputModalities: []string{"not-a-modality"}},
 		{ProviderModelName: "healthy-row", OutputModalities: []string{model.OutputModalityImage}},
 	}, time.Now().UTC())
 	if err != nil {

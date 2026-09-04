@@ -71,6 +71,12 @@ type UsageReported struct {
 	// which prices from the wildcard or the fallback, never from a guess.
 	Quality string
 	Size    string
+	// Meter names WHICH vendor counting rule a counted unit was metered
+	// under — characters under one provider's rule are bytes under
+	// another's, and a bill that states a count without its basis cannot
+	// be reconciled against either invoice. Empty on reports whose unit
+	// has no per-vendor ambiguity.
+	Meter string
 }
 
 func (UsageReported) RecordName() string { return "usage_reported" }

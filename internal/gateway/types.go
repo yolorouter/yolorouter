@@ -211,6 +211,11 @@ type Exchange struct {
 	// audioPricingSnapshot is the per-character settlement's account of
 	// itself, same contract as the image one, one modality over.
 	audioPricingSnapshot string
+	// noCrossProviderFailover is the payload's routing declaration that the
+	// walk stops after the first provider: what the caller named (a voice)
+	// does not survive a change of provider, so an error beats a silently
+	// different answer.
+	noCrossProviderFailover bool
 }
 
 // CandidateProviderModelName is the provider's own name for the model the

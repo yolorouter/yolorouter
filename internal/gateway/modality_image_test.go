@@ -26,9 +26,9 @@ import (
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
-// setImageOutputModalities points a seeded model's declaration at a
+// setOutputModalities points a seeded model's declaration at a
 // modality list, the way the admin API's update would.
-func setImageOutputModalities(t *testing.T, db *gorm.DB, modelID uint, list string) {
+func setOutputModalities(t *testing.T, db *gorm.DB, modelID uint, list string) {
 	t.Helper()
 	if err := db.Model(&model.Model{}).Where("id = ?", modelID).Update("output_modalities", list).Error; err != nil {
 		t.Fatalf("set output modalities: %v", err)
@@ -85,7 +85,7 @@ func newImageRigWith(t *testing.T, answer func(w http.ResponseWriter, r *http.Re
 	rig.provider = p
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "image-model", "image-model-real", false, false, 1)
-	setImageOutputModalities(t, rig.db, m.ID, `["image"]`)
+	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	rig.modelID = m.ID
 	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
 	return rig
@@ -209,7 +209,7 @@ func TestImageStreamingIsRefusedBeforeUpstream(t *testing.T) {
 // endpoint refuses it by name, before any candidate is walked.
 func TestImagesEndpointRefusesTextOnlyModel(t *testing.T) {
 	rig := newImageRig(t)
-	setImageOutputModalities(t, rig.db, rig.modelID, `["text"]`)
+	setOutputModalities(t, rig.db, rig.modelID, `["text"]`)
 
 	c, w := imageRequest(`{"model":"image-model","prompt":"a red fox"}`)
 	c.Set("request_id", "req-image-textmodel")
@@ -352,7 +352,7 @@ func TestImageB64ResponseIsAuditedRedacted(t *testing.T) {
 	p := createProvider(t, db, "image-provider", up.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 	m := createModelAndCandidate(t, db, p, "image-model", "image-model-real", false, false, 1)
-	setImageOutputModalities(t, db, m.ID, `["image"]`)
+	setOutputModalities(t, db, m.ID, `["image"]`)
 	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
 	c, w := imageRequest(`{"model":"image-model","prompt":"a fox","response_format":"b64_json"}`)

@@ -25,6 +25,9 @@ type audioPricingSnapshot struct {
 	UnitPrice   float64 `json:"unit_price"`
 	Unit        string  `json:"unit"`
 	Source      string  `json:"source"`
+	// Meter names the vendor counting rule the characters were counted
+	// under — the bill's own answer to "whose character is this".
+	Meter string `json:"meter,omitempty"`
 }
 
 // computeAudioCost prices one audio-mode candidate's settled delivery.
@@ -35,6 +38,22 @@ type audioPricingSnapshot struct {
 // a wiring bug whose bill would be fiction), or no configured price.
 // Unpriced and free are different facts, and a dashboard that adds up the
 // second must not be fed the first.
+// audioMicros prices count characters at a per-million price, in micros.
+// The price is per million characters and money stores micros, so the /1e6
+// of the former and the ×1e6 of the latter cancel — the product already is
+// micros. Written as the product with this comment rather than the
+// divided-then-multiplied form, which rounds twice for no reason (the
+// compress-savings line in computeCost uses the same cancellation). One
+// helper, because the settlement bill and the door's budget refusal must
+// price the same request identically or the boundary between them drifts.
+func audioMicros(price float64, count int) int64 {
+	micros := price*float64(count) + 0.5
+	if micros < 0 || micros > math.MaxInt64 {
+		return -1
+	}
+	return int64(micros)
+}
+
 func computeAudioCost(cand *model.ModelCandidate, report *fact.UsageReported) costBreakdown {
 	if cand == nil || report == nil || report.Unit != fact.UnitCharacter || report.Count <= 0 {
 		return costBreakdown{}
@@ -46,14 +65,8 @@ func computeAudioCost(cand *model.ModelCandidate, report *fact.UsageReported) co
 	if price < 0 {
 		return costBreakdown{}
 	}
-	// The price is per million characters and money stores micros, so the
-	// /1e6 of the former and the ×1e6 of the latter cancel — the product
-	// already is micros. Written as the product with this comment rather
-	// than the divided-then-multiplied form, which rounds twice for no
-	// reason (the compress-savings line in computeCost uses the same
-	// cancellation).
-	micros := price*float64(report.Count) + 0.5
-	if micros < 0 || micros > math.MaxInt64 {
+	micros := audioMicros(price, report.Count)
+	if micros < 0 {
 		return costBreakdown{}
 	}
 	snap := audioPricingSnapshot{
@@ -62,6 +75,7 @@ func computeAudioCost(cand *model.ModelCandidate, report *fact.UsageReported) co
 		UnitPrice:   price,
 		Unit:        report.Unit.String(),
 		Source:      report.Source.String(),
+		Meter:       report.Meter,
 	}
 	encoded, err := json.Marshal(snap)
 	if err != nil {

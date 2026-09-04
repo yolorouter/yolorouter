@@ -515,6 +515,12 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	v1.POST("/videos", gateway.PostChatCompletions(relaySvc))
 	v1.GET("/videos/:id", gateway.GetVideoResource(relaySvc))
 	v1.GET("/videos/:id/content", gateway.GetVideoContent(relaySvc))
+	// The speech route rides the same chain for the same reasons the image
+	// and video routes do: the path resolves to the audio protocol, the
+	// modality registry hands the request to the speech modality, and the
+	// shared auth/body-cap/audit all apply. The request body is small JSON;
+	// the response is binary audio streamed back as it arrives.
+	v1.POST("/audio/speech", gateway.PostChatCompletions(relaySvc))
 	// Model discovery: GET /v1/models and GET /v1/models/:model are
 	// read-only and bypass Service (no provider fan-out, no spend).
 	// They reuse the same APIKeyAuth + body-cap chain the relay POSTs above

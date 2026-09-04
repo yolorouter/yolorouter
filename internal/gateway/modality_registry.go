@@ -19,6 +19,7 @@ var modalities = map[protocols.ProtocolID]Modality{
 	protocols.ProtocolResponses: NewTextModality(),
 	protocols.ProtocolImages:    NewImageModality(),
 	protocols.ProtocolVideos:    NewVideoModality(),
+	protocols.ProtocolAudio:     NewAudioModality(),
 }
 
 // modalityFor returns the modality registered against an ingress protocol.

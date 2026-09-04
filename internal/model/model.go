@@ -78,13 +78,14 @@ const (
 	OutputModalityText  = "text"
 	OutputModalityImage = "image"
 	OutputModalityVideo = "video"
+	OutputModalityAudio = "audio"
 )
 
 // ValidOutputModalities is the write-path vocabulary: every id an
 // output_modalities value may contain. The read path (ServesOutputModality)
 // is deliberately laxer — an unknown id in a stored row reads as "not this
 // modality" rather than failing the request.
-var ValidOutputModalities = []string{OutputModalityText, OutputModalityImage, OutputModalityVideo}
+var ValidOutputModalities = []string{OutputModalityText, OutputModalityImage, OutputModalityVideo, OutputModalityAudio}
 
 // DefaultOutputModalitiesJSON is what a row created without a declaration
 // stores: text only, which is what every model predating the column was.

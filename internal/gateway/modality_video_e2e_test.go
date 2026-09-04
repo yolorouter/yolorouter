@@ -230,7 +230,7 @@ func newVideoRig(t *testing.T, providerModel string) *videoRig {
 	p := createProvider(t, rig.db, "video-provider", rig.server.URL)
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-video-up", "video-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "video-model", providerModel, false, false, 1)
-	setImageOutputModalities(t, rig.db, m.ID, `["video"]`)
+	setOutputModalities(t, rig.db, m.ID, `["video"]`)
 	rig.modelID = m.ID
 	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
 	return rig

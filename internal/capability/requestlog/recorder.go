@@ -225,6 +225,7 @@ type usageNotInColumns struct {
 	Requested             int    `json:"requested,omitempty"`
 	Quality               string `json:"quality,omitempty"`
 	Size                  string `json:"size,omitempty"`
+	Meter                 string `json:"meter,omitempty"`
 }
 
 func (usageNotInColumns) RecordName() string { return "usage_not_in_columns" }
@@ -259,6 +260,7 @@ func usageResidue(rec fact.UsageReported) fact.Record {
 		Requested:             rec.Requested,
 		Quality:               rec.Quality,
 		Size:                  rec.Size,
+		Meter:                 rec.Meter,
 	}
 }
 

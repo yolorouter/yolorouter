@@ -140,6 +140,14 @@ type RoutingIntent struct {
 	// separate from whether the upstream response has frames: a modality can
 	// be obliged to stream from upstream regardless (see UpstreamCall).
 	Stream bool
+	// NoCrossProviderFailover ends the candidate walk after the first
+	// provider's keys are exhausted. A payload sets it when what the caller
+	// named is provider-specific — a voice, whose identity does not survive
+	// a change of provider — so a failure is answered as an error rather
+	// than silently served by someone who would answer differently. Key
+	// rotation inside the one provider is untouched: same provider, same
+	// voice, still worth retrying.
+	NoCrossProviderFailover bool
 }
 
 // PricingView is the priced shape of the model this request resolved to, as

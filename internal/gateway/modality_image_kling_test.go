@@ -70,7 +70,7 @@ func newKlingImageRig(t *testing.T, providerModel string) *klingImageRig {
 	p := createProvider(t, rig.db, "kling-image-provider", up.URL)
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-kling-up", "kling-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "kling-image-test", providerModel, false, false, 1)
-	setImageOutputModalities(t, rig.db, m.ID, `["image"]`)
+	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
 		"billing_mode":        model.BillingModeImage,
 		"image_pricing_tiers": `{"mode":"per_image","default_price":0.02}`,

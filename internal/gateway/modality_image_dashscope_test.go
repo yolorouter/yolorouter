@@ -45,7 +45,7 @@ func newDashScopeRig(t *testing.T, upstream http.HandlerFunc) *dashScopeRig {
 	p := createProvider(t, rig.db, "dashscope-provider", up.URL)
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-dashscope-up", "dashscope-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "qwen-image-test", "qwen-image-plus", false, false, 1)
-	setImageOutputModalities(t, rig.db, m.ID, `["image"]`)
+	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
 		"billing_mode":        model.BillingModeImage,
 		"image_pricing_tiers": `{"mode":"per_image","default_price":0.02}`,
@@ -203,7 +203,7 @@ func TestImageSizeSeparatorCapability(t *testing.T) {
 		p := createProvider(t, db, "image-provider", up.URL)
 		createProviderKey(t, db, svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 		m := createModelAndCandidate(t, db, p, "image-model", "wan2.2-image", false, false, 1)
-		setImageOutputModalities(t, db, m.ID, `["image"]`)
+		setOutputModalities(t, db, m.ID, `["image"]`)
 		key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
 		c, w := imageRequest(`{"model":"image-model","prompt":"a fox","size":"1024x1024"}`)
@@ -230,7 +230,7 @@ func TestImageSizeSeparatorCapability(t *testing.T) {
 		p := createProvider(t, db, "image-provider", up.URL)
 		createProviderKey(t, db, svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 		m := createModelAndCandidate(t, db, p, "image-model", "gpt-image-2", false, false, 1)
-		setImageOutputModalities(t, db, m.ID, `["image"]`)
+		setOutputModalities(t, db, m.ID, `["image"]`)
 		key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
 
 		c, w := imageRequest(`{"model":"image-model","prompt":"a fox","size":"1024x1024"}`)

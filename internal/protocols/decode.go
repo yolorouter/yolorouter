@@ -23,6 +23,11 @@ const (
 	// requests that observe its outcome are different HTTP calls. Its
 	// shapes live in internal/protocols/videos.
 	ProtocolVideos ProtocolID = "videos"
+	// ProtocolAudio is the OpenAI speech family (POST /v1/audio/speech):
+	// JSON in, binary audio out, billed by the character. Like images it
+	// has no IR codecs — the modality parses the request itself and
+	// encodes the upstream body in the serving dialect's shape.
+	ProtocolAudio ProtocolID = "audio"
 )
 
 // RequestDecoder decodes a protocol-specific request JSON into IR.

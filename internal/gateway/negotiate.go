@@ -45,6 +45,8 @@ func IngressProtocol(requestPath string) protocols.ProtocolID {
 		return protocols.ProtocolImages
 	case videos.CreatePath:
 		return protocols.ProtocolVideos
+	case SpeechPath:
+		return protocols.ProtocolAudio
 	default:
 		return protocols.ProtocolOpenAI
 	}

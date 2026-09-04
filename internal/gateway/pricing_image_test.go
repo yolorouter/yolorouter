@@ -42,7 +42,7 @@ func newBillingRig(t *testing.T, tiersJSON, dataJSON string) *billingRig {
 	p := createProvider(t, rig.db, "image-provider", up.URL)
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "image-model", "image-model-real", false, false, 1)
-	setImageOutputModalities(t, rig.db, m.ID, `["image"]`)
+	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	rig.modelID = m.ID
 	updates := map[string]interface{}{"billing_mode": model.BillingModeImage}
 	if tiersJSON != "" {
@@ -174,7 +174,7 @@ func TestImageFailedUpstreamBillsNothing(t *testing.T) {
 	p := createProvider(t, db, "image-provider", up.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 	m := createModelAndCandidate(t, db, p, "image-model", "image-model-real", false, false, 1)
-	setImageOutputModalities(t, db, m.ID, `["image"]`)
+	setOutputModalities(t, db, m.ID, `["image"]`)
 	if err := db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
 		"billing_mode":        model.BillingModeImage,
 		"image_pricing_tiers": `{"mode":"per_image","default_price":0.04}`,

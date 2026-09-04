@@ -98,7 +98,7 @@ func newEditRigWith(t *testing.T, answer func(w http.ResponseWriter, r *http.Req
 	p := createProvider(t, rig.db, "image-provider", up.URL)
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "image-model", "image-model-real", false, false, 1)
-	setImageOutputModalities(t, rig.db, m.ID, `["image"]`)
+	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	rig.modelID = m.ID
 	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
 	return rig
