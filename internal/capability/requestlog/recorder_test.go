@@ -299,3 +299,25 @@ func TestImageUnitReportCarriesItsCount(t *testing.T) {
 		t.Fatalf("token report touched imageCount: %d", s.imageCount)
 	}
 }
+
+// A character-unit report carries its count the same way an image one does:
+// volume, written whether or not a price resolved, in the settling
+// candidate's own billing meter (a vendor that counts one CJK glyph as two
+// reports two). A token-unit report must not touch the column.
+func TestCharacterUnitReportCarriesItsCount(t *testing.T) {
+	var tl fact.Timeline
+	tl.Append(fact.Entry{Attempt: 1, Record: fact.UsageReported{
+		Unit: fact.UnitCharacter, Source: fact.UsageFromUpstream, Count: 240,
+	}})
+	if s := summarise(tl); s.usageCharacters != 240 {
+		t.Fatalf("usageCharacters = %d, want 240", s.usageCharacters)
+	}
+
+	var tlToken fact.Timeline
+	tlToken.Append(fact.Entry{Attempt: 1, Record: fact.UsageReported{
+		Unit: fact.UnitToken, Source: fact.UsageFromUpstream, Prompt: 5, Completion: 7, Total: 12,
+	}})
+	if s := summarise(tlToken); s.usageCharacters != 0 {
+		t.Fatalf("token report touched usageCharacters: %d", s.usageCharacters)
+	}
+}

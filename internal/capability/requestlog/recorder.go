@@ -55,6 +55,7 @@ type View interface {
 	StreamBodyPath() string
 	StreamBodyTruncated() bool
 	ImagePricingSnapshot() string
+	AudioPricingSnapshot() string
 }
 
 // Recorder writes the audit trail.
@@ -114,6 +115,7 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 		CacheWriteTokens:                 s.cacheWriteTokens,
 		CacheReadTokens:                  s.cacheReadTokens,
 		ImageCount:                       s.imageCount,
+		UsageCharacters:                  s.usageCharacters,
 		CostMicros:                       s.costMicros,
 		CostKnown:                        s.costKnown,
 		CacheReadSavedMicros:             s.cacheReadSavedMicros,
@@ -146,6 +148,7 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 	}
 
 	row.ImagePricingSnapshot = view.ImagePricingSnapshot()
+	row.AudioPricingSnapshot = view.AudioPricingSnapshot()
 
 	if err := repository.CreateRequestLog(r.db.WithContext(ctx), row); err != nil {
 		logger.Error("gateway: write request log failed",
@@ -176,7 +179,11 @@ type summary struct {
 	// imageCount is the delivered-image count of an image-unit usage report.
 	// Unlike the pricing snapshot, it is volume, not a bill: it is written
 	// even when no price resolved.
-	imageCount              int
+	imageCount int
+	// usageCharacters is the counted characters of a character-unit usage
+	// report, in the settling candidate's own billing meter. Same
+	// volume-not-bill contract as imageCount.
+	usageCharacters         int
 	costKnown               bool
 	costMicros              int64
 	settledPrices           *fact.SettledPrices
@@ -289,6 +296,13 @@ func summarise(tl fact.Timeline) summary {
 			// only when pricing succeeded).
 			if rec.Unit == fact.UnitImage {
 				s.imageCount = rec.Count
+			}
+			// A character-unit report follows the same volume rule, in the
+			// settling candidate's own billing meter (the vendor's counting
+			// rule) — the count is what the caller was metered on, priced or
+			// not.
+			if rec.Unit == fact.UnitCharacter {
+				s.usageCharacters = rec.Count
 			}
 			// Recognising a record is not the same as having a column for all
 			// of it. This row holds four token counts; the record also carries

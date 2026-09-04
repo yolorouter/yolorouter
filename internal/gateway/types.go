@@ -208,6 +208,9 @@ type Exchange struct {
 	// built by the same numbers the cost was computed from and read by the
 	// audit recorder. Empty on every request not priced per image.
 	imagePricingSnapshot string
+	// audioPricingSnapshot is the per-character settlement's account of
+	// itself, same contract as the image one, one modality over.
+	audioPricingSnapshot string
 }
 
 // CandidateProviderModelName is the provider's own name for the model the
@@ -225,6 +228,11 @@ func (rc *Exchange) CandidateProviderModelName() string {
 // request axes, requested vs delivered count, unit price — or empty when the
 // request was not priced per image.
 func (rc *Exchange) ImagePricingSnapshot() string { return rc.imagePricingSnapshot }
+
+// AudioPricingSnapshot is the JSON account of a per-character settlement —
+// mode, counted characters in the candidate's billing meter, unit price — or
+// empty when the request was not priced per character.
+func (rc *Exchange) AudioPricingSnapshot() string { return rc.audioPricingSnapshot }
 
 // markFirstByteSent flips firstByteSent true under the lock. Returns whether
 // this call was the one that flipped it — the stream path uses that to decide

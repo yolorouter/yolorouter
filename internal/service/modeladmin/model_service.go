@@ -85,12 +85,13 @@ type CandidateView struct {
 	CacheReadPrice    *float64 `json:"cache_read_price"`
 	MaxOutput         int      `json:"max_output"`
 	// BillingMode says what settlement prices this candidate in (token,
-	// image, or video); ImagePricingTiers is the per-image table and
-	// VideoPricingTiers the per-second one, nil when none is stored. The
-	// write path validates the pair together.
+	// image, video, or audio); ImagePricingTiers is the per-image table,
+	// VideoPricingTiers the per-second one, AudioUnitPrice the single
+	// per-million-characters price, nil when none is configured.
 	BillingMode       string                   `json:"billing_mode"`
 	ImagePricingTiers *model.ImagePricingTiers `json:"image_pricing_tiers"`
 	VideoPricingTiers *model.VideoPricingTiers `json:"video_pricing_tiers"`
+	AudioUnitPrice    *float64                 `json:"audio_unit_price"`
 	// Mirrors model.ModelCandidate: true when the last probe confirmed the
 	// capability, null when it did not. Informational — routing ignores these.
 	SupportsStreaming       *bool `json:"supports_streaming"`
@@ -243,7 +244,7 @@ func buildCandidateView(c model.ModelCandidate, providerName string, blockedBy s
 	return CandidateView{
 		ID: c.ID, ProviderID: c.ProviderID, ProviderName: providerName, ProviderModelName: c.ProviderModelName,
 		InputPrice: c.InputPrice, OutputPrice: c.OutputPrice, CacheWritePrice: c.CacheWritePrice, CacheReadPrice: c.CacheReadPrice,
-		MaxOutput: c.MaxOutput, BillingMode: model.NormalizeBillingMode(c.BillingMode), ImagePricingTiers: model.ParseImagePricingTiers(c.ImagePricingTiers), VideoPricingTiers: model.ParseVideoPricingTiers(c.VideoPricingTiers),
+		MaxOutput: c.MaxOutput, BillingMode: model.NormalizeBillingMode(c.BillingMode), ImagePricingTiers: model.ParseImagePricingTiers(c.ImagePricingTiers), VideoPricingTiers: model.ParseVideoPricingTiers(c.VideoPricingTiers), AudioUnitPrice: c.AudioUnitPrice,
 		SupportsStreaming: c.SupportsStreaming, SupportsFunctionCalling: c.SupportsFunctionCalling,
 		ManagementStatus: c.ManagementStatus, SortOrder: c.SortOrder, VerificationStatus: c.VerificationStatus,
 		Routable:           blockedBy == "",
@@ -553,6 +554,11 @@ type CreateCandidateInput struct {
 	// VideoPricingTiers is the per-second table a video-mode create
 	// requires, in the shared frontend editor's shape.
 	VideoPricingTiers *model.VideoPricingTiers
+	// AudioUnitPrice is the per-million-characters price an audio-mode
+	// create carries. Nil is a legal unpriced declaration (the row bills as
+	// unknown until a price is filled in); negative is a typo that would
+	// bill backwards.
+	AudioUnitPrice *float64
 }
 
 // Where a suggested price came from; empty ("") means nothing matched.
@@ -570,7 +576,10 @@ type SuggestedPrice struct {
 	OutputPrice     float64  `json:"output_price"`
 	CacheWritePrice *float64 `json:"cache_write_price"`
 	CacheReadPrice  *float64 `json:"cache_read_price"`
-	Source          string   `json:"source"` // "history" | "seed" | ""
+	// AudioUnitPrice is the per-million-characters suggestion an audio-mode
+	// candidate prefills from, in place of the four token slots.
+	AudioUnitPrice *float64 `json:"audio_unit_price"`
+	Source         string   `json:"source"` // "history" | "seed" | ""
 	// CatalogUpdatedAt is the freshness date of the built-in price catalog, in
 	// YYYY-MM-DD form, set only for Source "seed". The catalog is refreshed
 	// daily by an automated cron (see internal/pricecatalog/live.go), so this
@@ -600,7 +609,16 @@ func (s *ModelService) SuggestCandidatePrice(providerID uint, providerModelName 
 	}
 
 	// 1. History: the most recent candidate for this provider + model name.
+	// An audio-mode history row suggests its character price — the four token
+	// slots are inert under that mode, and prefilling them would price a
+	// speech mapping as tokens.
 	if hist, err := repository.FindLatestCandidatePrice(s.db, providerID, providerModelName); err == nil {
+		if model.NormalizeBillingMode(hist.BillingMode) == model.BillingModeAudio {
+			if hist.AudioUnitPrice == nil {
+				return SuggestedPrice{}, nil
+			}
+			return SuggestedPrice{AudioUnitPrice: hist.AudioUnitPrice, Source: PriceSourceHistory}, nil
+		}
 		return SuggestedPrice{
 			InputPrice:      hist.InputPrice,
 			OutputPrice:     hist.OutputPrice,
@@ -629,6 +647,9 @@ func (s *ModelService) SuggestCandidatePrice(providerID uint, providerModelName 
 			Source:           PriceSourceSeed,
 			CatalogUpdatedAt: pricecatalog.UpdatedAt(),
 		}, nil
+	}
+	if a, ok := pricecatalog.LookupAudio(provider.BaseURL, providerModelName); ok {
+		return SuggestedPrice{AudioUnitPrice: &a, Source: PriceSourceSeed, CatalogUpdatedAt: pricecatalog.UpdatedAt()}, nil
 	}
 
 	return SuggestedPrice{}, nil
@@ -1088,37 +1109,43 @@ func (s *ModelService) insertCandidateWithSortOrder(candidate *model.ModelCandid
 // mode must carry a table that prices (validated, then serialized), because
 // an image-mode candidate without a table prices nothing and the write path
 // is where that mistake should stop — and video mode carries the same rule
-// for its per-second table.
-func resolveBillingDeclaration(mode string, tiers *model.ImagePricingTiers, videoTiers *model.VideoPricingTiers) (string, string, string, error) {
+// for its per-second table. Audio mode prices off one column, so its only
+// check is the sign: nil is a legal unpriced declaration, a negative is a
+// typo that would bill backwards.
+func resolveBillingDeclaration(mode string, tiers *model.ImagePricingTiers, videoTiers *model.VideoPricingTiers, audioPrice *float64) (string, string, string, *float64, error) {
 	if mode == "" {
 		mode = model.BillingModeToken
 	}
 	if !slices.Contains(model.ValidBillingModes, mode) {
-		return "", "", "", fmt.Errorf("%w: unknown billing mode %q", errcode.ErrModelBillingInvalid, mode)
+		return "", "", "", nil, fmt.Errorf("%w: unknown billing mode %q", errcode.ErrModelBillingInvalid, mode)
 	}
 	tiersJSON := ""
 	videoTiersJSON := ""
 	switch mode {
 	case model.BillingModeImage:
 		if tiers == nil {
-			return "", "", "", fmt.Errorf("%w: image billing mode needs a pricing table", errcode.ErrModelBillingInvalid)
+			return "", "", "", nil, fmt.Errorf("%w: image billing mode needs a pricing table", errcode.ErrModelBillingInvalid)
 		}
 		out, err := model.MarshalImagePricingTiers(tiers)
 		if err != nil {
-			return "", "", "", fmt.Errorf("%w: %v", errcode.ErrModelBillingInvalid, err)
+			return "", "", "", nil, fmt.Errorf("%w: %v", errcode.ErrModelBillingInvalid, err)
 		}
 		tiersJSON = out
 	case model.BillingModeVideo:
 		if videoTiers == nil {
-			return "", "", "", fmt.Errorf("%w: video billing mode needs a pricing table", errcode.ErrModelBillingInvalid)
+			return "", "", "", nil, fmt.Errorf("%w: video billing mode needs a pricing table", errcode.ErrModelBillingInvalid)
 		}
 		out, err := model.MarshalVideoPricingTiers(videoTiers)
 		if err != nil {
-			return "", "", "", fmt.Errorf("%w: %v", errcode.ErrModelBillingInvalid, err)
+			return "", "", "", nil, fmt.Errorf("%w: %v", errcode.ErrModelBillingInvalid, err)
 		}
 		videoTiersJSON = out
+	case model.BillingModeAudio:
+		if audioPrice != nil && *audioPrice < 0 {
+			return "", "", "", nil, fmt.Errorf("%w: audio unit price must not be negative", errcode.ErrModelBillingInvalid)
+		}
 	}
-	return mode, tiersJSON, videoTiersJSON, nil
+	return mode, tiersJSON, videoTiersJSON, audioPrice, nil
 }
 
 func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, input CreateCandidateInput, now time.Time) (*CandidateView, error) {
@@ -1135,7 +1162,7 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 	if providerModelName == "" {
 		providerModelName = m.Name
 	}
-	billingMode, tiersJSON, videoTiersJSON, err := resolveBillingDeclaration(input.BillingMode, input.ImagePricingTiers, input.VideoPricingTiers)
+	billingMode, tiersJSON, videoTiersJSON, audioPrice, err := resolveBillingDeclaration(input.BillingMode, input.ImagePricingTiers, input.VideoPricingTiers, input.AudioUnitPrice)
 	if err != nil {
 		return nil, err
 	}
@@ -1143,7 +1170,7 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 		ModelID: modelID, ProviderID: input.ProviderID, ProviderModelName: providerModelName,
 		InputPrice: input.InputPrice, OutputPrice: input.OutputPrice,
 		CacheWritePrice: input.CacheWritePrice, CacheReadPrice: input.CacheReadPrice, MaxOutput: input.MaxOutput,
-		BillingMode: billingMode, ImagePricingTiers: tiersJSON, VideoPricingTiers: videoTiersJSON,
+		BillingMode: billingMode, ImagePricingTiers: tiersJSON, VideoPricingTiers: videoTiersJSON, AudioUnitPrice: audioPrice,
 		ManagementStatus:   model.ModelCandidateStatusDisabled,
 		VerificationStatus: model.ModelVerificationStatusUntested,
 		CreatedAt:          now, UpdatedAt: now, PriceUpdatedAt: now,
@@ -1487,10 +1514,12 @@ type UpdateCandidateInput struct {
 	// ImagePricingTiers is the per-image table; set-ness follows the
 	// pointer, so an update can clear the table by submitting an empty one
 	// alongside image mode only at its own risk of pricing nothing.
-	// VideoPricingTiers follows the same convention for video mode.
+	// VideoPricingTiers follows the same convention for video mode, and
+	// AudioUnitPrice the same for audio mode.
 	BillingMode       *string
 	ImagePricingTiers *model.ImagePricingTiers
 	VideoPricingTiers *model.VideoPricingTiers
+	AudioUnitPrice    *float64
 }
 
 // UpdateCandidateResult carries the updated candidate plus the probe run, if
@@ -1570,13 +1599,14 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 	// The billing declaration, resolved against what is stored when the edit
 	// leaves part of it alone: a PATCH that switches only the mode keeps the
 	// table, and one that replaces only the table keeps the mode. A change to
-	// either half is a price change for the clock below — the auto-suggest
+	// any half is a price change for the clock below — the auto-suggest
 	// ranking is about "who last made a pricing claim", and a tier table is
 	// one.
 	billingMode := candidate.BillingMode
 	imageTiersJSON := candidate.ImagePricingTiers
 	videoTiersJSON := candidate.VideoPricingTiers
-	if input.BillingMode != nil || input.ImagePricingTiers != nil || input.VideoPricingTiers != nil {
+	audioPrice := candidate.AudioUnitPrice
+	if input.BillingMode != nil || input.ImagePricingTiers != nil || input.VideoPricingTiers != nil || input.AudioUnitPrice != nil {
 		mode := candidate.BillingMode
 		if input.BillingMode != nil {
 			mode = *input.BillingMode
@@ -1589,12 +1619,15 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 		if input.VideoPricingTiers != nil {
 			videoTiers = input.VideoPricingTiers
 		}
-		resolvedMode, resolvedTiers, resolvedVideoTiers, err := resolveBillingDeclaration(mode, tiers, videoTiers)
+		if input.AudioUnitPrice != nil {
+			audioPrice = input.AudioUnitPrice
+		}
+		resolvedMode, resolvedTiers, resolvedVideoTiers, resolvedAudioPrice, err := resolveBillingDeclaration(mode, tiers, videoTiers, audioPrice)
 		if err != nil {
 			return nil, err
 		}
-		priceChanged = priceChanged || resolvedMode != candidate.BillingMode || resolvedTiers != candidate.ImagePricingTiers || resolvedVideoTiers != candidate.VideoPricingTiers
-		billingMode, imageTiersJSON, videoTiersJSON = resolvedMode, resolvedTiers, resolvedVideoTiers
+		priceChanged = priceChanged || resolvedMode != candidate.BillingMode || resolvedTiers != candidate.ImagePricingTiers || resolvedVideoTiers != candidate.VideoPricingTiers || !sameOptionalPrice(resolvedAudioPrice, candidate.AudioUnitPrice)
+		billingMode, imageTiersJSON, videoTiersJSON, audioPrice = resolvedMode, resolvedTiers, resolvedVideoTiers, resolvedAudioPrice
 	}
 
 	// One transaction for the status instruction and the field update, so a
@@ -1622,8 +1655,8 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 			input.CacheWritePrice, input.CacheReadPrice, input.MaxOutput, targetChanged, priceChanged, now); err != nil {
 			return err
 		}
-		if billingMode != candidate.BillingMode || imageTiersJSON != candidate.ImagePricingTiers || videoTiersJSON != candidate.VideoPricingTiers {
-			return repository.UpdateModelCandidateBilling(tx, id, billingMode, imageTiersJSON, videoTiersJSON, now)
+		if billingMode != candidate.BillingMode || imageTiersJSON != candidate.ImagePricingTiers || videoTiersJSON != candidate.VideoPricingTiers || !sameOptionalPrice(audioPrice, candidate.AudioUnitPrice) {
+			return repository.UpdateModelCandidateBilling(tx, id, billingMode, imageTiersJSON, videoTiersJSON, audioPrice, now)
 		}
 		return nil
 	}); err != nil {

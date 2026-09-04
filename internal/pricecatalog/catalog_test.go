@@ -27,7 +27,7 @@ func fixtureIndex(t *testing.T) index {
 	if err != nil {
 		t.Fatalf("buildIndex on the fixture failed: %v", err)
 	}
-	return idx
+	return idx.tokens
 }
 
 // The embedded seed is data, not code, so nothing else proves it is well
@@ -39,10 +39,10 @@ func TestEmbeddedCatalogLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embedded catalog failed to load: %v", err)
 	}
-	if len(idx) == 0 {
+	if len(idx.tokens) == 0 {
 		t.Fatal("embedded catalog has no hosts")
 	}
-	for host, models := range idx {
+	for host, models := range idx.tokens {
 		if len(models) == 0 {
 			t.Errorf("host %q has no models", host)
 		}
@@ -204,7 +204,7 @@ func TestEmbeddedCatalogDeserializesCachePrices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embedded catalog failed to load: %v", err)
 	}
-	for _, models := range idx {
+	for _, models := range idx.tokens {
 		for _, p := range models {
 			if p.CacheRead != nil || p.CacheWrite != nil {
 				return
@@ -219,5 +219,51 @@ func TestUpdatedAtReportsTheEmbeddedDate(t *testing.T) {
 	// a year old, so an empty string here means the catalog failed to load.
 	if UpdatedAt() == "" {
 		t.Fatal("expected the embedded catalog to report its sync date")
+	}
+}
+
+// The audio section is data like the token half, and its figures bill
+// audio-mode candidates directly — a broken section must fail loudly here
+// rather than quietly stop suggesting prices.
+func TestEmbeddedAudioCatalogLoadsAndLooksUp(t *testing.T) {
+	idx, err := load()
+	if err != nil {
+		t.Fatalf("embedded catalog failed to load: %v", err)
+	}
+	if len(idx.audio) == 0 {
+		t.Fatal("embedded catalog has no audio entries")
+	}
+	for host, models := range idx.audio {
+		if len(models) == 0 {
+			t.Errorf("audio host %q has no models", host)
+		}
+		for name, p := range models {
+			if p < 0 {
+				t.Errorf("audio %s/%s: negative price %v", host, name, p)
+			}
+		}
+	}
+
+	if p, ok := LookupAudio("https://api.minimax.cn", "Speech-2.8-HD"); !ok || p != 350 {
+		t.Errorf("LookupAudio(speech-2.8-hd) = %v, %v; want 350, true", p, ok)
+	}
+	if p, ok := LookupAudio("https://api.siliconflow.cn/v1", "FunAudioLLM/CosyVoice2-0.5B"); !ok || p != 50 {
+		t.Errorf("LookupAudio(cosyvoice2) = %v, %v; want 50, true", p, ok)
+	}
+	if _, ok := LookupAudio("https://api.minimax.cn", "MiniMax-H3"); ok {
+		t.Error("audio lookup hit for a video model; the sections must stay disjoint")
+	}
+}
+
+// A refreshed audio section in the wrong unit would bill characters at token
+// rates — the same magnitude error the token contract check exists for.
+func TestBuildIndexRejectsWrongAudioUnitContract(t *testing.T) {
+	c := fixtureCatalog()
+	c.Audio = &AudioCatalog{
+		Unit:   expectedUnit,
+		Prices: map[string]map[string]float64{"api.example.com": {"model-flash": 1}},
+	}
+	if _, err := buildIndex(c); err == nil {
+		t.Fatal("buildIndex accepted an audio section declared in the token unit")
 	}
 }

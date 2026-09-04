@@ -40,9 +40,24 @@ type imagePricingSnapshot struct {
 // payload reports facts — a delivered count, token sub-counts — and which of
 // them prices the request is configuration. A token-mode image model and an
 // image-mode one can deliver the same report and must settle differently.
+//
+// The unit is the guard on the default arm: a report that counted
+// characters reaches token math only over a misdeclared candidate, and
+// pricing a character count at a per-million-TOKEN rate is wrong money in
+// a shape nobody would notice — the count and a token count are the same
+// integer by then. Such a report settles as unknown instead; the mismatch
+// is a wiring bug, and unknown is the honest bill for one.
 func computeSettlementCost(cand *model.ModelCandidate, report *fact.UsageReported, usage *protocols.IRUsage, compressSaved int) costBreakdown {
-	if cand != nil && cand.BillingMode == model.BillingModeImage {
-		return computeImageCost(cand, report)
+	if cand != nil {
+		switch cand.BillingMode {
+		case model.BillingModeImage:
+			return computeImageCost(cand, report)
+		case model.BillingModeAudio:
+			return computeAudioCost(cand, report)
+		}
+	}
+	if report != nil && report.Unit == fact.UnitCharacter {
+		return costBreakdown{}
 	}
 	return computeCost(cand, usage, compressSaved)
 }
@@ -53,9 +68,11 @@ func computeSettlementCost(cand *model.ModelCandidate, report *fact.UsageReporte
 // no report (nothing delivered, or nothing the payload could count), no
 // count, no table, or a table with no match and no default. Unpriced and
 // free are different facts, and a dashboard that adds up the second must not
-// be fed the first.
+// be fed the first. A report that is not counting images is the same class
+// of wiring bug the dispatch's character guard exists for: its count would
+// price as images here without a unit check, silently.
 func computeImageCost(cand *model.ModelCandidate, report *fact.UsageReported) costBreakdown {
-	if cand == nil || report == nil || report.Count <= 0 {
+	if cand == nil || report == nil || report.Unit != fact.UnitImage || report.Count <= 0 {
 		return costBreakdown{}
 	}
 	tiers := model.ParseImagePricingTiers(cand.ImagePricingTiers)

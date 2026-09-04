@@ -759,5 +759,21 @@
         "cache_read": null
       }
     }
+  },
+  "audio": {
+    "unit": "per_million_characters",
+    "prices": {
+      "api.siliconflow.cn": {
+        "FunAudioLLM/CosyVoice2-0.5B": 50,
+        "fnlp/MOSS-TTSD-v0.5": 50
+      },
+      "open.bigmodel.cn": {
+        "glm-tts": 200
+      },
+      "api.minimax.cn": {
+        "speech-2.8-hd": 350,
+        "speech-2.8-turbo": 200
+      }
+    }
   }
 }

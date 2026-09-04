@@ -65,6 +65,11 @@ type costBreakdown struct {
 	// computed per image. Built by the same numbers the micros were, so the
 	// explanation cannot drift from the bill.
 	ImageSnapshot string
+	// AudioSnapshot is the per-character settlement's account of itself
+	// (mode, counted characters, unit price) as JSON. Empty on every cost
+	// not computed per character; same built-with-the-bill contract as
+	// ImageSnapshot.
+	AudioSnapshot string
 }
 
 // netPromptTokens returns the billable/loggable net input token count: the
@@ -314,6 +319,9 @@ func (s *Service) finalize(rc *Exchange, report *fact.UsageReported, statusCode 
 	cost := computeSettlementCost(rc.attempt.Candidate(), report, usage, compressTokensSaved(rc.timeline))
 	if cost.ImageSnapshot != "" {
 		rc.imagePricingSnapshot = cost.ImageSnapshot
+	}
+	if cost.AudioSnapshot != "" {
+		rc.audioPricingSnapshot = cost.AudioSnapshot
 	}
 
 	billedUsage := s.reportUsage(rc, report, usage, sink)

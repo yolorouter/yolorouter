@@ -76,6 +76,9 @@ type createCandidateRequest struct {
 	// VideoPricingTiers is the per-second table a video-mode candidate
 	// requires; same validation-home rule as the image table.
 	VideoPricingTiers *videoPricingTiersBody `json:"video_pricing_tiers"`
+	// AudioUnitPrice is the per-million-characters price an audio-mode
+	// candidate carries; nil is a legal unpriced declaration.
+	AudioUnitPrice *float64 `json:"audio_unit_price" binding:"omitempty,min=0"`
 }
 
 // imagePricingTiersBody is the wire form of a per-image price table, mapped
@@ -143,6 +146,8 @@ type updateCandidateRequest struct {
 	BillingMode       *string                `json:"billing_mode"`
 	ImagePricingTiers *imagePricingTiersBody `json:"image_pricing_tiers"`
 	VideoPricingTiers *videoPricingTiersBody `json:"video_pricing_tiers"`
+	// AudioUnitPrice follows the nil-means-leave-alone convention.
+	AudioUnitPrice *float64 `json:"audio_unit_price" binding:"omitempty,min=0"`
 }
 
 type candidateReorderRequest struct {
@@ -327,7 +332,7 @@ func PostModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice,
 			MaxOutput: req.MaxOutput, ManagementStatus: req.ManagementStatus,
 			BillingMode: req.BillingMode, ImagePricingTiers: req.ImagePricingTiers.toModel(),
-			VideoPricingTiers: req.VideoPricingTiers.toModel(),
+			VideoPricingTiers: req.VideoPricingTiers.toModel(), AudioUnitPrice: req.AudioUnitPrice,
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
@@ -352,7 +357,7 @@ func PatchModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice, MaxOutput: req.MaxOutput,
 			ManagementStatus: req.ManagementStatus,
 			BillingMode:      req.BillingMode, ImagePricingTiers: req.ImagePricingTiers.toModel(),
-			VideoPricingTiers: req.VideoPricingTiers.toModel(),
+			VideoPricingTiers: req.VideoPricingTiers.toModel(), AudioUnitPrice: req.AudioUnitPrice,
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)

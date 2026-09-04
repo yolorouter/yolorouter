@@ -386,6 +386,16 @@ func (s *ModelService) SuggestCandidatePrices(providerID uint, names []string) (
 			continue
 		}
 		if hist, ok := history[model.FoldModelName(name)]; ok {
+			// An audio-mode history row suggests its character price; the
+			// four token slots are inert under that mode.
+			if model.NormalizeBillingMode(hist.BillingMode) == model.BillingModeAudio {
+				if hist.AudioUnitPrice != nil {
+					result[name] = SuggestedPrice{AudioUnitPrice: hist.AudioUnitPrice, Source: PriceSourceHistory}
+				} else {
+					result[name] = SuggestedPrice{}
+				}
+				continue
+			}
 			result[name] = SuggestedPrice{
 				InputPrice:      hist.InputPrice,
 				OutputPrice:     hist.OutputPrice,
@@ -404,6 +414,10 @@ func (s *ModelService) SuggestCandidatePrices(providerID uint, names []string) (
 				Source:           PriceSourceSeed,
 				CatalogUpdatedAt: pricecatalog.UpdatedAt(),
 			}
+			continue
+		}
+		if a, ok := pricecatalog.LookupAudio(provider.BaseURL, name); ok {
+			result[name] = SuggestedPrice{AudioUnitPrice: &a, Source: PriceSourceSeed, CatalogUpdatedAt: pricecatalog.UpdatedAt()}
 			continue
 		}
 		result[name] = SuggestedPrice{}

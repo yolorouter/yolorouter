@@ -17,10 +17,14 @@ const (
 	// The spelling is the shared admin frontend's own ('video'), not a
 	// per-second coinage — one vocabulary, two readers.
 	BillingModeVideo = "video"
+	// BillingModeAudio is per-million-characters pricing through
+	// AudioUnitPrice. Speech has no input/output or tier axes, so the mode
+	// carries one number rather than a table.
+	BillingModeAudio = "audio"
 )
 
 // ValidBillingModes is the write-path vocabulary.
-var ValidBillingModes = []string{BillingModeToken, BillingModeImage, BillingModeVideo}
+var ValidBillingModes = []string{BillingModeToken, BillingModeImage, BillingModeVideo, BillingModeAudio}
 
 // NormalizeBillingMode maps a stored billing_mode onto the vocabulary: the
 // empty pre-migration value reads as the token default, and an unknown value
@@ -29,7 +33,7 @@ var ValidBillingModes = []string{BillingModeToken, BillingModeImage, BillingMode
 // guessing at a table that was never parsed.
 func NormalizeBillingMode(mode string) string {
 	switch mode {
-	case BillingModeImage, BillingModeVideo:
+	case BillingModeImage, BillingModeVideo, BillingModeAudio:
 		return mode
 	}
 	return BillingModeToken

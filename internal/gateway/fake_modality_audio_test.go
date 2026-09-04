@@ -80,7 +80,10 @@ func (p *fakeAudioPayload) Deliver(tools DeliveryTools, resp *http.Response) fac
 	// The usage is what the provider was asked to synthesise, and it is incurred
 	// the moment they start producing. Built once, up front, so every exit below
 	// carries it: a caller who hangs up mid-sentence still cost us the audio.
-	usage := &fact.UsageReported{Unit: fact.UnitCharacter, Prompt: p.characters}
+	// Count carries the counted-unit quantity (the image precedent); Source
+	// says the gateway derived it from the request rather than reading it off
+	// an upstream usage field.
+	usage := &fact.UsageReported{Unit: fact.UnitCharacter, Source: fact.UsageFromRequest, Count: p.characters}
 
 	buf := make([]byte, 8)
 	for {
@@ -166,9 +169,9 @@ func (p *fakeAudioPayload) audioStream(tools DeliveryTools, resp *http.Response)
 // FinalizeUsage counts characters, not tokens, and counts them whatever became
 // of the delivery.
 //
-// The unit belongs to the modality and travels with the numbers, which is as
-// far as it currently goes — nothing prices on it yet, and the test at the
-// bottom of this file is where that stops being an assumption.
+// The unit travels with the numbers, and settlement prices it when the
+// settling candidate declares audio billing — that dispatch and its unit
+// guard are tested in pricing_audio_test.go.
 // Completeness is deliberately not consulted: the provider synthesised the
 // audio and charged for it before any of this gateway's problems began, and a
 // modality that withheld usage on an incomplete delivery would be deciding a
@@ -177,7 +180,7 @@ func (p *fakeAudioPayload) FinalizeUsage(d fact.Delivery) *fact.UsageReported {
 	if d.Usage != nil {
 		return d.Usage
 	}
-	return &fact.UsageReported{Unit: fact.UnitCharacter, Prompt: p.characters}
+	return &fact.UsageReported{Unit: fact.UnitCharacter, Source: fact.UsageFromRequest, Count: p.characters}
 }
 
 // LogPolicy stores the caller's request and nothing else. The request is text;
@@ -488,14 +491,14 @@ func TestAudioAlreadySynthesisedIsBilledEvenIfTheCallerNeverHearsIt(t *testing.T
 
 	// A caller who left: the delivery is incomplete and blamed on them.
 	aborted := fact.Truncated(http.StatusOK, 499, fact.FaultClient, "client_write", errors.New("broken pipe")).
-		WithUsage(&fact.UsageReported{Unit: fact.UnitCharacter, Prompt: len("hello")})
+		WithUsage(&fact.UsageReported{Unit: fact.UnitCharacter, Source: fact.UsageFromRequest, Count: len("hello")})
 
 	got := payload.FinalizeUsage(aborted)
 
 	if got == nil {
 		t.Fatal("no usage reported for audio the provider had already synthesised and charged for")
 	}
-	if got.Prompt != len("hello") || got.Unit != fact.UnitCharacter {
+	if got.Count != len("hello") || got.Unit != fact.UnitCharacter {
 		t.Errorf("usage = %+v, want the characters that were synthesised", got)
 	}
 }
@@ -517,47 +520,7 @@ func TestAudioReportsItsUnitAlongsideItsCount(t *testing.T) {
 	if d.Usage.Unit != fact.UnitCharacter {
 		t.Errorf("unit = %v, want characters", d.Usage.Unit)
 	}
-	if d.Usage.Prompt != len("hello") {
-		t.Errorf("counted %d, want %d characters of input", d.Usage.Prompt, len("hello"))
-	}
-}
-
-// TestSettlementCannotYetPriceAnythingButTokens records the gap the test above
-// deliberately stops short of, so nobody reads that one as proof of a
-// capability the kernel does not have.
-//
-// UsageReported carries a Unit; the struct settlement prices from does not. The
-// conversion drops it and computeCost multiplies by a per-million TOKEN rate,
-// so a character count arriving here would be priced as if it were tokens. That
-// costs nothing today — text is the only modality wired in and it counts tokens
-// — and it is exactly what breaks the day a non-token modality is.
-//
-// Not fixed here on purpose. Unit-aware pricing is a revenue change, not a
-// refactor: the price columns to dispatch a non-token unit to do not exist, and
-// inventing them alongside a seam change would put a billing decision in a
-// commit nobody would look for one in. This test is what makes the omission
-// deliberate rather than forgotten — bringing in a non-token modality means
-// deleting it, and deleting it means answering the question.
-func TestSettlementCannotYetPriceAnythingButTokens(t *testing.T) {
-	reported := &fact.UsageReported{Unit: fact.UnitCharacter, Prompt: 120}
-
-	settled := usageFromReport(reported)
-
-	if settled == nil {
-		t.Fatal("usage vanished entirely on the way to settlement")
-	}
-	if settled.PromptTokens != 120 {
-		t.Errorf("prompt = %d, want the 120 that were counted", settled.PromptTokens)
-	}
-
-	// The field the count lands in is named PromptTokens, and there is no
-	// second field saying it might not be tokens. That is the gap stated as
-	// plainly as it can be: a character count and a token count are the same
-	// value in the same field by the time pricing reads it.
-	sameShapeAsTokens := usageFromReport(&fact.UsageReported{Unit: fact.UnitToken, Prompt: 120})
-	if *settled != *sameShapeAsTokens {
-		t.Fatalf("a character count and a token count now differ at settlement (%+v vs %+v) — "+
-			"if the unit survives this far, delete this test and price on it",
-			settled, sameShapeAsTokens)
+	if d.Usage.Count != len("hello") {
+		t.Errorf("counted %d, want %d characters of input", d.Usage.Count, len("hello"))
 	}
 }

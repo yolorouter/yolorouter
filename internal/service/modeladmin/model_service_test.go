@@ -3736,3 +3736,95 @@ func TestGetModelDetailExposesBindingCountsForBalancedModels(t *testing.T) {
 		}
 	}
 }
+
+// An audio-mode declaration is one price, not four: creating and re-editing a
+// speech mapping must round-trip the character price and leave the token slots
+// alone, because settlement reads only the audio column under that mode.
+func TestAudioCandidateRoundTripsCharacterPrice(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	pv := seedProviderWithBaseURL(t, providerService, "minimax-audio", "https://api.minimax.cn")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	now := time.Now().UTC()
+
+	modelView, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "speech-2.8-hd"}, now)
+	if err != nil {
+		t.Fatalf("CreateModel failed: %v", err)
+	}
+	price := 350.0
+	cand, err2 := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
+		ProviderID: pv.ID, BillingMode: model.BillingModeAudio, AudioUnitPrice: &price,
+	}, now)
+	if err2 != nil {
+		t.Fatalf("CreateModelCandidate(audio) failed: %v", err2)
+	}
+	if cand.BillingMode != model.BillingModeAudio || cand.AudioUnitPrice == nil || *cand.AudioUnitPrice != 350 {
+		t.Fatalf("created view = mode %q price %v, want audio/350", cand.BillingMode, cand.AudioUnitPrice)
+	}
+
+	edited := 200.0
+	result, err := svc.UpdateModelCandidate(context.Background(), cand.ID, modeladmin.UpdateCandidateInput{
+		AudioUnitPrice: &edited,
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate(audio price) failed: %v", err)
+	}
+	if result.Candidate.AudioUnitPrice == nil || *result.Candidate.AudioUnitPrice != 200 {
+		t.Fatalf("updated price = %v, want 200", result.Candidate.AudioUnitPrice)
+	}
+}
+
+// A negative character price is a typo that would bill backwards; the write
+// path is where it should stop, same rule as the image tier table's. Unpriced,
+// by contrast, is a legal declaration — the row bills as unknown until a price
+// is filled in.
+func TestAudioCandidatePriceSignRules(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	pv := seedProviderWithBaseURL(t, providerService, "sf-audio", "https://api.siliconflow.cn/v1")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	now := time.Now().UTC()
+	modelView, err := svc.CreateModel(modeladmin.CreateModelInput{Name: "cosyvoice"}, now)
+	if err != nil {
+		t.Fatalf("CreateModel failed: %v", err)
+	}
+
+	neg := -1.0
+	if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
+		ProviderID: pv.ID, BillingMode: model.BillingModeAudio, AudioUnitPrice: &neg,
+	}, now); err == nil {
+		t.Fatal("a negative audio unit price was accepted")
+	}
+
+	cand, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
+		ProviderID: pv.ID, BillingMode: model.BillingModeAudio,
+	}, now)
+	if err != nil {
+		t.Fatalf("unpriced audio declaration rejected: %v", err)
+	}
+	if cand.AudioUnitPrice != nil {
+		t.Fatalf("unpriced declaration stored a price: %v", *cand.AudioUnitPrice)
+	}
+}
+
+// The audio seed section feeds the same suggest endpoint the token half does,
+// so an import dialog on an audio host prefills a character price.
+func TestSuggestCandidatePriceUsesAudioSeedSection(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	pv := seedProviderWithBaseURL(t, providerService, "minimax-audio", "https://api.minimax.cn")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+
+	const name = "speech-2.8-turbo"
+	want, ok := pricecatalog.LookupAudio("https://api.minimax.cn", name)
+	if !ok {
+		t.Fatalf("the seed catalog's audio section no longer carries %s; pick another pair", name)
+	}
+	got, err := svc.SuggestCandidatePrice(pv.ID, name)
+	if err != nil {
+		t.Fatalf("SuggestCandidatePrice failed: %v", err)
+	}
+	if got.Source != "seed" || got.AudioUnitPrice == nil || *got.AudioUnitPrice != want {
+		t.Fatalf("suggestion = %+v, want seed audio price %v", got, want)
+	}
+	if got.InputPrice != 0 || got.OutputPrice != 0 {
+		t.Fatalf("audio suggestion carries token figures: %+v", got)
+	}
+}

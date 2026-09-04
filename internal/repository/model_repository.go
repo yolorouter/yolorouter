@@ -293,12 +293,13 @@ func UpdateModelCandidate(db *gorm.DB, id uint, providerModelName string, inputP
 // them — must not have to carry its columns through their signatures. Run
 // inside the same transaction as the field update when both fire: one edit,
 // one rollback.
-func UpdateModelCandidateBilling(db *gorm.DB, id uint, billingMode, imagePricingTiers, videoPricingTiers string, now time.Time) error {
+func UpdateModelCandidateBilling(db *gorm.DB, id uint, billingMode, imagePricingTiers, videoPricingTiers string, audioUnitPrice *float64, now time.Time) error {
 	return db.Model(&model.ModelCandidate{}).Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"billing_mode":        billingMode,
 			"image_pricing_tiers": imagePricingTiers,
 			"video_pricing_tiers": videoPricingTiers,
+			"audio_unit_price":    audioUnitPrice,
 			"updated_at":          now,
 		}).Error
 }
@@ -360,7 +361,7 @@ func FindLatestCandidatePricesByFoldedNames(db *gorm.DB, providerID uint, folded
 	}
 	var rows []model.ModelCandidate
 	err := db.
-		Select("input_price", "output_price", "cache_write_price", "cache_read_price", "price_updated_at", "provider_model_name_folded").
+		Select("input_price", "output_price", "cache_write_price", "cache_read_price", "billing_mode", "audio_unit_price", "price_updated_at", "provider_model_name_folded").
 		Where("provider_id = ? AND provider_model_name_folded IN ?", providerID, foldedNames).
 		Order("price_updated_at DESC, id DESC").
 		Find(&rows).Error
@@ -383,7 +384,7 @@ func FindLatestCandidatePrice(db *gorm.DB, providerID uint, providerModelName st
 	}
 	var c model.ModelCandidate
 	err := db.
-		Select("input_price", "output_price", "cache_write_price", "cache_read_price", "price_updated_at").
+		Select("input_price", "output_price", "cache_write_price", "cache_read_price", "billing_mode", "audio_unit_price", "price_updated_at").
 		Where("provider_id = ? AND provider_model_name_folded = ?", providerID, folded).
 		// Take rather than First: First appends its own ascending primary-key
 		// ordering, which would fight the descending tie-breaker here.

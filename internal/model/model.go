@@ -209,8 +209,9 @@ type ModelCandidate struct {
 	MaxOutput         int      `gorm:"column:max_output" json:"max_output"`
 	// BillingMode says which quantities settlement prices this candidate
 	// in: token (the default every row had before the column), image (per
-	// delivered image, through ImagePricingTiers), or video (per delivered
-	// second, through VideoPricingTiers).
+	// delivered image, through ImagePricingTiers), video (per delivered
+	// second, through VideoPricingTiers), or audio (per million counted
+	// characters, through AudioUnitPrice).
 	BillingMode string `gorm:"column:billing_mode" json:"billing_mode"`
 	// ImagePricingTiers is the per-image price table, stored as the JSON
 	// form model.ImagePricingTiers defines. Only read when BillingMode is
@@ -221,6 +222,11 @@ type ModelCandidate struct {
 	// editor shape). Only read when BillingMode is video; parsed leniently
 	// on the hot path and validated at save time.
 	VideoPricingTiers string `gorm:"column:video_pricing_tiers" json:"video_pricing_tiers"`
+	// AudioUnitPrice is the per-million-characters price, the single price
+	// an audio-mode candidate bills by (speech has no input/output or tier
+	// axes). Only read when BillingMode is audio. NULL is unpriced — a
+	// distinct fact from free, which is 0.
+	AudioUnitPrice *float64 `gorm:"column:audio_unit_price" json:"audio_unit_price"`
 	// SupportsStreaming / SupportsFunctionCalling record whether the last probe
 	// CONFIRMED the capability: true when it did, nil when it did not. They are
 	// informational — the admin UI shows them and routing ignores them entirely

@@ -31,11 +31,16 @@ var catalogBytes []byte
 const (
 	expectedCurrency = "CNY"
 	expectedUnit     = "per_million_tokens"
+	// expectedAudioUnit is the audio section's own contract: one CNY price
+	// per million CHARACTERS, the single column an audio-mode candidate
+	// bills by. A separate declaration rather than a per-entry override —
+	// the whole section is character-priced by construction.
+	expectedAudioUnit = "per_million_characters"
 )
 
 var (
 	loadOnce   sync.Once
-	loadedIdx  index
+	loadedCat  catalogIndex
 	loadedDate string
 	loadErr    error
 )
@@ -51,18 +56,40 @@ type Price struct {
 }
 
 // Catalog is the parsed seed file: prices keyed by base_url host, then by model
-// name, plus the header fields declaring what the figures mean.
+// name, plus the header fields declaring what the figures mean. The audio
+// section is optional and carries its own unit declaration — speech prices by
+// the character, not by the token, and mixing the two under one header is how
+// a per-token refresh ends up billed as characters.
 type Catalog struct {
 	UpdatedAt string                      `json:"updated_at"`
 	Currency  string                      `json:"currency"`
 	Unit      string                      `json:"unit"`
 	Prices    map[string]map[string]Price `json:"prices"`
+	Audio     *AudioCatalog               `json:"audio,omitempty"`
+}
+
+// AudioCatalog is the character-priced section: one CNY-per-million-characters
+// figure per host+model, for audio-mode candidates.
+type AudioCatalog struct {
+	Unit   string                        `json:"unit"`
+	Prices map[string]map[string]float64 `json:"prices"`
 }
 
 // index is Catalog.Prices with both key levels already normalized (host
 // stripped to its bare name, model lowercased), so a lookup is two map reads
 // instead of a case-insensitive scan of every host and every model.
 type index map[string]map[string]Price
+
+// audioIndex is AudioCatalog.Prices under the same normalization.
+type audioIndex map[string]map[string]float64
+
+// catalogIndex is both halves of a catalog as one value. Live refresh swaps a
+// whole one of these atomically, so a concurrent lookup can never observe the
+// new token half against the old audio half.
+type catalogIndex struct {
+	tokens index
+	audio  audioIndex
+}
 
 // UpdatedAt reports the date of the prices currently in effect, in YYYY-MM-DD
 // form. When the background refresh has warmed a live index fetched from the
@@ -87,62 +114,95 @@ func UpdatedAt() string {
 // rather than a runtime condition; it is surfaced as a non-nil error from every
 // Lookup (the caller then simply suggests nothing) and is caught in CI by
 // TestEmbeddedCatalogLoads.
-func load() (index, error) {
+func load() (catalogIndex, error) {
 	loadOnce.Do(func() {
 		var c Catalog
 		if err := json.Unmarshal(catalogBytes, &c); err != nil {
 			loadErr = fmt.Errorf("parse catalog: %w", err)
 			return
 		}
-		loadedIdx, loadErr = buildIndex(&c)
+		loadedCat, loadErr = buildIndex(&c)
 		if loadErr == nil {
 			loadedDate = c.UpdatedAt
 		}
 	})
-	return loadedIdx, loadErr
+	return loadedCat, loadErr
 }
 
 // buildIndex validates a parsed catalog and normalizes its keys. Split out from
 // load so the validation and lookup rules can be exercised against a fixture
 // instead of the shipped figures, which are expected to be re-synced.
-func buildIndex(c *Catalog) (index, error) {
+func buildIndex(c *Catalog) (catalogIndex, error) {
 	if c.Currency != expectedCurrency {
-		return nil, fmt.Errorf("catalog currency is %q, want %q", c.Currency, expectedCurrency)
+		return catalogIndex{}, fmt.Errorf("catalog currency is %q, want %q", c.Currency, expectedCurrency)
 	}
 	if c.Unit != expectedUnit {
-		return nil, fmt.Errorf("catalog unit is %q, want %q", c.Unit, expectedUnit)
+		return catalogIndex{}, fmt.Errorf("catalog unit is %q, want %q", c.Unit, expectedUnit)
 	}
 	// A date rather than free text: it is the only signal of how stale the
 	// figures are, and a typo would make that signal unreadable.
 	if _, err := time.Parse(time.DateOnly, c.UpdatedAt); err != nil {
-		return nil, fmt.Errorf("catalog updated_at %q is not a %s date", c.UpdatedAt, time.DateOnly)
+		return catalogIndex{}, fmt.Errorf("catalog updated_at %q is not a %s date", c.UpdatedAt, time.DateOnly)
 	}
 
-	idx := make(index, len(c.Prices))
-	for host, models := range c.Prices {
+	idx, err := normalizedSection(c.Prices, "catalog")
+	if err != nil {
+		return catalogIndex{}, err
+	}
+
+	audio, err := buildAudioIndex(c.Audio)
+	if err != nil {
+		return catalogIndex{}, err
+	}
+	return catalogIndex{tokens: idx, audio: audio}, nil
+}
+
+// normalizedSection applies the shared host/model key rules to one section's
+// prices: host stripped to its bare name, model lowercased, and collisions
+// rejected because which entry wins must not depend on map iteration order.
+// Both halves of the catalog (token and audio) fold through it so the rules
+// cannot drift apart; what names the section in rejection messages.
+func normalizedSection[V any](prices map[string]map[string]V, what string) (map[string]map[string]V, error) {
+	idx := make(map[string]map[string]V, len(prices))
+	for host, models := range prices {
 		h := hostOf(host)
 		if h == "" {
-			return nil, fmt.Errorf("catalog has an empty host key")
+			return nil, fmt.Errorf("%s has an empty host key", what)
 		}
-		// Two keys that normalize to the same host would make which set of
-		// prices wins depend on map iteration order, i.e. vary run to run.
 		if _, dup := idx[h]; dup {
-			return nil, fmt.Errorf("catalog host %q is listed more than once", h)
+			return nil, fmt.Errorf("%s lists host %q more than once", what, h)
 		}
-		normalized := make(map[string]Price, len(models))
+		normalized := make(map[string]V, len(models))
 		for name, p := range models {
 			m := strings.ToLower(strings.TrimSpace(name))
 			if m == "" {
-				return nil, fmt.Errorf("catalog host %q has an empty model key", h)
+				return nil, fmt.Errorf("%s host %q has an empty model key", what, h)
 			}
 			if _, dup := normalized[m]; dup {
-				return nil, fmt.Errorf("catalog host %q lists model %q more than once", h, m)
+				return nil, fmt.Errorf("%s host %q lists model %q more than once", what, h, m)
 			}
 			normalized[m] = p
 		}
 		idx[h] = normalized
 	}
 	return idx, nil
+}
+
+// buildAudioIndex normalizes the audio section under the same host/model rules
+// as the token half, plus its own unit declaration check. A nil section is an
+// empty index, not an error: deployments predate the section.
+func buildAudioIndex(a *AudioCatalog) (audioIndex, error) {
+	if a == nil {
+		return audioIndex{}, nil
+	}
+	if a.Unit != expectedAudioUnit {
+		return nil, fmt.Errorf("catalog audio unit is %q, want %q", a.Unit, expectedAudioUnit)
+	}
+	idx, err := normalizedSection(a.Prices, "catalog audio")
+	if err != nil {
+		return nil, err
+	}
+	return audioIndex(idx), nil
 }
 
 // hostOf normalizes a provider base_url down to its bare hostname — no scheme,
@@ -185,7 +245,20 @@ func Lookup(baseURL, modelName string) (Price, bool) {
 	if err != nil {
 		return Price{}, false
 	}
-	return lookupIn(idx, baseURL, modelName)
+	return lookupIn(idx.tokens, baseURL, modelName)
+}
+
+// LookupAudio returns the per-million-characters price for a provider and
+// model, under the same live-first, union-with-embed rule as Lookup.
+func LookupAudio(baseURL, modelName string) (float64, bool) {
+	if p, ok := lookupLiveAudio(baseURL, modelName); ok {
+		return p, true
+	}
+	idx, err := load()
+	if err != nil {
+		return 0, false
+	}
+	return lookupAudioIn(idx.audio, baseURL, modelName)
 }
 
 // lookupLive is the warm-index branch of Lookup. Returning false for an empty
@@ -196,7 +269,15 @@ func lookupLive(baseURL, modelName string) (Price, bool) {
 	if p == nil {
 		return Price{}, false
 	}
-	return lookupIn(*p, baseURL, modelName)
+	return lookupIn(p.tokens, baseURL, modelName)
+}
+
+func lookupLiveAudio(baseURL, modelName string) (float64, bool) {
+	p := live.Load()
+	if p == nil {
+		return 0, false
+	}
+	return lookupAudioIn(p.audio, baseURL, modelName)
 }
 
 func lookupIn(idx index, baseURL, modelName string) (Price, bool) {
@@ -214,6 +295,16 @@ func lookupIn(idx index, baseURL, modelName string) (Price, bool) {
 	// let one caller writing through them (a unit conversion, a markup) rewrite
 	// the embedded catalog for every caller after it.
 	return Price{Input: p.Input, Output: p.Output, CacheWrite: clonePtr(p.CacheWrite), CacheRead: clonePtr(p.CacheRead)}, true
+}
+
+func lookupAudioIn(idx audioIndex, baseURL, modelName string) (float64, bool) {
+	host := hostOf(baseURL)
+	model := strings.ToLower(strings.TrimSpace(modelName))
+	if host == "" || model == "" {
+		return 0, false
+	}
+	p, ok := idx[host][model]
+	return p, ok
 }
 
 func clonePtr(v *float64) *float64 {

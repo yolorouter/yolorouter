@@ -63,6 +63,7 @@ func TestExchangeExportsReadersOnly(t *testing.T) {
 		"ConcurrencyLimit":           true,
 		"CustomSystemPrompt":         true,
 		"CustomSystemPromptEnabled":  true,
+		"AudioPricingSnapshot":       true,
 		"ImagePricingSnapshot":       true,
 		"IngressPath":                true,
 		"IngressProtocol":            true,

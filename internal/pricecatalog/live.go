@@ -19,7 +19,9 @@ import (
 //
 // atomic.Pointer guarantees that a concurrent Lookup observes either the old or
 // the new index in full, never a half-swapped mix — see TestConcurrentLookupDuringSwapIsConsistent.
-var live atomic.Pointer[index]
+// The catalogIndex carries both halves (token and audio), so a swap can never
+// pair a fresh token section with a stale audio one.
+var live atomic.Pointer[catalogIndex]
 
 // liveDate holds the updated_at of the currently-warm live index, surfaced via
 // UpdatedAt so an admin sees "today's cron", not "the day this binary compiled".

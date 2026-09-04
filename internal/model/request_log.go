@@ -88,6 +88,18 @@ type RequestLog struct {
 	// rows, and pre-column rows — the usage figures then stay the token
 	// counts, so one row always reads in a single billing unit.
 	UsageSeconds int `gorm:"column:usage_seconds" json:"usage_seconds"`
+	// UsageCharacters is how many billable characters a speech request
+	// counted, written whenever the usage report carried a character unit
+	// — priced or not, and in the settling candidate's own billing meter
+	// (a vendor that counts one CJK glyph as two reports two here). The
+	// image/video counterparts are ImageCount/UsageSeconds.
+	UsageCharacters int `gorm:"column:usage_characters" json:"usage_characters"`
+	// AudioPricingSnapshot is what a per-character settlement priced by:
+	// the billing mode, the counted characters, and the per-million
+	// characters unit price. Written from the same numbers the cost was
+	// computed from, so a billed row can always explain itself. Empty on
+	// every row not billed per character.
+	AudioPricingSnapshot string `gorm:"column:audio_pricing_snapshot" json:"audio_pricing_snapshot"`
 	// Source marks who initiated the request: "" = a normal caller request,
 	// "vision_fallback" = an image-description sub-call the gateway made on
 	// behalf of the request named by ParentRequestID. Sub-calls are separate

@@ -152,7 +152,7 @@ func TestLookupFallsBackToEmbedWhenLiveEmpty(t *testing.T) {
 	}
 	var seedHost, seedModel string
 	var seedPrice Price
-	for h, ms := range idx {
+	for h, ms := range idx.tokens {
 		for m, p := range ms {
 			seedHost, seedModel, seedPrice = h, m, p
 			break
@@ -184,7 +184,7 @@ func TestLiveUnionsWithEmbed(t *testing.T) {
 	// Pick an embed-only host/model before warming.
 	idx, _ := load()
 	var embedHost, embedModel string
-	for h, ms := range idx {
+	for h, ms := range idx.tokens {
 		for m := range ms {
 			embedHost, embedModel = h, m
 			break
@@ -406,7 +406,7 @@ func TestLiveOverridesEmbeddedHostFigures(t *testing.T) {
 	resetLive(t)
 	idx, _ := load()
 	var host, model string
-	for h, ms := range idx {
+	for h, ms := range idx.tokens {
 		for m := range ms {
 			host, model = h, m
 			break
@@ -428,5 +428,36 @@ func TestLiveOverridesEmbeddedHostFigures(t *testing.T) {
 	}
 	if p.Input != 777 || p.Output != 888 {
 		t.Errorf("embed won over live: got %v/%v, want 777/888", p.Input, p.Output)
+	}
+}
+
+// The audio half follows the same live-wins, embed-fills union as tokens: a
+// refreshed character price overrides the seed, and an un-refreshed one keeps
+// it.
+func TestLiveUnionsWithEmbedForAudio(t *testing.T) {
+	resetLive(t)
+
+	seedPrice, ok := LookupAudio("https://api.minimax.cn", "speech-2.8-turbo")
+	if !ok || seedPrice != 200 {
+		t.Fatalf("embed fallback for audio broken: %v, %v", seedPrice, ok)
+	}
+
+	override := &Catalog{
+		UpdatedAt: "2099-12-31", Currency: expectedCurrency, Unit: expectedUnit,
+		Prices: map[string]map[string]Price{},
+		Audio: &AudioCatalog{
+			Unit:   expectedAudioUnit,
+			Prices: map[string]map[string]float64{"api.minimax.cn": {"speech-2.8-turbo": 123}},
+		},
+	}
+	raw, err := json.Marshal(override)
+	if err != nil {
+		t.Fatalf("marshal override: %v", err)
+	}
+	if err := ApplyLive(raw); err != nil {
+		t.Fatalf("ApplyLive override: %v", err)
+	}
+	if p, ok := LookupAudio("https://api.minimax.cn/v1", "speech-2.8-turbo"); !ok || p != 123 {
+		t.Errorf("live audio figures did not win: %v, %v", p, ok)
 	}
 }
