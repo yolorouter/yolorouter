@@ -114,6 +114,7 @@ import { useIsMobile } from '../../composables/useIsMobile.ts'
 function billingModeTag(mode: BillingMode): { labelKey: string; tagType: 'info' | 'success' | 'default' } {
   if (mode === 'image') return { labelKey: 'models.billingPerImage', tagType: 'info' }
   if (mode === 'video') return { labelKey: 'models.billingPerVideo', tagType: 'success' }
+  if (mode === 'audio') return { labelKey: 'models.billingModeAudio', tagType: 'info' }
   return { labelKey: 'models.billingPerToken', tagType: 'default' }
 }
 

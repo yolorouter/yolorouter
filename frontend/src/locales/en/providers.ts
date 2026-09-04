@@ -168,4 +168,6 @@ export default {
   editProvider: 'Edit Provider',
   editProtocolReverifyWarning: 'Changing the base URL or protocol requires this provider\'s keys to be re-verified before they route',
   saveSuccess: 'Saved',
+  candidateAudioUnpriced: 'Unpriced (character price not set)',
+  candidateAudioPrice: '¥{price} / M chars',
 }

@@ -461,6 +461,7 @@ export interface ProviderCandidate {
   billing_mode: BillingMode
   image_pricing_tiers: ImagePricingTiers | null
   video_pricing_tiers: VideoPricingTiers | null
+  audio_unit_price: number | null
   max_output: number
   management_status: number
   verification_status: number

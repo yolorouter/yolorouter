@@ -94,7 +94,7 @@ export default {
   videoTiersEmpty: '按秒计费需要至少一个档位',
   videoTierNegative: '档位价格不能为负数',
   billingPriceColumn: '计费 / 价格',
-  billingPriceColumn_tip: '该候选按什么计价、单价是多少：按 token 显示每百万输入/输出单价，按张显示阶梯价区间或默认价，按秒显示各分辨率档的每秒售价',
+  billingPriceColumn_tip: '该候选按什么计价、单价是多少：按 token 显示每百万输入/输出单价，按张显示阶梯价区间或默认价，按秒显示各分辨率档的每秒售价，按字符显示每百万计费字符的字符价',
   billingPerImage: '按张',
   billingPerToken: '按 token',
   outputModalitiesCreate_tip: '本次创建的模型产出什么；作用于手工名与所有勾选的预设，默认文本。',

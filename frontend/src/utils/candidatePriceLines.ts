@@ -25,6 +25,7 @@ export type PricedCandidate = {
   billing_mode: BillingMode
   image_pricing_tiers: ImagePricingTiers | null
   video_pricing_tiers: VideoPricingTiers | null
+  audio_unit_price: number | null
   input_price: number
   output_price: number
   cache_write_price: number | null
@@ -41,6 +42,14 @@ export function candidatePriceLines(row: PricedCandidate, t: Translator): VNodeC
       return [h('div', t('providers.candidateImagePriceRange', { min: formatImagePrice(summary.min), max: formatImagePrice(summary.max) }))]
     }
     return [h('div', t('providers.candidateImagePrice', { price: formatImagePrice(summary.min) }))]
+  }
+  if (row.billing_mode === 'audio') {
+    // One price is the whole declaration; its absence is unpriced, the
+    // image table's own muted treatment.
+    if (row.audio_unit_price === null) {
+      return [h('div', { class: 'candidate-muted' }, t('providers.candidateAudioUnpriced'))]
+    }
+    return [h('div', t('providers.candidateAudioPrice', { price: row.audio_unit_price }))]
   }
   if (row.billing_mode === 'video') {
     const lines = videoPriceLines(row.video_pricing_tiers)

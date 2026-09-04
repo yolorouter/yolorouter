@@ -29,14 +29,17 @@ type ProviderCandidateView struct {
 	// "image"); ImagePricingTiers is the per-image table for image mode,
 	// nil when none is configured. A list column prices an image-billed
 	// mapping off these — its per-M token prices are inert under that mode.
-	BillingMode        string                   `json:"billing_mode"`
-	ImagePricingTiers  *model.ImagePricingTiers `json:"image_pricing_tiers"`
-	MaxOutput          int                      `json:"max_output"`
-	ManagementStatus   int                      `json:"management_status"`
-	VerificationStatus int                      `json:"verification_status"`
-	LastTestResult     *int                     `json:"last_test_result"`
-	LastTestedAt       *time.Time               `json:"last_tested_at"`
-	LastTestError      *string                  `json:"last_test_error"`
+	BillingMode       string                   `json:"billing_mode"`
+	ImagePricingTiers *model.ImagePricingTiers `json:"image_pricing_tiers"`
+	// AudioUnitPrice is the per-million-characters price an audio-billed
+	// mapping carries; nil when none is set.
+	AudioUnitPrice     *float64   `json:"audio_unit_price"`
+	MaxOutput          int        `json:"max_output"`
+	ManagementStatus   int        `json:"management_status"`
+	VerificationStatus int        `json:"verification_status"`
+	LastTestResult     *int       `json:"last_test_result"`
+	LastTestedAt       *time.Time `json:"last_tested_at"`
+	LastTestError      *string    `json:"last_test_error"`
 	// AutoEnableOnPass is the standing probe promise: true means the queue
 	// (on some instance — not necessarily the one answering this request)
 	// still owes this row a probe outcome, so pollers should keep watching
@@ -165,6 +168,7 @@ func (s *ModelService) ListProviderCandidates(providerID uint) ([]ProviderCandid
 			CacheReadPrice:     c.CacheReadPrice,
 			BillingMode:        model.NormalizeBillingMode(c.BillingMode),
 			ImagePricingTiers:  model.ParseImagePricingTiers(c.ImagePricingTiers),
+			AudioUnitPrice:     c.AudioUnitPrice,
 			MaxOutput:          c.MaxOutput,
 			ManagementStatus:   c.ManagementStatus,
 			VerificationStatus: c.VerificationStatus,

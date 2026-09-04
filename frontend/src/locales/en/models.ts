@@ -94,7 +94,7 @@ export default {
   videoTiersEmpty: 'Per-second billing needs at least one tier',
   videoTierNegative: 'Tier prices cannot be negative',
   billingPriceColumn: 'Billing / Price',
-  billingPriceColumn_tip: 'How this candidate is priced: token rows show the per-million input/output prices, per-image rows show the tier range or default price, per-second rows show each resolution tier\'s per-second price',
+  billingPriceColumn_tip: 'How this candidate is priced: token rows show the per-million input/output prices, per-image rows show the tier range or default price, per-second rows show each resolution tier\'s per-second price, per-character rows show the per-million-character price',
   billingPerImage: 'per image',
   billingPerToken: 'per token',
   outputModalitiesCreate_tip: 'What the models this dialog creates produce; it applies to the manual name and every preset pick alike, and defaults to text.',

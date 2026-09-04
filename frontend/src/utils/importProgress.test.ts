@@ -22,6 +22,7 @@ const cand = (
   cache_write_price: null,
   cache_read_price: null,
   billing_mode: 'token',
+    audio_unit_price: null,
   image_pricing_tiers: null,
   video_pricing_tiers: null,
   max_output: 0,

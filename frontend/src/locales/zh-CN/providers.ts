@@ -170,4 +170,6 @@ export default {
   editProvider: '编辑供应商',
   editProtocolReverifyWarning: '修改 base URL 或协议会使该供应商的 Key 需要重新验证后才能路由',
   saveSuccess: '已保存',
+  candidateAudioUnpriced: '未定价（未设字符价）',
+  candidateAudioPrice: '{price} 元 / 百万字符',
 }

@@ -17,6 +17,7 @@ const imageRow = (tiers: PricedCandidate['image_pricing_tiers']): PricedCandidat
   billing_mode: 'image' as BillingMode,
   image_pricing_tiers: tiers,
   video_pricing_tiers: null,
+    audio_unit_price: null,
   input_price: 1,
   output_price: 2,
   cache_write_price: null,
@@ -27,6 +28,7 @@ const videoRow = (tiers: PricedCandidate['video_pricing_tiers']): PricedCandidat
   billing_mode: 'video' as BillingMode,
   image_pricing_tiers: null,
   video_pricing_tiers: tiers,
+  audio_unit_price: null,
   input_price: 1,
   output_price: 2,
   cache_write_price: null,
@@ -37,6 +39,7 @@ const tokenRow = (cacheWrite: number | null, cacheRead: number | null): PricedCa
   billing_mode: 'token' as BillingMode,
   image_pricing_tiers: null,
   video_pricing_tiers: null,
+    audio_unit_price: null,
   input_price: 1,
   output_price: 2,
   cache_write_price: cacheWrite,
@@ -49,6 +52,17 @@ function cell(line: VNodeChild): { text: string; className: string } {
   if (!isVNode(line)) throw new Error('expected a vnode line')
   return { text: String(line.children), className: String(line.props?.class ?? '') }
 }
+
+describe('audio row', () => {
+  it('renders the single character price, or unpriced when unset', () => {
+    const row = { billing_mode: 'audio' as BillingMode, image_pricing_tiers: null, video_pricing_tiers: null, audio_unit_price: 350, input_price: 0, output_price: 0, cache_write_price: null, cache_read_price: null }
+    const lines = candidatePriceLines(row, (k, n) => (k === 'providers.candidateAudioPrice' ? `¥${n?.price} / M chars` : k))
+    expect(lines).toHaveLength(1)
+    expect(cell(lines[0]).text).toContain('350')
+    const unpriced = candidatePriceLines({ ...row, audio_unit_price: null }, (k) => k)
+    expect(cell(unpriced[0]).text).toContain('candidateAudioUnpriced')
+  })
+})
 
 describe('candidatePriceLines', () => {
   it('renders an unpriced image row as a muted note', () => {
