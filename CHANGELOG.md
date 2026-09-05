@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-05
+
 ### Added
 
 - Speech generation (TTS) behind the OpenAI Speech API: `POST
@@ -708,7 +710,8 @@ failover, and observe usage and cost.
 - Single binary with the web console embedded via `go:embed`; SQLite or PostgreSQL storage; upstream keys encrypted at rest (AES-256).
 - Self-update via the `update` command and update-check API.
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/yolorouter/yolorouter/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/yolorouter/yolorouter/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/yolorouter/yolorouter/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yolorouter/yolorouter/compare/v0.1.9...v0.2.0
