@@ -1,54 +1,51 @@
-# Concise-output benchmark
+# Concise Output ベンチマーク
 
-[中文版](concise-output-benchmark_zh.md) · [日本語](concise-output-benchmark_ja.md)
+[English](concise-output-benchmark.md) · [中文版](concise-output-benchmark_zh.md) · 日本語
 
-The cost-optimization page estimates what the Concise Output switch saves
-(a global system prompt that asks models to keep replies short). The
-estimate is a period total for the selected time range: the output spend
-and the output tokens of your priced traffic, each times a fixed
-coefficient of **12.6%**. This file records how that 12.6% was measured.
-The complete raw data is at the bottom.
+コスト最適化ページは、Concise Output スイッチ（モデルに簡潔な回答を求めるグローバル
+システムプロンプト）がどれだけ節約するかを推定します。推定値は選択した期間の合計です:
+価格付け済みトラフィックの出力支出と出力トークンに、それぞれ固定係数 **12.6%** を
+掛けたもの。このファイルはその 12.6% がどう測定されたかを記録します。完全な生
+データは末尾にあります。
 
-## How it was measured
+## 測定方法
 
-10 fixed questions (listed below), 3 rounds each, on five models:
-claude-opus-4-7, deepseek-v4-flash, deepseek-v4-pro, glm-5.1,
-qwen3.5-flash. Each model ran all 30 questions with the switch off, then the
-switch was flipped through the console's own setting API and the same 30 ran
-again. 300 calls in total, none failed, which gives 150 on/off pairs — one
-per (model, question, round).
+10 個の固定質問（下記）を、5 つのモデル——claude-opus-4-7、deepseek-v4-flash、
+deepseek-v4-pro、glm-5.1、qwen3.5-flash——で各 3 ラウンド。各モデルはスイッチ
+オフで全 30 問を実行し、その後スイッチをコンソール自身の設定 API 経由でオンに
+切り替えて、同じ 30 問をもう一度実行しました。合計 300 回の呼び出し、失敗ゼロ、
+これで (モデル, 質問, ラウンド) ごとに 1 組、150 組のオン/オフ対が得られます。
 
-The ON runs installed exactly what the console installs when you turn the
-switch on, verbatim:
+ON ランは、スイッチをオンにしたときコンソールがインストールするものをそのまま
+一字一句同じくインストールしました:
 
 > 回答请保持简洁，去掉客套话和不必要的铺垫，保留完整语法和技术细节。优先复用标准库和平台已有能力，非必要不引入新的抽象或依赖，用最短的可行改动解决问题。
 
-Both sentences, because the switch writes both — the second one, about
-preferring existing platform capabilities and the smallest viable change,
-shortens code answers as much as the first one shortens prose. The console
-writes them in its own language, so an English console installs the English
-wording; that wording is not what was measured here.
+両方の文です。スイッチは両方を書き込むからです——既存のプラットフォーム能力の
+再利用と最小の実行可能な変更を好むという第二の文は、コード回答を第一の文が散文を
+縮めるのと同じだけ縮めます。コンソールは自分の言語でこれらを書き込むため、英語
+コンソールは英語の文面をインストールします。ここで測定されたのはその文面では
+ありません。
 
-Sampling parameters were whatever each model defaults to. For each pair,
-`r = (off_tokens − on_tokens) / off_tokens`, where the token counts are
-the upstream-reported `completion_tokens`. On reasoning models this
-includes the thinking tokens, because those are billed too. The shipped
-coefficient is the median of all 150 ratios.
+サンプリングパラメータは各モデルのデフォルトのまま。各対について
+`r = (off_tokens − on_tokens) / off_tokens` とし、トークン数は上流報告の
+`completion_tokens` です。推論モデルでは thinking トークンを含みます。それも
+課金されるからです。出荷される係数は 150 個全ての比率の中央値です。
 
-Measured on 2026-08-24.
+測定日: 2026-08-24。
 
-## Results
+## 結果
 
 | | |
 | --- | --- |
-| Median (the shipped coefficient) | **+12.6%** |
-| 25th / 75th percentile | −4.0% / +27.2% |
-| Min / max | −192.8% / +87.2% |
-| Negative pairs | 44 of 150 |
+| 中央値（出荷係数） | **+12.6%** |
+| 25 / 75 パーセンタイル | −4.0% / +27.2% |
+| 最小 / 最大 | −192.8% / +87.2% |
+| 負の対 | 150 中 44 |
 
-Per-model medians:
+モデル別中央値:
 
-| Model | Median |
+| モデル | 中央値 |
 | --- | --- |
 | claude-opus-4-7 | +3.6% |
 | deepseek-v4-flash | +18.6% |
@@ -56,49 +53,47 @@ Per-model medians:
 | glm-5.1 | +11.3% |
 | qwen3.5-flash | +10.6% |
 
-Every model came out ahead, but the spread inside each one is wide and it
-is not noise you can average away by looking harder. 44 of the 150 pairs are
-negative — the prompt made that particular answer longer. Individual pairs
-swing hard: the same model on the same question landed at −193% in one round
-and +46% in another. Expect the figure to hold across a month of traffic,
-not on any single request.
+すべてのモデルがプラスで終えましたが、各モデル内のばらつきは大きく、注意深く
+見て平均化できるノイズではありません。150 対のうち 44 対が負——プロンプトが
+その個別の回答を長くしました。個々の対は激しく振れます: 同じモデルの同じ質問が、
+あるラウンドでは −193%、別のラウンドでは +46% に着地することもあります。この
+数値が成り立つと期待するのは 1 ヵ月のトラフィック全体であって、個々のリクエスト
+ではありません。
 
-We ship one global number, not a per-model table. Models change faster than
-such a table stays useful, and the page labels the figure as an estimate.
-The number also assumes the switch is left on the prompt it installs;
-replacing that text through the API with something unrelated voids it.
+モデルごとの表ではなく、グローバルな 1 つの数値を出荷しています。モデルはその
+ような表が有用であり続けるより速く変わりますし、ページはこの数値を推定値と
+明示しています。またこの数値は、スイッチがインストールするプロンプトをそのまま
+使い続けることを前提としています。API 経由でその文言を無関係なもので置き換えると
+前提が崩れます。
 
-## The questions
+## 質問
 
-Frozen; the same set is used every time. The runs were made in Chinese —
-the questions below are translations, kept here so the mix is readable.
-Question length and language both move the token counts, so reproducing
-these numbers means sending the Chinese originals verbatim: they are in the
-[Chinese edition](concise-output-benchmark_zh.md#题目). (Embedded code, SQL
-and log samples are identical in both.)
+固定です。毎回同じセットを使います。実行は中国語で行われました——下記の質問は
+その翻訳で、構成が読めるようにここに置いてあります。質問の長さも言語もトークン
+数を動かすため、これらの数値を再現するには中国語原文を一字一句同じく送る必要が
+あります: 原文は[中文版](concise-output-benchmark_zh.md#题目)にあります。
+（埋め込まれたコード・SQL・ログサンプルは両版で同一です。）
 
-1. **[codegen]** Implement in Go a function `WordCount(text string, topN int)`
-   that counts case-insensitively how often each word appears in an English
-   text and returns the top `topN` `(word, count)` pairs by descending
-   count. Provide complete runnable code including imports and a small
-   `main` example.
-2. **[codegen]** Write a Python CLI script that recursively walks a given
-   directory, finds files larger than 10 MB modified within the last 7
-   days, and prints their paths and sizes (human-readable) in descending
-   size order. Provide complete code and usage instructions.
-3. **[code-explain]** Explain what this SQL does and point out possible
-   performance problems and improvements:
+1. **[codegen]** Go で `WordCount(text string, topN int)` 関数を実装する。
+   英文テキスト中の各単語の出現回数を大文字小文字を区別せず数え、出現回数の
+   降順で上位 `topN` 個の `(word, count)` ペアを返す。import を含む完全に
+   実行可能なコードと小さな `main` の例を提供すること。
+2. **[codegen]** 与えられたディレクトリを再帰的に走査し、過去 7 日以内に
+   変更された 10 MB 超のファイルを見つけて、パスとサイズ（人間が読める形式）を
+   サイズ降順で表示する Python CLI スクリプトを書く。完全なコードと使い方を
+   提供すること。
+3. **[code-explain]** この SQL が何をしているか説明し、考えられるパフォーマンス
+   問題と改善点を指摘する:
    `SELECT u.id, u.username, u.email, COUNT(o.id) AS order_count, SUM(o.amount) AS total FROM users u LEFT JOIN orders o ON o.user_id = u.id AND o.status = 'paid' WHERE u.created_at > '2026-01-01' AND u.status <> 'deleted' GROUP BY u.id, u.username, u.email HAVING COUNT(o.id) > 5 ORDER BY order_count DESC LIMIT 100;`
-4. **[code-review]** Review this Go code and list every problem you find
-   (error handling, resource leaks, edge cases):
+4. **[code-review]** この Go コードをレビューし、見つけた問題をすべて列挙する
+   （エラー処理、リソースリーク、エッジケース）:
    `func readConfig(path string) ([]byte, error) { f, err := os.Open(path); if err != nil { return nil, err } b, err := io.ReadAll(f); return b, err }`
-5. **[log-analysis]** Given this one-hour sample of API access logs
-   (format: `time method path status latency_ms`), analyze the traffic
-   pattern, surface anomalies, and give operational recommendations:
+5. **[log-analysis]** この 1 時間分の API アクセスログのサンプル（形式:
+   `time method path status latency_ms`）から、トラフィックパターンを分析し、
+   異常を洗い出し、運用上の推奨を示す:
    `10:01 GET /v1/models 200 12; 10:01 POST /v1/chat/completions 200 3421; 10:02 POST /v1/chat/completions 429 5; 10:02 POST /v1/chat/completions 200 5410; 10:03 GET /v1/models 200 9; 10:03 POST /v1/chat/completions 500 78; 10:04 POST /v1/chat/completions 200 4102; 10:05 GET /health 200 1; 10:05 POST /v1/chat/completions 200 6230; 10:06 POST /v1/chat/completions 429 4; 10:07 POST /v1/chat/completions 200 3871; 10:08 GET /v1/models 200 11; 10:09 POST /v1/chat/completions 200 5540; 10:10 POST /v1/chat/completions 502 120`
-6. **[summary]** Read the product introduction below and produce a
-   structured summary (target users, core features, pricing model,
-   differentiation — at most three bullets each): “YoloRouter is a
+6. **[summary]** 下の製品紹介を読み、構造化された要約（対象ユーザー、主要機能、
+   料金モデル、差別化——各 3 点以内）を作る: “YoloRouter is a
    developer-facing AI model routing gateway. It aggregates multiple
    upstream model services behind one OpenAI-compatible endpoint; callers
    switch models by pointing base_url at the gateway. Provider-level
@@ -108,32 +103,27 @@ and log samples are identical in both.)
    analytics and budget caps. Deployment is a single binary with SQLite
    built in, or PostgreSQL. Pricing is upstream cost + 5%, no monthly
    fee.”
-7. **[knowledge]** Why does TCP need a three-way handshake rather than two?
-   Explain from the protocol's design goals (preventing historical
-   connections, synchronizing initial sequence numbers, confirming
-   two-way communication) and what breaks with two.
-8. **[knowledge]** Explain the four database transaction isolation levels:
-   what each solves, which anomalies remain (dirty read, non-repeatable
-   read, phantom read), and MySQL InnoDB's default level and how it is
-   implemented.
-9. **[translate]** Translate this English technical documentation into
-   Chinese, preserving terminology: “The gateway normalizes every inbound
-   request into an intermediate representation before dispatching it to an
-   upstream provider. This decouples the ingress protocol spoken by the
-   caller from the egress protocol spoken by the provider, so a new
-   provider can be added without touching any caller-side code. Streaming
-   responses are relayed chunk-by-chunk with backpressure, and usage
-   reported by the upstream is reconciled into the audit log at settlement
-   time.”
-10. **[rewrite]** Rewrite this rambling email to be concise and
-    professional, keeping every key fact (time, place, agenda, prep
-    work): “hi 大家好，是这样的，我们本来定在下周三下午的开会时间，因为会议室被占了，所以现在改到周四上午十点了，地点还是老地方 B 栋 301。这次会议主要想跟大家同步一下二季度的进度，然后讨论一下下个季度的计划，另外呢，麻烦大家提前把自己负责模块的数据准备好，最好是能发我一份，我在会上统一汇总，谢谢大家配合，有什么问题随时找我。”
+7. **[knowledge]** TCP はなぜ 2 回ではなく 3 ウェイハンドシェイクを必要とするのか。
+   プロトコルの設計目標（歴史的接続の防止、初期シーケンス番号の同期、双方向通信の
+   確認）と、2 回だと何が壊れるかから説明すること。
+8. **[knowledge]** データベーストランザクションの 4 つの隔離レベルを説明する:
+   各レベルが解決するもの、残る異常（ダーティリード、反復不能読み取り、ファントム
+   リード）、および MySQL InnoDB のデフォルトレベルとその実装方法。
+9. **[translate]** この英語の技術文書を用語を保ったまま中国語に翻訳する:
+   “The gateway normalizes every inbound request into an intermediate
+   representation before dispatching it to an upstream provider. This
+   decouples the ingress protocol spoken by the caller from the egress
+   protocol spoken by the provider, so a new provider can be added
+   without touching any caller-side code. Streaming responses are
+   relayed chunk-by-chunk with backpressure, and usage reported by the
+   upstream is reconciled into the audit log at settlement time.”
+10. **[rewrite]** この冗長なメールを、重要事実（日時、場所、議題、事前準備）を
+    すべて保ったまま簡潔でプロフェッショナルに書き直す: “hi 大家好，是这样的，我们本来定在下周三下午的开会时间，因为会议室被占了，所以现在改到周四上午十点了，地点还是老地方 B 栋 301。这次会议主要想跟大家同步一下二季度的进度，然后讨论一下下个季度的计划，另外呢，麻烦大家提前把自己负责模块的数据准备好，最好是能发我一份，我在会上统一汇总，谢谢大家配合，有什么问题随时找我。”
 
-## Raw data — all 150 pairs
+## 生データ —— 全 150 対
 
-`off` / `on` are the upstream-reported `completion_tokens` (thinking tokens
-included); `r = (off − on) / off`. Positive `r` means the concise prompt
-shortened the output.
+`off` / `on` は上流報告の `completion_tokens`（thinking トークン込み）。
+`r = (off − on) / off`。正の `r` は簡潔プロンプトが出力を縮めたことを意味します。
 
 | Model | Question | Round | off | on | r |
 | --- | --- | --- | --- | --- | --- |

@@ -1,6 +1,6 @@
 # Image generation
 
-[中文版](image-generation_zh.md)
+[中文版](image-generation_zh.md) · [日本語](image-generation_ja.md)
 
 `POST /v1/images/generations` serves models declared with the **image** output
 modality in the console. The request and response are the OpenAI Images API

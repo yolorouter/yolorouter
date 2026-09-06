@@ -1,6 +1,6 @@
 # 输出精简基准实验
 
-[English](concise-output-benchmark.md)
+[English](concise-output-benchmark.md) · [日本語](concise-output-benchmark_ja.md)
 
 成本优化页会给「输出精简」开关估一个节省金额（这个开关就是全局系统提示词，
 要求模型回答简洁）。口径是所选时间段的总量：取该时段内已定价流量的输出费用

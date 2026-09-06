@@ -1,6 +1,6 @@
 # 图片生成
 
-[English](image-generation.md)
+[English](image-generation.md) · [日本語](image-generation_ja.md)
 
 `POST /v1/images/generations` 服务于在后台声明了**图片**输出模态的模型。请求与响应
 都是 OpenAI Images API 形状，OpenAI SDK 无需改造直接可用：

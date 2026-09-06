@@ -10,7 +10,7 @@
 [![Release](https://img.shields.io/github/v/release/yolorouter/yolorouter?sort=semver)](https://github.com/yolorouter/yolorouter/releases)
 [![Go](https://img.shields.io/badge/go-1.25.7+-00ADD8.svg)](go.mod)
 
-English · [简体中文](README_zh.md)
+English · [简体中文](README_zh.md) · [日本語](README_ja.md)
 
 [Quick start](#quick-start) · [Protocols](#protocols) · [Cost optimization](#cost-optimization) · [Documentation](#documentation) · [Contributing](#contributing)
 

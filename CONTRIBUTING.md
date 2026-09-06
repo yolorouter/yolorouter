@@ -1,5 +1,7 @@
 # Contributing to Yolorouter
 
+English · [简体中文](CONTRIBUTING_zh.md)
+
 Thanks for your interest in improving Yolorouter! This guide covers how to set
 up your environment, the coding standards we enforce, and how to get a change
 merged.

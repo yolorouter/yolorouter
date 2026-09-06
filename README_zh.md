@@ -10,7 +10,7 @@
 [![Release](https://img.shields.io/github/v/release/yolorouter/yolorouter?sort=semver)](https://github.com/yolorouter/yolorouter/releases)
 [![Go](https://img.shields.io/badge/go-1.25.7+-00ADD8.svg)](go.mod)
 
-[English](README.md) · 简体中文
+[English](README.md) · 简体中文 · [日本語](README_ja.md)
 
 [快速开始](#快速开始) · [协议](#协议) · [成本优化](#成本优化) · [文档](#文档) · [贡献](#贡献)
 
