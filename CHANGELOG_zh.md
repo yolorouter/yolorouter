@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-05
+
 ### 新增
 
 - OpenAI Speech API 形状下的语音生成（TTS）：`POST /v1/audio/speech` 以二进制音频
@@ -587,7 +589,8 @@ Yolorouter 走向多协议：现在接受四种线上协议，并能在去往供
   静态加密（AES-256）。
 - 经 `update` 命令与更新检查 API 自更新。
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/yolorouter/yolorouter/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/yolorouter/yolorouter/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/yolorouter/yolorouter/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yolorouter/yolorouter/compare/v0.1.9...v0.2.0
