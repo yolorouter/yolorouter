@@ -17,4 +17,7 @@ export default {
   statusAvailable: '可用',
   statusUnavailable: '不可用',
   discoveryFailedHint: '自动获取模型列表失败，当前为备用选项；可重试获取。',
+  keysLoading: '正在获取可用密钥…',
+  keysEmptyTitle: '没有能使用该模型的密钥',
+  keysEmptyHint: '创建一个状态可用、路由范围包含该模型的密钥后再来导出。',
 }

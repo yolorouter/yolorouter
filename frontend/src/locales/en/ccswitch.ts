@@ -19,4 +19,7 @@ export default {
   statusAvailable: 'Available',
   statusUnavailable: 'Unavailable',
   discoveryFailedHint: 'Automatic model discovery failed; fallback options shown. You can retry.',
+  keysLoading: 'Fetching usable keys…',
+  keysEmptyTitle: 'No key can use this model',
+  keysEmptyHint: 'Create an active key whose routing scope covers this model, then come back to export.',
 }

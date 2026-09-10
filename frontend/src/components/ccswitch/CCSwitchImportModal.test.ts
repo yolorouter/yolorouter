@@ -11,7 +11,12 @@ import { createI18n } from 'vue-i18n'
 import { NSelect } from 'naive-ui'
 
 import { APIError } from '../../api/client'
-import { getAPIKeyPlaintext, discoverGatewayModels, type APIKey } from '../../api/apiKeys'
+import {
+  getAPIKeyPlaintext,
+  discoverGatewayModels,
+  listAPIKeys,
+  type APIKey,
+} from '../../api/apiKeys'
 
 vi.mock('../../api/apiKeys', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/apiKeys')>()
@@ -19,11 +24,13 @@ vi.mock('../../api/apiKeys', async (importOriginal) => {
     ...actual,
     getAPIKeyPlaintext: vi.fn(),
     discoverGatewayModels: vi.fn(),
+    listAPIKeys: vi.fn(),
   }
 })
 
 const plaintextMock = vi.mocked(getAPIKeyPlaintext)
 const discoverMock = vi.mocked(discoverGatewayModels)
+const listKeysMock = vi.mocked(listAPIKeys)
 
 // Must be imported after the vi.mock factory is registered.
 import CCSwitchImportModal from './CCSwitchImportModal.vue'
@@ -88,6 +95,7 @@ afterEach(() => {
   document.body.innerHTML = ''
   plaintextMock.mockReset()
   discoverMock.mockReset()
+  listKeysMock.mockReset()
 })
 
 // Buttons live inside the teleported modal, so they are reachable through
@@ -285,6 +293,241 @@ describe('CCSwitchImportModal (model mode)', () => {
     await nextTick()
     const events = wrapper.getComponent(CCSwitchImportModal).emitted<{ apiKey?: string; model?: string }[]>('confirm')
     expect(events).toEqual([[{ apiKey: 'sk-key-B', model: 'glm-4.7' }]])
+    wrapper.unmount()
+  })
+})
+
+// --- key mode (models page) ------------------------------------------------
+
+import { createRouter, createMemoryHistory } from 'vue-router'
+
+const MODEL_ROW = { id: 7, name: 'glm-4.7' }
+
+// The modal's empty-state CTA navigates; a minimal memory router both
+// silences vue-router's missing-provider warning and makes the navigation
+// itself assertable. The bare `/` route keeps the router's initial
+// location from warning about having no match.
+function makeRouter() {
+  return createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { render: () => null } },
+      { path: '/api-keys', component: { render: () => null } },
+    ],
+  })
+}
+
+function ownKey(id: number, over: Partial<APIKey> = {}): APIKey {
+  return {
+    ...KEY,
+    id,
+    key_prefix: `sk-yr-k${id}prefix0000`,
+    remark: '',
+    owner_username: 'alice',
+    display_status: 'active',
+    allow_all_models: false,
+    model_ids: [MODEL_ROW.id],
+    ...over,
+  }
+}
+
+// Binds the modal open in KEY mode with the fixed model row and the login
+// username the picker filters by.
+const CcsKeyModeHost = defineComponent({
+  setup() {
+    const show = ref(true)
+    return () =>
+      h(CCSwitchImportModal, {
+        show: show.value,
+        'onUpdate:show': (v: boolean) => {
+          show.value = v
+        },
+        mode: 'key',
+        modelRow: MODEL_ROW,
+        ownerUsername: 'alice',
+        onConfirm: () => {},
+      })
+  },
+})
+
+function keyPage(list: APIKey[], total = list.length) {
+  return { total, page: 1, page_size: list.length, list }
+}
+
+describe('CCSwitchImportModal (key mode)', () => {
+  it('lists only own in-scope active keys, preselects the first, confirms the pair', async () => {
+    plaintextMock.mockResolvedValue({ plaintext_key: 'sk-first' })
+    // Mixed page: the third key is out of scope and must not be offered.
+    // The second own key carries no remark — its option falls back to the
+    // key prefix.
+    listKeysMock.mockResolvedValueOnce(
+      keyPage([
+        ownKey(1, { remark: '主力' }),
+        ownKey(5),
+        ownKey(2, { model_ids: [99] }),
+        ownKey(3, { owner_username: 'bob', allow_all_models: true }),
+      ]),
+    )
+
+    const wrapper = mount(CcsKeyModeHost, {
+      global: { plugins: [i18n, makeRouter()] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() =>
+      expect(document.body.textContent ?? '').toContain('主力'),
+    )
+    // Server-side filter narrows traffic to the one routable status.
+    expect(listKeysMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'active', page: 1, pageSize: 200 }),
+    )
+
+    const select = wrapper.getComponent(CCSwitchImportModal).findComponent(NSelect)
+    const options = select.props('options') as Array<{ label: string; value: number }>
+    expect(options).toEqual([
+      { label: '主力', value: 1 },
+      { label: 'sk-yr-k5prefix0000', value: 5 },
+    ])
+
+    clickConfirm()
+    await nextTick()
+    const events = wrapper.getComponent(CCSwitchImportModal).emitted<{ apiKey?: string; model?: string }[]>('confirm')
+    expect(events).toEqual([[{ apiKey: 'sk-first', model: 'glm-4.7' }]])
+    wrapper.unmount()
+  })
+
+  it('pages until the reported total is collected, ignoring drift duplicates', async () => {
+    plaintextMock.mockResolvedValue({ plaintext_key: 'sk-second-page' })
+    // Page 2 re-lists page 1's key (created/revoked drift between fetches):
+    // the dedupe must keep the dropdown duplicate-free while the total
+    // still gets collected.
+    listKeysMock.mockResolvedValueOnce(keyPage([ownKey(1)], 2))
+    listKeysMock.mockResolvedValueOnce(keyPage([ownKey(1), ownKey(2, { allow_all_models: true })], 2))
+
+    const wrapper = mount(CcsKeyModeHost, {
+      global: { plugins: [i18n, makeRouter()] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() => expect(listKeysMock).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() =>
+      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false),
+    )
+    // Preselect stays the FIRST compatible key across pages; the re-listed
+    // key appears exactly once.
+    expect(plaintextMock).toHaveBeenCalledWith(1)
+    const options = wrapper
+      .getComponent(CCSwitchImportModal)
+      .findComponent(NSelect)
+      .props('options') as Array<{ value: number }>
+    expect(options.map((o) => o.value)).toEqual([1, 2])
+    wrapper.unmount()
+  })
+
+  it('withholds confirm across a selection switch until the new key settles', async () => {
+    // Key 1's reveal resolves instantly (gate armed); key 2's is parked.
+    // Switching must DROP the gate until key 2 settles, and key 1's
+    // plaintext must not survive into the confirm payload.
+    let resolveSecond!: (v: { plaintext_key: string }) => void
+    plaintextMock.mockImplementationOnce(() =>
+      Promise.resolve({ plaintext_key: 'sk-key-1' }),
+    )
+    plaintextMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSecond = resolve
+        }),
+    )
+    listKeysMock.mockResolvedValueOnce(keyPage([ownKey(1), ownKey(2)]))
+
+    const wrapper = mount(CcsKeyModeHost, {
+      global: { plugins: [i18n, makeRouter()] },
+      attachTo: document.body,
+    })
+    // Preselected key 1 settles → confirm arms.
+    await vi.waitFor(() =>
+      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false),
+    )
+
+    // Switch to key 2: the gate must drop synchronously with the switch,
+    // before key 2's reveal has any chance to answer.
+    wrapper.getComponent(CCSwitchImportModal).findComponent(NSelect).vm.$emit('update:value', 2)
+    await nextTick()
+    expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(true)
+
+    resolveSecond({ plaintext_key: 'sk-key-2' })
+    await vi.waitFor(() =>
+      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false),
+    )
+
+    clickConfirm()
+    await nextTick()
+    const events = wrapper.getComponent(CCSwitchImportModal).emitted<{ apiKey?: string; model?: string }[]>('confirm')
+    expect(events).toEqual([[{ apiKey: 'sk-key-2', model: 'glm-4.7' }]])
+    wrapper.unmount()
+  })
+
+  it('shows the empty state with a create-key way out when nothing qualifies', async () => {
+    listKeysMock.mockResolvedValueOnce(keyPage([]))
+    const router = makeRouter()
+
+    const wrapper = mount(CcsKeyModeHost, {
+      global: { plugins: [i18n, router] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() =>
+      expect(document.body.textContent ?? '').toContain(en.ccswitch.keysEmptyTitle),
+    )
+    expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(true)
+
+    // The CTA actually navigates to where keys are made.
+    findButtonByText(en.apiKeys.createButton)!.dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/api-keys'))
+    wrapper.unmount()
+  })
+
+  it('surfaces a transient selected-key reveal failure with retry, never the placeholder', async () => {
+    // First reveal flakes; the retry succeeds. The flake must withhold
+    // Confirm (no placeholder export for a readable credential) and show
+    // the error with the retry that re-runs the prefetch.
+    plaintextMock.mockRejectedValueOnce(new APIError(9999, undefined))
+    plaintextMock.mockResolvedValueOnce({ plaintext_key: 'sk-after-retry' })
+    listKeysMock.mockResolvedValueOnce(keyPage([ownKey(1)]))
+
+    const wrapper = mount(CcsKeyModeHost, {
+      global: { plugins: [i18n, makeRouter()] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() => expect(plaintextMock).toHaveBeenCalledTimes(1))
+    // The transient branch, not the legacy one: no paste-by-hand notice.
+    expect(document.body.textContent ?? '').not.toContain(en.ccswitch.plaintextUnavailable)
+    expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(true)
+
+    findButtonByText(en.ccswitch.retry)!.dispatchEvent(new Event('click'))
+    await vi.waitFor(() =>
+      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false),
+    )
+
+    clickConfirm()
+    await nextTick()
+    const events = wrapper.getComponent(CCSwitchImportModal).emitted<{ apiKey?: string; model?: string }[]>('confirm')
+    expect(events).toEqual([[{ apiKey: 'sk-after-retry', model: 'glm-4.7' }]])
+    wrapper.unmount()
+  })
+
+  it('exports a legacy selected key with the placeholder notice', async () => {
+    plaintextMock.mockRejectedValue(new APIError(11016))
+    listKeysMock.mockResolvedValueOnce(keyPage([ownKey(1)]))
+
+    const wrapper = mount(CcsKeyModeHost, {
+      global: { plugins: [i18n, makeRouter()] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() =>
+      expect(document.body.textContent ?? '').toContain(en.ccswitch.plaintextUnavailable),
+    )
+    clickConfirm()
+    await nextTick()
+    const events = wrapper.getComponent(CCSwitchImportModal).emitted<{ apiKey?: string; model?: string }[]>('confirm')
+    expect(events).toEqual([[{ apiKey: undefined, model: 'glm-4.7' }]])
     wrapper.unmount()
   })
 })
