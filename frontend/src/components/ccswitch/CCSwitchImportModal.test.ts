@@ -61,17 +61,14 @@ const CATALOG = [
   { id: 2, name: 'kling-video', running_status: 'unavailable' },
 ]
 
-function makeHost(catalog: typeof CATALOG | null) {
-  return defineComponent({
-    render() {
-      return h(CcsModalHost, { catalog })
-    },
-  })
-}
-
-// Binds the modal open with the fixed key so tests never fight v-model.
+// Binds the modal open with the row passed as a prop, so tests never fight
+// v-model, and a test can switch rows (close-then-reopen, useRowModal
+// semantics) via setProps.
 const CcsModalHost = defineComponent({
-  props: { catalog: { type: Array as () => typeof CATALOG | null, default: null } },
+  props: {
+    catalog: { type: Array as () => typeof CATALOG | null, default: null },
+    row: { type: Object as () => APIKey, required: true },
+  },
   setup(props) {
     const show = ref(true)
     return () =>
@@ -80,7 +77,7 @@ const CcsModalHost = defineComponent({
         'onUpdate:show': (v: boolean) => {
           show.value = v
         },
-        apiKeyRow: KEY,
+        apiKeyRow: props.row,
         catalog: props.catalog,
         onConfirm: () => {},
       })
@@ -108,12 +105,21 @@ function clickConfirm() {
   return btn!
 }
 
+// The retry affordances (reveal error, discovery-failure notice) share the
+// body-teleported lookup shape with the confirm button.
+function findRetryButton(): HTMLButtonElement | undefined {
+  return [...document.body.querySelectorAll('button')].find((b) =>
+    (b.textContent ?? '').includes(en.ccswitch.retry),
+  )
+}
+
 describe('CCSwitchImportModal (model mode)', () => {
   it('loads, preselects the first catalog-available model, and confirms the pair', async () => {
     plaintextMock.mockResolvedValue({ plaintext_key: 'sk-test-123' })
     discoverMock.mockResolvedValue(['kling-video', 'glm-4.7'])
 
-    const wrapper = mount(makeHost(CATALOG), {
+    const wrapper = mount(CcsModalHost, {
+      props: { row: KEY, catalog: CATALOG },
       global: { plugins: [i18n] },
       attachTo: document.body,
     })
@@ -150,7 +156,8 @@ describe('CCSwitchImportModal (model mode)', () => {
     plaintextMock.mockRejectedValue(new APIError(11016))
     discoverMock.mockResolvedValue([])
 
-    const wrapper = mount(makeHost(CATALOG), {
+    const wrapper = mount(CcsModalHost, {
+      props: { row: KEY, catalog: CATALOG },
       global: { plugins: [i18n] },
       attachTo: document.body,
     })
@@ -173,7 +180,8 @@ describe('CCSwitchImportModal (model mode)', () => {
     plaintextMock.mockResolvedValue({ plaintext_key: 'sk-test-123' })
     discoverMock.mockRejectedValue(new Error('gateway down'))
 
-    const wrapper = mount(makeHost(null), {
+    const wrapper = mount(CcsModalHost, {
+      props: { row: KEY, catalog: null },
       global: { plugins: [i18n] },
       attachTo: document.body,
     })
@@ -189,19 +197,31 @@ describe('CCSwitchImportModal (model mode)', () => {
     input!.value = 'glm-4.7'
     input!.dispatchEvent(new Event('input'))
 
+    // The notice's retry actually rewires into a full reload: plaintext is
+    // prefetched again, not just the hint re-rendered. Clicked BEFORE
+    // confirm — after it the modal is closed and, under the production
+    // useRowModal wiring, the cleared row would stop any reload; a
+    // post-confirm click would test a state production cannot reach.
+    const retryBtn = findRetryButton()
+    expect(retryBtn, 'discovery retry rendered').toBeTruthy()
+    retryBtn!.dispatchEvent(new Event('click'))
+    // Wait for the reload to reach readiness, not just to start: while the
+    // second load is in flight the confirm button is (correctly) withheld.
+    // The reload also clears the manual input (a fresh plan may preselect),
+    // so the choice is re-entered after it settles.
+    await vi.waitFor(() => {
+      expect(plaintextMock).toHaveBeenCalledTimes(2)
+      expect(discoverMock).toHaveBeenCalledTimes(2)
+      expect(findConfirmButton()!.hasAttribute('disabled')).toBe(false)
+    })
+    const inputAfterRetry = document.body.querySelector('input')
+    inputAfterRetry!.value = 'glm-4.7'
+    inputAfterRetry!.dispatchEvent(new Event('input'))
+
     clickConfirm()
     await nextTick()
     const events = wrapper.getComponent(CCSwitchImportModal).emitted<{ apiKey?: string; model?: string }[]>('confirm')
     expect(events).toEqual([[{ apiKey: 'sk-test-123', model: 'glm-4.7' }]])
-
-    // The notice's retry actually rewires into a full reload: plaintext is
-    // prefetched again, not just the hint re-rendered.
-    const retryBtn = [...document.body.querySelectorAll('button')].find((b) =>
-      (b.textContent ?? '').includes(en.ccswitch.retry),
-    )
-    expect(retryBtn, 'discovery retry rendered').toBeTruthy()
-    retryBtn!.dispatchEvent(new Event('click'))
-    await vi.waitFor(() => expect(plaintextMock).toHaveBeenCalledTimes(2))
     wrapper.unmount()
   })
 
@@ -210,7 +230,8 @@ describe('CCSwitchImportModal (model mode)', () => {
     plaintextMock.mockResolvedValueOnce({ plaintext_key: 'sk-test-123' })
     discoverMock.mockResolvedValue(['glm-4.7'])
 
-    const wrapper = mount(makeHost(CATALOG), {
+    const wrapper = mount(CcsModalHost, {
+      props: { row: KEY, catalog: CATALOG },
       global: { plugins: [i18n] },
       attachTo: document.body,
     })
@@ -220,14 +241,52 @@ describe('CCSwitchImportModal (model mode)', () => {
     // Nothing to confirm against: the confirm button is withheld.
     expect(findConfirmButton()!.hasAttribute('disabled')).toBe(true)
 
-    const retryBtn = [...document.body.querySelectorAll('button')].find((b) =>
-      (b.textContent ?? '').includes(en.ccswitch.retry),
-    )
-    retryBtn!.dispatchEvent(new Event('click'))
+    findRetryButton()!.dispatchEvent(new Event('click'))
     await vi.waitFor(() =>
       expect(document.body.textContent ?? '').toContain('glm-4.7'),
     )
     expect(plaintextMock).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('drops a stale load\'s plaintext when it resolves after the row switched', async () => {
+    // Row A's reveal is parked on a deferred; row B's resolves instantly.
+    // A resolving LAST must not overwrite B's credential — the confirm
+    // would then emit B's profile name carrying A's key.
+    let resolveA!: (v: { plaintext_key: string }) => void
+    plaintextMock.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveA = resolve
+      }),
+    )
+    plaintextMock.mockImplementationOnce(() =>
+      Promise.resolve({ plaintext_key: 'sk-key-B' }),
+    )
+    discoverMock.mockResolvedValue(['glm-4.7'])
+
+    const wrapper = mount(CcsModalHost, {
+      props: { row: KEY, catalog: CATALOG },
+      global: { plugins: [i18n] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() => expect(plaintextMock).toHaveBeenCalledTimes(1))
+
+    // Switch to row B while A's reveal is still parked: the watch reloads
+    // for B (loadId bumped), exactly like close-then-reopen in production.
+    const rowB: APIKey = { ...KEY, id: 43, owner_username: 'bob' }
+    await wrapper.setProps({ row: rowB })
+    await vi.waitFor(() => expect(plaintextMock).toHaveBeenCalledTimes(2))
+
+    // A's answer lands after B already loaded — it must be dropped.
+    resolveA({ plaintext_key: 'sk-key-A' })
+    await vi.waitFor(() =>
+      expect(document.body.textContent ?? '').toContain('glm-4.7'),
+    )
+
+    clickConfirm()
+    await nextTick()
+    const events = wrapper.getComponent(CCSwitchImportModal).emitted<{ apiKey?: string; model?: string }[]>('confirm')
+    expect(events).toEqual([[{ apiKey: 'sk-key-B', model: 'glm-4.7' }]])
     wrapper.unmount()
   })
 })

@@ -186,7 +186,13 @@ async function load() {
   if (!row) return
 
   try {
-    plaintext.value = (await getAPIKeyPlaintext(row.id)).plaintext_key
+    const { plaintext_key } = await getAPIKeyPlaintext(row.id)
+    // Guard the SUCCESS write too, not just the catch path: a stale load
+    // resolving after a newer one must never overwrite the newer row's
+    // plaintext — the confirm would then export this profile name with the
+    // previous row's credential.
+    if (id !== loadId) return
+    plaintext.value = plaintext_key
   } catch (err) {
     // Guard BEFORE any catch-path write: a stale load whose request
     // rejects after a newer load reset the flags must stay silent —
@@ -232,11 +238,14 @@ async function load() {
 
 // Reload on every open and every row change: the dialog is reused across
 // rows, and a stale plan from the previous row would preselect a model this
-// key cannot route to.
+// key cannot route to. Closing cancels instead — without the bump, a load
+// dismissed by the close would keep running (a wasted request carrying the
+// real credential) and its late writes would land on the closed dialog.
 watch(
   () => [show.value, props.apiKeyRow] as const,
   ([isOpen]) => {
     if (isOpen) void load()
+    else loadId++
   },
   { immediate: true },
 )
