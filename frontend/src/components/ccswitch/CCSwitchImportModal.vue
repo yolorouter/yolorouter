@@ -168,9 +168,10 @@ let loadId = 0
 
 async function load() {
   const id = ++loadId
-  // Capture the row: closing the modal clears it (useRowModal) without
-  // bumping loadId, so an in-flight load must never read props.apiKeyRow
-  // past its first await — the capture is the row this load belongs to.
+  // Capture the row: closing the modal clears it (useRowModal), and while
+  // the close also bumps loadId, this load must never read props.apiKeyRow
+  // past its first await — the capture is the row this load belongs to,
+  // independent of how the guards interleave.
   const row = props.apiKeyRow
   phase.value = 'loading'
   plan.value = null
