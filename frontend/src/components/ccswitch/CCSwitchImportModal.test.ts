@@ -107,7 +107,7 @@ function findButtonByText(text: string): HTMLButtonElement | undefined {
 }
 
 function clickConfirm() {
-  const btn = findButtonByText(en.ccswitch.confirmLaunchButton)
+  const btn = findButtonByText(en.common.confirm)
   expect(btn, 'confirm button rendered').toBeTruthy()
   btn!.dispatchEvent(new Event('click'))
   return btn!
@@ -212,7 +212,7 @@ describe('CCSwitchImportModal (model mode)', () => {
     await vi.waitFor(() => {
       expect(plaintextMock).toHaveBeenCalledTimes(2)
       expect(discoverMock).toHaveBeenCalledTimes(2)
-      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false)
+      expect(findButtonByText(en.common.confirm)!.hasAttribute('disabled')).toBe(false)
     })
     const inputAfterRetry = document.body.querySelector('input')
     inputAfterRetry!.value = 'glm-4.7'
@@ -239,7 +239,7 @@ describe('CCSwitchImportModal (model mode)', () => {
       expect(document.body.textContent ?? '').toContain(en.ccswitch.retry),
     )
     // Nothing to confirm against: the confirm button is withheld.
-    expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(true)
+    expect(findButtonByText(en.common.confirm)!.hasAttribute('disabled')).toBe(true)
 
     findButtonByText(en.ccswitch.retry)!.dispatchEvent(new Event('click'))
     await vi.waitFor(() =>
@@ -279,7 +279,7 @@ describe('CCSwitchImportModal (model mode)', () => {
     // plan for B is in place.
     await vi.waitFor(() =>
       expect(
-        findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled'),
+        findButtonByText(en.common.confirm)!.hasAttribute('disabled'),
       ).toBe(false),
     )
 
@@ -409,7 +409,7 @@ describe('CCSwitchImportModal (key mode)', () => {
     })
     await vi.waitFor(() => expect(listKeysMock).toHaveBeenCalledTimes(2))
     await vi.waitFor(() =>
-      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false),
+      expect(findButtonByText(en.common.confirm)!.hasAttribute('disabled')).toBe(false),
     )
     // Preselect stays the FIRST compatible key across pages; the re-listed
     // key appears exactly once.
@@ -444,18 +444,18 @@ describe('CCSwitchImportModal (key mode)', () => {
     })
     // Preselected key 1 settles → confirm arms.
     await vi.waitFor(() =>
-      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false),
+      expect(findButtonByText(en.common.confirm)!.hasAttribute('disabled')).toBe(false),
     )
 
     // Switch to key 2: the gate must drop synchronously with the switch,
     // before key 2's reveal has any chance to answer.
     wrapper.getComponent(CCSwitchImportModal).findComponent(NSelect).vm.$emit('update:value', 2)
     await nextTick()
-    expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(true)
+    expect(findButtonByText(en.common.confirm)!.hasAttribute('disabled')).toBe(true)
 
     resolveSecond({ plaintext_key: 'sk-key-2' })
     await vi.waitFor(() =>
-      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false),
+      expect(findButtonByText(en.common.confirm)!.hasAttribute('disabled')).toBe(false),
     )
 
     clickConfirm()
@@ -476,7 +476,7 @@ describe('CCSwitchImportModal (key mode)', () => {
     await vi.waitFor(() =>
       expect(document.body.textContent ?? '').toContain(en.ccswitch.keysEmptyTitle),
     )
-    expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(true)
+    expect(findButtonByText(en.common.confirm)!.hasAttribute('disabled')).toBe(true)
 
     // The CTA actually navigates to where keys are made.
     findButtonByText(en.apiKeys.createButton)!.dispatchEvent(new Event('click'))
@@ -499,11 +499,11 @@ describe('CCSwitchImportModal (key mode)', () => {
     await vi.waitFor(() => expect(plaintextMock).toHaveBeenCalledTimes(1))
     // The transient branch, not the legacy one: no paste-by-hand notice.
     expect(document.body.textContent ?? '').not.toContain(en.ccswitch.plaintextUnavailable)
-    expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(true)
+    expect(findButtonByText(en.common.confirm)!.hasAttribute('disabled')).toBe(true)
 
     findButtonByText(en.ccswitch.retry)!.dispatchEvent(new Event('click'))
     await vi.waitFor(() =>
-      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false),
+      expect(findButtonByText(en.common.confirm)!.hasAttribute('disabled')).toBe(false),
     )
 
     clickConfirm()

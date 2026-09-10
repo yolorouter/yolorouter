@@ -27,7 +27,7 @@
   <ModalDrawer
     v-model:show="show"
     :title="t('ccswitch.modalTitle')"
-    :confirm-text="t('ccswitch.confirmLaunchButton')"
+    :confirm-text="t('common.confirm')"
     :back-label="t('common.back')"
     :loading="phase === 'loading'"
     :confirm-disabled="!canConfirm"
