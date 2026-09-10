@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Paired pick-before-export for the CC-Switch hand-off. Both export
+  entries used to fire the deep link with half the information guessed or
+  missing — the models page exported a profile with no credential, and the
+  API-keys page auto-picked a model from gateway discovery. Both now open
+  a shared dialog that fixes the half you clicked from and asks for the
+  other: the models page lists only your OWN active keys whose routing
+  scope covers that model (options show the key remark, or the prefix when
+  there is none; models that are management-disabled hide the entry
+  entirely since no key can route to them), while the API-keys page lists
+  the models the key can actually route to — gateway discovery authed with
+  that key, annotated with admin-catalog availability, falling back to the
+  catalog-scoped list or manual entry (empty allowed) when discovery
+  flakes, with an in-modal retry rather than a silent downgrade. The
+  dialog opens before any data arrives, prefetches everything during
+  selection (switching a key re-arms the confirm gate until the new
+  credential settles — an export can never carry one key's plaintext
+  under another's name), and Confirm fires with zero awaits so the
+  external-protocol navigation leaves while the click's user activation
+  is still live. Legacy keys that predate plaintext storage import with
+  the placeholder plus an in-modal paste-by-hand notice; transient
+  failures surface in-dialog with retry and never degrade to the
+  placeholder.
+
 ## [0.2.3] - 2026-09-05
 
 ### Added
