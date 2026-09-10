@@ -43,7 +43,7 @@
         </div>
         <div v-else-if="phase === 'error'" class="ccs-import__error">
           <span class="ccs-import__hint">{{ loadError }}</span>
-          <NButton size="small" @click="load">{{ t('ccswitch.retry') }}</NButton>
+          <NButton size="small" @click="runLoad">{{ t('ccswitch.retry') }}</NButton>
         </div>
         <!-- Not clearable: a confirmed export always carries a model choice;
              exporting without one is the manual-fallback path below. -->
@@ -70,7 +70,7 @@
            second-best, and one retry might restore the discovered one. -->
       <div v-if="phase === 'ready' && discoveryFailed" class="ccs-import__notice ccs-import__notice--row">
         <span>{{ t('ccswitch.discoveryFailedHint') }}</span>
-        <NButton size="tiny" quaternary @click="load">{{ t('ccswitch.retry') }}</NButton>
+        <NButton size="tiny" quaternary @click="runLoad">{{ t('ccswitch.retry') }}</NButton>
       </div>
     </div>
   </ModalDrawer>
@@ -90,6 +90,7 @@ import {
 } from '../../api/apiKeys'
 import { displayMessage, errorCodeOf } from '../../api/client'
 import {
+  ccsKeyIdentity,
   planCCSwitchModelChoices,
   type CCSwitchCatalogModel,
   type CCSwitchConfirmPayload,
@@ -130,13 +131,9 @@ const legacy = ref(false)
 // and to have the retry that might restore the real one.
 const discoveryFailed = ref(false)
 
-// Same identity rule the exported profile name uses, so the row the dialog
-// shows and the name CC-Switch receives can never disagree.
-const keyIdentity = computed(() => {
-  const row = props.apiKeyRow
-  if (!row) return ''
-  return row.owner_username ? `${row.owner_username} (#${row.id})` : `#${row.id}`
-})
+// Same identity the exported profile name is built from — see
+// ccsKeyIdentity, the one home of the rule.
+const keyIdentity = computed(() => (props.apiKeyRow ? ccsKeyIdentity(props.apiKeyRow) : ''))
 
 const canConfirm = computed(
   () => phase.value === 'ready' && (plan.value?.mode === 'manual' || !!selected.value),
@@ -238,17 +235,30 @@ async function load() {
 
 // Reload on every open and every row change: the dialog is reused across
 // rows, and a stale plan from the previous row would preselect a model this
-// key cannot route to. Closing cancels instead — without the bump, a load
-// dismissed by the close would keep running (a wasted request carrying the
-// real credential) and its late writes would land on the closed dialog.
+// key cannot route to. Closing suppresses instead: a load dismissed by the
+// close has its writes discarded (the HTTP request itself is not
+// transport-aborted, but its result is dropped, and discovery never fires
+// with the dismissed credential).
 watch(
   () => [show.value, props.apiKeyRow] as const,
   ([isOpen]) => {
-    if (isOpen) void load()
+    if (isOpen) void runLoad()
     else loadId++
   },
   { immediate: true },
 )
+
+// Defensive outer net: every realistic failure is caught inside load; a
+// defect in there must not strand the dialog in the loading phase with the
+// confirm button silently withheld.
+async function runLoad() {
+  try {
+    await load()
+  } catch (err) {
+    phase.value = 'error'
+    loadError.value = displayMessage(err, t)
+  }
+}
 
 function onConfirm() {
   if (!canConfirm.value) return

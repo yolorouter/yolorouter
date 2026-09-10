@@ -33,6 +33,15 @@ export interface CCSwitchConfirmPayload {
   model?: string
 }
 
+// The identity a CC-Switch profile is named by: owner + key id when the
+// owning account is known, the bare id otherwise (the id is unique per key;
+// two distinct keys can share a truncated 16-char prefix). One home, so the
+// export dialog's fixed display and the opening page's profile name can
+// never disagree.
+export function ccsKeyIdentity(row: { id: number; owner_username: string }): string {
+  return row.owner_username ? `${row.owner_username} (#${row.id})` : `#${row.id}`
+}
+
 export interface CCSwitchModelChoice {
   name: string
   // Tri-state: true/false = the admin catalog marks the model available or

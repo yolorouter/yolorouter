@@ -118,7 +118,7 @@ import CreateKeyModal from '../../components/apikeys/CreateKeyModal.vue'
 import EditKeyModal from '../../components/apikeys/EditKeyModal.vue'
 import KeyOptimize from '../../components/apikeys/KeyOptimize.vue'
 import CCSwitchImportModal from '../../components/ccswitch/CCSwitchImportModal.vue'
-import type { CCSwitchConfirmPayload } from '../../utils/ccswitchExport'
+import { ccsKeyIdentity, type CCSwitchConfirmPayload } from '../../utils/ccswitchExport'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
@@ -374,15 +374,12 @@ function openCCSImport(row: APIKey) {
 // The confirm payload is handed to the deep link here, synchronously in the
 // click's own handler — no awaits since the dialog prefetched everything,
 // so the external-protocol navigation leaves while the browser's transient
-// user activation is still live. The profile name keeps its long-standing
-// rule: owner + key id, so several keys of one account import as
-// distinguishable CC-Switch profiles — the id is unique per key; two
-// distinct keys can share a truncated 16-char prefix.
+// user activation is still live. The profile name is built from the shared
+// ccsKeyIdentity rule (one home, see utils/ccswitchExport).
 function onCCSConfirm(payload: CCSwitchConfirmPayload) {
   const row = ccsImportRow.value
   if (!row) return
-  const identity = row.owner_username ? `${row.owner_username} (#${row.id})` : `#${row.id}`
-  importToCCS({ name: ccsProfileName(identity), apiKey: payload.apiKey, model: payload.model })
+  importToCCS({ name: ccsProfileName(ccsKeyIdentity(row)), apiKey: payload.apiKey, model: payload.model })
 }
 
 function rowActions(row: APIKey): DropdownOption[] {

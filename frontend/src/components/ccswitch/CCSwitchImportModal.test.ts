@@ -90,27 +90,19 @@ afterEach(() => {
   discoverMock.mockReset()
 })
 
-// The confirm button lives inside the teleported modal, so it is reachable
-// through the shared body, not the host wrapper's element tree.
-function findConfirmButton(): HTMLButtonElement | undefined {
+// Buttons live inside the teleported modal, so they are reachable through
+// the shared body, not the host wrapper's element tree.
+function findButtonByText(text: string): HTMLButtonElement | undefined {
   return [...document.body.querySelectorAll('button')].find((b) =>
-    (b.textContent ?? '').includes(en.ccswitch.confirmLaunchButton),
+    (b.textContent ?? '').includes(text),
   )
 }
 
 function clickConfirm() {
-  const btn = findConfirmButton()
+  const btn = findButtonByText(en.ccswitch.confirmLaunchButton)
   expect(btn, 'confirm button rendered').toBeTruthy()
   btn!.dispatchEvent(new Event('click'))
   return btn!
-}
-
-// The retry affordances (reveal error, discovery-failure notice) share the
-// body-teleported lookup shape with the confirm button.
-function findRetryButton(): HTMLButtonElement | undefined {
-  return [...document.body.querySelectorAll('button')].find((b) =>
-    (b.textContent ?? '').includes(en.ccswitch.retry),
-  )
 }
 
 describe('CCSwitchImportModal (model mode)', () => {
@@ -202,7 +194,7 @@ describe('CCSwitchImportModal (model mode)', () => {
     // confirm — after it the modal is closed and, under the production
     // useRowModal wiring, the cleared row would stop any reload; a
     // post-confirm click would test a state production cannot reach.
-    const retryBtn = findRetryButton()
+    const retryBtn = findButtonByText(en.ccswitch.retry)
     expect(retryBtn, 'discovery retry rendered').toBeTruthy()
     retryBtn!.dispatchEvent(new Event('click'))
     // Wait for the reload to reach readiness, not just to start: while the
@@ -212,7 +204,7 @@ describe('CCSwitchImportModal (model mode)', () => {
     await vi.waitFor(() => {
       expect(plaintextMock).toHaveBeenCalledTimes(2)
       expect(discoverMock).toHaveBeenCalledTimes(2)
-      expect(findConfirmButton()!.hasAttribute('disabled')).toBe(false)
+      expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(false)
     })
     const inputAfterRetry = document.body.querySelector('input')
     inputAfterRetry!.value = 'glm-4.7'
@@ -239,9 +231,9 @@ describe('CCSwitchImportModal (model mode)', () => {
       expect(document.body.textContent ?? '').toContain(en.ccswitch.retry),
     )
     // Nothing to confirm against: the confirm button is withheld.
-    expect(findConfirmButton()!.hasAttribute('disabled')).toBe(true)
+    expect(findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled')).toBe(true)
 
-    findRetryButton()!.dispatchEvent(new Event('click'))
+    findButtonByText(en.ccswitch.retry)!.dispatchEvent(new Event('click'))
     await vi.waitFor(() =>
       expect(document.body.textContent ?? '').toContain('glm-4.7'),
     )
@@ -275,13 +267,19 @@ describe('CCSwitchImportModal (model mode)', () => {
     // for B (loadId bumped), exactly like close-then-reopen in production.
     const rowB: APIKey = { ...KEY, id: 43, owner_username: 'bob' }
     await wrapper.setProps({ row: rowB })
-    await vi.waitFor(() => expect(plaintextMock).toHaveBeenCalledTimes(2))
-
-    // A's answer lands after B already loaded — it must be dropped.
-    resolveA({ plaintext_key: 'sk-key-A' })
+    // B's readiness, not just its start: the confirm gate lifting means the
+    // plan for B is in place.
     await vi.waitFor(() =>
-      expect(document.body.textContent ?? '').toContain('glm-4.7'),
+      expect(
+        findButtonByText(en.ccswitch.confirmLaunchButton)!.hasAttribute('disabled'),
+      ).toBe(false),
     )
+
+    // A's answer lands after B is ready — it must be dropped. One nextTick
+    // flushes A's continuation (plain microtasks) before the click reads
+    // the payload, so a missing guard would surface as A's key below.
+    resolveA({ plaintext_key: 'sk-key-A' })
+    await nextTick()
 
     clickConfirm()
     await nextTick()
