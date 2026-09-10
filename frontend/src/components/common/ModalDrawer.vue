@@ -32,7 +32,12 @@
           <NButton v-if="dismissable" @click="onCancel">{{
             cancelText || t("common.cancel")
           }}</NButton>
-          <NButton type="primary" :loading="loading" @click="emit('confirm')">
+          <NButton
+            type="primary"
+            :loading="loading"
+            :disabled="confirmDisabled"
+            @click="emit('confirm')"
+          >
             {{ confirmText }}
           </NButton>
         </div>
@@ -78,6 +83,7 @@
                 type="primary"
                 block
                 :loading="loading"
+                :disabled="confirmDisabled"
                 @click="emit('confirm')"
               >
                 {{ confirmText }}
@@ -104,6 +110,10 @@ const props = withDefaults(
     loading?: boolean;
     backLabel?: string;
     maxWidth?: string;
+    // Blocks the Confirm button (both renderings) without the visual of a
+    // spinner — for flows whose data is not ready yet (`loading` is for work
+    // in flight; this is for "nothing to confirm against").
+    confirmDisabled?: boolean;
     // Apply to both renderings: the desktop modal's mask/Esc, and the
     // mobile drawer's mask/Esc (naive-ui defaults both to true there too —
     // the back arrow is the visible affordance, not the only one).
@@ -124,6 +134,7 @@ const props = withDefaults(
     maskClosable: true,
     closeOnEsc: true,
     dismissable: true,
+    confirmDisabled: false,
   },
 );
 
