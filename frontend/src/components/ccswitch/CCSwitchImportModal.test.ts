@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { defineComponent, h, nextTick, ref } from 'vue'
 import { createI18n } from 'vue-i18n'
+import { NSelect } from 'naive-ui'
 
 import { APIError } from '../../api/client'
 import { getAPIKeyPlaintext, discoverGatewayModels, type APIKey } from '../../api/apiKeys'
@@ -51,7 +52,9 @@ const KEY: APIKey = {
   custom_system_prompt: '',
   compress_enabled_override: false,
   compress_enabled: false,
-} as unknown as APIKey
+  created_at: '2026-09-01T00:00:00Z',
+  updated_at: '2026-09-01T00:00:00Z',
+}
 
 const CATALOG = [
   { id: 1, name: 'glm-4.7', running_status: 'available' },
@@ -90,10 +93,16 @@ afterEach(() => {
   discoverMock.mockReset()
 })
 
-function clickConfirm() {
-  const btn = [...document.body.querySelectorAll('button')].find((b) =>
+// The confirm button lives inside the teleported modal, so it is reachable
+// through the shared body, not the host wrapper's element tree.
+function findConfirmButton(): HTMLButtonElement | undefined {
+  return [...document.body.querySelectorAll('button')].find((b) =>
     (b.textContent ?? '').includes(en.ccswitch.confirmLaunchButton),
   )
+}
+
+function clickConfirm() {
+  const btn = findConfirmButton()
   expect(btn, 'confirm button rendered').toBeTruthy()
   btn!.dispatchEvent(new Event('click'))
   return btn!
@@ -119,9 +128,16 @@ describe('CCSwitchImportModal (model mode)', () => {
 
     // Both discovered names are offered (the unselected one lives in the
     // closed dropdown's option list, asserted through the component tree).
-    const select = wrapper.getComponent(CCSwitchImportModal).findComponent({ name: 'Select' })
-    const options = select.props('options') as Array<{ label: string; value: string }>
+    const select = wrapper.getComponent(CCSwitchImportModal).findComponent(NSelect)
+    const options = select.props('options') as Array<{
+      label: string
+      value: string
+      render: () => unknown
+    }>
     expect(options.map((o) => o.value)).toEqual(['kling-video', 'glm-4.7'])
+    // The admin catalog annotates: annotated options render rich labels
+    // (VNode), unlike the member view's plain strings.
+    expect(typeof options[0].render()).toBe('object')
 
     clickConfirm()
     await nextTick()
@@ -177,6 +193,15 @@ describe('CCSwitchImportModal (model mode)', () => {
     await nextTick()
     const events = wrapper.getComponent(CCSwitchImportModal).emitted<{ apiKey?: string; model?: string }[]>('confirm')
     expect(events).toEqual([[{ apiKey: 'sk-test-123', model: 'glm-4.7' }]])
+
+    // The notice's retry actually rewires into a full reload: plaintext is
+    // prefetched again, not just the hint re-rendered.
+    const retryBtn = [...document.body.querySelectorAll('button')].find((b) =>
+      (b.textContent ?? '').includes(en.ccswitch.retry),
+    )
+    expect(retryBtn, 'discovery retry rendered').toBeTruthy()
+    retryBtn!.dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(plaintextMock).toHaveBeenCalledTimes(2))
     wrapper.unmount()
   })
 
@@ -193,10 +218,7 @@ describe('CCSwitchImportModal (model mode)', () => {
       expect(document.body.textContent ?? '').toContain(en.ccswitch.retry),
     )
     // Nothing to confirm against: the confirm button is withheld.
-    const confirmBtn = [...document.body.querySelectorAll('button')].find((b) =>
-      (b.textContent ?? '').includes(en.ccswitch.confirmLaunchButton),
-    )
-    expect(confirmBtn!.hasAttribute('disabled')).toBe(true)
+    expect(findConfirmButton()!.hasAttribute('disabled')).toBe(true)
 
     const retryBtn = [...document.body.querySelectorAll('button')].find((b) =>
       (b.textContent ?? '').includes(en.ccswitch.retry),

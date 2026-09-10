@@ -87,7 +87,7 @@
     <CCSwitchImportModal
       v-model:show="showCCSImport"
       :api-key-row="ccsImportRow"
-      :catalog="authStore.isAdmin ? models : null"
+      :catalog="authStore.isAdmin && modelsLoaded ? models : null"
       @confirm="onCCSConfirm"
     />
   </div>
@@ -137,6 +137,8 @@ const editingId = ref<number | null>(null)
 const showCompress = ref(false)
 const compressKeyId = ref<number | null>(null)
 const models = ref<Model[]>([])
+// See fetchModels: false until the admin catalog has actually arrived.
+const modelsLoaded = ref(false)
 const { userOptions, loadUserOptions } = useUserOptions()
 
 // Live draft of the filter controls. The text inputs only apply on Enter or
@@ -169,6 +171,12 @@ onMounted(() => {
 async function fetchModels() {
   const { list } = await listModels()
   models.value = list
+  // Latch only on a real answer: until then the CC-Switch export modal must
+  // see the catalog as ABSENT (null), not the empty-but-truthy [] it starts
+  // as — an unloaded catalog read as "known" would annotate every discovered
+  // model as unavailable and skew the fallback into manual entry. A failed
+  // fetch keeps it absent: unknown beats confidently wrong.
+  modelsLoaded.value = true
 }
 
 async function reload() {

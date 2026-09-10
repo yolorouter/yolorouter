@@ -171,6 +171,10 @@ let loadId = 0
 
 async function load() {
   const id = ++loadId
+  // Capture the row: closing the modal clears it (useRowModal) without
+  // bumping loadId, so an in-flight load must never read props.apiKeyRow
+  // past its first await — the capture is the row this load belongs to.
+  const row = props.apiKeyRow
   phase.value = 'loading'
   plan.value = null
   selected.value = null
@@ -179,15 +183,18 @@ async function load() {
   discoveryFailed.value = false
   plaintext.value = undefined
   loadError.value = ''
-  if (!props.apiKeyRow) return
+  if (!row) return
 
   try {
-    plaintext.value = (await getAPIKeyPlaintext(props.apiKeyRow.id)).plaintext_key
+    plaintext.value = (await getAPIKeyPlaintext(row.id)).plaintext_key
   } catch (err) {
+    // Guard BEFORE any catch-path write: a stale load whose request
+    // rejects after a newer load reset the flags must stay silent —
+    // otherwise it pins its legacy/notice state onto the newer row.
+    if (id !== loadId) return
     if (errorCodeOf(err) !== ERRCODE_KEY_PLAINTEXT_UNAVAILABLE) {
       // Transient — importing the placeholder would silently hand
       // CC-Switch a wrong key for a perfectly readable credential.
-      if (id !== loadId) return
       phase.value = 'error'
       loadError.value = displayMessage(err, t)
       return
@@ -206,7 +213,7 @@ async function load() {
       discovered = await discoverGatewayModels(plaintext.value)
     } catch {
       discovered = null
-      discoveryFailed.value = true
+      if (id === loadId) discoveryFailed.value = true
     }
   }
   if (id !== loadId) return
@@ -215,8 +222,8 @@ async function load() {
     discovered,
     catalog: props.catalog,
     key: {
-      allow_all_models: props.apiKeyRow.allow_all_models,
-      model_ids: props.apiKeyRow.model_ids,
+      allow_all_models: row.allow_all_models,
+      model_ids: row.model_ids,
     },
   })
   selected.value = plan.value.mode === 'select' ? plan.value.preselect : null
