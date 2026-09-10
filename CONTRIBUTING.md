@@ -146,6 +146,14 @@ frontend/           Vue 3 + TypeScript admin console (Vite)
 ## Commits & pull requests
 
 - Use clear, conventional-style commit subjects where practical (e.g. `feat(gateway): ...`, `fix(auth): ...`).
+- Subjects are English and describe the change itself, regardless of the
+  language you collaborate in — the public history reads as a log of WHAT
+  changed. Keep internal process bookkeeping out of subjects: ticket
+  rounds and review-loop iterations ("loop-review round 3", "R4
+  convergence") belong in the PR description, not in the history. The
+  github push gate (`.githooks/pre-push`) rejects the violation classes
+  seen so far — CJK subjects and the known review-loop spellings; the
+  rest of this rule is enforced in review.
 - Keep PRs focused; one logical change per PR is easiest to review.
 - Fill in the pull request template — what changed, why, and how you verified it.
 - Ensure CI is green (test, lint, and the embedded build) before requesting review.
