@@ -6,7 +6,7 @@
 // opening page hands to the deep link.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { defineComponent, h, nextTick, ref } from 'vue'
+import { defineComponent, h, nextTick, ref, type VNode, type VNodeChild } from 'vue'
 import { createI18n } from 'vue-i18n'
 import { NSelect } from 'naive-ui'
 
@@ -113,6 +113,23 @@ function clickConfirm() {
   return btn!
 }
 
+// The NTag inside a render-label VNode, matched by component name (VNodes
+// carry no stable test hook).
+function tagOf(label: VNode): VNode {
+  const tag = (label.children as VNode[]).find(
+    (c) => typeof c === 'object' && c.type && String((c.type as { name?: string }).name).includes('Tag'),
+  )
+  expect(tag, 'availability tag rendered').toBeTruthy()
+  return tag as VNode
+}
+
+// Slot factories return the raw string here (Vue normalizes only during
+// render), so accept both it and a text VNode.
+function slotTextOf(tag: VNode): unknown {
+  const slot = (tag.children as { default: () => unknown }).default()
+  return typeof slot === 'string' ? slot : (slot as VNode).children
+}
+
 describe('CCSwitchImportModal (model mode)', () => {
   it('loads, preselects the first catalog-available model, and confirms the pair', async () => {
     plaintextMock.mockResolvedValue({ plaintext_key: 'sk-test-123' })
@@ -138,12 +155,31 @@ describe('CCSwitchImportModal (model mode)', () => {
     const options = select.props('options') as Array<{
       label: string
       value: string
-      render: () => unknown
+      available: boolean | null
     }>
     expect(options.map((o) => o.value)).toEqual(['kling-video', 'glm-4.7'])
-    // The admin catalog annotates: annotated options render rich labels
-    // (VNode), unlike the member view's plain strings.
-    expect(typeof options[0].render()).toBe('object')
+    // Regression: a per-option `render` replaces the whole option node in
+    // naive-ui, discarding the clickable styled wrapper — the menu
+    // rendered dead unstyled spans. Availability must ride on the option
+    // and flow through the component-level render-label.
+    expect(options.map((o) => 'render' in o)).toEqual([false, false])
+    expect(options.map((o) => o.available)).toEqual([false, true])
+
+    const renderLabel = select.props('renderLabel') as (o: unknown) => VNodeChild
+    expect(renderLabel).toBeTypeOf('function')
+    // Annotated: the label is a flex VNode carrying the name and the
+    // availability tag (direction asserted — wrong-way tags must fail);
+    // member view (available === null) stays a string.
+    const annotated = renderLabel(options[1]) as VNode
+    expect(annotated.type).toBe('span')
+    const tag = tagOf(annotated)
+    expect((tag.props as { type?: string }).type).toBe('success')
+    expect(slotTextOf(tag)).toBe(en.ccswitch.statusAvailable)
+    const unavailable = renderLabel(options[0]) as VNode
+    const warningTag = tagOf(unavailable)
+    expect((warningTag.props as { type?: string }).type).toBe('warning')
+    expect(slotTextOf(warningTag)).toBe(en.ccswitch.statusUnavailable)
+    expect(renderLabel({ label: 'glm-4.7', value: 'glm-4.7', available: null })).toBe('glm-4.7')
 
     clickConfirm()
     await nextTick()
@@ -222,6 +258,35 @@ describe('CCSwitchImportModal (model mode)', () => {
     await nextTick()
     const events = wrapper.getComponent(CCSwitchImportModal).emitted<{ apiKey?: string; model?: string }[]>('confirm')
     expect(events).toEqual([[{ apiKey: 'sk-test-123', model: 'glm-4.7' }]])
+    wrapper.unmount()
+  })
+
+  it('renders plain, unannotated options for a member with no catalog', async () => {
+    plaintextMock.mockResolvedValue({ plaintext_key: 'sk-test-123' })
+    discoverMock.mockResolvedValue(['glm-4.7', 'kling-video'])
+
+    const wrapper = mount(CcsModalHost, {
+      props: { row: KEY, catalog: null },
+      global: { plugins: [i18n] },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() =>
+      expect(document.body.textContent ?? '').toContain('glm-4.7'),
+    )
+
+    // The member view end to end: no catalog means the planner emits
+    // available === null, and the picker must show bare names — a null that
+    // regressed to false would paint every model as a false "Unavailable".
+    const select = wrapper.getComponent(CCSwitchImportModal).findComponent(NSelect)
+    const options = select.props('options') as Array<{ available: boolean | null }>
+    expect(options.map((o) => o.available)).toEqual([null, null])
+    const renderLabel = select.props('renderLabel') as (o: unknown) => VNodeChild
+    for (const o of options) {
+      const label = renderLabel(o)
+      expect(typeof label).toBe('string')
+    }
+    // No tag text anywhere in the modal's select display.
+    expect(document.body.textContent ?? '').not.toContain(en.ccswitch.statusUnavailable)
     wrapper.unmount()
   })
 

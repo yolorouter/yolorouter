@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failures surface in-dialog with retry and never degrade to the
   placeholder.
 
+### Fixed
+
+- The CC-Switch export dialog's model picker was unusable whenever it
+  had options to show: the dropdown's options rendered as unclickable
+  inline text. The availability tag was attached through
+  a per-option `render` property, which in naive-ui replaces the ENTIRE
+  option node — discarding the clickable, styled `.n-base-select-option`
+  wrapper. The tag now flows through the component-level `render-label`
+  (wrapper preserved), with inline styles because the menu portal lands
+  outside the component's scoped-style subtree.
+
 ## [0.2.3] - 2026-09-05
 
 ### Added

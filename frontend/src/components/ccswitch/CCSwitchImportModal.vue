@@ -84,10 +84,16 @@
         </template>
         <!-- Not clearable: a confirmed export always carries a model choice;
              exporting without one is the manual-fallback path below. -->
+        <!-- The availability tag lives in render-label, NOT in a per-option
+             `render` — that property replaces the entire option node
+             (naive-ui SelectOption render branch), discarding the clickable
+             `.n-base-select-option` wrapper and leaving dead, unstyled
+             spans in the menu. -->
         <NSelect
           v-else-if="plan?.mode === 'select'"
           v-model:value="selected"
           :options="selectOptions"
+          :render-label="renderModelLabel"
           filterable
         />
         <template v-else>
@@ -120,7 +126,7 @@
 import { computed, h, ref, watch, type VNodeChild } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { NButton, NInput, NSelect, NTag } from 'naive-ui'
+import { NButton, NInput, NSelect, NTag, type SelectOption } from 'naive-ui'
 import { KeyRound } from '@lucide/vue'
 
 import ModalDrawer from '../common/ModalDrawer.vue'
@@ -243,27 +249,63 @@ const keySelectOptions = computed(() =>
   })),
 )
 
-const selectOptions = computed(() => {
+// Availability rides ON the option object for renderModelLabel to read —
+// plain label/value otherwise, so filtering matches on the bare name.
+type ModelOption = { label: string; value: string; available: boolean | null }
+
+const selectOptions = computed<ModelOption[]>(() => {
   if (plan.value?.mode !== 'select') return []
   return plan.value.choices.map((c) => ({
     label: c.name,
     value: c.name,
-    render: (): VNodeChild =>
-      c.available === null
-        ? c.name
-        : h('span', { class: 'ccs-import__option' }, [
-            h('span', null, c.name),
-            h(
-              NTag,
-              { size: 'tiny', bordered: false, type: c.available ? 'success' : 'warning' },
-              {
-                default: () =>
-                  c.available ? t('ccswitch.statusAvailable') : t('ccswitch.statusUnavailable'),
-              },
-            ),
-          ]),
+    available: c.available,
   }))
 })
+
+// Styles are inline on purpose: the menu portal lands outside this
+// component's scoped-style subtree (inside the modal card), so a scoped
+// class would silently never apply. render-label also renders the CLOSED
+// box's selected value, so the name span must ellipsize or a long model
+// name pushes the tag out of the fixed-height trigger.
+function renderModelLabel(option: SelectOption): VNodeChild {
+  const { available, label } = option as ModelOption
+  if (available == null) return label
+  return h(
+    'span',
+    {
+      style: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '6px',
+        width: '100%',
+        minWidth: '0',
+      },
+    },
+    [
+      h(
+        'span',
+        {
+          style: {
+            minWidth: '0',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          },
+        },
+        label,
+      ),
+      h(
+        NTag,
+        { size: 'tiny', bordered: false, type: available ? 'success' : 'warning' },
+        {
+          default: () =>
+            available ? t('ccswitch.statusAvailable') : t('ccswitch.statusUnavailable'),
+        },
+      ),
+    ],
+  )
+}
 
 // Monotonic token: reopening for another row (or a retry) while a previous
 // load is still in flight must leave the LAST started load authoritative —
@@ -537,12 +579,5 @@ function onConfirm() {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-}
-
-:deep(.ccs-import__option) {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
 }
 </style>
