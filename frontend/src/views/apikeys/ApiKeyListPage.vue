@@ -84,32 +84,41 @@
       @update:show="openOptimizeShow"
       @saved="openOptimizeSaved"
     />
+    <CCSwitchImportModal
+      v-model:show="showCCSImport"
+      :api-key-row="ccsImportRow"
+      :catalog="authStore.isAdmin ? models : null"
+      @confirm="onCCSConfirm"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, h, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { NButton, NInput, NTag, NTooltip, useDialog, useMessage, type DataTableColumns, type DropdownOption, type PaginationProps } from 'naive-ui'
 import { KeyRound, Plus, Search, MoreHorizontal, Copy } from '@lucide/vue'
 import { useApiKeysStore } from '../../store/apiKeys'
 import { useAuthStore } from '../../store/auth'
-import { displayMessage, errorCodeOf } from '../../api/client'
+import { displayMessage } from '../../api/client'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { formatMicros } from '../../utils/money'
 import { ccsProfileName } from '../../utils/format'
 import { useCCSwitchImport } from '../../composables/useCCSwitchImport'
+import { useRowModal } from '../../composables/useRowModal'
 import { useUserOptions } from '../../composables/useUserOptions'
 import { copyToClipboard } from '../../utils/clipboard'
 import ApiAccessPanel from '../../components/apikeys/ApiAccessPanel.vue'
 import { listModels, type Model } from '../../api/models'
-import { discoverGatewayModels, ERRCODE_KEY_PLAINTEXT_UNAVAILABLE, type APIKey } from '../../api/apiKeys'
+import { type APIKey } from '../../api/apiKeys'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import CreateKeyModal from '../../components/apikeys/CreateKeyModal.vue'
 import EditKeyModal from '../../components/apikeys/EditKeyModal.vue'
 import KeyOptimize from '../../components/apikeys/KeyOptimize.vue'
+import CCSwitchImportModal from '../../components/ccswitch/CCSwitchImportModal.vue'
+import type { CCSwitchConfirmPayload } from '../../utils/ccswitchExport'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
@@ -341,92 +350,31 @@ function onSaved() {
   void reload()
 }
 
-function firstUsableModel(row: APIKey): string | undefined {
-  if (row.allow_all_models) return models.value.find((m) => m.running_status === 'available')?.name ?? models.value[0]?.name
-  const firstAllowedModelId = row.model_ids[0]
-  return models.value.find((model) => model.id === firstAllowedModelId)?.name
+// --- CC-Switch export ------------------------------------------------------
+// The row action opens the shared export dialog (CCSwitchImportModal), which
+// owns the whole choice flow: it prefetches the plaintext and the model
+// choices (gateway discovery authed with this key, admin-catalog annotation
+// and backfill, manual-entry last resort) and only emits a pair once there
+// is something real to confirm against. The data-fetch and degradation rules
+// it applies live in the pure utils/ccswitchExport module.
+const { row: ccsImportRow, show: showCCSImport } = useRowModal<APIKey>()
+
+function openCCSImport(row: APIKey) {
+  ccsImportRow.value = row
 }
 
-// importKeyToCCS hands the key to CC-Switch with its REAL plaintext and a
-// model this key can actually route to. The plaintext comes from the
-// re-view endpoint (owner-scoped, so members reach it for their own keys);
-// the model comes from discoverGatewayModels — the gateway's own /v1/models
-// AUTHED WITH THIS KEY, the one source that is correct for both roles
-// (members cannot read the admin model catalog) and reflects the key's
-// real scope. The admin catalog (firstUsableModel) is only a fallback when
-// discovery fails.
-//
-// Reveal failures split by cause: only the permanent legacy case
-// (plaintext never stored) imports with the placeholder plus a paste-by-
-// hand toast. Any other failure is transient — importing the placeholder
-// then would silently hand CC-Switch a wrong key for a perfectly readable
-// credential — so the import aborts with the real error and the user
-// retries. The legacy case cannot lose the model fallback either: plaintext
-// storage predates per-account key ownership, so a legacy key can only
-// belong to the admin-era account, and admin viewers have the catalog
-// loaded for firstUsableModel.
-//
-// One import at a time (same single-flight rule as copyPlaintext, same
-// reason): two in flight would race to the deep link, and the profile
-// CC-Switch opens would be whichever request finished last, not the row the
-// user clicked last. A completion that lands after the page unmounted must
-// not fire the deep link from an unrelated page either — the unmounted
-// flag drops it.
-const importingId = ref<number | null>(null)
-const unmounted = ref(false)
-onUnmounted(() => {
-  unmounted.value = true
-})
-
-// pickDiscoveredModel chooses among the key-scoped names /v1/models
-// returned. The gateway lists management-enabled models only and says
-// nothing about live availability, while the admin catalog knows
-// running_status but not the key's scope — so intersect the two: the first
-// discovered name the catalog marks available wins. Members have an empty
-// catalog and keep the gateway's first entry.
-function pickDiscoveredModel(names: string[]): string | undefined {
-  const available = names.find((name) =>
-    models.value.some((m) => m.name === name && m.running_status === 'available'))
-  return available ?? names[0]
-}
-
-async function importKeyToCCS(row: APIKey) {
-  if (importingId.value !== null) return
-  importingId.value = row.id
-  try {
-    // Owner + key id, so several keys of one account import as
-    // distinguishable CC-Switch profiles instead of identical names. The id
-    // is unique per key; two distinct keys can share a truncated 16-char
-    // prefix, so it would not.
-    const identity = row.owner_username ? `${row.owner_username} (#${row.id})` : `#${row.id}`
-    const name = ccsProfileName(identity)
-    let plaintext: string | undefined
-    try {
-      plaintext = (await store.fetchPlaintext(row.id)).plaintext_key
-    } catch (err) {
-      if (errorCodeOf(err) !== ERRCODE_KEY_PLAINTEXT_UNAVAILABLE) {
-        message.error(displayMessage(err, t))
-        return
-      }
-      message.warning(t('ccswitch.plaintextUnavailable'))
-    }
-    let model: string | undefined
-    if (plaintext) {
-      try {
-        model = pickDiscoveredModel(await discoverGatewayModels(plaintext))
-      } catch {
-        // Discovery is best-effort; fall through to the catalog fallback.
-      }
-    }
-    if (unmounted.value) return
-    importToCCS({
-      name,
-      apiKey: plaintext,
-      model: model ?? firstUsableModel(row),
-    })
-  } finally {
-    importingId.value = null
-  }
+// The confirm payload is handed to the deep link here, synchronously in the
+// click's own handler — no awaits since the dialog prefetched everything,
+// so the external-protocol navigation leaves while the browser's transient
+// user activation is still live. The profile name keeps its long-standing
+// rule: owner + key id, so several keys of one account import as
+// distinguishable CC-Switch profiles — the id is unique per key; two
+// distinct keys can share a truncated 16-char prefix.
+function onCCSConfirm(payload: CCSwitchConfirmPayload) {
+  const row = ccsImportRow.value
+  if (!row) return
+  const identity = row.owner_username ? `${row.owner_username} (#${row.id})` : `#${row.id}`
+  importToCCS({ name: ccsProfileName(identity), apiKey: payload.apiKey, model: payload.model })
 }
 
 function rowActions(row: APIKey): DropdownOption[] {
@@ -530,7 +478,7 @@ const columns = computed<DataTableColumns<APIKey>>(() => [
             else if (key === 'look') router.push(`/costs/keys/${row.id}`)
             else if (key === 'optimize') openOptimize(row)
             else if (key === 'delete') confirmRevoke(row)
-            else if (key === 'importCCSImport') importKeyToCCS(row)
+            else if (key === 'importCCSImport') openCCSImport(row)
           },
         },
         {
