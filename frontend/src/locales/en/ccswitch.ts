@@ -8,4 +8,15 @@ export default {
   confirmLaunchTitle: 'Open CC-Switch',
   confirmLaunchContent: 'The import data is ready. Click the button below to open CC-Switch and finish the import.',
   confirmLaunchButton: 'Open CC-Switch',
+  modalTitle: 'Export to CC-Switch',
+  keyLabel: 'Key',
+  modelLabel: 'Model',
+  modelLoading: 'Fetching the models this key can route to…',
+  retry: 'Retry',
+  modelManualHint:
+    "Couldn't load the model list automatically. Type a model name, or leave it empty to export without a preselected model.",
+  modelPlaceholder: 'Model name, e.g. glm-4.7',
+  statusAvailable: 'Available',
+  statusUnavailable: 'Unavailable',
+  discoveryFailedHint: 'Automatic model discovery failed; fallback options shown. You can retry.',
 }
