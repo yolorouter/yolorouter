@@ -2,9 +2,9 @@
 
 [中文版](image-generation_zh.md) · [日本語](image-generation_ja.md)
 
-`POST /v1/images/generations` serves models declared with the **image** output
-modality in the console. The request and response are the OpenAI Images API
-shape, so OpenAI SDKs work unmodified:
+`POST /v1/images/generations` and `POST /v1/images/edits` serve models
+declared with the **image** output modality in the console. The request and
+response are the OpenAI Images API shape, so OpenAI SDKs work unmodified:
 
 ```bash
 curl https://your-router/v1/images/generations \
@@ -46,6 +46,22 @@ you wrote them.
 - On OpenAI-compatible routes, models of the `qwen-image-*`, `wanx-*`, and
   `wan2.*` families get the size separator converted automatically.
 
+## Edits and streaming
+
+`POST /v1/images/edits` accepts the OpenAI multipart upload (reference
+images, mask, prompt) and forwards it to OpenAI-compatible providers with
+only the model field rewritten; the re-encode is cached across failover
+attempts. On a DashScope host the reference images are re-encoded into the
+native dialect as base64 data URIs — that dialect has no mask field, so a
+masked ask is refused per candidate rather than silently dropped. Settlement
+reuses the per-image rules below.
+
+`stream: true` is served as named-event SSE for `gpt-image-*` models —
+`partial_image` and `completed` events, on both the generation and the edit
+route. Any other model keeps the 400. Usage is read from the completed
+events, and an incomplete delivery — the upstream's own error event, a stream
+that never completes an image, a broken read — bills nothing.
+
 ## Billing
 
 Per the candidate's declared billing mode:
@@ -64,8 +80,7 @@ nothing. Every priced row carries a snapshot of what it was priced by
 
 ## Limits
 
-- `stream: true` is refused with a clear 400 — progressive image streaming is
-  not supported.
-- `POST /v1/images/edits` is not served yet.
+- Image streaming is a `gpt-image-*`-family capability — other families
+  answer a streaming ask with 400.
 - Returned URLs (and their expiry) belong to the upstream; this gateway does
   not rehost image bytes.

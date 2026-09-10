@@ -2,9 +2,9 @@
 
 [English](image-generation.md) · [中文版](image-generation_zh.md) · 日本語
 
-`POST /v1/images/generations` は、コンソールで出力モダリティが**画像**と宣言された
-モデルを提供します。リクエストとレスポンスは OpenAI Images API 形状のため、
-OpenAI SDK が無改造で動きます:
+`POST /v1/images/generations` と `POST /v1/images/edits` は、コンソールで出力
+モダリティが**画像**と宣言されたモデルを提供します。リクエストとレスポンスは
+OpenAI Images API 形状のため、OpenAI SDK が無改造で動きます:
 
 ```bash
 curl https://your-router/v1/images/generations \
@@ -45,6 +45,22 @@ curl https://your-router/v1/images/generations \
 - OpenAI 互換ルートでは、`qwen-image-*`、`wanx-*`、`wan2.*` ファミリのモデルに
   対してサイズ区切りが自動変換されます。
 
+## 編集とストリーミング
+
+`POST /v1/images/edits` は OpenAI のマルチパートアップロード（参照画像、
+マスク、prompt）を受け付け、OpenAI 互換プロバイダーにはモデルフィールドだけを
+書き換えて転送します。再エンコード結果はフェイルオーバーの各試行間でキャッシュ
+されます。DashScope ホストでは参照画像がネイティブ方言に base64 data URI として
+再エンコードされます——その方言にはマスクのフィールドがないため、マスク付きの
+リクエストは候補ごとに拒否され、黙って落とされることはありません。決済は下の
+1 枚ごとのルールを再利用します。
+
+`stream: true` は `gpt-image-*` モデルに対して名前付きイベント SSE として提供
+されます——`partial_image` と `completed` イベント、生成と編集の両ルートで
+対応します。他のモデルは 400 のままです。用量は completed イベントから読み
+取られ、未完了の納品——上流自身のエラーイベント、1 枚も完成しなかったストリーム、
+読み取りの中断——は課金されません。
+
 ## 課金
 
 候補が宣言した課金モードに従います:
@@ -61,8 +77,7 @@ curl https://your-router/v1/images/generations \
 
 ## 制限
 
-- `stream: true` は明確な 400 で拒否されます——漸進的画像ストリーミングは
-  サポートされていません。
-- `POST /v1/images/edits` はまだ提供されていません。
+- 画像ストリーミングは `gpt-image-*` ファミリの機能です——他のファミリは
+  ストリーミング要求に 400 で応えます。
 - 返される URL（とその有効期限）は上流に属します。このゲートウェイは画像バイトを
   再ホストしません。
