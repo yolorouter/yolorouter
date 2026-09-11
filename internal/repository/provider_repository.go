@@ -421,6 +421,13 @@ func CountProviderKeysByProvider(db *gorm.DB, providerID uint) (int64, error) {
 func DeleteProviderCascade(db *gorm.DB, id uint) (bool, error) {
 	deleted := false
 	err := db.Transaction(func(tx *gorm.DB) error {
+		// The keys' observed rate limits go before the keys themselves —
+		// the evidence dies with the credentials it describes, same rule
+		// as DeleteProviderKey's single-key path.
+		if err := tx.Where("provider_key_id IN (SELECT id FROM provider_keys WHERE provider_id = ?)", id).
+			Delete(&model.ObservedRateLimit{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("provider_id = ?", id).Delete(&model.ProviderKey{}).Error; err != nil {
 			return err
 		}
@@ -439,12 +446,23 @@ func DeleteProviderCascade(db *gorm.DB, id uint) (bool, error) {
 
 // DeleteProviderKey removes one key row, scoped to its provider in the same
 // statement so a keyID belonging to a different provider is a no-op rather
-// than a cross-provider delete. Returns whether a row was actually removed;
-// the caller translates false into not-found, identically for a missing and
-// a cross-provider key.
+// than a cross-provider delete. The key's observed rate limit rows go in
+// the same transaction — they are evidence about a credential that is
+// leaving, and no FK pragma is relied on to notice. Returns whether a key
+// row was actually removed; the caller translates false into not-found,
+// identically for a missing and a cross-provider key.
 func DeleteProviderKey(db *gorm.DB, providerID, keyID uint) (bool, error) {
-	res := db.Where("provider_id = ? AND id = ?", providerID, keyID).Delete(&model.ProviderKey{})
-	return res.RowsAffected > 0, res.Error
+	var removed bool
+	err := db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("provider_id = ? AND id = ?", providerID, keyID).Delete(&model.ProviderKey{})
+		removed = res.RowsAffected > 0
+		if res.Error != nil || !removed {
+			return res.Error
+		}
+		return tx.Where("provider_key_id = ?", keyID).
+			Delete(&model.ObservedRateLimit{}).Error
+	})
+	return removed, err
 }
 
 // UpdateProviderKeyLabelAndStatusIfVerified is UpdateProviderKeyLabelAndStatus's

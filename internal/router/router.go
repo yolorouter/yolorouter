@@ -345,6 +345,14 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.POST("/providers/:id/keys/:keyId/test", handler.PostProviderKeyTest(providerSvc))
 	protected.POST("/providers/:id/keys/test-all", handler.PostProviderKeysTestAll(providerSvc))
 
+	// Observed rate limits: what upstreams' 429s have said about each key's
+	// own limits. Admin-only alongside the rest of the provider dimension;
+	// read plus the reset-delete, both straight off the repository (no
+	// service layer — the only business rule, only-down, lives inside the
+	// upsert itself).
+	protected.GET("/rate-limits", handler.GetRateLimits(db))
+	protected.DELETE("/rate-limits/:id", handler.DeleteRateLimit(db))
+
 	modelSvc := modeladmin.NewModelService(db, secrets, providerclient.NewHTTPProviderClient(allowPrivateUpstreams))
 	protected.GET("/models", handler.GetModels(modelSvc))
 	protected.POST("/models", handler.PostModel(modelSvc))

@@ -1531,6 +1531,57 @@ func (s *Service) markProviderKeyForRetest(ctx context.Context, rc *Exchange, pk
 	}
 }
 
+// recordRateLimitObservation turns a 429's rate-limit evidence into
+// learned rows and, for the body dialect that names a long window
+// (Gemini's RetryInfo), a lengthening of the bench this same verdict
+// booked. It is a recorder on the failure path: a DB error logs and the
+// request proceeds untouched — the observation is telemetry for the pool
+// order and the admin surface, never a gate anything waits on.
+func (s *Service) recordRateLimitObservation(ctx context.Context, rc *Exchange, pk *model.ProviderKey, header http.Header, body []byte) {
+	now := time.Now().UTC()
+	evidence := parseRateLimitHeaderEvidence(header, now)
+	gemini, geminiOK := parseGeminiRateLimitBody(body)
+	if len(evidence) == 0 && !geminiOK {
+		return
+	}
+	obsCtx, obsCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer obsCancel()
+	db := s.db.WithContext(obsCtx)
+	for _, ev := range evidence {
+		if err := repository.UpsertObservedRateLimit(db, pk.ID, ev.Meter, ev.Limit, ev.WindowSecs, ev.Remaining, resetOrNull(ev.ResetAt), now); err != nil {
+			logger.Warn("gateway: record observed rate limit failed",
+				zap.Uint("key_id", pk.ID), zap.String("meter", ev.Meter),
+				zap.String("request_id", rc.requestID), zap.Error(err))
+		}
+	}
+	// Gemini's evidence is body-side, so it arrives after the header-stage
+	// bench booking; a structured retryDelay becomes a lengthen candidate,
+	// and lengthenKeyBench applies it only where it actually extends the
+	// standing bench. WindowSecs is stored for the admin surface — the
+	// delay is the only honest duration to bench on.
+	if geminiOK {
+		if gemini.WindowSecs > 0 {
+			window := gemini.WindowSecs
+			if err := repository.UpsertObservedRateLimit(db, pk.ID, model.MeterRequests, nil, &window, nil, nil, now); err != nil {
+				logger.Warn("gateway: record observed rate limit window failed",
+					zap.Uint("key_id", pk.ID), zap.String("request_id", rc.requestID), zap.Error(err))
+			}
+		}
+		if d := geminiLongWindowBench(gemini); d > 0 {
+			s.keyPool.lengthenKeyBench(pk.ID, pk.ConfigVersion, rc.keyDispatchedAt, d)
+		}
+	}
+}
+
+// resetOrNull maps the zero time (no parseable reset) to a NULL column —
+// a stored zero reset would read as "the window reopened at the epoch".
+func resetOrNull(at time.Time) *time.Time {
+	if at.IsZero() {
+		return nil
+	}
+	return &at
+}
+
 func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plaintext string, egress *EgressDecision, outBody []byte, url string, call *UpstreamCall, start time.Time, repairAllowed bool) (attemptResult, []byte) {
 	// The attempt's identity — candidate, provider, key — lives on rc.attempt,
 	// staged by the loops above; plaintext alone stays a parameter, because a
@@ -1700,16 +1751,22 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	}
 
 	// A 429's bench is likewise booked from the headers, BEFORE the error
-	// body is read: the status line and Retry-After carry the whole verdict,
-	// and the bounded body read below can still take the full
+	// body is read: the status line and Retry-After carry the whole
+	// verdict, and the bounded body read below can still take the full
 	// errorBodyTotalBudget against a slow-trickle upstream — waiting would
 	// leave concurrent requests dispatching the limited key for that whole
-	// window and then start the stated Retry-After late. If the body then
-	// reveals an exhausted quota, the invalidation path below drops this
-	// bench again — that key is leaving rotation entirely.
+	// window and then start the stated Retry-After late. rateLimitBenchDuration
+	// keeps that rule for everything that does not name a concrete longer
+	// window: when a rate-limit reset header itself says the wall stands
+	// for more than the Retry-After ceiling (an hourly or daily quota),
+	// the bench follows that window, capped at observedBenchCeiling — a
+	// daily wall is not a ten-minute wall, and re-dispatching into it every
+	// ten minutes burns attempts for a day. If the body then reveals an
+	// exhausted quota, the invalidation path below drops this bench again —
+	// that key is leaving rotation entirely.
 	if statusCode == http.StatusTooManyRequests {
 		s.keyPool.coolKey(pk.ID, pk.ConfigVersion, rc.keyDispatchedAt,
-			cooldownFromRetryAfter(resp.Header.Get("Retry-After"), s.keyPool.stamp(), s.gateway.KeyRateLimitCooldown))
+			rateLimitBenchDuration(resp.Header, s.keyPool.stamp(), s.gateway.KeyRateLimitCooldown))
 	}
 
 	// Capture the obtainable upstream error body before close, verbatim.
@@ -1740,6 +1797,16 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	// only reorders later walks.
 	if statusCode == http.StatusTooManyRequests && quotaExhaustedBody(errBody) {
 		s.markProviderKeyForRetest(ctx, rc, pk, provider)
+	}
+
+	// Learn what this 429 said about the key's own limits. After the
+	// quota check on purpose: when that path just invalidated the key, the
+	// dropKey inside it has removed the bench, and the lengthen inside
+	// this call is refused by its ordering gates — the retest verdict owns
+	// the key now. Recording the evidence still happens either way; rows
+	// about a key leaving rotation are harmless and die with its cascade.
+	if statusCode == http.StatusTooManyRequests {
+		s.recordRateLimitObservation(ctx, rc, pk, resp.Header, errBody)
 	}
 	_ = resp.Body.Close()
 

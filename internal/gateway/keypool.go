@@ -251,6 +251,39 @@ func (p *keyPool) coolKey(keyID uint, cfg int, dispatchedAt time.Time, d time.Du
 	s.benchUntil, s.benchInstalled, s.limitedAt = now.Add(d), now, dispatchedAt
 }
 
+// lengthenKeyBench extends a standing bench to a later expiry, on behalf
+// of evidence from the SAME verdict that booked it — dispatchedAt equal
+// to the recorded limitedAt — arriving after the bench was booked (the
+// 429's error body is read after the header-stage booking). It only ever
+// moves benchUntil later: the header stage booked a floor from what it
+// could see, and body evidence naming a longer window is strictly more
+// information. A bench that no longer stands (quota path dropped it,
+// success released it) is left alone — lengthening nothing is correct
+// there, and the same ordering gates as coolKey refuse verdicts that a
+// newer invalidation or recovery has already outrun.
+func (p *keyPool) lengthenKeyBench(keyID uint, cfg int, dispatchedAt time.Time, d time.Duration) {
+	if p == nil || d <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.stateFor(keyID, cfg)
+	if s == nil || !s.benched() {
+		return
+	}
+	// dispatchedAt must be the verdict that owns the standing bench (or a
+	// newer one); Before means an older verdict's straggler evidence and
+	// is refused exactly like coolKey refuses it.
+	if !dispatchedAt.After(s.invalidatedAt) ||
+		!dispatchedAt.After(s.recoveredAt) ||
+		dispatchedAt.Before(s.limitedAt) {
+		return
+	}
+	if until := p.now().Add(d); until.After(s.benchUntil) {
+		s.benchUntil = until
+	}
+}
+
 // dropKey books a persistent invalidation (quota 429, 401 — the retest
 // path) observed at observedAt: it releases the bench and records the
 // invalidation mark, both ordering-gated like every other verdict. Retest
