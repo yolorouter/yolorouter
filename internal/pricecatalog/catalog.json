@@ -1,20 +1,14 @@
 {
-  "updated_at": "2026-09-03",
+  "updated_at": "2026-09-10",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
     "api.deepseek.com": {
-      "deepseek-v4-flash": {
-        "input": 1.5,
-        "output": 4.5,
+      "deepseek-v4-pro(2)": {
+        "input": 1,
+        "output": 4,
         "cache_write": null,
-        "cache_read": 0.05
-      },
-      "deepseek-v4-pro": {
-        "input": 4.5,
-        "output": 13.5,
-        "cache_write": null,
-        "cache_read": 0.15
+        "cache_read": 0.02
       }
     },
     "api.moonshot.cn": {
@@ -118,6 +112,18 @@
       }
     },
     "api.siliconflow.cn": {
+      "Qwen/Qwen3.8-27B": {
+        "input": 1.8,
+        "output": 14.4,
+        "cache_write": null,
+        "cache_read": null
+      },
+      "nex-agi/Nex-N2-Pro": {
+        "input": 1.75,
+        "output": 7,
+        "cache_write": null,
+        "cache_read": null
+      },
       "zai-org/GLM-5.3": {
         "input": 6,
         "output": 28,
@@ -151,12 +157,6 @@
       "deepseek-ai/DeepSeek-V4-Pro": {
         "input": 12,
         "output": 24,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "nex-agi/Nex-N2-Pro": {
-        "input": 1.75,
-        "output": 7,
         "cache_write": null,
         "cache_read": null
       },
