@@ -814,7 +814,7 @@ func TestGetCandidateSuggestPriceReturnsSeedPrice(t *testing.T) {
 	providerID := createProviderOnHostForModelTest(t, providerRouter, "deepseek", "https://api.deepseek.com/v1")
 	r := newModelTestRouterSharingProviderDB(t, db, &alwaysSuccessClient{})
 
-	w, env := getSuggestPrice(t, r, fmt.Sprintf("provider_id=%d&provider_model_name=deepseek-v4-flash", providerID))
+	w, env := getSuggestPrice(t, r, fmt.Sprintf("provider_id=%d&provider_model_name=deepseek-v4-pro", providerID))
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}

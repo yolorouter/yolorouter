@@ -3289,7 +3289,7 @@ const catalogSeededHost = "https://api.deepseek.com/v1"
 
 func catalogSeededModel(t *testing.T) string {
 	t.Helper()
-	const name = "deepseek-v4-flash"
+	const name = "deepseek-v4-pro"
 	if _, ok := pricecatalog.Lookup(catalogSeededHost, name); !ok {
 		t.Fatalf("the seed catalog no longer carries %s/%s; pick another pair for this test", catalogSeededHost, name)
 	}

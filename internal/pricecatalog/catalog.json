@@ -1,10 +1,10 @@
 {
-  "updated_at": "2026-09-10",
+  "updated_at": "2026-09-11",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
     "api.deepseek.com": {
-      "deepseek-v4-pro(2)": {
+      "deepseek-v4-pro": {
         "input": 1,
         "output": 4,
         "cache_write": null,
