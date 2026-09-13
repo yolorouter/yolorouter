@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/yolorouter/yolorouter/internal/gateway/rows"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/service/videotask"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
@@ -20,53 +19,12 @@ import (
 	"gorm.io/gorm"
 )
 
-func videoTaskToModelForTest(t *VideoTask) *model.VideoTask {
-	return &model.VideoTask{
-		ID: t.ID, APIKeyID: t.APIKeyID, ModelID: t.ModelID, ModelName: t.ModelName,
-		CandidateID: t.CandidateID, ProviderID: t.ProviderID, ProviderModelName: t.ProviderModelName,
-		ProviderTaskID: t.ProviderTaskID, DestinationVersion: t.DestinationVersion,
-		RequestID: t.RequestID, Status: t.Status, ErrorCode: t.ErrorCode, ErrorMessage: t.ErrorMessage,
-		RequestSnapshot: t.RequestSnapshot, Size: t.Size, Seconds: t.Seconds,
-		ResultURL: t.ResultURL, CoverURL: t.CoverURL, UsageSeconds: t.UsageSeconds,
-		EstimatedMicros: t.EstimatedMicros, Billed: t.Billed, BilledMicros: t.BilledMicros,
-		ExpiresAt: t.ExpiresAt, LastPolledAt: t.LastPolledAt,
-		UpstreamSubmittedAt: t.UpstreamSubmittedAt, UpstreamCompletedAt: t.UpstreamCompletedAt,
-		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
-	}
-}
-
-func videoTaskToRowsForTest(t *model.VideoTask) *VideoTask {
-	return &VideoTask{
-		ID: t.ID, APIKeyID: t.APIKeyID, ModelID: t.ModelID, ModelName: t.ModelName,
-		CandidateID: t.CandidateID, ProviderID: t.ProviderID, ProviderModelName: t.ProviderModelName,
-		ProviderTaskID: t.ProviderTaskID, DestinationVersion: t.DestinationVersion,
-		RequestID: t.RequestID, Status: t.Status, ErrorCode: t.ErrorCode, ErrorMessage: t.ErrorMessage,
-		RequestSnapshot: t.RequestSnapshot, Size: t.Size, Seconds: t.Seconds,
-		ResultURL: t.ResultURL, CoverURL: t.CoverURL, UsageSeconds: t.UsageSeconds,
-		EstimatedMicros: t.EstimatedMicros, Billed: t.Billed, BilledMicros: t.BilledMicros,
-		ExpiresAt: t.ExpiresAt, LastPolledAt: t.LastPolledAt,
-		UpstreamSubmittedAt: t.UpstreamSubmittedAt, UpstreamCompletedAt: t.UpstreamCompletedAt,
-		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
-	}
-}
-
 type testVideoTasks struct{ svc *videotask.Service }
 
 func (v testVideoTasks) Create(ctx context.Context, task *VideoTask, now time.Time) error {
-	m := videoTaskToModelForTest(task)
-	if err := v.svc.Create(ctx, m, now); err != nil {
+	if err := v.svc.Create(ctx, task, now); err != nil {
 		return translateVideoErr(err)
 	}
-	// The domain mints the job id, the expiry horizon, and the price
-	// estimate inside Create — write them back so the caller's task is
-	// the one the caller can poll.
-	task.ID = m.ID
-	task.Status = m.Status
-	task.ExpiresAt = m.ExpiresAt
-	task.EstimatedMicros = m.EstimatedMicros
-	task.UpstreamSubmittedAt = m.UpstreamSubmittedAt
-	task.CreatedAt = m.CreatedAt
-	task.UpdatedAt = m.UpdatedAt
 	return nil
 }
 
@@ -79,15 +37,15 @@ func (v testVideoTasks) Get(ctx context.Context, apiKeyID uint, id string, now t
 	if err != nil {
 		return nil, translateVideoErr(err)
 	}
-	return videoTaskToRowsForTest(t), nil
+	return t, nil
 }
 
 // testVideoQuerierAdapter adapts the kernel poller to the domain's
 // Querier, converting the task row in and the result out.
 type testVideoQuerierAdapter struct{ poller *UpstreamVideoTaskPoller }
 
-func (a testVideoQuerierAdapter) QueryTask(ctx context.Context, task model.VideoTask) (videotask.QueryResult, error) {
-	res, err := a.poller.PollTask(ctx, *videoTaskToRowsForTest(&task))
+func (a testVideoQuerierAdapter) QueryTask(ctx context.Context, task rows.VideoTask) (videotask.QueryResult, error) {
+	res, err := a.poller.PollTask(ctx, task)
 	if err != nil {
 		return videotask.QueryResult{}, err
 	}
@@ -107,7 +65,7 @@ func (a testVideoQuerierAdapter) QueryTask(ctx context.Context, task model.Video
 func newTestVideoTasks(t *testing.T, db *gorm.DB, secrets crypto.SecretBox, store Store, client *UpstreamClient) testVideoTasks {
 	t.Helper()
 	poller := NewVideoTaskPoller(store, secrets, client)
-	return testVideoTasks{svc: videotask.NewService(db, testVideoQuerierAdapter{poller: poller})}
+	return testVideoTasks{svc: videotask.NewService(testVideoStoreFrom(db), testVideoQuerierAdapter{poller: poller})}
 }
 
 // translateVideoErr maps the domain's own error types onto the kernel
@@ -122,4 +80,55 @@ func translateVideoErr(err error) error {
 		return rows.ErrVideoTaskNotFound
 	}
 	return err
+}
+
+// testVideoStoreFrom builds a videotask Store over the test database so
+// the real domain (Create/budget/settle) runs in the kernel's own tests.
+type testVideoStore struct{ inner *testStore }
+
+func testVideoStoreFrom(db *gorm.DB) *testVideoStore {
+	return &testVideoStore{inner: testStoreFrom(db)}
+}
+
+func (s *testVideoStore) FindModelByName(ctx context.Context, name string) (*rows.Model, error) {
+	return s.inner.FindModelByName(ctx, name)
+}
+func (s *testVideoStore) ListModelCandidatesByModelID(ctx context.Context, modelID uint) ([]rows.ModelCandidate, error) {
+	return s.inner.ListModelCandidatesByModelID(ctx, modelID)
+}
+func (s *testVideoStore) FindModelCandidateByID(ctx context.Context, id uint) (*rows.ModelCandidate, error) {
+	return s.inner.FindModelCandidateByID(ctx, id)
+}
+func (s *testVideoStore) FindAPIKeyByID(ctx context.Context, id uint) (*rows.APIKey, error) {
+	return s.inner.FindAPIKeyByID(ctx, id)
+}
+func (s *testVideoStore) CreateVideoTask(ctx context.Context, task *rows.VideoTask) error {
+	return s.inner.CreateVideoTask(ctx, task)
+}
+func (s *testVideoStore) FindVideoTaskForOwner(ctx context.Context, apiKeyID uint, id string) (*rows.VideoTask, error) {
+	return s.inner.FindVideoTaskForOwner(ctx, apiKeyID, id)
+}
+func (s *testVideoStore) SaveVideoTaskPollResult(ctx context.Context, id string, result map[string]any, now time.Time) (bool, error) {
+	return s.inner.SaveVideoTaskPollResult(ctx, id, result, now)
+}
+func (s *testVideoStore) ClaimVideoTaskPoll(ctx context.Context, apiKeyID uint, id string, prev, next time.Time) (bool, error) {
+	return s.inner.ClaimVideoTaskPoll(ctx, apiKeyID, id, prev, next)
+}
+func (s *testVideoStore) ChargeVideoTask(ctx context.Context, id string, micros int64, now time.Time) (bool, error) {
+	return s.inner.ChargeVideoTask(ctx, id, micros, now)
+}
+func (s *testVideoStore) UpdateRequestLogVideoSettlement(ctx context.Context, requestID string, micros int64, seconds int) error {
+	return s.inner.UpdateRequestLogVideoSettlement(ctx, requestID, micros, seconds)
+}
+func (s *testVideoStore) ExpireStaleVideoTasks(ctx context.Context, now time.Time) (int64, error) {
+	return s.inner.ExpireStaleVideoTasks(ctx, now)
+}
+func (s *testVideoStore) ExpireProviderInFlightVideoTasks(ctx context.Context, providerID uint, newDestinationVersion int, now time.Time) (int64, error) {
+	return s.inner.ExpireProviderInFlightVideoTasks(ctx, providerID, newDestinationVersion, now)
+}
+func (s *testVideoStore) SumInFlightVideoEstimated(ctx context.Context, apiKeyID uint) (int64, error) {
+	return s.inner.SumInFlightVideoEstimated(ctx, apiKeyID)
+}
+func (s *testVideoStore) ListUnbilledCompletedVideoTasks(ctx context.Context) ([]rows.VideoTask, error) {
+	return s.inner.ListUnbilledCompletedVideoTasks(ctx)
 }

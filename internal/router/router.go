@@ -491,7 +491,7 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	store := osswire.NewStore(db)
 	pollerClient := gateway.NewUpstreamClient(allowPrivateUpstreams, gatewayCfg.HeaderTimeout, gatewayCfg.ConnectTimeout, gatewayCfg.TLSHandshakeTimeout)
 	poller := gateway.NewVideoTaskPoller(store, secrets, pollerClient)
-	videoDomain := videotask.NewService(db, osswire.QuerierAdapter{Poller: poller})
+	videoDomain := videotask.NewService(osswire.NewVideoStore(db), osswire.QuerierAdapter{Poller: poller})
 	relaySvc := gateway.NewService(store, osswire.NewVideoTasks(videoDomain), secrets, allowPrivateUpstreams, settingsSvc, gatewayCfg)
 	// The model detail view shows per-candidate sticky-binding counts for
 	// balanced models; both sides must read the registry the relay actually

@@ -14,6 +14,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
 	"github.com/yolorouter/yolorouter/internal/pricecatalog"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/router"
@@ -322,7 +323,7 @@ func runServe(ctx context.Context, args []string) error {
 	// is safe to run before any video dialect is wired (the nil-querier
 	// service answers every poll with "not wired" and the sweep still
 	// works); it dies with serve's ctx like the probe queue above.
-	videoTaskSvc := videotask.NewService(app.DB, nil)
+	videoTaskSvc := videotask.NewService(osswire.NewVideoStore(app.DB), nil)
 	videoTaskSvc.StartReaper(ctx, time.Minute)
 
 	serveErrCh := make(chan error, 1)

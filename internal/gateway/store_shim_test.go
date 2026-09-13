@@ -179,3 +179,91 @@ func (stubVideoTasks) PrecheckBudget(context.Context, uint, string, string, int)
 func (stubVideoTasks) Get(context.Context, uint, string, time.Time) (*VideoTask, error) {
 	return nil, ErrVideoTaskNotFound
 }
+
+// Video-domain methods the test video store delegates to.
+
+func (s *testStore) FindModelCandidateByID(ctx context.Context, id uint) (*ModelCandidate, error) {
+	c, err := repository.FindModelCandidateByID(s.db.WithContext(ctx), id)
+	if err != nil {
+		return nil, s.notFound(err)
+	}
+	out := ModelCandidate{ID: c.ID, ModelID: c.ModelID, ProviderID: c.ProviderID,
+		ProviderModelName: c.ProviderModelName, InputPrice: c.InputPrice, OutputPrice: c.OutputPrice,
+		MaxOutput: c.MaxOutput, BillingMode: c.BillingMode, VideoPricingTiers: c.VideoPricingTiers,
+		ManagementStatus: c.ManagementStatus, VerificationStatus: c.VerificationStatus, SortOrder: c.SortOrder}
+	return &out, nil
+}
+
+func (s *testStore) CreateVideoTask(ctx context.Context, task *rows.VideoTask) error {
+	return repository.CreateVideoTask(s.db.WithContext(ctx), tsVideoToModel(task))
+}
+
+func (s *testStore) FindVideoTaskForOwner(ctx context.Context, apiKeyID uint, id string) (*rows.VideoTask, error) {
+	t, err := repository.FindVideoTaskForOwner(s.db.WithContext(ctx), apiKeyID, id)
+	if err != nil {
+		return nil, s.notFound(err)
+	}
+	return tsVideoFromModel(t), nil
+}
+
+func (s *testStore) SaveVideoTaskPollResult(ctx context.Context, id string, result map[string]any, now time.Time) (bool, error) {
+	return repository.SaveVideoTaskPollResult(s.db.WithContext(ctx), id, result, now)
+}
+
+func (s *testStore) ClaimVideoTaskPoll(ctx context.Context, apiKeyID uint, id string, prev, next time.Time) (bool, error) {
+	return repository.ClaimVideoTaskPoll(s.db.WithContext(ctx), apiKeyID, id, prev, next)
+}
+
+func (s *testStore) ChargeVideoTask(ctx context.Context, id string, micros int64, now time.Time) (bool, error) {
+	return repository.ChargeVideoTask(s.db.WithContext(ctx), id, micros, now)
+}
+
+func (s *testStore) UpdateRequestLogVideoSettlement(ctx context.Context, requestID string, micros int64, seconds int) error {
+	return repository.UpdateRequestLogVideoSettlement(s.db.WithContext(ctx), requestID, micros, seconds)
+}
+
+func (s *testStore) ExpireStaleVideoTasks(ctx context.Context, now time.Time) (int64, error) {
+	return repository.ExpireStaleVideoTasks(s.db.WithContext(ctx), now)
+}
+
+func (s *testStore) ExpireProviderInFlightVideoTasks(ctx context.Context, providerID uint, newDestinationVersion int, now time.Time) (int64, error) {
+	return repository.ExpireProviderInFlightVideoTasks(s.db.WithContext(ctx), providerID, newDestinationVersion, now)
+}
+
+func (s *testStore) SumInFlightVideoEstimated(ctx context.Context, apiKeyID uint) (int64, error) {
+	return repository.SumInFlightVideoEstimated(s.db.WithContext(ctx), apiKeyID)
+}
+
+func (s *testStore) ListUnbilledCompletedVideoTasks(ctx context.Context) ([]rows.VideoTask, error) {
+	tasks, err := repository.ListUnbilledCompletedVideoTasks(s.db.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]rows.VideoTask, 0, len(tasks))
+	for i := range tasks {
+		out = append(out, *tsVideoFromModel(&tasks[i]))
+	}
+	return out, nil
+}
+
+func tsVideoToModel(t *rows.VideoTask) *model.VideoTask {
+	return &model.VideoTask{ID: t.ID, APIKeyID: t.APIKeyID, ModelID: t.ModelID, ModelName: t.ModelName,
+		CandidateID: t.CandidateID, ProviderID: t.ProviderID, ProviderModelName: t.ProviderModelName,
+		ProviderTaskID: t.ProviderTaskID, DestinationVersion: t.DestinationVersion, RequestID: t.RequestID,
+		Status: t.Status, ErrorCode: t.ErrorCode, ErrorMessage: t.ErrorMessage, RequestSnapshot: t.RequestSnapshot,
+		Size: t.Size, Seconds: t.Seconds, ResultURL: t.ResultURL, CoverURL: t.CoverURL, UsageSeconds: t.UsageSeconds,
+		EstimatedMicros: t.EstimatedMicros, Billed: t.Billed, BilledMicros: t.BilledMicros, ExpiresAt: t.ExpiresAt,
+		LastPolledAt: t.LastPolledAt, UpstreamSubmittedAt: t.UpstreamSubmittedAt, UpstreamCompletedAt: t.UpstreamCompletedAt,
+		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
+}
+
+func tsVideoFromModel(t *model.VideoTask) *rows.VideoTask {
+	return &rows.VideoTask{ID: t.ID, APIKeyID: t.APIKeyID, ModelID: t.ModelID, ModelName: t.ModelName,
+		CandidateID: t.CandidateID, ProviderID: t.ProviderID, ProviderModelName: t.ProviderModelName,
+		ProviderTaskID: t.ProviderTaskID, DestinationVersion: t.DestinationVersion, RequestID: t.RequestID,
+		Status: t.Status, ErrorCode: t.ErrorCode, ErrorMessage: t.ErrorMessage, RequestSnapshot: t.RequestSnapshot,
+		Size: t.Size, Seconds: t.Seconds, ResultURL: t.ResultURL, CoverURL: t.CoverURL, UsageSeconds: t.UsageSeconds,
+		EstimatedMicros: t.EstimatedMicros, Billed: t.Billed, BilledMicros: t.BilledMicros, ExpiresAt: t.ExpiresAt,
+		LastPolledAt: t.LastPolledAt, UpstreamSubmittedAt: t.UpstreamSubmittedAt, UpstreamCompletedAt: t.UpstreamCompletedAt,
+		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
+}

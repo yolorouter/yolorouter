@@ -13,6 +13,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/gateway/rows"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -22,8 +23,8 @@ import (
 type pricedFixture struct {
 	db        *gorm.DB
 	svc       *Service
-	apiKey    *model.APIKey
-	candidate *model.ModelCandidate
+	apiKey    *rows.APIKey
+	candidate *rows.ModelCandidate
 	extra     int
 }
 
@@ -35,38 +36,38 @@ func newPricedFixture(t *testing.T, sellPrice float64, limitMicros *int64) *pric
 	if err := db.Create(provider).Error; err != nil {
 		t.Fatalf("seed provider: %v", err)
 	}
-	m := &model.Model{Name: "video-priced", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &rows.Model{Name: "video-priced", ManagementStatus: rows.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	tiers, err := model.MarshalVideoPricingTiers(&model.VideoPricingTiers{Tiers: []model.VideoPricingTier{
+	tiers, err := rows.MarshalVideoPricingTiers(&rows.VideoPricingTiers{Tiers: []rows.VideoPricingTier{
 		{Resolution: "720P", PurchasePrice: 0, SellPrice: sellPrice},
 		{Resolution: "1080P", PurchasePrice: 0, SellPrice: sellPrice * 2},
 	}})
 	if err != nil {
 		t.Fatalf("marshal tiers: %v", err)
 	}
-	cand := &model.ModelCandidate{
+	cand := &rows.ModelCandidate{
 		ModelID: m.ID, ProviderID: provider.ID, ProviderModelName: "wan2.7-t2v",
-		BillingMode: model.BillingModeVideo, VideoPricingTiers: tiers,
-		ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: 1,
-		VerificationStatus: model.ModelVerificationStatusPassed, CreatedAt: now, UpdatedAt: now,
+		BillingMode: rows.BillingModeVideo, VideoPricingTiers: tiers,
+		ManagementStatus: rows.ModelCandidateStatusEnabled, SortOrder: 1,
+		VerificationStatus: rows.ModelVerificationStatusPassed, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(cand).Error; err != nil {
 		t.Fatalf("seed candidate: %v", err)
 	}
-	key := &model.APIKey{
-		KeyHash: "hash-video-priced", KeyPrefix: "sk-yr-video-priced", Status: model.APIKeyStatusActive,
+	key := &rows.APIKey{
+		KeyHash: "hash-video-priced", KeyPrefix: "sk-yr-video-priced", Status: rows.APIKeyStatusActive,
 		BudgetLimitMicros: limitMicros, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(key).Error; err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	return &pricedFixture{db: db, svc: NewService(db, nil), apiKey: key, candidate: cand}
+	return &pricedFixture{db: db, svc: NewService(testStoreFrom(db), nil), apiKey: key, candidate: cand}
 }
 
-func (f *pricedFixture) task(seconds int) *model.VideoTask {
-	return &model.VideoTask{
+func (f *pricedFixture) task(seconds int) *rows.VideoTask {
+	return &rows.VideoTask{
 		APIKeyID: f.apiKey.ID, ModelID: f.candidate.ModelID, ModelName: "video-priced",
 		CandidateID: f.candidate.ID, ProviderID: f.candidate.ProviderID, ProviderModelName: "wan2.7-t2v",
 		ProviderTaskID: "up-1", DestinationVersion: 1,
@@ -76,7 +77,7 @@ func (f *pricedFixture) task(seconds int) *model.VideoTask {
 
 func (f *pricedFixture) spent(t *testing.T) int64 {
 	t.Helper()
-	var key model.APIKey
+	var key rows.APIKey
 	if err := f.db.Where("id = ?", f.apiKey.ID).First(&key).Error; err != nil {
 		t.Fatalf("reload key: %v", err)
 	}
@@ -86,7 +87,7 @@ func (f *pricedFixture) spent(t *testing.T) int64 {
 func TestSettlementChargesObservedSecondsOnce(t *testing.T) {
 	f := newPricedFixture(t, 0.5, nil) // 0.5 yuan/s at 720P
 	q := &stubQuerier{answers: []QueryResult{
-		{Status: model.VideoTaskCompleted, ResultURL: "https://v", UsageSeconds: 8},
+		{Status: rows.VideoTaskCompleted, ResultURL: "https://v", UsageSeconds: 8},
 	}}
 	f.svc.querier = q
 	now := time.Now()
@@ -121,7 +122,7 @@ func TestSettlementChargesObservedSecondsOnce(t *testing.T) {
 
 func TestSettlementUsesSubmitTimeSnapshotPrice(t *testing.T) {
 	f := newPricedFixture(t, 0.5, nil)
-	q := &stubQuerier{answers: []QueryResult{{Status: model.VideoTaskCompleted, UsageSeconds: 4}}}
+	q := &stubQuerier{answers: []QueryResult{{Status: rows.VideoTaskCompleted, UsageSeconds: 4}}}
 	f.svc.querier = q
 	now := time.Now()
 	task := f.task(4)
@@ -129,10 +130,10 @@ func TestSettlementUsesSubmitTimeSnapshotPrice(t *testing.T) {
 
 	// The tier price doubles after submit: the snapshot was taken at
 	// creation, so the bill must not follow the edit.
-	doubled, _ := model.MarshalVideoPricingTiers(&model.VideoPricingTiers{Tiers: []model.VideoPricingTier{
+	doubled, _ := rows.MarshalVideoPricingTiers(&rows.VideoPricingTiers{Tiers: []rows.VideoPricingTier{
 		{Resolution: "720P", SellPrice: 9.9},
 	}})
-	if err := f.db.Model(&model.ModelCandidate{}).Where("id = ?", f.candidate.ID).Update("video_pricing_tiers", doubled).Error; err != nil {
+	if err := f.db.Model(&rows.ModelCandidate{}).Where("id = ?", f.candidate.ID).Update("video_pricing_tiers", doubled).Error; err != nil {
 		t.Fatalf("retier: %v", err)
 	}
 
@@ -141,7 +142,7 @@ func TestSettlementUsesSubmitTimeSnapshotPrice(t *testing.T) {
 		t.Fatalf("an in-flight task bills its submit-time price, got %+v", got.BilledMicros)
 	}
 	// And a task created AFTER the edit bills the new one.
-	q2 := &stubQuerier{answers: []QueryResult{{Status: model.VideoTaskCompleted, UsageSeconds: 4}}}
+	q2 := &stubQuerier{answers: []QueryResult{{Status: rows.VideoTaskCompleted, UsageSeconds: 4}}}
 	f.svc.querier = q2
 	later := f.task(4)
 	later.ProviderTaskID = "up-2"
@@ -153,7 +154,7 @@ func TestSettlementUsesSubmitTimeSnapshotPrice(t *testing.T) {
 }
 
 func TestFailuresBillNothing(t *testing.T) {
-	for _, terminal := range []string{model.VideoTaskFailed, model.VideoTaskCancelled, model.VideoTaskExpired} {
+	for _, terminal := range []string{rows.VideoTaskFailed, rows.VideoTaskCancelled, rows.VideoTaskExpired} {
 		t.Run(terminal, func(t *testing.T) {
 			f := newPricedFixture(t, 0.5, nil)
 			f.svc.querier = &stubQuerier{answers: []QueryResult{{Status: terminal, ErrorCode: "x"}}}
@@ -196,7 +197,7 @@ func TestBudgetGateRejectsAndReleases(t *testing.T) {
 
 	// The first task fails: its reservation releases, and the second now
 	// fits.
-	f.svc.querier = &stubQuerier{answers: []QueryResult{{Status: model.VideoTaskFailed}}}
+	f.svc.querier = &stubQuerier{answers: []QueryResult{{Status: rows.VideoTaskFailed}}}
 	if _, err := f.svc.Get(context.Background(), f.apiKey.ID, first.ID, now.Add(time.Second)); err != nil {
 		t.Fatalf("poll first: %v", err)
 	}
@@ -212,8 +213,8 @@ func TestUnpricedTasksSkipTheBudgetGate(t *testing.T) {
 	f := newPricedFixture(t, 0.5, &zero)
 	// A candidate with no video pricing bills nothing and reserves
 	// nothing — the lenient reading, same as the image settlement.
-	f.db.Model(&model.ModelCandidate{}).Where("id = ?", f.candidate.ID).
-		Updates(map[string]any{"billing_mode": model.BillingModeToken, "video_pricing_tiers": ""})
+	f.db.Model(&rows.ModelCandidate{}).Where("id = ?", f.candidate.ID).
+		Updates(map[string]any{"billing_mode": rows.BillingModeToken, "video_pricing_tiers": ""})
 	now := time.Now()
 	task := f.task(8)
 	if err := f.svc.Create(context.Background(), task, now); err != nil {
@@ -232,8 +233,8 @@ func TestCompletionBackstopSettlesUnbilledRows(t *testing.T) {
 	now := time.Now()
 	task := f.task(4)
 	_ = f.svc.Create(context.Background(), task, now)
-	if err := f.db.Model(&model.VideoTask{}).Where("id = ?", task.ID).Updates(map[string]any{
-		"status": model.VideoTaskCompleted, "usage_seconds": 4, "result_url": "https://v",
+	if err := f.db.Model(&rows.VideoTask{}).Where("id = ?", task.ID).Updates(map[string]any{
+		"status": rows.VideoTaskCompleted, "usage_seconds": 4, "result_url": "https://v",
 	}).Error; err != nil {
 		t.Fatalf("forge completion: %v", err)
 	}
@@ -254,8 +255,8 @@ func TestSweepSettlesUnbilledCompletedRows(t *testing.T) {
 	now := time.Now()
 	task := f.task(8)
 	_ = f.svc.Create(context.Background(), task, now)
-	if err := f.db.Model(&model.VideoTask{}).Where("id = ?", task.ID).Updates(map[string]any{
-		"status": model.VideoTaskCompleted, "usage_seconds": 8, "result_url": "https://v",
+	if err := f.db.Model(&rows.VideoTask{}).Where("id = ?", task.ID).Updates(map[string]any{
+		"status": rows.VideoTaskCompleted, "usage_seconds": 8, "result_url": "https://v",
 	}).Error; err != nil {
 		t.Fatalf("forge completion: %v", err)
 	}
@@ -283,8 +284,8 @@ func TestBudgetReservesForUnsettledCompletions(t *testing.T) {
 	now := time.Now()
 	first := f.task(8)
 	_ = f.svc.Create(context.Background(), first, now)
-	if err := f.db.Model(&model.VideoTask{}).Where("id = ?", first.ID).Updates(map[string]any{
-		"status": model.VideoTaskCompleted, "usage_seconds": 8, "billed": false,
+	if err := f.db.Model(&rows.VideoTask{}).Where("id = ?", first.ID).Updates(map[string]any{
+		"status": rows.VideoTaskCompleted, "usage_seconds": 8, "billed": false,
 	}).Error; err != nil {
 		t.Fatalf("forge unsettled completion: %v", err)
 	}
@@ -314,25 +315,25 @@ func (f *pricedFixture) addCandidate(t *testing.T, sellPrice float64, enabled bo
 		t.Fatalf("seed extra provider: %v", err)
 	}
 	tiers := ""
-	if billing == model.BillingModeVideo {
+	if billing == rows.BillingModeVideo {
 		var err error
-		tiers, err = model.MarshalVideoPricingTiers(&model.VideoPricingTiers{Tiers: []model.VideoPricingTier{
+		tiers, err = rows.MarshalVideoPricingTiers(&rows.VideoPricingTiers{Tiers: []rows.VideoPricingTier{
 			{Resolution: "720P", PurchasePrice: 0, SellPrice: sellPrice},
 		}})
 		if err != nil {
 			t.Fatalf("marshal tiers: %v", err)
 		}
 	}
-	status := model.ModelCandidateStatusDisabled
+	status := rows.ModelCandidateStatusDisabled
 	if enabled {
-		status = model.ModelCandidateStatusEnabled
+		status = rows.ModelCandidateStatusEnabled
 	}
 	f.extra++
-	cand := &model.ModelCandidate{
+	cand := &rows.ModelCandidate{
 		ModelID: f.candidate.ModelID, ProviderID: provider.ID, ProviderModelName: "wan2.7-t2v-alt",
 		BillingMode: billing, VideoPricingTiers: tiers,
 		ManagementStatus: status, SortOrder: f.extra + 1,
-		VerificationStatus: model.ModelVerificationStatusPassed, CreatedAt: now, UpdatedAt: now,
+		VerificationStatus: rows.ModelVerificationStatusPassed, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := f.db.Create(cand).Error; err != nil {
 		t.Fatalf("seed extra candidate: %v", err)
@@ -357,8 +358,8 @@ func TestPrecheckBudgetCheapestCandidateDecides(t *testing.T) {
 	// fits means the call is not certainly over, and the exact gate in
 	// Create still holds whichever candidate actually routes.
 	limit := int64(1_000_000)
-	f := newPricedFixture(t, 0.5, &limit)                // 4s at 0.5 asks 2M
-	f.addCandidate(t, 0.2, true, model.BillingModeVideo) // 4s at 0.2 asks 800k
+	f := newPricedFixture(t, 0.5, &limit)               // 4s at 0.5 asks 2M
+	f.addCandidate(t, 0.2, true, rows.BillingModeVideo) // 4s at 0.2 asks 800k
 	if err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4); err != nil {
 		t.Fatalf("a candidate that fits means the precheck must stay silent, got %v", err)
 	}
@@ -366,7 +367,7 @@ func TestPrecheckBudgetCheapestCandidateDecides(t *testing.T) {
 	// Tighten past even the cheapest: now the refusal reports the
 	// cheapest ask, not the routed candidate's one.
 	tight := int64(500_000)
-	f.db.Model(&model.APIKey{}).Where("id = ?", f.apiKey.ID).Update("budget_limit_micros", tight)
+	f.db.Model(&rows.APIKey{}).Where("id = ?", f.apiKey.ID).Update("budget_limit_micros", tight)
 	err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4)
 	var budget *BudgetExceededError
 	if !errors.As(err, &budget) {
@@ -383,8 +384,8 @@ func TestPrecheckBudgetIgnoresDisabledAndNonVideoCandidates(t *testing.T) {
 	// count, exactly the candidates the router could pick.
 	limit := int64(1_000_000)
 	f := newPricedFixture(t, 0.5, &limit) // enabled video, asks 2M
-	f.addCandidate(t, 0.1, false, model.BillingModeVideo)
-	f.addCandidate(t, 0.05, true, model.BillingModeToken)
+	f.addCandidate(t, 0.1, false, rows.BillingModeVideo)
+	f.addCandidate(t, 0.05, true, rows.BillingModeToken)
 	err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4)
 	var budget *BudgetExceededError
 	if !errors.As(err, &budget) {
@@ -404,8 +405,8 @@ func TestPrecheckBudgetSilentWhenItCannotPrice(t *testing.T) {
 	if err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "no-such-model", "720x1280", 4); err != nil {
 		t.Fatalf("an unknown model must pass silently, got %v", err)
 	}
-	f.db.Model(&model.ModelCandidate{}).Where("id = ?", f.candidate.ID).
-		Updates(map[string]any{"billing_mode": model.BillingModeToken, "video_pricing_tiers": ""})
+	f.db.Model(&rows.ModelCandidate{}).Where("id = ?", f.candidate.ID).
+		Updates(map[string]any{"billing_mode": rows.BillingModeToken, "video_pricing_tiers": ""})
 	if err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4); err != nil {
 		t.Fatalf("an unpriced table must pass silently, got %v", err)
 	}
@@ -430,7 +431,7 @@ func TestSettlementProjectsCostOntoRequestLog(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	f.svc.querier = &stubQuerier{answers: []QueryResult{
-		{Status: model.VideoTaskCompleted, ResultURL: "https://v", UsageSeconds: 8},
+		{Status: rows.VideoTaskCompleted, ResultURL: "https://v", UsageSeconds: 8},
 	}}
 	if _, err := f.svc.Get(context.Background(), f.apiKey.ID, task.ID, now.Add(time.Second)); err != nil {
 		t.Fatalf("poll to completion: %v", err)
@@ -461,7 +462,7 @@ func TestSettlementSkipsProjectionWithoutRequestID(t *testing.T) {
 		t.Fatalf("fixture task must carry no request id for this test")
 	}
 	f.svc.querier = &stubQuerier{answers: []QueryResult{
-		{Status: model.VideoTaskCompleted, ResultURL: "https://v", UsageSeconds: 8},
+		{Status: rows.VideoTaskCompleted, ResultURL: "https://v", UsageSeconds: 8},
 	}}
 	if _, err := f.svc.Get(context.Background(), f.apiKey.ID, task.ID, now.Add(time.Second)); err != nil {
 		t.Fatalf("poll to completion: %v", err)
@@ -479,8 +480,8 @@ func TestPrecheckBudgetSilentWhileAnUnpricedCandidateCouldRoute(t *testing.T) {
 	// and the precheck must stay silent.
 	limit := int64(1_000_000)
 	f := newPricedFixture(t, 0.5, &limit) // enabled, prices 720P at 2M for 4s
-	f.addCandidate(t, 0, true, model.BillingModeVideo)
-	f.db.Model(&model.ModelCandidate{}).
+	f.addCandidate(t, 0, true, rows.BillingModeVideo)
+	f.db.Model(&rows.ModelCandidate{}).
 		Where("provider_model_name = ?", "wan2.7-t2v-alt").
 		Update("video_pricing_tiers", "")
 	if err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4); err != nil {
@@ -488,7 +489,7 @@ func TestPrecheckBudgetSilentWhileAnUnpricedCandidateCouldRoute(t *testing.T) {
 	}
 	// With the unpriced candidate gone, every priced one exceeds and the
 	// certain refusal returns.
-	f.db.Where("provider_model_name = ?", "wan2.7-t2v-alt").Delete(&model.ModelCandidate{})
+	f.db.Where("provider_model_name = ?", "wan2.7-t2v-alt").Delete(&rows.ModelCandidate{})
 	err := f.svc.PrecheckBudget(context.Background(), f.apiKey.ID, "video-priced", "720x1280", 4)
 	var budget *BudgetExceededError
 	if !errors.As(err, &budget) || budget.Ask != 2_000_000 {

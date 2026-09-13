@@ -185,11 +185,12 @@ const (
 	MeterRequests = "requests"
 	MeterTokens   = "tokens"
 
-	VideoTaskPending   = "pending"
-	VideoTaskCompleted = "completed"
-	VideoTaskFailed    = "failed"
-	VideoTaskExpired   = "expired"
-	VideoTaskCancelled = "cancelled"
+	VideoTaskPending    = "pending"
+	VideoTaskProcessing = "processing"
+	VideoTaskCompleted  = "completed"
+	VideoTaskFailed     = "failed"
+	VideoTaskExpired    = "expired"
+	VideoTaskCancelled  = "cancelled"
 
 	RequestLogSourceVisionFallback = "vision_fallback"
 
@@ -385,4 +386,39 @@ type BudgetExceededError struct {
 
 func (e *BudgetExceededError) Error() string {
 	return fmt.Sprintf("video budget exceeded: limit %d, spent %d, in-flight %d, this task %d", e.Limit, e.Spent, e.InFlight, e.Ask)
+}
+
+// VideoTaskTerminal reports whether a status is one the state machine
+// never moves out of; only terminal rows may settle.
+func VideoTaskTerminal(status string) bool {
+	switch status {
+	case VideoTaskCompleted, VideoTaskFailed, VideoTaskCancelled, VideoTaskExpired:
+		return true
+	}
+	return false
+}
+
+// MarshalVideoPricingTiers writes the stored declaration; empty tiers
+// marshal to the empty string, which parses back as no table.
+func MarshalVideoPricingTiers(t *VideoPricingTiers) (string, error) {
+	if t == nil || len(t.Tiers) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(t)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// MarshalImagePricingTiers writes the stored declaration.
+func MarshalImagePricingTiers(t *ImagePricingTiers) (string, error) {
+	if t == nil || len(t.Tiers) == 0 && t.DefaultPrice == nil {
+		return "", nil
+	}
+	b, err := json.Marshal(t)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
