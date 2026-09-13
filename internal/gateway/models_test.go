@@ -10,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -30,7 +29,7 @@ func newModelsGetCtx(target string, anthropic bool) (*gin.Context, *httptest.Res
 }
 
 func TestOpenAIModelObject(t *testing.T) {
-	obj := openAIModelObject(model.Model{Name: "gpt-4o", CreatedAt: time.Unix(1700000000, 0)})
+	obj := openAIModelObject(Model{Name: "gpt-4o", CreatedAt: time.Unix(1700000000, 0)})
 	if obj["id"] != "gpt-4o" || obj["object"] != "model" || obj["owned_by"] != ownedByTag {
 		t.Errorf("obj=%v", obj)
 	}
@@ -54,7 +53,7 @@ func TestModelObjectsCarryOutputModalities(t *testing.T) {
 		{"legacy empty", "", []string{"text"}},
 	}
 	for _, tc := range cases {
-		m := model.Model{Name: "m", CreatedAt: time.Unix(1, 0), OutputModalities: tc.raw}
+		m := Model{Name: "m", CreatedAt: time.Unix(1, 0), OutputModalities: tc.raw}
 		openAI := openAIModelObject(m)
 		if got := openAI["output_modalities"]; !equalStringSlice(got, tc.want) {
 			t.Errorf("%s: openAI output_modalities=%v want %v", tc.name, got, tc.want)
@@ -81,7 +80,7 @@ func equalStringSlice(got any, want []string) bool {
 }
 
 func TestAnthropicModelObject(t *testing.T) {
-	obj := anthropicModelObject(model.Model{Name: "claude-3", CreatedAt: time.Unix(1700000000, 0).UTC()})
+	obj := anthropicModelObject(Model{Name: "claude-3", CreatedAt: time.Unix(1700000000, 0).UTC()})
 	if obj["type"] != "model" || obj["id"] != "claude-3" || obj["display_name"] != "claude-3" {
 		t.Errorf("obj=%v", obj)
 	}
@@ -96,7 +95,7 @@ func TestAnthropicModelObject(t *testing.T) {
 
 func TestWriteModelListOpenAI(t *testing.T) {
 	c, w := newModelsGetCtx("/v1/models", false)
-	writeModelList(c, protocols.ProtocolOpenAI, []model.Model{
+	writeModelList(c, protocols.ProtocolOpenAI, []Model{
 		{Name: "a", CreatedAt: time.Unix(1, 0)}, {Name: "b", CreatedAt: time.Unix(2, 0)},
 	})
 	var body map[string]any
@@ -135,7 +134,7 @@ func TestRejectInvalidKey(t *testing.T) {
 	const rid = "test-rid"
 
 	c, w := newModelsGetCtx("/v1/models", false)
-	if !rejectInvalidKey(c, protocols.ProtocolOpenAI, &model.APIKey{Status: model.APIKeyStatusRevoked}, rid) {
+	if !rejectInvalidKey(c, protocols.ProtocolOpenAI, &APIKey{Status: APIKeyStatusRevoked}, rid) {
 		t.Fatal("revoked key not rejected")
 	}
 	if w.Code != http.StatusUnauthorized {
@@ -143,7 +142,7 @@ func TestRejectInvalidKey(t *testing.T) {
 	}
 
 	c2, w2 := newModelsGetCtx("/v1/models", false)
-	if !rejectInvalidKey(c2, protocols.ProtocolOpenAI, &model.APIKey{Status: model.APIKeyStatusActive, ExpiresAt: &past}, rid) {
+	if !rejectInvalidKey(c2, protocols.ProtocolOpenAI, &APIKey{Status: APIKeyStatusActive, ExpiresAt: &past}, rid) {
 		t.Fatal("expired key not rejected")
 	}
 	if w2.Code != http.StatusUnauthorized {
@@ -151,19 +150,19 @@ func TestRejectInvalidKey(t *testing.T) {
 	}
 
 	c3, _ := newModelsGetCtx("/v1/models", false)
-	if rejectInvalidKey(c3, protocols.ProtocolOpenAI, &model.APIKey{Status: model.APIKeyStatusActive}, rid) {
+	if rejectInvalidKey(c3, protocols.ProtocolOpenAI, &APIKey{Status: APIKeyStatusActive}, rid) {
 		t.Fatal("active key incorrectly rejected")
 	}
 }
 
-func seedModel(t *testing.T, db *gorm.DB, name string, enabled bool) *model.Model {
+func seedModel(t *testing.T, db *gorm.DB, name string, enabled bool) *Model {
 	t.Helper()
 	now := time.Now().UTC()
-	status := model.ModelStatusEnabled
+	status := ModelStatusEnabled
 	if !enabled {
-		status = model.ModelStatusDisabled
+		status = ModelStatusDisabled
 	}
-	m := &model.Model{Name: name, ManagementStatus: status, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: name, ManagementStatus: status, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
@@ -176,8 +175,8 @@ func TestListModels_AllowAllModels(t *testing.T) {
 	seedModel(t, db, "alpha", true)
 	seedModel(t, db, "hidden", false) // disabled -> dropped
 
-	k := createAPIKey(t, db, model.APIKeyStatusActive, nil)
-	if err := db.Model(&model.APIKey{}).Where("id = ?", k.ID).Update("allow_all_models", true).Error; err != nil {
+	k := createAPIKey(t, db, APIKeyStatusActive, nil)
+	if err := db.Model(&APIKey{}).Where("id = ?", k.ID).Update("allow_all_models", true).Error; err != nil {
 		t.Fatalf("set allow_all_models: %v", err)
 	}
 	// Sync the in-memory key: SetGatewayAuth stores this pointer directly,
@@ -186,7 +185,7 @@ func TestListModels_AllowAllModels(t *testing.T) {
 
 	c, w := newModelsGetCtx("/v1/models", false)
 	SetGatewayAuth(c, k)
-	ListModels(db)(c)
+	ListModels(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -209,11 +208,11 @@ func TestListModels_AllowlistFilter(t *testing.T) {
 	m1 := seedModel(t, db, "alpha", true)
 	seedModel(t, db, "bravo", true) // not in allowlist
 
-	k := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m1.ID})
+	k := createAPIKey(t, db, APIKeyStatusActive, []uint{m1.ID})
 
 	c, w := newModelsGetCtx("/v1/models", false)
 	SetGatewayAuth(c, k)
-	ListModels(db)(c)
+	ListModels(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -231,11 +230,11 @@ func TestListModels_AllowlistFilter(t *testing.T) {
 func TestListModels_EmptyAllowlist(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	seedModel(t, db, "alpha", true)
-	k := createAPIKey(t, db, model.APIKeyStatusActive, nil) // empty allowlist, AllowAllModels=false
+	k := createAPIKey(t, db, APIKeyStatusActive, nil) // empty allowlist, AllowAllModels=false
 
 	c, w := newModelsGetCtx("/v1/models", false)
 	SetGatewayAuth(c, k)
-	ListModels(db)(c)
+	ListModels(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -253,8 +252,8 @@ func TestListModels_EmptyAllowlist(t *testing.T) {
 func TestListModels_AnthropicEnvelope(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	seedModel(t, db, "alpha", true)
-	k := createAPIKey(t, db, model.APIKeyStatusActive, nil)
-	if err := db.Model(&model.APIKey{}).Where("id = ?", k.ID).Update("allow_all_models", true).Error; err != nil {
+	k := createAPIKey(t, db, APIKeyStatusActive, nil)
+	if err := db.Model(&APIKey{}).Where("id = ?", k.ID).Update("allow_all_models", true).Error; err != nil {
 		t.Fatalf("set allow_all_models: %v", err)
 	}
 	// Sync the in-memory key: SetGatewayAuth stores this pointer directly,
@@ -263,7 +262,7 @@ func TestListModels_AnthropicEnvelope(t *testing.T) {
 
 	c, w := newModelsGetCtx("/v1/models", true) // anthropic-version header
 	SetGatewayAuth(c, k)
-	ListModels(db)(c)
+	ListModels(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -284,11 +283,11 @@ func TestListModels_AnthropicEnvelope(t *testing.T) {
 func TestListModels_RevokedKey(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	seedModel(t, db, "alpha", true)
-	k := createAPIKey(t, db, model.APIKeyStatusRevoked, nil)
+	k := createAPIKey(t, db, APIKeyStatusRevoked, nil)
 
 	c, w := newModelsGetCtx("/v1/models", false)
 	SetGatewayAuth(c, k)
-	ListModels(db)(c)
+	ListModels(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d want 401", w.Code)
@@ -298,12 +297,12 @@ func TestListModels_RevokedKey(t *testing.T) {
 func TestRetrieveModel_Found(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	m := seedModel(t, db, "alpha", true)
-	k := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	k := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newModelsGetCtx("/v1/models/alpha", false)
 	c.Params = gin.Params{{Key: "model", Value: "alpha"}}
 	SetGatewayAuth(c, k)
-	RetrieveModel(db)(c)
+	RetrieveModel(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -319,8 +318,8 @@ func TestRetrieveModel_Found(t *testing.T) {
 
 func TestRetrieveModel_NotFound(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	k := createAPIKey(t, db, model.APIKeyStatusActive, nil)
-	if err := db.Model(&model.APIKey{}).Where("id = ?", k.ID).Update("allow_all_models", true).Error; err != nil {
+	k := createAPIKey(t, db, APIKeyStatusActive, nil)
+	if err := db.Model(&APIKey{}).Where("id = ?", k.ID).Update("allow_all_models", true).Error; err != nil {
 		t.Fatalf("set allow_all_models: %v", err)
 	}
 	// Sync the in-memory key: SetGatewayAuth stores this pointer directly,
@@ -330,7 +329,7 @@ func TestRetrieveModel_NotFound(t *testing.T) {
 	c, w := newModelsGetCtx("/v1/models/nope", false)
 	c.Params = gin.Params{{Key: "model", Value: "nope"}}
 	SetGatewayAuth(c, k)
-	RetrieveModel(db)(c)
+	RetrieveModel(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status=%d want 404", w.Code)
@@ -340,12 +339,12 @@ func TestRetrieveModel_NotFound(t *testing.T) {
 func TestRetrieveModel_Disabled(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	m := seedModel(t, db, "alpha", false)
-	k := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	k := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newModelsGetCtx("/v1/models/alpha", false)
 	c.Params = gin.Params{{Key: "model", Value: "alpha"}}
 	SetGatewayAuth(c, k)
-	RetrieveModel(db)(c)
+	RetrieveModel(testStoreFrom(db))(c)
 
 	// Disabled reports "does not exist" (no existence leak), matching the relay.
 	if w.Code != http.StatusNotFound {
@@ -356,12 +355,12 @@ func TestRetrieveModel_Disabled(t *testing.T) {
 func TestRetrieveModel_NotInAllowlist(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	seedModel(t, db, "alpha", true)
-	k := createAPIKey(t, db, model.APIKeyStatusActive, nil) // empty allowlist
+	k := createAPIKey(t, db, APIKeyStatusActive, nil) // empty allowlist
 
 	c, w := newModelsGetCtx("/v1/models/alpha", false)
 	c.Params = gin.Params{{Key: "model", Value: "alpha"}}
 	SetGatewayAuth(c, k)
-	RetrieveModel(db)(c)
+	RetrieveModel(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status=%d want 403", w.Code)
@@ -369,7 +368,7 @@ func TestRetrieveModel_NotInAllowlist(t *testing.T) {
 }
 
 func TestWriteModelObject(t *testing.T) {
-	m := model.Model{Name: "gpt-4o", CreatedAt: time.Unix(1700000000, 0).UTC()}
+	m := Model{Name: "gpt-4o", CreatedAt: time.Unix(1700000000, 0).UTC()}
 
 	t.Run("openai", func(t *testing.T) {
 		c, w := newModelsGetCtx("/v1/models/gpt-4o", false)
@@ -416,12 +415,12 @@ func TestWriteModelObject(t *testing.T) {
 func TestRetrieveModel_SlashNamedModelViaCatchAllParam(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	m := seedModel(t, db, "deepseek-ai/DeepSeek-V4", true)
-	k := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	k := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newModelsGetCtx("/v1/models/deepseek-ai/DeepSeek-V4", false)
 	c.Params = gin.Params{{Key: "model", Value: "/deepseek-ai/DeepSeek-V4"}}
 	SetGatewayAuth(c, k)
-	RetrieveModel(db)(c)
+	RetrieveModel(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -441,12 +440,12 @@ func TestRetrieveModel_SlashNamedModelViaCatchAllParam(t *testing.T) {
 func TestRetrieveModel_TrailingSlashResolvesModel(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	m := seedModel(t, db, "alpha", true)
-	k := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	k := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newModelsGetCtx("/v1/models/alpha/", false)
 	c.Params = gin.Params{{Key: "model", Value: "/alpha/"}}
 	SetGatewayAuth(c, k)
-	RetrieveModel(db)(c)
+	RetrieveModel(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -466,12 +465,12 @@ func TestRetrieveModel_TrailingSlashResolvesModel(t *testing.T) {
 func TestRetrieveModel_EmptyNameFallsBackToList(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	m := seedModel(t, db, "alpha", true)
-	k := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	k := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newModelsGetCtx("/v1/models/", false)
 	c.Params = gin.Params{{Key: "model", Value: "/"}}
 	SetGatewayAuth(c, k)
-	RetrieveModel(db)(c)
+	RetrieveModel(testStoreFrom(db))(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())

@@ -9,7 +9,6 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/gateway/circuit"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -44,7 +43,7 @@ func TestProviderFaultsOpenTheBreaker(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	for i := 0; i < 3; i++ {
 		c, _ := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
@@ -102,7 +101,7 @@ func TestFailedDeliveriesOpenTheBreaker(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	for i := 0; i < 3; i++ {
 		c, _ := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
@@ -148,7 +147,7 @@ func TestRateLimitsOpenTheBreakerOnlyAtDoubleThreshold(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// Twice the threshold of 2 = 4 rate-limited dispatches to open; the
 	// first three must all still be admitted (a hard-failure breaker would
@@ -200,7 +199,7 @@ func TestTripMidRotationStopsTheKeyLoop(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-2", "k2", 2, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-3", "k3", 3, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, _ := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -243,7 +242,7 @@ func TestPersistentStreamTruncationOpensTheBreaker(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	for i := 0; i < 4; i++ {
 		c, _ := newCtx([]byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
@@ -296,7 +295,7 @@ func TestRoutineNoTerminatorStreamsBookNothing(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// Far past the double threshold: every request must still dispatch.
 	for i := 0; i < 6; i++ {
@@ -360,7 +359,7 @@ func TestRoutineStreamsCloseAHalfOpenBreaker(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	send := func() {
 		c, _ := newCtx([]byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
@@ -411,7 +410,7 @@ func TestSuccessResetsTheFailureStreak(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	for i := 0; i < 6; i++ {
 		c, _ := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
@@ -466,7 +465,7 @@ func TestOpenWindowElapsesIntoAServedProbe(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	for i := 0; i < 3; i++ {
 		c, _ := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))

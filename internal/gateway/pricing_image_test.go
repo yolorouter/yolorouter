@@ -23,7 +23,7 @@ import (
 type billingRig struct {
 	svc     *Service
 	db      *gorm.DB
-	key     *model.APIKey
+	key     *APIKey
 	modelID uint
 }
 
@@ -44,14 +44,14 @@ func newBillingRig(t *testing.T, tiersJSON, dataJSON string) *billingRig {
 	m := createModelAndCandidate(t, rig.db, p, "image-model", "image-model-real", false, false, 1)
 	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	rig.modelID = m.ID
-	updates := map[string]interface{}{"billing_mode": model.BillingModeImage}
+	updates := map[string]interface{}{"billing_mode": BillingModeImage}
 	if tiersJSON != "" {
 		updates["image_pricing_tiers"] = tiersJSON
 	}
-	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).Updates(updates).Error; err != nil {
+	if err := rig.db.Model(&ModelCandidate{}).Where("model_id = ?", m.ID).Updates(updates).Error; err != nil {
 		t.Fatalf("set billing mode: %v", err)
 	}
-	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	rig.key = createAPIKey(t, rig.db, APIKeyStatusActive, []uint{m.ID})
 	return rig
 }
 
@@ -175,13 +175,13 @@ func TestImageFailedUpstreamBillsNothing(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 	m := createModelAndCandidate(t, db, p, "image-model", "image-model-real", false, false, 1)
 	setOutputModalities(t, db, m.ID, `["image"]`)
-	if err := db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
-		"billing_mode":        model.BillingModeImage,
+	if err := db.Model(&ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
+		"billing_mode":        BillingModeImage,
 		"image_pricing_tiers": `{"mode":"per_image","default_price":0.04}`,
 	}).Error; err != nil {
 		t.Fatalf("seed billing: %v", err)
 	}
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := imageRequest(`{"model":"image-model","prompt":"a fox"}`)
 	c.Set("request_id", "req-img-fail")

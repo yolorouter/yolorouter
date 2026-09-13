@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/testutil"
@@ -112,7 +111,7 @@ func newCtxDisconnectAfterBodyRead(body []byte) (*gin.Context, *httptest.Respons
 func TestHandleFindModelDBCanceledContextReturns499(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -160,7 +159,7 @@ func TestHandleFindModelDBCanceledContextReturns499(t *testing.T) {
 func TestHandleFindModelDBRealErrorStays500(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -202,9 +201,9 @@ func TestRelayCandidatesProviderKeyLoadCanceledContextReturns499(t *testing.T) {
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", "http://upstream.invalid")
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var cand model.ModelCandidate
+	var cand ModelCandidate
 	if err := db.Where("model_id = ?", m.ID).First(&cand).Error; err != nil {
 		t.Fatalf("load seeded candidate: %v", err)
 	}
@@ -234,7 +233,7 @@ func TestRelayCandidatesProviderKeyLoadCanceledContextReturns499(t *testing.T) {
 	if rej != nil {
 		t.Fatalf("Admit refused a valid body: %+v", rej)
 	}
-	svc.relayCandidates(c, rc, admitted{payload: newOrderedPayload(payload, rc.requestID)}, []model.ModelCandidate{cand}, time.Now())
+	svc.relayCandidates(c, rc, admitted{payload: newOrderedPayload(payload, rc.requestID)}, []ModelCandidate{cand}, time.Now())
 	// relayCandidates settles the exchange; Handle is what records it, so a
 	// test that calls the inner function has to do the same.
 	svc.recordTerminal(rc)

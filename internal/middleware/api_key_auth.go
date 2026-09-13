@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/gateway"
+	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
 	"github.com/yolorouter/yolorouter/internal/loopback"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
@@ -85,7 +86,7 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 			gateway.WriteIngressError(c, ingress, http.StatusUnauthorized, "authentication_error", "account disabled", requestID)
 			return
 		}
-		gateway.SetGatewayAuth(c, key)
+		gateway.SetGatewayAuth(c, osswire.APIKey(key))
 		// The plaintext credential rides along for loopback self-calls only
 		// (the gateway re-presenting the caller's identity to itself); it is
 		// never logged — the header capture is sanitized separately.

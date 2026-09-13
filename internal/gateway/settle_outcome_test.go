@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -136,7 +135,7 @@ func TestReleaseSeesTheSettledUsageAndCost(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -175,7 +174,7 @@ func TestReleaseSeesNoUsageOnARejectedExchange(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)

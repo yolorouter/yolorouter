@@ -18,7 +18,7 @@ func TestComputeCost(t *testing.T) {
 	// Candidate prices are CNY per million tokens. Cost is
 	// stored as integer micros (CNY × 1e6, i.e. 6-decimal precision).
 	// 1M input @ 1.0 + 0.5M output @ 2.0 = 1.0 + 1.0 = 2.0 CNY = 2_000_000 micros.
-	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0}
+	cand := &ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0}
 	usage := &protocols.IRUsage{PromptTokens: 1_000_000, CompletionTokens: 500_000}
 	cost := computeCost(cand, usage, 0)
 	if !cost.Known {
@@ -34,7 +34,7 @@ func TestComputeCostCacheEconomics(t *testing.T) {
 	// premium over input). 1M cache-read tokens save (3.0−0.3)=2.7 CNY;
 	// 1M cache-write tokens cost an extra (3.75−3.0)=0.75 CNY.
 	readPrice, writePrice := 0.3, 3.75
-	cand := &model.ModelCandidate{
+	cand := &ModelCandidate{
 		InputPrice:      3.0,
 		OutputPrice:     6.0,
 		CacheReadPrice:  &readPrice,
@@ -53,7 +53,7 @@ func TestComputeCostCacheEconomics(t *testing.T) {
 func TestComputeCostNoCachePriceHasNoSavings(t *testing.T) {
 	// Without configured cache prices, cache tokens bill at the input price, so
 	// there is neither a read saving nor a write premium.
-	cand := &model.ModelCandidate{InputPrice: 2.0, OutputPrice: 4.0}
+	cand := &ModelCandidate{InputPrice: 2.0, OutputPrice: 4.0}
 	usage := &protocols.IRUsage{PromptTokens: 1_000_000, CacheReadTokens: 500_000, CacheWriteTokens: 500_000}
 	cost := computeCost(cand, usage, 0)
 	if cost.CacheReadSavedMicros != 0 || cost.CacheWriteExtraMicros != 0 {
@@ -65,7 +65,7 @@ func TestComputeCostNoCachePriceHasNoSavings(t *testing.T) {
 func TestComputeCostRoundsToMicro(t *testing.T) {
 	// Micros are the smallest stored unit (CNY × 1e6). 1 token @ 1.5/M =
 	// 0.0000015 CNY = 1.5 micros -> rounds to 2 micros.
-	cand := &model.ModelCandidate{InputPrice: 1.5, OutputPrice: 0}
+	cand := &ModelCandidate{InputPrice: 1.5, OutputPrice: 0}
 	usage := &protocols.IRUsage{PromptTokens: 1, CompletionTokens: 0}
 	cost := computeCost(cand, usage, 0)
 	if !cost.Known || cost.CostMicros != 2 {
@@ -75,7 +75,7 @@ func TestComputeCostRoundsToMicro(t *testing.T) {
 
 func TestComputeCostMissingUsageIsUnknown(t *testing.T) {
 	// Missing usage must be "unknown", never 0 cost.
-	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 1.0}
+	cand := &ModelCandidate{InputPrice: 1.0, OutputPrice: 1.0}
 	if cost := computeCost(cand, nil, 0); cost.Known || cost.CostMicros != 0 {
 		t.Fatalf("expected unknown/0 for nil usage, got %d (known=%v)", cost.CostMicros, cost.Known)
 	}
@@ -95,7 +95,7 @@ func TestComputeCostMissingCandidateIsUnknown(t *testing.T) {
 func TestFinalizeWritesBodyRow(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	rc := &Exchange{
 		requestID:      "req-body-1",
@@ -151,7 +151,7 @@ func TestFinalizeWritesBodyRow(t *testing.T) {
 func TestFinalizeBodyWriteFailureDoesNotRollbackBilling(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	// Force UpsertRequestLogBody to fail without touching request_logs, so
 	// the assertion below proves the body write's failure never rolled back
@@ -196,7 +196,7 @@ func TestGenerateRequestIDUnique(t *testing.T) {
 // 1500 * 2.5 = 3750 micros (the /1e6 from per-M pricing cancels the ×1e6
 // to micros). Reported only — CostMicros itself is unaffected.
 func TestComputeCostCompressSavings(t *testing.T) {
-	cand := &model.ModelCandidate{InputPrice: 2.5, OutputPrice: 5.0}
+	cand := &ModelCandidate{InputPrice: 2.5, OutputPrice: 5.0}
 	usage := &protocols.IRUsage{PromptTokens: 100, CompletionTokens: 50}
 	cost := computeCost(cand, usage, 1500)
 	if !cost.Known {
@@ -217,7 +217,7 @@ func TestComputeCostCompressSavings(t *testing.T) {
 // must round to the nearest micro (matching the CostMicros rounding policy).
 // 1 token @ 1.5/M = 1.5 micros -> rounds to 2.
 func TestComputeCostCompressSavingsRoundingFractional(t *testing.T) {
-	cand := &model.ModelCandidate{InputPrice: 1.5, OutputPrice: 0}
+	cand := &ModelCandidate{InputPrice: 1.5, OutputPrice: 0}
 	usage := &protocols.IRUsage{PromptTokens: 1, CompletionTokens: 0}
 	cost := computeCost(cand, usage, 1)
 	if cost.CompressCostSavedMicros != 2 {
@@ -229,7 +229,7 @@ func TestComputeCostCompressSavingsRoundingFractional(t *testing.T) {
 // usage unknown), cost_saved must be 0 even if tokens_saved > 0 — matching
 // the CostKnown=false semantics so an unknown row never reports a saving.
 func TestComputeCostCompressSavingsUnknownIsZero(t *testing.T) {
-	cand := &model.ModelCandidate{InputPrice: 2.0, OutputPrice: 4.0}
+	cand := &ModelCandidate{InputPrice: 2.0, OutputPrice: 4.0}
 	if cost := computeCost(cand, nil, 1000); cost.Known || cost.CompressCostSavedMicros != 0 {
 		t.Fatalf("expected unknown/0 compress savings for nil usage, got %d (known=%v)",
 			cost.CompressCostSavedMicros, cost.Known)
@@ -247,15 +247,15 @@ func TestComputeCostCompressSavingsUnknownIsZero(t *testing.T) {
 func TestFinalizeWritesCompressColumns(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	// Cand InputPrice 2.0/M, tokensSaved 1500 -> 1500 * 2.0 = 3000 micros.
 	// the attempt state candidate is only read in-memory by computeCost (InputPrice), never
 	// persisted by finalize — so an unpersisted in-memory candidate is enough.
-	cand := &model.ModelCandidate{
+	cand := &ModelCandidate{
 		InputPrice: 2.0, OutputPrice: 4.0, MaxOutput: 128,
-		SupportsStreaming: boolPtr(true), ManagementStatus: model.ModelCandidateStatusEnabled,
-		VerificationStatus: model.ModelVerificationStatusPassed,
+		SupportsStreaming: boolPtr(true), ManagementStatus: ModelCandidateStatusEnabled,
+		VerificationStatus: ModelVerificationStatusPassed,
 	}
 	rc := &Exchange{
 		requestID: "req-compress-1",
@@ -309,7 +309,7 @@ func TestFinalizeWritesCompressColumns(t *testing.T) {
 func TestFinalizeWritesCompressSkippedColumns(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	rc := &Exchange{
 		requestID: "req-compress-skip-1",
@@ -351,7 +351,7 @@ func TestFinalizeWritesCompressSkippedColumns(t *testing.T) {
 func TestFinalizeWritesCompressColumnsUncompressed(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	rc := &Exchange{requestID: "req-nocompress-1", apiKeyID: apiKey.ID}
 	svc.finalize(rc, nil, 200, "", time.Now())
@@ -386,7 +386,7 @@ func TestFinalizeWritesCompressColumnsUncompressed(t *testing.T) {
 func TestFinalizeCompressCostSavedZeroWhenPricingUnknown(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	rc := &Exchange{
 		requestID: "req-unknown-price-1",
@@ -432,7 +432,7 @@ func TestFinalizeCompressCostSavedZeroWhenPricingUnknown(t *testing.T) {
 func TestFinalizeCompressPhantomSavingsZeroedOnPreRelayRejection(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	rc := &Exchange{
 		requestID: "req-phantom-1",
@@ -559,7 +559,7 @@ func TestNetPromptTokens(t *testing.T) {
 // TestComputeCostAcceptsContradictoryTotal for the positive case.
 func TestComputeCostRejectsIncoherentUsage(t *testing.T) {
 	readPrice := 0.02
-	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0, CacheReadPrice: &readPrice}
+	cand := &ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0, CacheReadPrice: &readPrice}
 
 	cases := []struct {
 		name  string
@@ -654,7 +654,7 @@ func TestComputeCostRejectsIncoherentUsage(t *testing.T) {
 // out of range, so an absurd unit price against a huge-but-coherent token count
 // must yield unknown rather than an arbitrary budget charge.
 func TestComputeCostGuardsMicrosOverflow(t *testing.T) {
-	cand := &model.ModelCandidate{InputPrice: 1e12, OutputPrice: 1e12}
+	cand := &ModelCandidate{InputPrice: 1e12, OutputPrice: 1e12}
 	usage := &protocols.IRUsage{PromptTokens: 1_000_000_000, CompletionTokens: 1_000_000_000, TotalTokens: 2_000_000_000}
 	got := computeCost(cand, usage, 0)
 	if got.Known {
@@ -668,7 +668,7 @@ func TestComputeCostUsesNetInputAcrossProtocols(t *testing.T) {
 	// request as gross prompt=17389 with cache_read=17152 (flag true). Both
 	// must bill identically: 237 net @ input price + 17152 @ cache_read price.
 	readPrice := 0.02
-	cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0, CacheReadPrice: &readPrice}
+	cand := &ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0, CacheReadPrice: &readPrice}
 
 	anthropic := &protocols.IRUsage{PromptTokens: 237, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: false}
 	openai := &protocols.IRUsage{PromptTokens: 17389, CompletionTokens: 10, CacheReadTokens: 17152, CacheIncludedInPrompt: true}
@@ -861,8 +861,8 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db := testutil.NewSQLiteDB(t)
 			svc := newSvc(t, db)
-			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
-			cand := &model.ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0, CacheReadPrice: &readPrice}
+			apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
+			cand := &ModelCandidate{InputPrice: 1.0, OutputPrice: 2.0, CacheReadPrice: &readPrice}
 
 			reqID := fmt.Sprintf("req-cacheconv-%d", i)
 			rc := &Exchange{requestID: reqID, apiKeyID: apiKey.ID}
@@ -892,7 +892,7 @@ func TestFinalizeNormalizesCacheExclusivePrompt(t *testing.T) {
 
 			// A billed request must reach the key's budget, or a limit set on it
 			// would never bite.
-			var updated model.APIKey
+			var updated APIKey
 			if err := db.First(&updated, apiKey.ID).Error; err != nil {
 				t.Fatalf("reload api key: %v", err)
 			}

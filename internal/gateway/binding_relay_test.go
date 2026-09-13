@@ -69,15 +69,15 @@ func newFailingUpstream(t *testing.T) *failingUpstream {
 // addCandidateToModel attaches a second (third, ...) provider's mapping to an
 // existing model — the shape balanced scheduling exists for, which the
 // createModelAndCandidate helper (one model, one candidate) cannot express.
-func addCandidateToModel(t *testing.T, db *gorm.DB, m *model.Model, provider *model.Provider, providerModelName string, order int) {
+func addCandidateToModel(t *testing.T, db *gorm.DB, m *Model, provider *Provider, providerModelName string, order int) {
 	t.Helper()
 	now := time.Now().UTC()
-	cand := &model.ModelCandidate{
+	cand := &ModelCandidate{
 		ModelID: m.ID, ProviderID: provider.ID, ProviderModelName: providerModelName,
 		InputPrice: 1.0, OutputPrice: 2.0, MaxOutput: 4096,
 		SupportsStreaming: boolPtr(false), SupportsFunctionCalling: boolPtr(false),
-		ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: order,
-		VerificationStatus: model.ModelVerificationStatusPassed,
+		ManagementStatus: ModelCandidateStatusEnabled, SortOrder: order,
+		VerificationStatus: ModelVerificationStatusPassed,
 		CreatedAt:          now, UpdatedAt: now,
 	}
 	if err := db.Create(cand).Error; err != nil {
@@ -87,7 +87,7 @@ func addCandidateToModel(t *testing.T, db *gorm.DB, m *model.Model, provider *mo
 
 func setModelSchedulingMode(t *testing.T, db *gorm.DB, modelID uint, mode model.SchedulingMode) {
 	t.Helper()
-	if err := db.Model(&model.Model{}).Where("id = ?", modelID).Update("scheduling_mode", mode).Error; err != nil {
+	if err := db.Model(&Model{}).Where("id = ?", modelID).Update("scheduling_mode", mode).Error; err != nil {
 		t.Fatalf("set scheduling mode %q: %v", mode, err)
 	}
 }
@@ -95,10 +95,10 @@ func setModelSchedulingMode(t *testing.T, db *gorm.DB, modelID uint, mode model.
 // createDistinctAPIKey is createAPIKey with a caller-chosen token, so one
 // test can hold several keys side by side (the shared helper's fixed hash
 // trips the key_hash UNIQUE constraint on the second call).
-func createDistinctAPIKey(t *testing.T, db *gorm.DB, status int, modelIDs []uint, token string) *model.APIKey {
+func createDistinctAPIKey(t *testing.T, db *gorm.DB, status int, modelIDs []uint, token string) *APIKey {
 	t.Helper()
 	now := time.Now().UTC()
-	k := &model.APIKey{
+	k := &APIKey{
 		KeyHash: ycrypto.HashToken(token), KeyPrefix: token + "------", Status: status, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(k).Error; err != nil {
@@ -112,7 +112,7 @@ func createDistinctAPIKey(t *testing.T, db *gorm.DB, status int, modelIDs []uint
 	return k
 }
 
-func relayOK(t *testing.T, svc *Service, apiKey *model.APIKey, modelName string) {
+func relayOK(t *testing.T, svc *Service, apiKey *APIKey, modelName string) {
 	t.Helper()
 	c, w := newCtx([]byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"hello"}]}`))
 	svc.Handle(c, apiKey)
@@ -134,10 +134,10 @@ func TestBalancedModelSpreadsKeysAndSticks(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, pB.ID, "sk-b", "kb", 1, true)
 	m := createModelAndCandidate(t, db, pA, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pB, "gpt-4o-real", 2)
-	setModelSchedulingMode(t, db, m.ID, model.ModelSchedulingModeBalanced)
+	setModelSchedulingMode(t, db, m.ID, model.SchedulingMode(ModelSchedulingModeBalanced))
 
-	key1 := createDistinctAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID}, "sk-balanced-key-1")
-	key2 := createDistinctAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID}, "sk-balanced-key-2")
+	key1 := createDistinctAPIKey(t, db, APIKeyStatusActive, []uint{m.ID}, "sk-balanced-key-1")
+	key2 := createDistinctAPIKey(t, db, APIKeyStatusActive, []uint{m.ID}, "sk-balanced-key-2")
 
 	relayOK(t, svc, key1, "gpt-4o")
 	a1, b1 := upA.hits.Load(), upB.hits.Load()
@@ -195,8 +195,8 @@ func TestBalancedModelReassignsWhenBoundProviderDies(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, pLive.ID, "sk-live", "kl", 1, true)
 	m := createModelAndCandidate(t, db, pDead, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pLive, "gpt-4o-real", 2)
-	setModelSchedulingMode(t, db, m.ID, model.ModelSchedulingModeBalanced)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	setModelSchedulingMode(t, db, m.ID, model.SchedulingMode(ModelSchedulingModeBalanced))
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// First request: binding lands on the chain head (the soon-to-die
 	// provider), which answers 500, opening the breaker; the chain fails
@@ -260,8 +260,8 @@ func TestFailoverModelNeverConsultsBindings(t *testing.T) {
 	m := createModelAndCandidate(t, db, pA, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pB, "gpt-4o-real", 2)
 
-	key1 := createDistinctAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID}, "sk-balanced-key-1")
-	key2 := createDistinctAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID}, "sk-balanced-key-2")
+	key1 := createDistinctAPIKey(t, db, APIKeyStatusActive, []uint{m.ID}, "sk-balanced-key-1")
+	key2 := createDistinctAPIKey(t, db, APIKeyStatusActive, []uint{m.ID}, "sk-balanced-key-2")
 	for i := 0; i < 3; i++ {
 		relayOK(t, svc, key1, "gpt-4o")
 		relayOK(t, svc, key2, "gpt-4o")
@@ -313,11 +313,11 @@ func TestBalancedReorderKeepsSkipRowAccounting(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, pB.ID, "sk-b", "kb", 1, true)
 	m := createModelAndCandidate(t, db, pA, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pB, "gpt-4o-real", 2)
-	setModelSchedulingMode(t, db, m.ID, model.ModelSchedulingModeBalanced)
+	setModelSchedulingMode(t, db, m.ID, model.SchedulingMode(ModelSchedulingModeBalanced))
 
 	// First request binds the chain head A, which answers 500 and opens its
 	// one-fault breaker; the walk fails over to B and the caller gets 200.
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 	relayOK(t, svc, key, "gpt-4o")
 	if !svc.breaker.IsOpen(pA.ID, pA.DestinationVersion) {
 		t.Fatal("breaker did not open after the configured one-fault threshold")
@@ -367,8 +367,8 @@ func TestBalancedBoundKeylessProviderMovesBinding(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, pB.ID, "sk-b", "kb", 1, true)
 	m := createModelAndCandidate(t, db, pA, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pB, "gpt-4o-real", 2)
-	setModelSchedulingMode(t, db, m.ID, model.ModelSchedulingModeBalanced)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	setModelSchedulingMode(t, db, m.ID, model.SchedulingMode(ModelSchedulingModeBalanced))
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// First request binds the chain head A and is served by it.
 	relayOK(t, svc, key, "gpt-4o")
@@ -379,8 +379,8 @@ func TestBalancedBoundKeylessProviderMovesBinding(t *testing.T) {
 	// The admin disables A's only upstream key. Candidate and provider stay
 	// enabled+verified, so the routable filter and the breaker both still
 	// treat A as a valid target.
-	if err := db.Model(&model.ProviderKey{}).Where("provider_id = ?", pA.ID).
-		Update("management_status", model.ProviderKeyStatusDisabled).Error; err != nil {
+	if err := db.Model(&ProviderKey{}).Where("provider_id = ?", pA.ID).
+		Update("management_status", ProviderKeyStatusDisabled).Error; err != nil {
 		t.Fatalf("disable A's key: %v", err)
 	}
 
@@ -419,7 +419,7 @@ func TestBalancedBoundKeylessProviderMovesBinding(t *testing.T) {
 	// window must not be fed into it either — its FIRST assignment goes
 	// straight to the serving provider, no probe burned rediscovering the
 	// dead end the first caller already proved.
-	key2 := createDistinctAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID}, "sk-balanced-keyless-2")
+	key2 := createDistinctAPIKey(t, db, APIKeyStatusActive, []uint{m.ID}, "sk-balanced-keyless-2")
 	relayOK(t, svc, key2, "gpt-4o")
 	if len(lastAttempts) != 1 || lastAttempts[0].ProviderID != pB.ID {
 		t.Fatalf("a new key was fed into the quarantined dead end, attempts: %+v", lastAttempts)
@@ -450,13 +450,13 @@ func TestBalancedRebindHappensOnTerminalAnswerToo(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, pB.ID, "sk-b", "kb", 1, true)
 	m := createModelAndCandidate(t, db, pA, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pB, "gpt-4o-real", 2)
-	setModelSchedulingMode(t, db, m.ID, model.ModelSchedulingModeBalanced)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	setModelSchedulingMode(t, db, m.ID, model.SchedulingMode(ModelSchedulingModeBalanced))
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// Bind A, then take its only key away.
 	relayOK(t, svc, key, "gpt-4o")
-	if err := db.Model(&model.ProviderKey{}).Where("provider_id = ?", pA.ID).
-		Update("management_status", model.ProviderKeyStatusDisabled).Error; err != nil {
+	if err := db.Model(&ProviderKey{}).Where("provider_id = ?", pA.ID).
+		Update("management_status", ProviderKeyStatusDisabled).Error; err != nil {
 		t.Fatalf("disable A's key: %v", err)
 	}
 
@@ -491,18 +491,18 @@ func TestBalancedWalkQuarantinesEveryDeadEnd(t *testing.T) {
 	m := createModelAndCandidate(t, db, pA, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pB, "gpt-4o-real", 2)
 	addCandidateToModel(t, db, m, pC, "gpt-4o-real", 3)
-	setModelSchedulingMode(t, db, m.ID, model.ModelSchedulingModeBalanced)
+	setModelSchedulingMode(t, db, m.ID, model.SchedulingMode(ModelSchedulingModeBalanced))
 
 	// Both A and B lose their only keys before any binding exists.
 	for _, pid := range []uint{pA.ID, pB.ID} {
-		if err := db.Model(&model.ProviderKey{}).Where("provider_id = ?", pid).
-			Update("management_status", model.ProviderKeyStatusDisabled).Error; err != nil {
+		if err := db.Model(&ProviderKey{}).Where("provider_id = ?", pid).
+			Update("management_status", ProviderKeyStatusDisabled).Error; err != nil {
 			t.Fatalf("disable keys for provider %d: %v", pid, err)
 		}
 	}
 
 	// First caller walks past both dead ends and is served by C.
-	key1 := createDistinctAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID}, "sk-balanced-deadends-1")
+	key1 := createDistinctAPIKey(t, db, APIKeyStatusActive, []uint{m.ID}, "sk-balanced-deadends-1")
 	relayOK(t, svc, key1, "gpt-4o")
 	if got := upC.hits.Load(); got != 1 {
 		t.Fatalf("healthy tail served %d requests, want 1", got)
@@ -513,7 +513,7 @@ func TestBalancedWalkQuarantinesEveryDeadEnd(t *testing.T) {
 	prevHook := testHookHandleDone
 	testHookHandleDone = func(rc *Exchange) { lastAttempts = append([]AttemptRecord(nil), rc.attempts...) }
 	defer func() { testHookHandleDone = prevHook }()
-	key2 := createDistinctAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID}, "sk-balanced-deadends-2")
+	key2 := createDistinctAPIKey(t, db, APIKeyStatusActive, []uint{m.ID}, "sk-balanced-deadends-2")
 	relayOK(t, svc, key2, "gpt-4o")
 	if len(lastAttempts) != 1 || lastAttempts[0].ProviderID != pC.ID {
 		t.Fatalf("second key should enter straight at the healthy provider, got %+v", lastAttempts)
@@ -538,13 +538,13 @@ func TestBalancedFailedWalkKeepsBinding(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, pB.ID, "sk-b", "kb", 1, true)
 	m := createModelAndCandidate(t, db, pA, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pB, "gpt-4o-real", 2)
-	setModelSchedulingMode(t, db, m.ID, model.ModelSchedulingModeBalanced)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	setModelSchedulingMode(t, db, m.ID, model.SchedulingMode(ModelSchedulingModeBalanced))
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// Bind A, then make A keyless and open B's breaker directly.
 	relayOK(t, svc, key, "gpt-4o")
-	if err := db.Model(&model.ProviderKey{}).Where("provider_id = ?", pA.ID).
-		Update("management_status", model.ProviderKeyStatusDisabled).Error; err != nil {
+	if err := db.Model(&ProviderKey{}).Where("provider_id = ?", pA.ID).
+		Update("management_status", ProviderKeyStatusDisabled).Error; err != nil {
 		t.Fatalf("disable A's key: %v", err)
 	}
 	_, gen := svc.breaker.Allow(pB.ID, pB.DestinationVersion)
@@ -590,13 +590,13 @@ func TestBalancedClientDisconnectDoesNotRebind(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, pB.ID, "sk-b", "kb", 1, true)
 	m := createModelAndCandidate(t, db, pA, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pB, "gpt-4o-real", 2)
-	setModelSchedulingMode(t, db, m.ID, model.ModelSchedulingModeBalanced)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	setModelSchedulingMode(t, db, m.ID, model.SchedulingMode(ModelSchedulingModeBalanced))
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// Bind A, then take its key away so the next walk flags the binding.
 	relayOK(t, svc, key, "gpt-4o")
-	if err := db.Model(&model.ProviderKey{}).Where("provider_id = ?", pA.ID).
-		Update("management_status", model.ProviderKeyStatusDisabled).Error; err != nil {
+	if err := db.Model(&ProviderKey{}).Where("provider_id = ?", pA.ID).
+		Update("management_status", ProviderKeyStatusDisabled).Error; err != nil {
 		t.Fatalf("disable A's key: %v", err)
 	}
 
@@ -658,8 +658,8 @@ func TestBalancedHalfOpenRefusalKeepsBinding(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, pB.ID, "sk-b", "kb", 1, true)
 	m := createModelAndCandidate(t, db, pA, "gpt-4o", "gpt-4o-real", false, false, 1)
 	addCandidateToModel(t, db, m, pB, "gpt-4o-real", 2)
-	setModelSchedulingMode(t, db, m.ID, model.ModelSchedulingModeBalanced)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	setModelSchedulingMode(t, db, m.ID, model.SchedulingMode(ModelSchedulingModeBalanced))
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// Bind A; its failure opens the one-fault breaker and B serves.
 	relayOK(t, svc, key, "gpt-4o")

@@ -17,6 +17,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/gateway"
+	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
 	"github.com/yolorouter/yolorouter/internal/handler"
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/selfupdate"
@@ -30,6 +31,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/service/requestlog"
 	"github.com/yolorouter/yolorouter/internal/service/systemsettings"
 	versionsvc "github.com/yolorouter/yolorouter/internal/service/version"
+	"github.com/yolorouter/yolorouter/internal/service/videotask"
 	"github.com/yolorouter/yolorouter/internal/version"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
@@ -482,7 +484,15 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// gateway.PostChatCompletions/Service.Handle dispatch by request
 	// path (gateway.IngressProtocol) to pick the caller's actual wire
 	// protocol.
-	relaySvc := gateway.NewService(db, secrets, allowPrivateUpstreams, settingsSvc, gatewayCfg)
+	// The kernel's ports are wired here: the Store over this deployment's
+	// repository, and the video job domain over the kernel-side poller
+	// (built on its own transport so the domain exists before the relay
+	// service does — both clients share the same transport rules).
+	store := osswire.NewStore(db)
+	pollerClient := gateway.NewUpstreamClient(allowPrivateUpstreams, gatewayCfg.HeaderTimeout, gatewayCfg.ConnectTimeout, gatewayCfg.TLSHandshakeTimeout)
+	poller := gateway.NewVideoTaskPoller(store, secrets, pollerClient)
+	videoDomain := videotask.NewService(db, osswire.QuerierAdapter{Poller: poller})
+	relaySvc := gateway.NewService(store, osswire.NewVideoTasks(videoDomain), secrets, allowPrivateUpstreams, settingsSvc, gatewayCfg)
 	// The model detail view shows per-candidate sticky-binding counts for
 	// balanced models; both sides must read the registry the relay actually
 	// routes through, so the gateway's instance is handed over rather than a
@@ -533,12 +543,12 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// read-only and bypass Service (no provider fan-out, no spend).
 	// They reuse the same APIKeyAuth + body-cap chain the relay POSTs above
 	// use, so a caller presents the same key as for a completion request.
-	v1.GET("/models", gateway.ListModels(db))
+	v1.GET("/models", gateway.ListModels(store))
 	// A catch-all (not ":model") because model ids may be slash-namespaced
 	// (deepseek-ai/DeepSeek-V4): net/http decodes "%2F" in URL.Path before
 	// gin matches, so a single-segment param can never see such a name. The
 	// handler strips the leading "/" gin includes in a catch-all value.
-	v1.GET("/models/*model", gateway.RetrieveModel(db))
+	v1.GET("/models/*model", gateway.RetrieveModel(store))
 
 	v1beta := gatewayGroup(r, "/v1beta", bodiesDir, db)
 	// :modelaction captures the whole "{model}:{action}" path segment (a

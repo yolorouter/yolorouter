@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -98,7 +97,7 @@ func TestKeyPoolRotatesFirstDispatchAcrossRequests(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "k2", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	relay := func() []string {
 		rec.reset()
@@ -155,7 +154,7 @@ func TestPreDispatchSkipDoesNotConsumeRotationTurn(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "k2", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	refusedPreDispatch := func() {
 		refuse = true
@@ -212,10 +211,10 @@ func TestStaleDestinationKeyExcludedFromRotation(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "k2", 2, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-c", "k3", 3, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// Strand key A on a destination version the provider no longer has.
-	if err := db.Model(&model.ProviderKey{}).Where("label = ?", "k1").
+	if err := db.Model(&ProviderKey{}).Where("label = ?", "k1").
 		UpdateColumn("authorized_destination_version", 999).Error; err != nil {
 		t.Fatalf("strand key A: %v", err)
 	}
@@ -261,9 +260,9 @@ func TestUndecryptableKeyExcludedFromRotation(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "k2", 2, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-c", "k3", 3, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	if err := db.Model(&model.ProviderKey{}).Where("label = ?", "k1").
+	if err := db.Model(&ProviderKey{}).Where("label = ?", "k1").
 		Update("encrypted_key", "corrupt-ciphertext").Error; err != nil {
 		t.Fatalf("corrupt key A: %v", err)
 	}
@@ -324,7 +323,7 @@ func TestRetryAfterBenchHonouredAndHeals(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "k2", 2, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-c", "k3", 3, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	firstAuth := func() string {
 		rec.reset()
@@ -387,7 +386,7 @@ func TestAllCoolingPoolStillDispatches(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "k2", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	relay := func() (int, []string) {
 		rec.reset()
@@ -432,9 +431,9 @@ func TestSuccessfulDispatchReleasesTheBench(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "k2", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var keyA model.ProviderKey
+	var keyA ProviderKey
 	if err := db.Where("label = ?", "k1").First(&keyA).Error; err != nil {
 		t.Fatalf("load key A: %v", err)
 	}
@@ -455,8 +454,8 @@ func TestSuccessfulDispatchReleasesTheBench(t *testing.T) {
 
 	// Take B out of the pool, then have A serve: the only key is benched and
 	// still dispatched, and the 2xx must release the bench.
-	if err := db.Model(&model.ProviderKey{}).Where("label = ?", "k2").
-		Update("management_status", model.ProviderKeyStatusDisabled).Error; err != nil {
+	if err := db.Model(&ProviderKey{}).Where("label = ?", "k2").
+		Update("management_status", ProviderKeyStatusDisabled).Error; err != nil {
 		t.Fatalf("disable key B: %v", err)
 	}
 	if code := relay(); code != http.StatusOK {
@@ -489,9 +488,9 @@ func TestBenchReleasedOn2xxAcceptance(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var keyA model.ProviderKey
+	var keyA ProviderKey
 	if err := db.Where("label = ?", "k1").First(&keyA).Error; err != nil {
 		t.Fatalf("load key A: %v", err)
 	}
@@ -543,9 +542,9 @@ func TestPlain429BenchBookedBeforeBodyCompletes(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var keyA model.ProviderKey
+	var keyA ProviderKey
 	if err := db.Where("label = ?", "k1").First(&keyA).Error; err != nil {
 		t.Fatalf("load key A: %v", err)
 	}
@@ -585,7 +584,7 @@ func TestInvalidationCASLostKeepsBench(t *testing.T) {
 		// Refresh the key's test generation before answering, so the
 		// invalidation CAS triggered by this quota response loses.
 		bump.Do(func() {
-			if err := db.Model(&model.ProviderKey{}).Where("label = ?", "k1").
+			if err := db.Model(&ProviderKey{}).Where("label = ?", "k1").
 				UpdateColumn("test_generation", 999).Error; err != nil {
 				t.Errorf("bump test generation: %v", err)
 			}
@@ -599,9 +598,9 @@ func TestInvalidationCASLostKeepsBench(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var keyA model.ProviderKey
+	var keyA ProviderKey
 	if err := db.Where("label = ?", "k1").First(&keyA).Error; err != nil {
 		t.Fatalf("load key A: %v", err)
 	}
@@ -614,7 +613,7 @@ func TestInvalidationCASLostKeepsBench(t *testing.T) {
 	if err := db.Where("label = ?", "k1").First(&keyA).Error; err != nil {
 		t.Fatalf("reload key A: %v", err)
 	}
-	if keyA.VerificationStatus == model.VerificationStatusFailed {
+	if keyA.VerificationStatus == VerificationStatusFailed {
 		t.Fatal("CAS was expected to lose, but the invalidation applied")
 	}
 	if !svc.keyPool.benched(keyA.ID) {
@@ -638,9 +637,9 @@ func TestQuotaExhausted429DropsExistingBench(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var keyA model.ProviderKey
+	var keyA ProviderKey
 	if err := db.Where("label = ?", "k1").First(&keyA).Error; err != nil {
 		t.Fatalf("load key A: %v", err)
 	}
@@ -654,7 +653,7 @@ func TestQuotaExhausted429DropsExistingBench(t *testing.T) {
 	if err := db.Where("label = ?", "k1").First(&keyA).Error; err != nil {
 		t.Fatalf("reload key A: %v", err)
 	}
-	if keyA.VerificationStatus != model.VerificationStatusFailed {
+	if keyA.VerificationStatus != VerificationStatusFailed {
 		t.Fatalf("key A verification_status = %d, want failed (retest path)", keyA.VerificationStatus)
 	}
 	if svc.keyPool.benched(keyA.ID) {
@@ -683,7 +682,7 @@ func TestQuotaExhausted429RemovesWithoutBenching(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "k2", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`))
 	svc.Handle(c, apiKey)
@@ -691,11 +690,11 @@ func TestQuotaExhausted429RemovesWithoutBenching(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (rotation to B); body = %s", w.Code, w.Body.String())
 	}
 
-	var keyA model.ProviderKey
+	var keyA ProviderKey
 	if err := db.Where("label = ?", "k1").First(&keyA).Error; err != nil {
 		t.Fatalf("load key A: %v", err)
 	}
-	if keyA.VerificationStatus != model.VerificationStatusFailed {
+	if keyA.VerificationStatus != VerificationStatusFailed {
 		t.Errorf("key A verification_status = %d, want failed (retest path)", keyA.VerificationStatus)
 	}
 	if svc.keyPool.benched(keyA.ID) {

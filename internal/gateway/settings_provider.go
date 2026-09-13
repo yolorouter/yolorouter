@@ -5,7 +5,6 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/settings"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
@@ -43,7 +42,7 @@ type requestSettings struct {
 // layer; it joins as the natural no-override case. Read failures are
 // logged with the request id and follow the fail-open rule documented on
 // requestSettings.
-func resolveRequestSettings(ctx context.Context, sp SettingsProvider, apiKey *model.APIKey, requestID string) requestSettings {
+func resolveRequestSettings(ctx context.Context, sp SettingsProvider, apiKey *APIKey, requestID string) requestSettings {
 	var out requestSettings
 
 	if apiKey.CompressEnabledOverride {

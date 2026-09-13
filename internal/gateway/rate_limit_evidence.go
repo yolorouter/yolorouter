@@ -23,8 +23,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // observedBenchCeiling caps how long rate-limit reset EVIDENCE can bench a
@@ -63,7 +61,7 @@ type rateLimitMeterEvidence struct {
 // are counting calls.
 func parseRateLimitHeaderEvidence(h http.Header, now time.Time) []rateLimitMeterEvidence {
 	var out []rateLimitMeterEvidence
-	for _, meter := range []string{model.MeterRequests, model.MeterTokens} {
+	for _, meter := range []string{MeterRequests, MeterTokens} {
 		ev := rateLimitMeterEvidence{Meter: meter}
 		ev.Limit = firstInt64(
 			h.Get("x-ratelimit-limit-"+meter),
@@ -97,7 +95,7 @@ func parseRateLimitHeaderEvidence(h http.Header, now time.Time) []rateLimitMeter
 		return nil
 	}
 	return []rateLimitMeterEvidence{{
-		Meter:     model.MeterRequests,
+		Meter:     MeterRequests,
 		Limit:     limit,
 		Remaining: remaining,
 		ResetAt:   resetAt,
@@ -198,7 +196,7 @@ func longestResetWindow(h http.Header, now time.Time) time.Duration {
 			longest = d
 		}
 	}
-	for _, meter := range []string{model.MeterRequests, model.MeterTokens} {
+	for _, meter := range []string{MeterRequests, MeterTokens} {
 		if d := parseGoDurationHeader(h.Get("x-ratelimit-reset-" + meter)); d > 0 {
 			consider(d)
 		}
@@ -212,7 +210,7 @@ func longestResetWindow(h http.Header, now time.Time) time.Duration {
 	// reset happened to parse), so the two paths cannot disagree about
 	// which dialect owns a mixed response.
 	meteredPresent := false
-	for _, meter := range []string{model.MeterRequests, model.MeterTokens} {
+	for _, meter := range []string{MeterRequests, MeterTokens} {
 		for _, key := range []string{
 			"x-ratelimit-limit-" + meter,
 			"x-ratelimit-remaining-" + meter,

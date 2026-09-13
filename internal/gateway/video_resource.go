@@ -18,9 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
-	"github.com/yolorouter/yolorouter/internal/repository"
 )
 
 // GetVideoResource handles GET /v1/videos/{id}: the job in the dialect's
@@ -40,7 +38,7 @@ func GetVideoResource(svc *Service) gin.HandlerFunc {
 			return
 		}
 		task, err := svc.videoTasks.Get(c.Request.Context(), apiKey.ID, c.Param("id"), time.Now())
-		if errors.Is(err, repository.ErrVideoTaskNotFound) {
+		if errors.Is(err, ErrVideoTaskNotFound) {
 			WriteIngressError(c, proto, http.StatusNotFound, errTypeInvalidRequest, "no such video job", rid)
 			return
 		}
@@ -61,7 +59,7 @@ const resultURLWindow = 24 * time.Hour
 // vocabulary is the four the SDK's strict typing accepts; the internal
 // cancelled and expired states travel as failed plus the error channel,
 // which is how the caller learns which one it was.
-func renderVideoResource(task *model.VideoTask) videos.Resource {
+func renderVideoResource(task *VideoTask) videos.Resource {
 	wire, wireErrCode := videos.MapWireStatus(task.Status)
 	res := videos.Resource{
 		ID: task.ID, Object: "video", Model: task.ModelName,
@@ -72,12 +70,12 @@ func renderVideoResource(task *model.VideoTask) videos.Resource {
 	if task.UpstreamCompletedAt != nil {
 		unix := task.UpstreamCompletedAt.Unix()
 		res.CompletedAt = &unix
-		if task.Status == model.VideoTaskCompleted {
+		if task.Status == VideoTaskCompleted {
 			expires := task.UpstreamCompletedAt.Add(resultURLWindow).Unix()
 			res.ExpiresAt = &expires
 		}
 	}
-	if task.Status == model.VideoTaskFailed || wireErrCode != "" {
+	if task.Status == VideoTaskFailed || wireErrCode != "" {
 		code := task.ErrorCode
 		if code == "" {
 			code = wireErrCode
@@ -104,7 +102,7 @@ func GetVideoContent(svc *Service) gin.HandlerFunc {
 			return
 		}
 		task, err := svc.videoTasks.Get(c.Request.Context(), apiKey.ID, c.Param("id"), time.Now())
-		if errors.Is(err, repository.ErrVideoTaskNotFound) {
+		if errors.Is(err, ErrVideoTaskNotFound) {
 			WriteIngressError(c, proto, http.StatusNotFound, errTypeInvalidRequest, "no downloadable video for this job", rid)
 			return
 		}
@@ -115,7 +113,7 @@ func GetVideoContent(svc *Service) gin.HandlerFunc {
 			WriteIngressError(c, proto, http.StatusInternalServerError, errTypeServer, "internal error", rid)
 			return
 		}
-		if task.Status != model.VideoTaskCompleted || task.ResultURL == "" {
+		if task.Status != VideoTaskCompleted || task.ResultURL == "" {
 			WriteIngressError(c, proto, http.StatusNotFound, errTypeInvalidRequest, "no downloadable video for this job", rid)
 			return
 		}

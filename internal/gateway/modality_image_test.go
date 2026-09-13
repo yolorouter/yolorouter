@@ -30,7 +30,7 @@ import (
 // modality list, the way the admin API's update would.
 func setOutputModalities(t *testing.T, db *gorm.DB, modelID uint, list string) {
 	t.Helper()
-	if err := db.Model(&model.Model{}).Where("id = ?", modelID).Update("output_modalities", list).Error; err != nil {
+	if err := db.Model(&Model{}).Where("id = ?", modelID).Update("output_modalities", list).Error; err != nil {
 		t.Fatalf("set output modalities: %v", err)
 	}
 }
@@ -42,9 +42,9 @@ func setOutputModalities(t *testing.T, db *gorm.DB, modelID uint, list string) {
 type imageRig struct {
 	svc      *Service
 	db       *gorm.DB
-	key      *model.APIKey
+	key      *APIKey
 	modelID  uint
-	provider *model.Provider
+	provider *Provider
 	hits     atomic.Int64
 	// lastPath / lastAuth / lastBody record what the upstream saw, written
 	// from the handler goroutine and read after Handle returns.
@@ -87,7 +87,7 @@ func newImageRigWith(t *testing.T, answer func(w http.ResponseWriter, r *http.Re
 	m := createModelAndCandidate(t, rig.db, p, "image-model", "image-model-real", false, false, 1)
 	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	rig.modelID = m.ID
-	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	rig.key = createAPIKey(t, rig.db, APIKeyStatusActive, []uint{m.ID})
 	return rig
 }
 
@@ -353,7 +353,7 @@ func TestImageB64ResponseIsAuditedRedacted(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 	m := createModelAndCandidate(t, db, p, "image-model", "image-model-real", false, false, 1)
 	setOutputModalities(t, db, m.ID, `["image"]`)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := imageRequest(`{"model":"image-model","prompt":"a fox","response_format":"b64_json"}`)
 	c.Set("request_id", "req-image-b64")

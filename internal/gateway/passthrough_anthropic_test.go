@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -44,7 +43,7 @@ func TestPassthroughAnthropicNonStream_UsageAndModelRewrite(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -140,7 +139,7 @@ func TestPassthroughAnthropicStream_UsageAndCleanCompletion(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -229,7 +228,7 @@ func TestPassthroughAnthropicStream_MessageStartModelRewrite(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }

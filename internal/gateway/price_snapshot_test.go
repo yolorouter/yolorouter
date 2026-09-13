@@ -31,14 +31,14 @@ func TestPriceSnapshotPersistedOnSettlement(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	if err := db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).
+	if err := db.Model(&ModelCandidate{}).Where("model_id = ?", m.ID).
 		Updates(map[string]any{
 			"input_price": 3.0, "output_price": 6.0,
 			"cache_read_price": 0.3, "cache_write_price": 3.75,
 		}).Error; err != nil {
 		t.Fatalf("set candidate prices: %v", err)
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`))
 	svc.Handle(c, apiKey)
@@ -73,7 +73,7 @@ func TestPriceSnapshotRecordsEffectiveCachePrices(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`))
 	svc.Handle(c, apiKey)
@@ -105,7 +105,7 @@ func TestPriceSnapshotAbsentWhenCostUnknown(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`))
 	svc.Handle(c, apiKey)
@@ -157,19 +157,19 @@ func TestPriceSnapshotComesFromTheAttemptThatPriced(t *testing.T) {
 
 	svc := newSvc(t, db)
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
 	seedSnapshotCandidate := func(name, baseURL string, order int, input, output float64) {
 		p := createProvider(t, db, name, baseURL)
 		createProviderKey(t, db, svc.secrets, p.ID, "sk-"+name, "k1", 1, true)
-		if err := db.Create(&model.ModelCandidate{
+		if err := db.Create(&ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: name + "-model",
 			InputPrice: input, OutputPrice: output, MaxOutput: 4096,
 			SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-			ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: order,
-			VerificationStatus: model.ModelVerificationStatusPassed,
+			ManagementStatus: ModelCandidateStatusEnabled, SortOrder: order,
+			VerificationStatus: ModelVerificationStatusPassed,
 			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %s: %v", name, err)
@@ -177,7 +177,7 @@ func TestPriceSnapshotComesFromTheAttemptThatPriced(t *testing.T) {
 	}
 	seedSnapshotCandidate("p-fails", failing.URL, 1, 100.0, 200.0)
 	seedSnapshotCandidate("p-serves", upstream.URL, 2, 3.0, 6.0)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`))
 	svc.Handle(c, apiKey)

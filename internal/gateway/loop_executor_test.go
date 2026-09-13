@@ -204,7 +204,7 @@ func TestRetrySameVerdictFallsBackToTheKernelRouting(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -265,7 +265,7 @@ func TestTerminalVerdictWithoutAStatusAnswersWithTheUpstreams(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -290,7 +290,7 @@ func TestSurfacedClientErrorKeepsItsAuditCode(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -310,7 +310,7 @@ func TestSurfacedClientErrorKeepsItsAuditCode(t *testing.T) {
 // seedTwoProvidersFirstWithTwoKeys wires one external model onto two
 // providers where the FIRST provider holds two keys — the shape that tells a
 // key rotation apart from a candidate failover.
-func seedTwoProvidersFirstWithTwoKeys(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string) *model.APIKey {
+func seedTwoProvidersFirstWithTwoKeys(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string) *APIKey {
 	t.Helper()
 	p1 := createProvider(t, db, "p1", upstreamURL)
 	createProviderKey(t, db, svc.secrets, p1.ID, "sk-1a", "k1", 1, true)
@@ -319,27 +319,27 @@ func seedTwoProvidersFirstWithTwoKeys(t *testing.T, svc *Service, db *gorm.DB, u
 	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, true)
 
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	for i, p := range []*model.Provider{p1, p2} {
+	for i, p := range []*Provider{p1, p2} {
 		name := "c1-model"
 		if i == 1 {
 			name = "c2-model"
 		}
-		if err := db.Create(&model.ModelCandidate{
+		if err := db.Create(&ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: name,
 			InputPrice: 0, OutputPrice: 0, MaxOutput: 4096,
 			SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-			ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: i + 1,
-			VerificationStatus: model.ModelVerificationStatusPassed,
+			ManagementStatus: ModelCandidateStatusEnabled, SortOrder: i + 1,
+			VerificationStatus: ModelVerificationStatusPassed,
 			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %d: %v", i, err)
 		}
 	}
-	return createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	return createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 }
 
 func strOrNil(s *string) any {

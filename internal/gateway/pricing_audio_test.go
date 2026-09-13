@@ -23,7 +23,7 @@ func audioPrice(v float64) *float64 { return &v }
 func TestAudioSettlementPricesCharacterCountsByBillingMode(t *testing.T) {
 	report := &fact.UsageReported{Unit: fact.UnitCharacter, Source: fact.UsageFromUpstream, Count: 120}
 
-	audioCand := &model.ModelCandidate{BillingMode: model.BillingModeAudio, AudioUnitPrice: audioPrice(350)}
+	audioCand := &ModelCandidate{BillingMode: BillingModeAudio, AudioUnitPrice: audioPrice(350)}
 	settled := computeSettlementCost(audioCand, report, nil, 0)
 	if !settled.Known {
 		t.Fatal("an audio-mode candidate with a price left a character report unpriced")
@@ -34,7 +34,7 @@ func TestAudioSettlementPricesCharacterCountsByBillingMode(t *testing.T) {
 		t.Errorf("micros = %d, want %d", settled.CostMicros, want)
 	}
 
-	tokenCand := &model.ModelCandidate{BillingMode: model.BillingModeToken, InputPrice: 4, OutputPrice: 4}
+	tokenCand := &ModelCandidate{BillingMode: BillingModeToken, InputPrice: 4, OutputPrice: 4}
 	if settled := computeSettlementCost(tokenCand, report, nil, 0); settled.Known {
 		t.Errorf("a character count settled as known on a token-mode candidate (micros=%d): "+
 			"pricing characters at a per-million-token rate is wrong money in a shape nobody would notice",
@@ -46,10 +46,10 @@ func TestAudioSettlementPricesCharacterCountsByBillingMode(t *testing.T) {
 }
 
 func TestComputeAudioCost(t *testing.T) {
-	base := model.ModelCandidate{BillingMode: model.BillingModeAudio, AudioUnitPrice: audioPrice(2)}
+	base := ModelCandidate{BillingMode: BillingModeAudio, AudioUnitPrice: audioPrice(2)}
 	cases := []struct {
 		name   string
-		cand   *model.ModelCandidate
+		cand   *ModelCandidate
 		rpt    *fact.UsageReported
 		want   int64
 		priced bool
@@ -57,10 +57,10 @@ func TestComputeAudioCost(t *testing.T) {
 		{"nil report", &base, nil, 0, false},
 		{"zero count", &base, &fact.UsageReported{Unit: fact.UnitCharacter, Count: 0}, 0, false},
 		{"token-unit report on audio mode", &base, &fact.UsageReported{Unit: fact.UnitToken, Count: 5}, 0, false},
-		{"unpriced candidate", &model.ModelCandidate{BillingMode: model.BillingModeAudio}, &fact.UsageReported{Unit: fact.UnitCharacter, Count: 5}, 0, false},
-		{"free is a price, not a gap", &model.ModelCandidate{BillingMode: model.BillingModeAudio, AudioUnitPrice: audioPrice(0)}, &fact.UsageReported{Unit: fact.UnitCharacter, Count: 5}, 0, true},
-		{"negative price is not billable", &model.ModelCandidate{BillingMode: model.BillingModeAudio, AudioUnitPrice: audioPrice(-1)}, &fact.UsageReported{Unit: fact.UnitCharacter, Count: 5}, 0, false},
-		{"vendor meter, not runes", &model.ModelCandidate{BillingMode: model.BillingModeAudio, AudioUnitPrice: audioPrice(200)}, &fact.UsageReported{Unit: fact.UnitCharacter, Count: 240}, 200 * 240, true},
+		{"unpriced candidate", &ModelCandidate{BillingMode: BillingModeAudio}, &fact.UsageReported{Unit: fact.UnitCharacter, Count: 5}, 0, false},
+		{"free is a price, not a gap", &ModelCandidate{BillingMode: BillingModeAudio, AudioUnitPrice: audioPrice(0)}, &fact.UsageReported{Unit: fact.UnitCharacter, Count: 5}, 0, true},
+		{"negative price is not billable", &ModelCandidate{BillingMode: BillingModeAudio, AudioUnitPrice: audioPrice(-1)}, &fact.UsageReported{Unit: fact.UnitCharacter, Count: 5}, 0, false},
+		{"vendor meter, not runes", &ModelCandidate{BillingMode: BillingModeAudio, AudioUnitPrice: audioPrice(200)}, &fact.UsageReported{Unit: fact.UnitCharacter, Count: 240}, 200 * 240, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestComputeAudioCostRoundsHalfUp(t *testing.T) {
 	// token math's convention: 1 character at CNY 1.5 per million is 1.5
 	// micros, and half-up bills it as 2.
 	got := computeAudioCost(
-		&model.ModelCandidate{BillingMode: model.BillingModeAudio, AudioUnitPrice: audioPrice(1.5)},
+		&ModelCandidate{BillingMode: BillingModeAudio, AudioUnitPrice: audioPrice(1.5)},
 		&fact.UsageReported{Unit: fact.UnitCharacter, Count: 1},
 	)
 	if !got.Known || got.CostMicros != 2 {
@@ -92,7 +92,7 @@ func TestComputeAudioCostRoundsHalfUp(t *testing.T) {
 // the micros were — the test pins both halves agreeing.
 func TestComputeAudioCostSnapshotCarriesMeterAndPrice(t *testing.T) {
 	got := computeAudioCost(
-		&model.ModelCandidate{BillingMode: model.BillingModeAudio, AudioUnitPrice: audioPrice(350)},
+		&ModelCandidate{BillingMode: BillingModeAudio, AudioUnitPrice: audioPrice(350)},
 		&fact.UsageReported{Unit: fact.UnitCharacter, Source: fact.UsageFromUpstream, Count: 240},
 	)
 	if !got.Known || got.AudioSnapshot == "" {
@@ -103,7 +103,7 @@ func TestComputeAudioCostSnapshotCarriesMeterAndPrice(t *testing.T) {
 		t.Fatalf("snapshot did not parse: %v (%s)", err, got.AudioSnapshot)
 	}
 	for key, want := range map[string]string{
-		"billing_mode": model.BillingModeAudio,
+		"billing_mode": BillingModeAudio,
 		"unit":         fact.UnitCharacter.String(),
 		"source":       fact.UsageFromUpstream.String(),
 	} {
@@ -127,7 +127,7 @@ func TestComputeAudioCostSnapshotCarriesMeterAndPrice(t *testing.T) {
 // conversion produces (the token math guards the same way).
 func TestComputeAudioCostSettlesUnknownWhenProductOverflows(t *testing.T) {
 	got := computeAudioCost(
-		&model.ModelCandidate{BillingMode: model.BillingModeAudio, AudioUnitPrice: audioPrice(1e308)},
+		&ModelCandidate{BillingMode: BillingModeAudio, AudioUnitPrice: audioPrice(1e308)},
 		&fact.UsageReported{Unit: fact.UnitCharacter, Count: 240},
 	)
 	if got.Known {
@@ -152,7 +152,7 @@ func TestComputeAudioCostPricesTheVendorMeterNotTheText(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.vendor, func(t *testing.T) {
 			got := computeAudioCost(
-				&model.ModelCandidate{BillingMode: model.BillingModeAudio, AudioUnitPrice: audioPrice(tc.price)},
+				&ModelCandidate{BillingMode: BillingModeAudio, AudioUnitPrice: audioPrice(tc.price)},
 				&fact.UsageReported{Unit: fact.UnitCharacter, Source: fact.UsageFromUpstream, Count: tc.meter},
 			)
 			if !got.Known || got.CostMicros != int64(tc.price*float64(tc.meter)+0.5) {
@@ -172,7 +172,7 @@ func TestCharacterCountDoesNotPriceAsImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal tiers: %v", err)
 	}
-	imageCand := &model.ModelCandidate{BillingMode: model.BillingModeImage, ImagePricingTiers: tiers}
+	imageCand := &ModelCandidate{BillingMode: BillingModeImage, ImagePricingTiers: tiers}
 	report := &fact.UsageReported{Unit: fact.UnitCharacter, Source: fact.UsageFromUpstream, Count: 3}
 	if settled := computeSettlementCost(imageCand, report, nil, 0); settled.Known {
 		t.Fatalf("a character count settled as known on an image-mode candidate (micros=%d)", settled.CostMicros)

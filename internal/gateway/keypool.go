@@ -26,8 +26,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // The bench a Retry-After header can buy is clamped at both ends: below the
@@ -144,7 +142,7 @@ func newKeyPool(now func() time.Time) *keyPool {
 // The input order (sort_order from the repository) is the tiebreaker within
 // each group, and a pool with fewer than two keys is returned untouched —
 // there is nothing to rotate.
-func (p *keyPool) walkOrder(providerID uint, keys []model.ProviderKey) []model.ProviderKey {
+func (p *keyPool) walkOrder(providerID uint, keys []ProviderKey) []ProviderKey {
 	// Empty comes back untouched too — before the cursor arithmetic, whose
 	// modulo would divide by zero. Today's only caller filters empties
 	// first; the method's own contract must not depend on that.
@@ -170,11 +168,11 @@ func (p *keyPool) walkOrder(providerID uint, keys []model.ProviderKey) []model.P
 	// [1,2,3] and 1 cooling, consecutive walks would start 2,2,3, serving
 	// one healthy key double traffic exactly when part of the pool is
 	// already limited.
-	ready := make([]model.ProviderKey, 0, len(keys))
+	ready := make([]ProviderKey, 0, len(keys))
 	// benched carries the expiry alongside the key so the tail can be sorted
 	// soonest-first without a second lookup per comparison.
 	type benched struct {
-		key    model.ProviderKey
+		key    ProviderKey
 		expiry time.Time
 	}
 	var tail []benched
@@ -205,7 +203,7 @@ func (p *keyPool) walkOrder(providerID uint, keys []model.ProviderKey) []model.P
 	// The cursor rotates the healthy subset only, modulo its CURRENT size —
 	// the same "survives size changes" arithmetic the whole-pool rotation
 	// uses when keys come and go.
-	order := make([]model.ProviderKey, 0, len(keys))
+	order := make([]ProviderKey, 0, len(keys))
 	if len(ready) > 0 {
 		start := int(cur % uint64(len(ready)))
 		order = append(order, ready[start:]...)

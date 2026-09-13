@@ -48,12 +48,12 @@ func boolPtr(v bool) *bool { return &v }
 // failover can recover from (attemptOne treats the upstream 4xx a missing
 // capability produces as terminal).
 func TestFilterCandidatesIgnoresCapabilityFlags(t *testing.T) {
-	candidateWith := func(streaming, functionCalling *bool) model.ModelCandidate {
-		return model.ModelCandidate{
+	candidateWith := func(streaming, functionCalling *bool) ModelCandidate {
+		return ModelCandidate{
 			ID:                      1,
-			ManagementStatus:        model.ModelCandidateStatusEnabled,
-			VerificationStatus:      model.ModelVerificationStatusPassed,
-			Provider:                &model.Provider{ManagementStatus: model.ProviderStatusEnabled},
+			ManagementStatus:        ModelCandidateStatusEnabled,
+			VerificationStatus:      ModelVerificationStatusPassed,
+			Provider:                &Provider{ManagementStatus: ProviderStatusEnabled},
 			SupportsStreaming:       streaming,
 			SupportsFunctionCalling: functionCalling,
 		}
@@ -67,7 +67,7 @@ func TestFilterCandidatesIgnoresCapabilityFlags(t *testing.T) {
 		{name: "recorded as unsupported", streaming: boolPtr(false), functions: boolPtr(false)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			routable, anyEnabled := filterCandidates([]model.ModelCandidate{candidateWith(tc.streaming, tc.functions)})
+			routable, anyEnabled := filterCandidates([]ModelCandidate{candidateWith(tc.streaming, tc.functions)})
 			if len(routable) != 1 {
 				t.Fatalf("expected the candidate to route regardless of its capability flags, got %d routable", len(routable))
 			}
@@ -83,32 +83,32 @@ func TestFilterCandidatesIgnoresCapabilityFlags(t *testing.T) {
 // repository contract: production always preloads, so nil marks a broken
 // association, and it must fail closed like a switched-off provider.
 func TestFilterCandidatesRequiresEnabledAndVerified(t *testing.T) {
-	enabledProvider := &model.Provider{ManagementStatus: model.ProviderStatusEnabled}
+	enabledProvider := &Provider{ManagementStatus: ProviderStatusEnabled}
 	for _, tc := range []struct {
 		name           string
-		provider       *model.Provider
+		provider       *Provider
 		management     int
 		verification   int
 		wantRoutable   bool
 		wantAnyEnabled bool
 	}{
-		{name: "enabled and verified", provider: enabledProvider, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusPassed, wantRoutable: true, wantAnyEnabled: true},
-		{name: "enabled but unverified", provider: enabledProvider, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusUntested, wantRoutable: false, wantAnyEnabled: true},
-		{name: "enabled but failed", provider: enabledProvider, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusFailed, wantRoutable: false, wantAnyEnabled: true},
-		{name: "disabled though verified", provider: enabledProvider, management: model.ModelCandidateStatusDisabled, verification: model.ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
+		{name: "enabled and verified", provider: enabledProvider, management: ModelCandidateStatusEnabled, verification: ModelVerificationStatusPassed, wantRoutable: true, wantAnyEnabled: true},
+		{name: "enabled but unverified", provider: enabledProvider, management: ModelCandidateStatusEnabled, verification: ModelVerificationStatusUntested, wantRoutable: false, wantAnyEnabled: true},
+		{name: "enabled but failed", provider: enabledProvider, management: ModelCandidateStatusEnabled, verification: ModelVerificationStatusFailed, wantRoutable: false, wantAnyEnabled: true},
+		{name: "disabled though verified", provider: enabledProvider, management: ModelCandidateStatusDisabled, verification: ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
 		// A switched-off provider keeps its candidates out of the chain and
 		// out of anyEnabled alike: the state is configuration an operator
 		// turned down — the "no enabled route" answer — not a route waiting
 		// on verification.
-		{name: "provider disabled though candidate on", provider: &model.Provider{ManagementStatus: model.ProviderStatusDisabled}, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
-		{name: "provider not preloaded", provider: nil, management: model.ModelCandidateStatusEnabled, verification: model.ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
+		{name: "provider disabled though candidate on", provider: &Provider{ManagementStatus: ProviderStatusDisabled}, management: ModelCandidateStatusEnabled, verification: ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
+		{name: "provider not preloaded", provider: nil, management: ModelCandidateStatusEnabled, verification: ModelVerificationStatusPassed, wantRoutable: false, wantAnyEnabled: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cand := model.ModelCandidate{
+			cand := ModelCandidate{
 				ID: 1, Provider: tc.provider,
 				ManagementStatus: tc.management, VerificationStatus: tc.verification,
 			}
-			routable, anyEnabled := filterCandidates([]model.ModelCandidate{cand})
+			routable, anyEnabled := filterCandidates([]ModelCandidate{cand})
 			if got := len(routable) == 1; got != tc.wantRoutable {
 				t.Fatalf("expected routable=%v, got %v", tc.wantRoutable, got)
 			}
@@ -163,8 +163,11 @@ func newSvc(t *testing.T, db *gorm.DB) *Service {
 func newSvcWithSettingsAndGateway(t *testing.T, db *gorm.DB, sp stubSettingsProvider, gateway config.GatewayConfig) *Service {
 	t.Helper()
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(db, ycrypto.NewSecretBox(masterKey), false, sp, gateway)
+	master := ycrypto.NewSecretBox(masterKey)
+	svc := NewService(testStoreFrom(db), nil, master, false, sp, gateway)
 	svc.client.httpClient.Transport = &http.Transport{}
+	svc.videoTasks = newTestVideoTasks(t, db, master, testStoreFrom(db), svc.client)
+	videoTasks = svc.videoTasks
 	// Mirror the assembly the router performs. A bare Service runs no
 	// capabilities at all, which is the point of the split — so a test that
 	// expects capability-driven behaviour has to wire that capability in, just
@@ -272,12 +275,12 @@ func newCtxPath(path string, body []byte) (*gin.Context, *httptest.ResponseRecor
 	return c, w
 }
 
-func createProvider(t *testing.T, db *gorm.DB, name, baseURL string) *model.Provider {
+func createProvider(t *testing.T, db *gorm.DB, name, baseURL string) *Provider {
 	t.Helper()
 	now := time.Now().UTC()
-	p := &model.Provider{
+	p := &Provider{
 		Name: name, ProviderType: "openai", BaseURL: baseURL,
-		ManagementStatus: model.ProviderStatusEnabled, DestinationVersion: 1,
+		ManagementStatus: ProviderStatusEnabled, DestinationVersion: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(p).Error; err != nil {
@@ -291,8 +294,8 @@ func createProvider(t *testing.T, db *gorm.DB, name, baseURL string) *model.Prov
 // provider's candidates out of routing (see filterCandidates).
 func disableProvider(t *testing.T, db *gorm.DB, id uint) {
 	t.Helper()
-	if err := db.Model(&model.Provider{}).Where("id = ?", id).
-		Update("management_status", model.ProviderStatusDisabled).Error; err != nil {
+	if err := db.Model(&Provider{}).Where("id = ?", id).
+		Update("management_status", ProviderStatusDisabled).Error; err != nil {
 		t.Fatalf("disable provider: %v", err)
 	}
 }
@@ -304,14 +307,14 @@ func createProviderKey(t *testing.T, db *gorm.DB, secrets ycrypto.SecretBox, pro
 	if err != nil {
 		t.Fatalf("encrypt upstream key: %v", err)
 	}
-	status := model.ProviderKeyStatusEnabled
+	status := ProviderKeyStatusEnabled
 	if !enabled {
-		status = model.ProviderKeyStatusDisabled
+		status = ProviderKeyStatusDisabled
 	}
-	pk := &model.ProviderKey{
+	pk := &ProviderKey{
 		ProviderID: providerID, Label: label, EncryptedKey: enc, KeyPrefix: plaintext,
 		SortOrder: order, TestModel: "m", ManagementStatus: status,
-		VerificationStatus:           model.VerificationStatusPassed,
+		VerificationStatus:           VerificationStatusPassed,
 		AuthorizedDestinationVersion: 1, ConfigVersion: 1, TestGeneration: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -320,19 +323,19 @@ func createProviderKey(t *testing.T, db *gorm.DB, secrets ycrypto.SecretBox, pro
 	}
 }
 
-func createModelAndCandidate(t *testing.T, db *gorm.DB, provider *model.Provider, externalName, providerModelName string, stream, fn bool, order int) *model.Model {
+func createModelAndCandidate(t *testing.T, db *gorm.DB, provider *Provider, externalName, providerModelName string, stream, fn bool, order int) *Model {
 	t.Helper()
 	now := time.Now().UTC()
-	m := &model.Model{Name: externalName, ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: externalName, ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	cand := &model.ModelCandidate{
+	cand := &ModelCandidate{
 		ModelID: m.ID, ProviderID: provider.ID, ProviderModelName: providerModelName,
 		InputPrice: 1.0, OutputPrice: 2.0, MaxOutput: 4096,
 		SupportsStreaming: boolPtr(stream), SupportsFunctionCalling: boolPtr(fn),
-		ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: order,
-		VerificationStatus: model.ModelVerificationStatusPassed,
+		ManagementStatus: ModelCandidateStatusEnabled, SortOrder: order,
+		VerificationStatus: ModelVerificationStatusPassed,
 		CreatedAt:          now, UpdatedAt: now,
 	}
 	if err := db.Create(cand).Error; err != nil {
@@ -341,10 +344,10 @@ func createModelAndCandidate(t *testing.T, db *gorm.DB, provider *model.Provider
 	return m
 }
 
-func createAPIKey(t *testing.T, db *gorm.DB, status int, modelIDs []uint) *model.APIKey {
+func createAPIKey(t *testing.T, db *gorm.DB, status int, modelIDs []uint) *APIKey {
 	t.Helper()
 	now := time.Now().UTC()
-	k := &model.APIKey{
+	k := &APIKey{
 		KeyHash: ycrypto.HashToken("sk-yr-test"), KeyPrefix: "sk-yr-test------", Status: status, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(k).Error; err != nil {
@@ -377,7 +380,7 @@ func TestRelayNonStreamSuccess(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`))
 	svc.Handle(c, apiKey)
@@ -420,7 +423,7 @@ func TestRelayNonStreamScalarStopNotRejected(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"gpt-4o","stop":"END","messages":[{"role":"user","content":"hello"}]}`)
 	c, w := newCtx(reqBody)
@@ -453,7 +456,7 @@ func TestFinalizeNonStreamCapturesBodies(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -539,7 +542,7 @@ func TestHandleSetsRequestDeadline(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-upstream-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -593,7 +596,7 @@ func TestRelayKeyRotation(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-bad", "bad", 1, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-good", "good", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -636,27 +639,27 @@ func TestRelayCandidateFailover(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, true)
 	// Both candidates back the same external model, different provider names.
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	for i, p := range []*model.Provider{p1, p2} {
+	for i, p := range []*Provider{p1, p2} {
 		name := "c1-model"
 		if i == 1 {
 			name = "c2-model"
 		}
-		if err := db.Create(&model.ModelCandidate{
+		if err := db.Create(&ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: name,
 			InputPrice: 0, OutputPrice: 0, MaxOutput: 4096,
 			SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-			ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: i + 1,
-			VerificationStatus: model.ModelVerificationStatusPassed,
+			ManagementStatus: ModelCandidateStatusEnabled, SortOrder: i + 1,
+			VerificationStatus: ModelVerificationStatusPassed,
 			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %d: %v", i, err)
 		}
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -693,7 +696,7 @@ func TestRelayClientErrorNoSwitch(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-2", "k2", 2, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -721,7 +724,7 @@ func TestRelayModelNotAllowed(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	// Key has an EMPTY allowlist — no model is permitted.
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -751,7 +754,7 @@ func TestRelayAllowAllModelsBypassesAllowlist(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	// Empty allowlist, but the key is flagged to permit any model.
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 	apiKey.AllowAllModels = true
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
@@ -779,7 +782,7 @@ func TestRelayRevokedKey(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusRevoked, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusRevoked, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -803,20 +806,20 @@ func TestHandleEarlyRejectionCapturesRequestBody(t *testing.T) {
 
 	cases := []struct {
 		name          string
-		configureKey  func(k *model.APIKey)
+		configureKey  func(k *APIKey)
 		preRejectHook func(lim *ratelimit.Limiter, apiKeyID uint)
 		wantStatus    int
 		wantRespSub   string
 	}{
 		{
 			name:         "revoked",
-			configureKey: func(k *model.APIKey) { k.Status = model.APIKeyStatusRevoked },
+			configureKey: func(k *APIKey) { k.Status = APIKeyStatusRevoked },
 			wantStatus:   http.StatusUnauthorized,
 			wantRespSub:  "API key revoked",
 		},
 		{
 			name: "expired",
-			configureKey: func(k *model.APIKey) {
+			configureKey: func(k *APIKey) {
 				past := time.Now().UTC().Add(-time.Hour)
 				k.ExpiresAt = &past
 			},
@@ -825,7 +828,7 @@ func TestHandleEarlyRejectionCapturesRequestBody(t *testing.T) {
 		},
 		{
 			name: "budget_exceeded",
-			configureKey: func(k *model.APIKey) {
+			configureKey: func(k *APIKey) {
 				limit := int64(100)
 				k.BudgetLimitMicros = &limit
 				k.BudgetSpentMicros = 100
@@ -835,7 +838,7 @@ func TestHandleEarlyRejectionCapturesRequestBody(t *testing.T) {
 		},
 		{
 			name: "concurrency_limit",
-			configureKey: func(k *model.APIKey) {
+			configureKey: func(k *APIKey) {
 				limit := 1
 				k.ConcurrencyLimit = &limit
 			},
@@ -847,7 +850,7 @@ func TestHandleEarlyRejectionCapturesRequestBody(t *testing.T) {
 		},
 		{
 			name: "rpm_exceeded",
-			configureKey: func(k *model.APIKey) {
+			configureKey: func(k *APIKey) {
 				limit := 1
 				k.RPMLimit = &limit
 			},
@@ -865,7 +868,7 @@ func TestHandleEarlyRejectionCapturesRequestBody(t *testing.T) {
 			svc := newSvc(t, db)
 			p := createProvider(t, db, "p1", "http://unused.invalid")
 			m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+			apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 			tc.configureKey(apiKey)
 			if err := db.Save(apiKey).Error; err != nil {
 				t.Fatalf("update api key: %v", err)
@@ -929,7 +932,7 @@ func TestRelayAllCandidatesFailed(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -972,8 +975,8 @@ func TestRelayBudgetExceededReturnsInsufficientQuota(t *testing.T) {
 	// Key whose budget is already fully spent (>= limit).
 	now := time.Now().UTC()
 	limit := int64(100)
-	apiKey := &model.APIKey{
-		KeyHash: ycrypto.HashToken("sk-yr-test"), KeyPrefix: "sk-yr-test------", Status: model.APIKeyStatusActive,
+	apiKey := &APIKey{
+		KeyHash: ycrypto.HashToken("sk-yr-test"), KeyPrefix: "sk-yr-test------", Status: APIKeyStatusActive,
 		BudgetLimitMicros: &limit, BudgetSpentMicros: 100,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -1025,7 +1028,7 @@ func TestRelayStreamSuccess(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -1078,7 +1081,7 @@ func TestRelayClaudeMalformedBodyRejectedBeforeCandidateLoop(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1169,7 +1172,7 @@ func TestGeminiIngressResolvesModelFromPath(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// The body deliberately carries neither "model" nor "stream" -- Gemini's
 	// wire format has no such top-level fields; both must come from the URL.
@@ -1211,7 +1214,7 @@ func TestGeminiIngressStreamActionSetsStreamFromPath(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1249,7 +1252,7 @@ func TestGeminiIngressMalformedPathRejected(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 	c, w := newCtxPath("/v1beta/models/:generateContent", reqBody)
@@ -1283,7 +1286,7 @@ func TestResponsesIngressResolvesModelAndStreamFromBody(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "responses-model", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"responses-model","input":"hi"}`)
 	c, w := newCtxPath("/v1/responses", reqBody)
@@ -1313,7 +1316,7 @@ func TestResponsesIngressMissingInputRejected(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "responses-model", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"responses-model"}`)
 	c, w := newCtxPath("/v1/responses", reqBody)
@@ -1406,7 +1409,7 @@ func TestCompressTriggersAcrossProtocols(t *testing.T) {
 			p := createProvider(t, db, "p1", upstream.URL)
 			createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 			m := createModelAndCandidate(t, db, p, tc.externalNm, tc.providerMn, true, true, 1)
-			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+			apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 			var captured *Exchange
 			testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1466,7 +1469,7 @@ func TestCompressSkipsNoLiveZone(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1508,7 +1511,7 @@ func TestCompressDisabledBySwitch(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1552,7 +1555,7 @@ func TestCompressNonChatEndpointNotCompressed(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1601,7 +1604,7 @@ func TestCompressFailOpenProceeds(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1649,7 +1652,7 @@ func TestCompressOverrideShortCircuitsGlobal(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 	apiKey.CompressEnabledOverride = true
 	apiKey.CompressEnabled = false
 
@@ -1691,7 +1694,7 @@ func TestCompressOverrideEnablesWhenGlobalOff(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 	apiKey.CompressEnabledOverride = true
 	apiKey.CompressEnabled = true
 
@@ -1738,7 +1741,7 @@ func TestCompressGlobalFailOpenOnError(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1788,7 +1791,7 @@ func TestCompressAndCSPCoexist(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1867,7 +1870,7 @@ func TestAttemptOne_StreamBodyIdleIsTerminal(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -1965,27 +1968,27 @@ func TestAttemptOne_NonStreamBodyIdleFailovers(t *testing.T) {
 	// Two candidates backing the same external model, distinguished by their
 	// provider_model_name so the test upstream can route each one.
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	for i, p := range []*model.Provider{p1, p2} {
+	for i, p := range []*Provider{p1, p2} {
 		name := "c1-model"
 		if i == 1 {
 			name = "c2-model"
 		}
-		if err := db.Create(&model.ModelCandidate{
+		if err := db.Create(&ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: name,
 			InputPrice: 0, OutputPrice: 0, MaxOutput: 4096,
 			SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-			ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: i + 1,
-			VerificationStatus: model.ModelVerificationStatusPassed,
+			ManagementStatus: ModelCandidateStatusEnabled, SortOrder: i + 1,
+			VerificationStatus: ModelVerificationStatusPassed,
 			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %d: %v", i, err)
 		}
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -2082,23 +2085,23 @@ func TestRelayCandidateLoopRespectsRequestBudget(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k2", 1, true)
 
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	for i, p := range []*model.Provider{p1, p2} {
-		if err := db.Create(&model.ModelCandidate{
+	for i, p := range []*Provider{p1, p2} {
+		if err := db.Create(&ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "c" + string(rune('1'+i)),
 			InputPrice: 0, OutputPrice: 0, MaxOutput: 4096,
 			SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-			ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: i + 1,
-			VerificationStatus: model.ModelVerificationStatusPassed,
+			ManagementStatus: ModelCandidateStatusEnabled, SortOrder: i + 1,
+			VerificationStatus: ModelVerificationStatusPassed,
 			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %d: %v", i, err)
 		}
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -2134,13 +2137,13 @@ func TestRelayCandidateLoopRespectsRequestBudget(t *testing.T) {
 // post-dispatch attempt record at once.
 func TestRecordCurrentAttemptCarriesTheStagedIdentity(t *testing.T) {
 	rc := &Exchange{}
-	cand := model.ModelCandidate{ProviderModelName: "m-upstream"}
+	cand := ModelCandidate{ProviderModelName: "m-upstream"}
 	cand.ID = 7
 	rc.attempt.BeginCandidate(&cand)
-	prov := &model.Provider{Name: "prov-a"}
+	prov := &Provider{Name: "prov-a"}
 	prov.ID = 3
 	rc.attempt.BindProvider(prov)
-	key := &model.ProviderKey{Label: "key-1"}
+	key := &ProviderKey{Label: "key-1"}
 	key.ID = 11
 	rc.attempt.BindKey(key)
 
@@ -2196,7 +2199,7 @@ func TestRelayQuotaExhausted429MarksKeyPlainRateLimitDoesNot(t *testing.T) {
 			createProviderKey(t, db, svc.secrets, p.ID, "sk-broke", "broke", 1, true)
 			createProviderKey(t, db, svc.secrets, p.ID, "sk-good", "good", 2, true)
 			m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+			apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 			c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 			svc.Handle(c, apiKey)
@@ -2204,11 +2207,11 @@ func TestRelayQuotaExhausted429MarksKeyPlainRateLimitDoesNot(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200 after rotation; body = %s", w.Code, w.Body.String())
 			}
-			var broke model.ProviderKey
+			var broke ProviderKey
 			if err := db.Where("provider_id = ? AND label = ?", p.ID, "broke").First(&broke).Error; err != nil {
 				t.Fatalf("load key: %v", err)
 			}
-			marked := broke.VerificationStatus == model.VerificationStatusFailed
+			marked := broke.VerificationStatus == VerificationStatusFailed
 			if marked != tc.wantMarked {
 				t.Fatalf("key verification_status = %d, marked=%v, want marked=%v", broke.VerificationStatus, marked, tc.wantMarked)
 			}
@@ -2228,12 +2231,12 @@ func TestRelayModelUnavailableSaysWhy(t *testing.T) {
 		providerDisabled bool
 		wantMessage      string
 	}{
-		{"all routes disabled", false, model.ModelVerificationStatusPassed, false, "model is not available: no enabled route"},
-		{"enabled but unverified", true, model.ModelVerificationStatusUntested, false, "model is not available: routes not verified yet"},
+		{"all routes disabled", false, ModelVerificationStatusPassed, false, "model is not available: no enabled route"},
+		{"enabled but unverified", true, ModelVerificationStatusUntested, false, "model is not available: routes not verified yet"},
 		// A provider switched off reads the same way as a candidate switched
 		// off: configuration an operator turned down, addressed by re-enabling
 		// — not by waiting out verification, and not an upstream outage.
-		{"all providers disabled", true, model.ModelVerificationStatusPassed, true, "model is not available: no enabled route"},
+		{"all providers disabled", true, ModelVerificationStatusPassed, true, "model is not available: no enabled route"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := testutil.NewSQLiteDB(t)
@@ -2241,18 +2244,18 @@ func TestRelayModelUnavailableSaysWhy(t *testing.T) {
 			p := createProvider(t, db, "p1", "http://127.0.0.1:0")
 			createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 			m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-			status := model.ModelCandidateStatusEnabled
+			status := ModelCandidateStatusEnabled
 			if !tc.enabled {
-				status = model.ModelCandidateStatusDisabled
+				status = ModelCandidateStatusDisabled
 			}
 			if tc.providerDisabled {
 				disableProvider(t, db, p.ID)
 			}
-			if err := db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).
+			if err := db.Model(&ModelCandidate{}).Where("model_id = ?", m.ID).
 				Updates(map[string]any{"management_status": status, "verification_status": tc.verified}).Error; err != nil {
 				t.Fatalf("shape candidate: %v", err)
 			}
-			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+			apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 			c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 			svc.Handle(c, apiKey)
@@ -2285,7 +2288,7 @@ func TestLoopbackSubCallBypassesAdmissionAndAllowlist(t *testing.T) {
 	// Empty allowlist AND a fully-exhausted concurrency slot: either alone
 	// would reject a normal caller request. The allowlist exemption is
 	// scoped to the CONFIGURED describe model, so the stub configures "eyes".
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 	limit := 1
 	apiKey.ConcurrencyLimit = &limit
 	limiterOf(t, svc).AcquireConcurrency(apiKey.ID, 1)
@@ -2300,7 +2303,7 @@ func TestLoopbackSubCallBypassesAdmissionAndAllowlist(t *testing.T) {
 	}
 	// The sub-call's own audit row is marked and linked to its parent.
 	var row model.RequestLog
-	if err := db.Where("source = ?", model.RequestLogSourceVisionFallback).First(&row).Error; err != nil {
+	if err := db.Where("source = ?", RequestLogSourceVisionFallback).First(&row).Error; err != nil {
 		t.Fatalf("no sub-call-marked request_logs row: %v", err)
 	}
 	if row.ParentRequestID != "req-parent-1" {
@@ -2321,7 +2324,7 @@ func TestForgedLoopbackTokenGetsNoBypass(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createModelAndCandidate(t, db, p, "eyes", "eyes-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil) // empty allowlist
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil) // empty allowlist
 
 	c, w := newCtx([]byte(`{"model":"eyes","messages":[{"role":"user","content":"hi"}]}`))
 	c.Request.Header.Set(loopback.HeaderInternal, "forged-value")
@@ -2374,7 +2377,7 @@ func TestVisionFallbackSurvivesSettingsRefreshError(t *testing.T) {
 	if err := db.Model(m).Update("supports_image_input", false).Error; err != nil {
 		t.Fatalf("declare blind: %v", err)
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"blind","messages":[{"role":"user","content":[` +
 		`{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}]}]}`))
@@ -2402,7 +2405,7 @@ func TestLoopbackSubCallToUnconfiguredModelStillAllowlisted(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	createModelAndCandidate(t, db, p, "other-model", "other-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil) // empty allowlist
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil) // empty allowlist
 
 	c, w := newCtx([]byte(`{"model":"other-model","messages":[{"role":"user","content":"hi"}]}`))
 	c.Request.Header.Set(loopback.HeaderInternal, loopback.Token)
@@ -2418,7 +2421,7 @@ func TestLoopbackSubCallToUnconfiguredModelStillAllowlisted(t *testing.T) {
 func TestForgedLoopbackTokenGetsNoAdmissionBypass(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 	limit := 1
 	apiKey.ConcurrencyLimit = &limit
 	limiterOf(t, svc).AcquireConcurrency(apiKey.ID, 1)
@@ -2510,7 +2513,7 @@ func TestVisionFallbackDescribesAcrossAllIngressProtocols(t *testing.T) {
 			if err := db.Model(m).Update("supports_image_input", false).Error; err != nil {
 				t.Fatalf("declare blind: %v", err)
 			}
-			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+			apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 			c, w := newCtxPath(tc.path, []byte(tc.body))
 			svc.Handle(c, apiKey)

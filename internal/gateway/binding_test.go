@@ -8,17 +8,15 @@ package gateway
 import (
 	"testing"
 	"time"
-
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
-func bindingTestChain(providerIDs ...uint) []model.ModelCandidate {
+func bindingTestChain(providerIDs ...uint) []ModelCandidate {
 	// One candidate per given provider ID, in sort_order. candidate ID =
 	// provider ID so "which candidate" and "which provider" stay
 	// distinguishable in assertions.
-	chain := make([]model.ModelCandidate, 0, len(providerIDs))
+	chain := make([]ModelCandidate, 0, len(providerIDs))
 	for i, providerID := range providerIDs {
-		chain = append(chain, model.ModelCandidate{ID: providerID, ProviderID: providerID, SortOrder: i + 1})
+		chain = append(chain, ModelCandidate{ID: providerID, ProviderID: providerID, SortOrder: i + 1})
 	}
 	return chain
 }
@@ -129,9 +127,9 @@ func TestBindingDroppedCandidateReassigns(t *testing.T) {
 	r := NewBindingRegistry(nil)
 	full := bindingTestChain(10, 11, 12)
 	first := r.Route(1, 7, full, noneDead)
-	shrunk := []model.ModelCandidate{full[0], full[1]}
+	shrunk := []ModelCandidate{full[0], full[1]}
 	if first == 10 || first == 11 {
-		shrunk = []model.ModelCandidate{full[1], full[2]}
+		shrunk = []ModelCandidate{full[1], full[2]}
 	}
 	// Reassign against a chain that no longer contains the bound candidate.
 	reassigned := r.Route(1, 7, shrunk, noneDead)

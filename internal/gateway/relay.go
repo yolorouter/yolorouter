@@ -14,17 +14,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/decision"
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/gateway/circuit"
 	"github.com/yolorouter/yolorouter/internal/loopback"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
-	"github.com/yolorouter/yolorouter/internal/repository"
-	"github.com/yolorouter/yolorouter/internal/service/videotask"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
@@ -104,7 +100,7 @@ var testHookHandleDone func(*Exchange)
 // for decrypting provider keys, an upstream HTTP client, and the in-memory
 // rate limiter.
 type Service struct {
-	db      *gorm.DB
+	store   Store
 	secrets crypto.SecretBox
 	client  *UpstreamClient
 	// settingsProvider is the read-only window into the cached global custom
@@ -145,17 +141,11 @@ type Service struct {
 	// that replace a component wholesale after construction.
 	state StateStore
 
-	// keys is where the pool's key rows come from when a non-database
-	// source is wired in; nil means the database, which keyRows
-	// supplies (state.go). The kernel loops ask keyRows, so a
-	// different key source is a constructor change, not a loop change.
-	keys keySource
-
 	// videoTasks is the video task domain: the poll-side state machine the
 	// job resource routes read through, and the store the video modality's
 	// delivery persists accepted jobs into (via the package-level
 	// videoTasks sink, which NewService points at this same service).
-	videoTasks *videotask.Service
+	videoTasks VideoTasks
 
 	// secondaryFetch is the shared client for downloading responses an upstream
 	// referred to rather than returned. Built once, on first use: a transport
@@ -215,7 +205,7 @@ type Service struct {
 // the upstream transport's TCP dial bound and its HeaderTimeout seeds the
 // ResponseHeaderTimeout, while the remaining fields are read by the
 // per-attempt timeout orchestration.
-func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp SettingsProvider, gatewayCfg config.GatewayConfig) *Service {
+func NewService(store Store, video VideoTasks, secrets crypto.SecretBox, allowPrivate bool, sp SettingsProvider, gatewayCfg config.GatewayConfig) *Service {
 	// Normalise the count budgets here rather than at every read: a config
 	// assembled without them (unit tests, older config files) means the
 	// defaults, not a request that stops before its first dispatch.
@@ -238,7 +228,7 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 		gatewayCfg.KeyRateLimitCooldown = config.DefaultKeyRateLimitCooldown
 	}
 	svc := &Service{
-		db:               db,
+		store:            store,
 		secrets:          secrets,
 		client:           NewUpstreamClient(allowPrivate, gatewayCfg.HeaderTimeout, gatewayCfg.ConnectTimeout, gatewayCfg.TLSHandshakeTimeout),
 		settingsProvider: sp,
@@ -255,12 +245,8 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 	// db/secrets/client, and the modality's delivery-side sink points at
 	// the same instance so a job persisted at submit and a job polled at
 	// GET share one state machine.
-	taskDomain := videotask.NewService(db, &videoTaskQuerier{
-		db: db, secrets: secrets,
-		client: upstreamDoer{client: svc.client},
-	})
-	svc.videoTasks = taskDomain
-	videoTasks = taskDomain
+	svc.videoTasks = video
+	videoTasks = video
 	// The speech door's budget pre-gate rides the same instance's db, and
 	// hangs off a package-level seam for the same reason videoTasks does:
 	// the modality is stateless and the door is not.
@@ -269,7 +255,7 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 	// same db/secrets/client triple, for the same reason the video
 	// poller does: one transport rule set, one key-resolution rule.
 	klingImagePoll = &klingImagePoller{
-		db: db, secrets: secrets,
+		store: store, secrets: secrets,
 		client: upstreamDoer{client: svc.client},
 	}
 	return svc
@@ -334,7 +320,7 @@ func isClientDisconnected(c *gin.Context) bool {
 // runs the full pipeline: pre-checks → model lookup → allowlist →
 // validate → candidate chain with Key rotation + failover → response rewrite
 // → log. Every exit path writes exactly one request_logs row via finalize.
-func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
+func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 	start := time.Now()
 	rc := &Exchange{
 		requestID:        requestIDFor(c),
@@ -563,7 +549,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 
 	// Step 4: model exists and is enabled. A model disabled by an admin
 	// must not route even if its candidates are still enabled.
-	m, err := repository.FindModelByName(s.db.WithContext(requestCtx), rc.originalModel)
+	m, err := s.store.FindModelByName(requestCtx, rc.originalModel)
 	if err != nil {
 		if isClientDisconnected(c) {
 			// The client hung up while this query was in flight — a
@@ -572,7 +558,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 			s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
 			return
 		}
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, ErrNotFound) {
 			s.rejectRequest(c, rc, http.StatusNotFound, errTypeNotFound, "model does not exist", "model_not_found", fact.FaultClient, start)
 			return
 		}
@@ -580,7 +566,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 		s.rejectRequest(c, rc, http.StatusInternalServerError, errTypeServer, "internal error", "db_model: "+err.Error(), fact.FaultGateway, start)
 		return
 	}
-	if m.ManagementStatus != model.ModelStatusEnabled {
+	if m.ManagementStatus != ModelStatusEnabled {
 		s.rejectRequest(c, rc, http.StatusNotFound, errTypeNotFound, "model does not exist", "model_disabled", fact.FaultClient, start)
 		return
 	}
@@ -604,7 +590,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// code checks exactly that instead of trusting the marker alone; the
 	// marker is process-token-gated on top.
 	if !apiKey.AllowAllModels && (!rc.visionFallbackSubCall || m.Name != rc.settings.VisionFallbackModel) {
-		allowed, err := repository.HasAPIKeyModelAccess(s.db.WithContext(requestCtx), apiKey.ID, m.ID)
+		allowed, err := s.store.HasAPIKeyModelAccess(requestCtx, apiKey.ID, m.ID)
 		if err != nil {
 			if isClientDisconnected(c) {
 				s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
@@ -621,7 +607,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	}
 
 	// Step 7: candidates filtered by requested capability.
-	allCandidates, err := repository.ListModelCandidatesByModelID(s.db.WithContext(requestCtx), m.ID)
+	allCandidates, err := s.store.ListModelCandidatesByModelID(requestCtx, m.ID)
 	if err != nil {
 		if isClientDisconnected(c) {
 			s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
@@ -714,8 +700,8 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 // called on each rejection (these three checks all run
 // before Handle's normal body read, so the audit row would otherwise have an
 // empty request_body).
-func (s *Service) checkKeyStateAndLimits(c *gin.Context, rc *Exchange, apiKey *model.APIKey, start time.Time) bool {
-	if apiKey.Status == model.APIKeyStatusRevoked {
+func (s *Service) checkKeyStateAndLimits(c *gin.Context, rc *Exchange, apiKey *APIKey, start time.Time) bool {
+	if apiKey.Status == APIKeyStatusRevoked {
 		captureRejectedBody(c, rc)
 		s.rejectRequest(c, rc, http.StatusUnauthorized, errTypeAuthentication, "API key revoked", "revoked", fact.FaultClient, start)
 		return false
@@ -784,7 +770,7 @@ func (s *Service) exhaustedBudget(rc *Exchange) bool {
 // candidate it loads the provider's enabled keys, decrypts them one at a
 // time, and sends the upstream request; Key rotation and candidate failover
 // decisions come back from tryKeys.
-func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, candidates []model.ModelCandidate, start time.Time) {
+func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, candidates []ModelCandidate, start time.Time) {
 	// A no-failover payload serves from the first provider or fails: every
 	// later candidate is by construction a different provider (one mapping
 	// per provider and model), and a different provider would answer with
@@ -808,7 +794,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 	// rotations inside a candidate deliberately spend nothing (the
 	// key-unusable row's call): a provider with several unusable keys must
 	// not eat the walk budget without the candidate itself being abandoned.
-	skipCandidate := func(cand model.ModelCandidate, provider *model.Provider, outcome, note string) {
+	skipCandidate := func(cand ModelCandidate, provider *Provider, outcome, note string) {
 		rc.spendBudget(decision.BudgetConsumeProbe)
 		rc.recordAttempt(cand, provider, nil, 0, outcome, note)
 	}
@@ -826,7 +812,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 	// egress verdicts) and transient errors say nothing about the
 	// provider's health, and the breaker's own refusal is the recovery path
 	// working, not a dead end.
-	skipDeadEndCandidate := func(cand model.ModelCandidate, provider *model.Provider, outcome, note string) {
+	skipDeadEndCandidate := func(cand ModelCandidate, provider *Provider, outcome, note string) {
 		skipCandidate(cand, provider, outcome, note)
 		s.st().Bindings().Quarantine(cand.ProviderID)
 		if rc.binding.candidateID != 0 && cand.ID == rc.binding.candidateID {
@@ -886,7 +872,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 			skipDeadEndCandidate(cand, nil, AttemptBadStatus, "provider missing (preload)")
 			continue
 		}
-		if provider.ManagementStatus != model.ProviderStatusEnabled {
+		if provider.ManagementStatus != ProviderStatusEnabled {
 			skipDeadEndCandidate(cand, provider, AttemptBadStatus, "provider disabled")
 			continue
 		}
@@ -1172,7 +1158,7 @@ const (
 // has been written to the client, or outcomeNextCandidate when every key on
 // this provider failed with a key-rotation error and the chain should move
 // to the next candidate (same-provider no usable key, THEN failover).
-func (s *Service) tryKeys(c *gin.Context, rc *Exchange, adm admitted, keys []model.ProviderKey, plain map[uint]string, egress *EgressDecision, outBody []byte, url string, call *UpstreamCall, start time.Time) relayOutcome {
+func (s *Service) tryKeys(c *gin.Context, rc *Exchange, adm admitted, keys []ProviderKey, plain map[uint]string, egress *EgressDecision, outBody []byte, url string, call *UpstreamCall, start time.Time) relayOutcome {
 	provider := rc.attempt.Provider()
 	// Indexed by hand because one iteration can legitimately not advance: a
 	// repaired-body retry re-enters the same key with the new body. One
@@ -1519,7 +1505,7 @@ func (s *Service) NoteKeyRetestPassed(keyID uint, configVersion int, observedAt 
 // a stuck DB so it cannot hang the goroutine indefinitely. The CAS's own
 // version guard (expectedDestinationVersion) already protects against
 // concurrent edits, so the detached context is safe.
-func (s *Service) markProviderKeyForRetest(ctx context.Context, rc *Exchange, pk *model.ProviderKey, provider *model.Provider) {
+func (s *Service) markProviderKeyForRetest(ctx context.Context, rc *Exchange, pk *ProviderKey, provider *Provider) {
 	// The invalidation's observation time, taken before the CAS: should this
 	// goroutine stall through the DB write, a retest, and fresh verdicts on
 	// the recovered key, the late dropKey below must count against the
@@ -1527,7 +1513,7 @@ func (s *Service) markProviderKeyForRetest(ctx context.Context, rc *Exchange, pk
 	observed := s.st().Keys().stamp()
 	casCtx, casCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer casCancel()
-	if applied, mErr := repository.MarkProviderKeyVerificationFailedIfCurrent(s.db.WithContext(casCtx), pk.ID, provider.DestinationVersion, pk.ConfigVersion, pk.TestGeneration, time.Now()); mErr != nil {
+	if applied, mErr := s.store.MarkProviderKeyVerificationFailedIfCurrent(casCtx, pk.ID, provider.DestinationVersion, pk.ConfigVersion, pk.TestGeneration, time.Now()); mErr != nil {
 		logger.Warn("gateway: mark provider key failed",
 			zap.Uint("key_id", pk.ID), zap.String("request_id", rc.requestID), zap.Error(mErr))
 	} else if !applied {
@@ -1553,7 +1539,7 @@ func (s *Service) markProviderKeyForRetest(ctx context.Context, rc *Exchange, pk
 // booked. It is a recorder on the failure path: a DB error logs and the
 // request proceeds untouched — the observation is telemetry for the pool
 // order and the admin surface, never a gate anything waits on.
-func (s *Service) recordRateLimitObservation(ctx context.Context, rc *Exchange, pk *model.ProviderKey, header http.Header, body []byte) {
+func (s *Service) recordRateLimitObservation(ctx context.Context, rc *Exchange, pk *ProviderKey, header http.Header, body []byte) {
 	now := time.Now().UTC()
 	evidence := parseRateLimitHeaderEvidence(header, now)
 	gemini, geminiOK := parseGeminiRateLimitBody(body)
@@ -1562,9 +1548,8 @@ func (s *Service) recordRateLimitObservation(ctx context.Context, rc *Exchange, 
 	}
 	obsCtx, obsCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer obsCancel()
-	db := s.db.WithContext(obsCtx)
 	for _, ev := range evidence {
-		if err := repository.UpsertObservedRateLimit(db, pk.ID, ev.Meter, ev.Limit, ev.WindowSecs, ev.Remaining, resetOrNull(ev.ResetAt), now); err != nil {
+		if err := s.store.UpsertObservedRateLimit(obsCtx, pk.ID, ev.Meter, ev.Limit, ev.WindowSecs, ev.Remaining, resetOrNull(ev.ResetAt), now); err != nil {
 			logger.Warn("gateway: record observed rate limit failed",
 				zap.Uint("key_id", pk.ID), zap.String("meter", ev.Meter),
 				zap.String("request_id", rc.requestID), zap.Error(err))
@@ -1578,7 +1563,7 @@ func (s *Service) recordRateLimitObservation(ctx context.Context, rc *Exchange, 
 	if geminiOK {
 		if gemini.WindowSecs > 0 {
 			window := gemini.WindowSecs
-			if err := repository.UpsertObservedRateLimit(db, pk.ID, model.MeterRequests, nil, &window, nil, nil, now); err != nil {
+			if err := s.store.UpsertObservedRateLimit(obsCtx, pk.ID, MeterRequests, nil, &window, nil, nil, now); err != nil {
 				logger.Warn("gateway: record observed rate limit window failed",
 					zap.Uint("key_id", pk.ID), zap.String("request_id", rc.requestID), zap.Error(err))
 			}
@@ -1977,7 +1962,7 @@ func (s *Service) allCandidatesFailed(c *gin.Context, rc *Exchange, start time.T
 // A zero return from Route (no bindings wired, or every provider currently
 // dead) keeps the caller's slice untouched: sort_order order, failover
 // behaviour — the degrade is "not balanced right now", never "not routed".
-func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []model.ModelCandidate) []model.ModelCandidate {
+func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []ModelCandidate) []ModelCandidate {
 	if len(candidates) < 2 {
 		// A single-candidate chain has nothing to balance; Route would bind
 		// it all the same, but the binding would only burn LRU capacity —
@@ -2008,7 +1993,7 @@ func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []model
 		if i == 0 {
 			return candidates
 		}
-		out := make([]model.ModelCandidate, 0, len(candidates))
+		out := make([]ModelCandidate, 0, len(candidates))
 		out = append(out, candidates[i])
 		out = append(out, candidates[:i]...)
 		out = append(out, candidates[i+1:]...)
@@ -2038,7 +2023,7 @@ func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []model
 // candidate on a switched-off provider counts toward neither: it is
 // configuration an operator turned down — the "no enabled route" answer — not
 // a route waiting on verification.
-func filterCandidates(all []model.ModelCandidate) (routable []model.ModelCandidate, anyEnabled bool) {
+func filterCandidates(all []ModelCandidate) (routable []ModelCandidate, anyEnabled bool) {
 	for _, c := range all {
 		// The provider gate comes first, as it does in
 		// modeladmin.CandidateBlockedBy, which also rules on the provider
@@ -2049,10 +2034,10 @@ func filterCandidates(all []model.ModelCandidate) (routable []model.ModelCandida
 		// of a live provider can spend the whole budget before the request
 		// reaches the provider that would have served it. A nil provider
 		// (broken association, a missed preload) falls to the same gate.
-		if c.Provider == nil || c.Provider.ManagementStatus != model.ProviderStatusEnabled {
+		if c.Provider == nil || c.Provider.ManagementStatus != ProviderStatusEnabled {
 			continue
 		}
-		if c.ManagementStatus != model.ModelCandidateStatusEnabled {
+		if c.ManagementStatus != ModelCandidateStatusEnabled {
 			continue
 		}
 		anyEnabled = true
@@ -2062,7 +2047,7 @@ func filterCandidates(all []model.ModelCandidate) (routable []model.ModelCandida
 		// routability check (modeladmin.CandidateBlockedBy) already rejects these, so the
 		// gateway must match that gate or it routes a mapping known to be
 		// unverified.
-		if c.VerificationStatus != model.ModelVerificationStatusPassed {
+		if c.VerificationStatus != ModelVerificationStatusPassed {
 			continue
 		}
 		routable = append(routable, c)
@@ -2074,10 +2059,10 @@ func filterCandidates(all []model.ModelCandidate) (routable []model.ModelCandida
 // verification-passed (the gateway must match ModelService's routability
 // gate). anyEnabled lets the caller distinguish "all keys disabled" from
 // "enabled but none verified" for an accurate log reason.
-func filterEnabledKeys(keys []model.ProviderKey) (out []model.ProviderKey, anyEnabled bool) {
-	out = make([]model.ProviderKey, 0, len(keys))
+func filterEnabledKeys(keys []ProviderKey) (out []ProviderKey, anyEnabled bool) {
+	out = make([]ProviderKey, 0, len(keys))
 	for _, k := range keys {
-		if k.ManagementStatus != model.ProviderKeyStatusEnabled {
+		if k.ManagementStatus != ProviderKeyStatusEnabled {
 			continue
 		}
 		anyEnabled = true
@@ -2085,7 +2070,7 @@ func filterEnabledKeys(keys []model.ProviderKey) (out []model.ProviderKey, anyEn
 		// is not Passed (never tested, or failed a retest) must not be
 		// sent to the upstream — the gateway would otherwise keep using a
 		// credential already known to be invalid.
-		if k.VerificationStatus != model.VerificationStatusPassed {
+		if k.VerificationStatus != VerificationStatusPassed {
 			continue
 		}
 		out = append(out, k)
@@ -2118,7 +2103,7 @@ func (rc *Exchange) recordCurrentAttempt(status int, outcome, failReason string)
 // per candidate in relayCandidates and set in attemptOne, so it reflects the
 // current attempt: empty for attempts that failed before any request was
 // sent.
-func (rc *Exchange) recordAttempt(cand model.ModelCandidate, provider *model.Provider, key *model.ProviderKey, status int, outcome, failReason string) {
+func (rc *Exchange) recordAttempt(cand ModelCandidate, provider *Provider, key *ProviderKey, status int, outcome, failReason string) {
 	rec := AttemptRecord{
 		CandidateID:       cand.ID,
 		ProviderModelName: cand.ProviderModelName,

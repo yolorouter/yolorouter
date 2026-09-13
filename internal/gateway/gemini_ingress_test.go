@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -41,7 +40,7 @@ func TestGeminiIngressToOpenAIUpstream_NonStream(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 	c, w := newCtxPath("/v1beta/models/gemini-2.0-flash:generateContent", reqBody)
@@ -121,7 +120,7 @@ func TestGeminiIngressToOpenAIUpstream_Stream(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 	c, w := newCtxPath("/v1beta/models/gemini-2.0-flash:streamGenerateContent", reqBody)
@@ -221,7 +220,7 @@ func TestGeminiIngressToGeminiProvider_Passthrough(t *testing.T) {
 	p := createGeminiProvider(t, db, "gemini-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-gemini-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gemini-2.0-flash-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 	c, w := newCtxPath("/v1beta/models/gemini-2.0-flash:generateContent", reqBody)
@@ -310,7 +309,7 @@ func TestGeminiIngressToGeminiProvider_PassthroughStream(t *testing.T) {
 	p := createGeminiProvider(t, db, "gemini-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-gemini-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gemini-2.0-flash-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	dir := t.TempDir()
 	var captured *Exchange
@@ -368,7 +367,7 @@ func TestGeminiIngressAllCandidatesFailed_NativeError(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 	c, w := newCtxPath("/v1beta/models/gemini-2.0-flash:generateContent", reqBody)

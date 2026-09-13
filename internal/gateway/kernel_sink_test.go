@@ -8,7 +8,6 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/decision"
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -19,8 +18,8 @@ import (
 // cannot file a kernel judgement under an empty — or someone else's — name.
 func TestReportKernelFactStampsProvenanceAndFolds(t *testing.T) {
 	rc := &Exchange{attempts: make([]AttemptRecord, 2)}
-	rc.attempt.BeginCandidate(&model.ModelCandidate{ID: 77})
-	rc.attempt.BindProvider(&model.Provider{ID: 42})
+	rc.attempt.BeginCandidate(&ModelCandidate{ID: 77})
+	rc.attempt.BindProvider(&Provider{ID: 42})
 
 	got := reportKernelFact(rc, fact.Fact{Kind: fact.KindUpstreamTransportFailure})
 
@@ -120,7 +119,7 @@ func TestSettlementNotesCarryKernelProvenance(t *testing.T) {
 		p := createProvider(t, db, "p1", upstream.URL)
 		createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 		m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-		apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+		apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 		var captured *Exchange
 		testHookHandleDone = func(rc *Exchange) { captured = rc }

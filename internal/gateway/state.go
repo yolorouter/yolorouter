@@ -5,10 +5,6 @@ import (
 	"time"
 
 	"github.com/yolorouter/yolorouter/internal/gateway/circuit"
-	"github.com/yolorouter/yolorouter/internal/model"
-	"github.com/yolorouter/yolorouter/internal/repository"
-
-	"gorm.io/gorm"
 )
 
 // BreakerState is the circuit ledger's read-write face: everything the
@@ -40,7 +36,7 @@ type BreakerState interface {
 // would justify exporting the surface, and that change belongs to the
 // moment such an implementation exists, not before.
 type KeyPoolState interface {
-	walkOrder(providerID uint, keys []model.ProviderKey) []model.ProviderKey
+	walkOrder(providerID uint, keys []ProviderKey) []ProviderKey
 	coolKey(keyID uint, cfg int, dispatchedAt time.Time, d time.Duration)
 	lengthenKeyBench(keyID uint, cfg int, dispatchedAt time.Time, d time.Duration)
 	dropKey(keyID uint, cfg int, observedAt time.Time)
@@ -58,7 +54,7 @@ type KeyPoolState interface {
 // through the seam, so an implementation behind it would owe a method
 // nobody calls.
 type BindingState interface {
-	Route(apiKeyID, modelID uint, candidates []model.ModelCandidate, providerDead func(uint) bool) uint
+	Route(apiKeyID, modelID uint, candidates []ModelCandidate, providerDead func(uint) bool) uint
 	Quarantine(providerID uint)
 	Rebind(apiKeyID, modelID, providerID, candidateID, invalidatedCandidateID uint)
 }
@@ -113,29 +109,8 @@ func (s *Service) st() StateStore {
 	return svcStateView{s: s}
 }
 
-// keySource is where the pool's key rows come from. The default reads
-// them from the database on every dispatch — always fresh, never
-// cached in the process — which is one honest implementation of the
-// seam; a deployment whose keys live somewhere else (a config file
-// loaded at startup) supplies its own without touching the pool or
-// the kernel loops.
-type keySource interface {
-	EnabledKeys(ctx context.Context, providerID uint) ([]model.ProviderKey, error)
-}
-
-// dbKeys reads key rows through the same repository call the relay
-// loop previously made inline, context handling included.
-type dbKeys struct{ db *gorm.DB }
-
-func (d dbKeys) EnabledKeys(ctx context.Context, providerID uint) ([]model.ProviderKey, error) {
-	return repository.ListProviderKeysByProvider(d.db.WithContext(ctx), providerID)
-}
-
-// keyRows is the kernel's key fetch: the installed source when one is
-// wired, the database otherwise, so a bare Service still answers.
-func (s *Service) keyRows(ctx context.Context, providerID uint) ([]model.ProviderKey, error) {
-	if s.keys != nil {
-		return s.keys.EnabledKeys(ctx, providerID)
-	}
-	return dbKeys{db: s.db}.EnabledKeys(ctx, providerID)
+// keyRows is the kernel's key fetch — straight through the Store, the
+// one place all database access lives.
+func (s *Service) keyRows(ctx context.Context, providerID uint) ([]ProviderKey, error) {
+	return s.store.ListProviderKeysByProvider(ctx, providerID)
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -72,7 +71,7 @@ func TestASlowCallerOnAForwardedStreamIsBlamedForTheirOwnTimeout(t *testing.T) {
 	p := createProvider(t, db, "p-passthrough-slow", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-passthrough-slow", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-slow", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -164,7 +163,7 @@ func TestASlowCallerOnADecodedStreamIsBlamedForTheirOwnTimeout(t *testing.T) {
 	p := createGeminiProvider(t, db, "gemini-passthrough-slow", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-gemini-slow", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash-slow", "gemini-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

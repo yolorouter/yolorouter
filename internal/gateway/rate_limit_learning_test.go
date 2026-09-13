@@ -9,7 +9,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -33,7 +32,7 @@ func benchRemainder(p *keyPool, keyID uint) time.Duration {
 // asserting pool state built during a relay.
 func keyIDForLabel(t *testing.T, db *gorm.DB, providerID uint, label string) uint {
 	t.Helper()
-	var key model.ProviderKey
+	var key ProviderKey
 	if err := db.Where("provider_id = ? AND label = ?", providerID, label).First(&key).Error; err != nil {
 		t.Fatalf("load key %q: %v", label, err)
 	}
@@ -59,7 +58,7 @@ func TestRelayLearnsObservedRateLimitsFromHeaders(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -109,7 +108,7 @@ func TestRelayBenchesLongWindowFromResetHeader(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -141,7 +140,7 @@ func TestRelayLearnsGeminiWindowAndLengthensBench(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -182,7 +181,7 @@ func TestRelayQuotaExhaustedTeachesWithoutBench(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-a", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)

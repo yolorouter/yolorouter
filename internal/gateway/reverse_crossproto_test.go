@@ -54,10 +54,10 @@ func TestMultiProtocolProvider_BothIngresses_RouteToCorrectPerProtocolUpstream(t
 
 	svc := newSvc(t, db)
 	now := time.Now().UTC()
-	p := &model.Provider{
+	p := &Provider{
 		Name: "multi-protocol-provider", ProviderType: "openai", BaseURL: openaiUpstream.URL,
 		ProtocolEndpoints: `{"anthropic":"` + claudeUpstream.URL + `"}`,
-		ManagementStatus:  model.ProviderStatusEnabled, DestinationVersion: 1,
+		ManagementStatus:  ProviderStatusEnabled, DestinationVersion: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(p).Error; err != nil {
@@ -65,7 +65,7 @@ func TestMultiProtocolProvider_BothIngresses_RouteToCorrectPerProtocolUpstream(t
 	}
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-multi-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "provider-model", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// --- OpenAI ingress: must land on the provider's primary BaseURL ---
 	openaiReqBody := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
@@ -165,7 +165,7 @@ func TestDestinationVersionBump_RevokesStaleKeyUntilReVerified(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
 
@@ -211,7 +211,7 @@ func TestDestinationVersionBump_RevokesStaleKeyUntilReVerified(t *testing.T) {
 	// Simulate re-verification: an operator (or the verification worker)
 	// re-checks the key against the provider's new configuration and bumps
 	// its authorized_destination_version to match.
-	var key model.ProviderKey
+	var key ProviderKey
 	if err := db.Where("provider_id = ?", p.ID).First(&key).Error; err != nil {
 		t.Fatalf("load provider key: %v", err)
 	}

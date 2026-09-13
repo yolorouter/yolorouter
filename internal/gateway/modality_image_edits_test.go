@@ -59,7 +59,7 @@ var editUploadPNG = func() []byte {
 type editRig struct {
 	svc      *Service
 	db       *gorm.DB
-	key      *model.APIKey
+	key      *APIKey
 	modelID  uint
 	hits     atomic.Int64
 	baseURL  string
@@ -100,7 +100,7 @@ func newEditRigWith(t *testing.T, answer func(w http.ResponseWriter, r *http.Req
 	m := createModelAndCandidate(t, rig.db, p, "image-model", "image-model-real", false, false, 1)
 	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	rig.modelID = m.ID
-	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	rig.key = createAPIKey(t, rig.db, APIKeyStatusActive, []uint{m.ID})
 	return rig
 }
 
@@ -411,8 +411,8 @@ func TestImageEditDashScopeEndToEnd(t *testing.T) {
 	t.Cleanup(func() { isDashScopeBase = prev })
 	// The dialect candidate bills per image at a default price, the way a
 	// qwen-image-edit mapping would be configured.
-	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", rig.modelID).Updates(map[string]interface{}{
-		"billing_mode":        model.BillingModeImage,
+	if err := rig.db.Model(&ModelCandidate{}).Where("model_id = ?", rig.modelID).Updates(map[string]interface{}{
+		"billing_mode":        BillingModeImage,
 		"image_pricing_tiers": `{"mode":"per_image","default_price":0.02}`,
 	}).Error; err != nil {
 		t.Fatalf("seed billing: %v", err)

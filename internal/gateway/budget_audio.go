@@ -14,9 +14,6 @@ import (
 	"fmt"
 
 	"gorm.io/gorm"
-
-	"github.com/yolorouter/yolorouter/internal/model"
-	"github.com/yolorouter/yolorouter/internal/repository"
 )
 
 // audioBudgetExceededError is the certain refusal the pre-gate answers with.
@@ -43,7 +40,7 @@ var audioBudgetPrecheck func(ctx context.Context, apiKeyID uint, modelName, inpu
 // advisory: the authoritative accounting runs at settle, where the routed
 // candidate's own price and meter decide.
 func (s *Service) precheckAudioBudget(ctx context.Context, apiKeyID uint, modelName, input string) error {
-	m, err := repository.FindModelByName(s.db.WithContext(ctx), modelName)
+	m, err := s.store.FindModelByName(ctx, modelName)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Routing will answer a name it cannot resolve; a precheck
@@ -53,7 +50,7 @@ func (s *Service) precheckAudioBudget(ctx context.Context, apiKeyID uint, modelN
 		}
 		return err
 	}
-	cands, err := repository.ListModelCandidatesByModelID(s.db.WithContext(ctx), m.ID)
+	cands, err := s.store.ListModelCandidatesByModelID(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -65,10 +62,10 @@ func (s *Service) precheckAudioBudget(ctx context.Context, apiKeyID uint, modelN
 	unpricedEnabled := false
 	for i := range cands {
 		cand := &cands[i]
-		if cand.ManagementStatus != model.ModelCandidateStatusEnabled {
+		if cand.ManagementStatus != ModelCandidateStatusEnabled {
 			continue
 		}
-		if model.NormalizeBillingMode(cand.BillingMode) != model.BillingModeAudio {
+		if NormalizeBillingMode(cand.BillingMode) != BillingModeAudio {
 			continue
 		}
 		if cand.AudioUnitPrice == nil {
@@ -89,7 +86,7 @@ func (s *Service) precheckAudioBudget(ctx context.Context, apiKeyID uint, modelN
 	if minAsk < 0 || unpricedEnabled {
 		return nil
 	}
-	key, err := repository.FindAPIKeyByID(s.db.WithContext(ctx), apiKeyID)
+	key, err := s.store.FindAPIKeyByID(ctx, apiKeyID)
 	if err != nil {
 		return err
 	}

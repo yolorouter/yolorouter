@@ -11,7 +11,6 @@ import (
 	"math"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 )
 
@@ -47,12 +46,12 @@ type imagePricingSnapshot struct {
 // a shape nobody would notice — the count and a token count are the same
 // integer by then. Such a report settles as unknown instead; the mismatch
 // is a wiring bug, and unknown is the honest bill for one.
-func computeSettlementCost(cand *model.ModelCandidate, report *fact.UsageReported, usage *protocols.IRUsage, compressSaved int) costBreakdown {
+func computeSettlementCost(cand *ModelCandidate, report *fact.UsageReported, usage *protocols.IRUsage, compressSaved int) costBreakdown {
 	if cand != nil {
 		switch cand.BillingMode {
-		case model.BillingModeImage:
+		case BillingModeImage:
 			return computeImageCost(cand, report)
-		case model.BillingModeAudio:
+		case BillingModeAudio:
 			return computeAudioCost(cand, report)
 		}
 	}
@@ -71,11 +70,11 @@ func computeSettlementCost(cand *model.ModelCandidate, report *fact.UsageReporte
 // be fed the first. A report that is not counting images is the same class
 // of wiring bug the dispatch's character guard exists for: its count would
 // price as images here without a unit check, silently.
-func computeImageCost(cand *model.ModelCandidate, report *fact.UsageReported) costBreakdown {
+func computeImageCost(cand *ModelCandidate, report *fact.UsageReported) costBreakdown {
 	if cand == nil || report == nil || report.Unit != fact.UnitImage || report.Count <= 0 {
 		return costBreakdown{}
 	}
-	tiers := model.ParseImagePricingTiers(cand.ImagePricingTiers)
+	tiers := ParseImagePricingTiers(cand.ImagePricingTiers)
 	if tiers == nil {
 		return costBreakdown{}
 	}
@@ -88,7 +87,7 @@ func computeImageCost(cand *model.ModelCandidate, report *fact.UsageReported) co
 		return costBreakdown{}
 	}
 	snap := imagePricingSnapshot{
-		BillingMode:    model.BillingModeImage,
+		BillingMode:    BillingModeImage,
 		RequestQuality: report.Quality,
 		RequestSize:    report.Size,
 		RequestN:       report.Requested,

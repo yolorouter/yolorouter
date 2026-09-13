@@ -3,21 +3,19 @@ package gateway
 import (
 	"testing"
 	"time"
-
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // keysWith builds a sort-ordered pool from IDs, and idsOf flattens one back,
 // so order assertions read as the sequence of key IDs a walk would dispatch.
-func keysWith(ids ...uint) []model.ProviderKey {
-	out := make([]model.ProviderKey, len(ids))
+func keysWith(ids ...uint) []ProviderKey {
+	out := make([]ProviderKey, len(ids))
 	for i, id := range ids {
-		out[i] = model.ProviderKey{ID: id}
+		out[i] = ProviderKey{ID: id}
 	}
 	return out
 }
 
-func idsOf(keys []model.ProviderKey) []uint {
+func idsOf(keys []ProviderKey) []uint {
 	out := make([]uint, len(keys))
 	for i, k := range keys {
 		out[i] = k.ID
@@ -25,7 +23,7 @@ func idsOf(keys []model.ProviderKey) []uint {
 	return out
 }
 
-func assertIDs(t *testing.T, got []model.ProviderKey, want ...uint) {
+func assertIDs(t *testing.T, got []ProviderKey, want ...uint) {
 	t.Helper()
 	gotIDs := idsOf(got)
 	if len(gotIDs) != len(want) {
@@ -256,7 +254,7 @@ func TestDropKeyOlderGenerationCannotRelease(t *testing.T) {
 	p, _ := fakePool(t)
 	p.coolKey(1, 1, p.stamp(), time.Hour)
 	p.dropKey(1, 0, p.stamp())
-	keys := []model.ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
+	keys := []ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
 	assertIDs(t, p.walkOrder(7, keys), 2, 1)
 }
 
@@ -296,7 +294,7 @@ func TestCoolKeyRecoveryWatermarkIsGenerationScoped(t *testing.T) {
 	p, _ := fakePool(t)
 	p.clearKey(1, 0, time.Unix(5, 0))           // old-secret success, dispatched t=5
 	p.coolKey(1, 1, time.Unix(3, 0), time.Hour) // new credential's 429, dispatched t=3
-	keys := []model.ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
+	keys := []ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
 	assertIDs(t, p.walkOrder(7, keys), 2, 1) // the 429 benched the new credential
 }
 
@@ -307,7 +305,7 @@ func TestCoolKeyInvalidationWatermarkIsGenerationScoped(t *testing.T) {
 	advance(5 * time.Second)
 	p.dropKey(1, 0, p.stamp())                  // old-secret invalidation at t=5
 	p.coolKey(1, 1, time.Unix(3, 0), time.Hour) // new credential's 429, dispatched t=3
-	keys := []model.ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
+	keys := []ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
 	assertIDs(t, p.walkOrder(7, keys), 2, 1)
 }
 
@@ -319,7 +317,7 @@ func TestClearKeyOlderGenerationCannotRegressWatermark(t *testing.T) {
 	p.clearKey(1, 1, time.Unix(10, 0))          // replacement's success, dispatched t=10
 	p.clearKey(1, 0, time.Unix(20, 0))          // late old-secret success, dispatched t=20
 	p.coolKey(1, 1, time.Unix(9, 0), time.Hour) // stale replacement 429, dispatched t=9
-	keys := []model.ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
+	keys := []ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
 	assertIDs(t, p.walkOrder(7, keys), 1, 2) // still refused by the replacement's watermark
 }
 
@@ -367,7 +365,7 @@ func TestNewerGenerationResetsRecord(t *testing.T) {
 	// any old-generation fact carried over — the recovery mark at t=100
 	// most of all — it would refuse this bench.
 	p.coolKey(1, 1, p.stamp(), time.Hour)
-	keys := []model.ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
+	keys := []ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
 	assertIDs(t, p.walkOrder(7, keys), 2, 1) // benched: nothing leaked across
 }
 
@@ -381,7 +379,7 @@ func TestNewerGenerationResetsRecord(t *testing.T) {
 func TestWalkOrderStaleGenerationBenchPruned(t *testing.T) {
 	p, _ := fakePool(t)
 	p.coolKey(1, 0, p.stamp(), time.Hour) // benched as generation 0
-	keys := []model.ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
+	keys := []ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
 	assertIDs(t, p.walkOrder(7, keys), 1, 2)
 	if p.states[1].benched() {
 		t.Fatalf("stale-generation bench not pruned: %+v", p.states[1])
@@ -432,7 +430,7 @@ func TestRetestProofObservedBeforeFreshBenchCannotRelease(t *testing.T) {
 func TestWalkOrderStaleWalkCannotPruneNewerBench(t *testing.T) {
 	p, _ := fakePool(t)
 	p.coolKey(1, 1, p.stamp(), time.Hour) // the replacement's own bench
-	stale := []model.ProviderKey{{ID: 1, ConfigVersion: 0}, {ID: 2}}
+	stale := []ProviderKey{{ID: 1, ConfigVersion: 0}, {ID: 2}}
 	assertIDs(t, p.walkOrder(7, stale), 1, 2) // the bench cannot speak for the old key
 	if !p.states[1].benched() {
 		t.Fatal("a stale-generation walk pruned the newer credential's bench")
@@ -446,7 +444,7 @@ func TestCoolKeyOlderGenerationCannotOverwrite(t *testing.T) {
 	p, _ := fakePool(t)
 	p.coolKey(1, 1, p.stamp(), time.Hour)   // the replacement's own bench
 	p.coolKey(1, 0, p.stamp(), time.Minute) // late verdict about the old secret
-	keys := []model.ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
+	keys := []ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
 	assertIDs(t, p.walkOrder(7, keys), 2, 1) // replacement's bench intact
 }
 
@@ -456,7 +454,7 @@ func TestClearKeyOlderGenerationCannotRelease(t *testing.T) {
 	p, _ := fakePool(t)
 	p.coolKey(1, 1, p.stamp(), time.Hour)
 	p.clearKey(1, 0, time.Unix(10, 0)) // late success from the old secret
-	keys := []model.ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
+	keys := []ProviderKey{{ID: 1, ConfigVersion: 1}, {ID: 2}}
 	assertIDs(t, p.walkOrder(7, keys), 2, 1)
 }
 

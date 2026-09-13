@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/yolorouter/yolorouter/internal/gateway/circuit"
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // Benchmarks for the state seam: the three state hot paths, each
@@ -15,18 +14,18 @@ import (
 // are the same, so the delta is the seam's price (view construction
 // plus interface dispatch) and nothing else.
 
-func benchKeys(n int) []model.ProviderKey {
-	keys := make([]model.ProviderKey, 0, n)
+func benchKeys(n int) []ProviderKey {
+	keys := make([]ProviderKey, 0, n)
 	for i := 1; i <= n; i++ {
-		keys = append(keys, model.ProviderKey{ID: uint(i), ProviderID: 7, SortOrder: i})
+		keys = append(keys, ProviderKey{ID: uint(i), ProviderID: 7, SortOrder: i})
 	}
 	return keys
 }
 
-func benchCandidates(n int) []model.ModelCandidate {
-	cands := make([]model.ModelCandidate, 0, n)
+func benchCandidates(n int) []ModelCandidate {
+	cands := make([]ModelCandidate, 0, n)
 	for i := 1; i <= n; i++ {
-		cands = append(cands, model.ModelCandidate{ID: uint(i), ProviderID: uint(i), SortOrder: i})
+		cands = append(cands, ModelCandidate{ID: uint(i), ProviderID: uint(i), SortOrder: i})
 	}
 	return cands
 }

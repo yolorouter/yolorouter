@@ -68,7 +68,7 @@ linters:
           allow:
             - $gostd
             - "github.com/yolorouter/yolorouter/internal/decision"
-            - "github.com/yolorouter/yolorouter/internal/model"
+            - "github.com/yolorouter/yolorouter/internal/gateway/rows"
             - "github.com/yolorouter/yolorouter/internal/gateway/attempt"
         # capture owns the audit-record bytes and the stream capture file, and
         # nothing else: an import beyond the standard library would let the

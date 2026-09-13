@@ -136,7 +136,7 @@ func withWiringModality(t *testing.T, m *wiringModality) {
 // newWiringRig stands up the dispatch fixture: a database, a fake upstream
 // serving whatever the test's handler says, a provider pointed at it, a
 // routable model, and a caller key allowed to reach that model.
-func newWiringRig(t *testing.T, upstream http.HandlerFunc) (*Service, *model.APIKey) {
+func newWiringRig(t *testing.T, upstream http.HandlerFunc) (*Service, *APIKey) {
 	t.Helper()
 	db := testutil.NewSQLiteDB(t)
 	up := httptest.NewServer(upstream)
@@ -145,7 +145,7 @@ func newWiringRig(t *testing.T, upstream http.HandlerFunc) (*Service, *model.API
 	p := createProvider(t, db, "wiring-provider", up.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-wiring-up", "wiring-key", 1, true)
 	mdl := createModelAndCandidate(t, db, p, "wiring-model", "wiring-real", false, false, 1)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{mdl.ID})
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{mdl.ID})
 	return svc, key
 }
 
@@ -231,7 +231,7 @@ func TestLogPolicyDropsEveryBodyItDoesNotAdmit(t *testing.T) {
 	p := createProvider(t, db, "wiring-provider", up.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-wiring-up", "wiring-key", 1, true)
 	mdl := createModelAndCandidate(t, db, p, "wiring-model", "wiring-real", false, false, 1)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{mdl.ID})
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{mdl.ID})
 
 	// The zero policy keeps nothing — deliberately the safe default a
 	// modality that forgot to answer gets.
@@ -318,7 +318,7 @@ func TestLogPolicyRendersAndCapsWhatItAdmits(t *testing.T) {
 	p := createProvider(t, db, "wiring-provider", up.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-wiring-up", "wiring-key", 1, true)
 	mdl := createModelAndCandidate(t, db, p, "wiring-model", "wiring-real", false, false, 1)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{mdl.ID})
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{mdl.ID})
 
 	// Everything stored rendered, capped at 16 bytes — the form a modality
 	// whose bodies must not be stored as they arrived asks for.

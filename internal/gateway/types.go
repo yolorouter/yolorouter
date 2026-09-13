@@ -20,7 +20,6 @@ import (
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/gateway/attempt"
 	"github.com/yolorouter/yolorouter/internal/gateway/capture"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 )
 
@@ -385,7 +384,7 @@ func (rc *Exchange) IsVisionFallbackSubCall() bool { return rc.visionFallbackSub
 // loopback sub-call).
 func (rc *Exchange) CallSource() string {
 	if rc.visionFallbackSubCall {
-		return model.RequestLogSourceVisionFallback
+		return RequestLogSourceVisionFallback
 	}
 	return ""
 }

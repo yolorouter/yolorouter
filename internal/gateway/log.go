@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -12,9 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
-	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -186,7 +185,7 @@ func compressTokensSaved(t fact.Timeline) int {
 // rate so the saving is reported on the same basis as the billed cost. It is
 // forced to 0 whenever usage/pricing is unknown, matching CostKnown=false.
 // Candidate prices are CNY per million tokens.
-func computeCost(cand *model.ModelCandidate, usage *protocols.IRUsage, compressTokensSaved int) costBreakdown {
+func computeCost(cand *ModelCandidate, usage *protocols.IRUsage, compressTokensSaved int) costBreakdown {
 	if cand == nil || !usageIsCoherent(usage) {
 		return costBreakdown{} // Known=false: no cost recorded, no budget consumed
 	}
@@ -339,7 +338,7 @@ func (s *Service) finalize(rc *Exchange, report *fact.UsageReported, statusCode 
 	// is not an audit concern, and a deployment that swapped out its audit trail
 	// must not be able to stop collecting money by accident.
 	if cost.Known && cost.CostMicros > 0 {
-		if err := repository.IncrementAPIKeyBudgetSpent(s.db, rc.apiKeyID, cost.CostMicros); err != nil {
+		if err := s.store.IncrementAPIKeyBudgetSpent(context.Background(), rc.apiKeyID, cost.CostMicros); err != nil {
 			logger.Error("gateway: increment budget spent failed",
 				zap.String("request_id", rc.requestID), zap.Error(err))
 		}

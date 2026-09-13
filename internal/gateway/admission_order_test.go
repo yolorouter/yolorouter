@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -24,7 +23,7 @@ import (
 func TestAMalformedRequestIsRefusedBeforeItsModelIsLookedUp(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, nil)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, nil)
 
 	// Both wrong at once: no model by this name exists, and an empty message
 	// list is a body no OpenAI-shaped request may have.

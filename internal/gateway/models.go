@@ -19,11 +19,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
-	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
 
@@ -35,12 +32,12 @@ const ownedByTag = "yolorouter"
 // gatewayAPIKeyFromContext reads the APIKey APIKeyAuth stored on the context.
 // Same lookup PostChatCompletions inlines; extracted so both discovery
 // handlers share one read site.
-func gatewayAPIKeyFromContext(c *gin.Context) (*model.APIKey, bool) {
+func gatewayAPIKeyFromContext(c *gin.Context) (*APIKey, bool) {
 	v, ok := c.Get(gatewayAPIKeyKey)
 	if !ok {
 		return nil, false
 	}
-	k, ok := v.(*model.APIKey)
+	k, ok := v.(*APIKey)
 	return k, ok
 }
 
@@ -49,8 +46,8 @@ func gatewayAPIKeyFromContext(c *gin.Context) (*model.APIKey, bool) {
 // not filter Status/ExpiresAt), so a revoked or expired key would otherwise
 // still discover models. Returns true when the key was rejected and the
 // error response already written.
-func rejectInvalidKey(c *gin.Context, proto protocols.ProtocolID, apiKey *model.APIKey, rid string) bool {
-	if apiKey.Status == model.APIKeyStatusRevoked {
+func rejectInvalidKey(c *gin.Context, proto protocols.ProtocolID, apiKey *APIKey, rid string) bool {
+	if apiKey.Status == APIKeyStatusRevoked {
 		WriteIngressError(c, proto, http.StatusUnauthorized, errTypeAuthentication, "API key revoked", rid)
 		return true
 	}
@@ -65,7 +62,7 @@ func rejectInvalidKey(c *gin.Context, proto protocols.ProtocolID, apiKey *model.
 // a non-standard extension, spelled and shaped exactly like the admin API's
 // field so one vocabulary serves discovery and configuration. The list is
 // canonical: a model that never declared its modalities reports ["text"].
-func openAIModelObject(m model.Model) gin.H {
+func openAIModelObject(m Model) gin.H {
 	return gin.H{
 		"id":                m.Name,
 		"object":            "model",
@@ -75,7 +72,7 @@ func openAIModelObject(m model.Model) gin.H {
 	}
 }
 
-func anthropicModelObject(m model.Model) gin.H {
+func anthropicModelObject(m Model) gin.H {
 	return gin.H{
 		"type":              "model",
 		"id":                m.Name,
@@ -87,7 +84,7 @@ func anthropicModelObject(m model.Model) gin.H {
 
 // writeModelList writes the protocol-appropriate listing envelope for the
 // already-filtered, already-sorted models.
-func writeModelList(c *gin.Context, proto protocols.ProtocolID, models []model.Model) {
+func writeModelList(c *gin.Context, proto protocols.ProtocolID, models []Model) {
 	if proto == protocols.ProtocolClaude {
 		data := make([]gin.H, 0, len(models))
 		for _, m := range models {
@@ -116,7 +113,7 @@ func writeModelList(c *gin.Context, proto protocols.ProtocolID, models []model.M
 }
 
 // writeModelObject writes the protocol-appropriate single-model envelope.
-func writeModelObject(c *gin.Context, proto protocols.ProtocolID, m model.Model) {
+func writeModelObject(c *gin.Context, proto protocols.ProtocolID, m Model) {
 	if proto == protocols.ProtocolClaude {
 		c.JSON(http.StatusOK, anthropicModelObject(m))
 		return
@@ -128,7 +125,7 @@ func writeModelObject(c *gin.Context, proto protocols.ProtocolID, m model.Model)
 // the authenticated key may call, in the caller's wire format. A key with
 // AllowAllModels sees every enabled model; otherwise the intersection with
 // the key's model allowlist (same rule the relay enforces at call time).
-func ListModels(db *gorm.DB) gin.HandlerFunc {
+func ListModels(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		proto := IngressProtocolForContext(c)
 		rid := requestIDFor(c)
@@ -140,7 +137,8 @@ func ListModels(db *gorm.DB) gin.HandlerFunc {
 		if rejectInvalidKey(c, proto, apiKey, rid) {
 			return
 		}
-		all, err := repository.ListModels(db)
+		ctx := c.Request.Context()
+		all, err := store.ListModels(ctx)
 		if err != nil {
 			logger.Error("gateway: list models", zap.String("request_id", rid), zap.Error(err))
 			WriteIngressError(c, proto, http.StatusInternalServerError, errTypeServer, "internal error", rid)
@@ -148,7 +146,7 @@ func ListModels(db *gorm.DB) gin.HandlerFunc {
 		}
 		var allowed map[uint]struct{}
 		if !apiKey.AllowAllModels {
-			ids, err := repository.FindAPIKeyModelIDs(db, apiKey.ID)
+			ids, err := store.FindAPIKeyModelIDs(ctx, apiKey.ID)
 			if err != nil {
 				logger.Error("gateway: list key allowlist", zap.String("request_id", rid), zap.Error(err))
 				WriteIngressError(c, proto, http.StatusInternalServerError, errTypeServer, "internal error", rid)
@@ -159,9 +157,9 @@ func ListModels(db *gorm.DB) gin.HandlerFunc {
 				allowed[id] = struct{}{}
 			}
 		}
-		out := make([]model.Model, 0, len(all))
+		out := make([]Model, 0, len(all))
 		for _, m := range all {
-			if m.ManagementStatus != model.ModelStatusEnabled {
+			if m.ManagementStatus != ModelStatusEnabled {
 				continue
 			}
 			if allowed != nil {
@@ -180,8 +178,8 @@ func ListModels(db *gorm.DB) gin.HandlerFunc {
 // an admin reports as "does not exist" (no existence leak), and a model
 // outside the key's allowlist is rejected with 403 — both matching the
 // relay's call-time enforcement so list and call never disagree.
-func RetrieveModel(db *gorm.DB) gin.HandlerFunc {
-	list := ListModels(db)
+func RetrieveModel(store Store) gin.HandlerFunc {
+	list := ListModels(store)
 	return func(c *gin.Context) {
 		// The route's catch-all param arrives with a leading "/" (and may
 		// itself contain slashes — model ids like deepseek-ai/DeepSeek-V4
@@ -205,9 +203,10 @@ func RetrieveModel(db *gorm.DB) gin.HandlerFunc {
 		if rejectInvalidKey(c, proto, apiKey, rid) {
 			return
 		}
-		m, err := repository.FindModelByName(db, name)
+		ctx := c.Request.Context()
+		m, err := store.FindModelByName(ctx, name)
 		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
+			if errors.Is(err, ErrNotFound) {
 				WriteIngressError(c, proto, http.StatusNotFound, errTypeNotFound, "model does not exist", rid)
 				return
 			}
@@ -215,12 +214,12 @@ func RetrieveModel(db *gorm.DB) gin.HandlerFunc {
 			WriteIngressError(c, proto, http.StatusInternalServerError, errTypeServer, "internal error", rid)
 			return
 		}
-		if m.ManagementStatus != model.ModelStatusEnabled {
+		if m.ManagementStatus != ModelStatusEnabled {
 			WriteIngressError(c, proto, http.StatusNotFound, errTypeNotFound, "model does not exist", rid)
 			return
 		}
 		if !apiKey.AllowAllModels {
-			allowed, err := repository.HasAPIKeyModelAccess(db, apiKey.ID, m.ID)
+			allowed, err := store.HasAPIKeyModelAccess(ctx, apiKey.ID, m.ID)
 			if err != nil {
 				logger.Error("gateway: check model allowlist", zap.String("request_id", rid), zap.Error(err))
 				WriteIngressError(c, proto, http.StatusInternalServerError, errTypeServer, "internal error", rid)

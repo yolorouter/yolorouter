@@ -14,7 +14,6 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/decision"
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -56,12 +55,12 @@ func upstreamEchoingBody(t *testing.T, sent *[]byte) *httptest.Server {
 
 // wireOneCandidate builds the smallest routable setup: one provider, one key,
 // one model.
-func wireOneCandidate(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string) *model.APIKey {
+func wireOneCandidate(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string) *APIKey {
 	t.Helper()
 	p := createProvider(t, db, "p1", upstreamURL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	return createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	return createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 }
 
 // Stage order is the whole reason the stage exists. Registration order is
