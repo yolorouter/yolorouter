@@ -1482,6 +1482,7 @@ func foldUpstreamDecision(observed decision.Resolved, statusCode int, hasRepair,
 // and pre-first-byte stream failures are candidate-level (failover); 401/429
 // are key-level (rotate); 2xx is success; other 4xx is terminal (caller's
 // problem).
+
 // NoteKeyRetestPassed records a completed, PASSED retest of a provider key:
 // proof of recovery, delivered by the provider service's commit path (the
 // only place proof exists — TestGeneration alone advances when a retest is

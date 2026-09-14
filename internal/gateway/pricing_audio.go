@@ -29,7 +29,7 @@ type audioPricingSnapshot struct {
 	Meter string `json:"meter,omitempty"`
 }
 
-// computeAudioCost prices one audio-mode candidate's settled delivery.
+// audioMicros prices one audio-mode candidate's settled delivery.
 //
 // Unknown, not zero, in every case where no price could be resolved
 // honestly: no report, no count, a report that is not counting characters

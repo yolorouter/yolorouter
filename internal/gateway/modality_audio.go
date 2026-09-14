@@ -181,10 +181,10 @@ type audioPayload struct {
 	prepareErr error
 }
 
-// The voice the caller named is only theirs to name per provider: voices do
-// not travel between vendors, so a failed attempt never moves to another
-// provider — an audio served in a different voice is an answer to a question
-// nobody asked. Key rotation inside the one provider keeps working.
+// Routing keeps voice affinity per provider: voices do not travel between
+// vendors, so a failed attempt never moves to another provider — an audio
+// served in a different voice is an answer to a question nobody asked.
+// Key rotation inside the one provider keeps working.
 func (p *audioPayload) Routing() RoutingIntent {
 	return RoutingIntent{Model: p.req.Model, NoCrossProviderFailover: true}
 }

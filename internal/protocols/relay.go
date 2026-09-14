@@ -867,3 +867,15 @@ func UpstreamHeadersToCopy(header http.Header) http.Header {
 	}
 	return out
 }
+
+// ApplyStreamWriteDeadline sets a sliding write deadline of now +
+// streamWriteWindow on the response writer. The writer below calls it before
+// each Write and Flush, so a slow-reading client is bounded by
+// streamWriteWindow. On a writer that does not support SetWriteDeadline
+// (e.g. httptest.ResponseRecorder), the error is non-nil but benign in
+// production (*http.response always supports it) — the caller still gets
+// the error back so tests can assert on it.
+func ApplyStreamWriteDeadline(c *gin.Context) error {
+	rc := http.NewResponseController(c.Writer)
+	return rc.SetWriteDeadline(time.Now().Add(streamWriteWindow))
+}

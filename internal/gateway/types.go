@@ -238,6 +238,18 @@ func (rc *Exchange) ImagePricingSnapshot() string { return rc.imagePricingSnapsh
 // empty when the request was not priced per character.
 func (rc *Exchange) AudioPricingSnapshot() string { return rc.audioPricingSnapshot }
 
+// spendBudget books the count budget a resolved decision asks for. One spend
+// point for every call site keeps the cost of a judgement the table's call: a
+// path cannot decide its own price, and nothing ever books a refund.
+func (rc *Exchange) spendBudget(b decision.BudgetEffect) {
+	switch b {
+	case decision.BudgetConsumeAttempt:
+		rc.attemptsSpent++
+	case decision.BudgetConsumeProbe:
+		rc.probesSpent++
+	}
+}
+
 // markFirstByteSent flips firstByteSent true under the lock. Returns whether
 // this call was the one that flipped it — the stream path uses that to decide
 // whether a mid-stream upstream error can still switch (no) or must be
@@ -256,18 +268,6 @@ func (rc *Exchange) AudioPricingSnapshot() string { return rc.audioPricingSnapsh
 // method set so it cannot quietly grow back. What keeps a capability honest
 // is the narrow view it binds, which is a property of the assembly and not of
 // this file.
-// spendBudget books the count budget a resolved decision asks for. One spend
-// point for every call site keeps the cost of a judgement the table's call: a
-// path cannot decide its own price, and nothing ever books a refund.
-func (rc *Exchange) spendBudget(b decision.BudgetEffect) {
-	switch b {
-	case decision.BudgetConsumeAttempt:
-		rc.attemptsSpent++
-	case decision.BudgetConsumeProbe:
-		rc.probesSpent++
-	}
-}
-
 func (rc *Exchange) markFirstByteSent() bool {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
