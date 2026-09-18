@@ -64,7 +64,7 @@ type Exchange struct {
 	// for; empty on normal requests. Captured from the loopback parent
 	// header only when the internal token matched.
 	parentRequestID string
-	// pricingBasis is the per-million rates the pre-dispatch estimate is taken
+	// pricingBasis is the priced shape the pre-dispatch estimate is taken
 	// against: the FIRST routable candidate's, fixed once so everything asking
 	// that question reads one answer instead of each picking its own candidate.
 	//

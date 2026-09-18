@@ -643,12 +643,14 @@ func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 	// it; the field's own note says why not. Read BEFORE the balanced reorder
 	// below, so the basis is the admin's sort_order head for every request of
 	// a model — a per-key bound provider must not make the estimate drift
-	// between callers. Nothing consumes the estimate today (the text modality
-	// answers that it cannot say), so the head-vs-walked-candidate gap is
-	// presently harmless either way.
+	// between callers. Nothing consumes the estimate's return today (the
+	// text modality answers that it cannot say; the image modality answers
+	// from ImageTiers), so the head-vs-walked-candidate gap is presently
+	// harmless either way.
 	rc.pricingBasis = PricingView{
 		InputPricePerMillion:  routable[0].InputPrice,
 		OutputPricePerMillion: routable[0].OutputPrice,
+		ImageTiers:            ParseImagePricingTiers(routable[0].ImagePricingTiers),
 	}
 
 	// Balanced models reorder the chain per caller key before the walk enters

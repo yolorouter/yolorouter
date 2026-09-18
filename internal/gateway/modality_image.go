@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
@@ -228,12 +229,35 @@ func (p *imagePayload) Routing() RoutingIntent {
 	return RoutingIntent{Model: p.requestModel(), Stream: p.streamAsked()}
 }
 
-// EstimateCost cannot name a figure before the upstream answers — the count
-// that bills is how many images come back, not how many were asked for — so
-// it says unknown in this modality's own unit. The unit is the point: it is
-// what settlement will count in, before there is a number to fill it with.
-func (p *imagePayload) EstimateCost(PricingView) CostEstimate {
-	return CostEstimate{Known: false, Unit: fact.UnitImage}
+// EstimateCost prices the ask before anything is sent: the per-image table
+// resolved against the request's own axes — quality, size, and the count
+// asked for, floored at one — with an unmatched pair falling to the table's
+// own default. Settlement will still price what is actually delivered (an
+// ask of three that returns one bills one); this figure is the one a
+// reservation would be sized from, made before any image exists to count,
+// so the ask is the only count it can use. Nothing consumes the return yet
+// (the relay's own call site discards it) — the figure is this seat's
+// promised semantics, pinned by test until a consumer arrives. No table on
+// the basis — a token-priced image model, or tiers a parser cannot read —
+// answers unknown: the token rates are not this modality's vocabulary, and
+// a table with no matching tier and no default is unpriced, not free.
+func (p *imagePayload) EstimateCost(pv PricingView) CostEstimate {
+	if pv.ImageTiers == nil {
+		return CostEstimate{Known: false, Unit: fact.UnitImage}
+	}
+	requested, quality, size := p.requestAxes()
+	if requested <= 0 {
+		requested = 1
+	}
+	price, _, ok := pv.ImageTiers.ResolvePrice(quality, size)
+	if !ok {
+		return CostEstimate{Known: false, Unit: fact.UnitImage}
+	}
+	return CostEstimate{
+		Known:  true,
+		Micros: int64(math.Round(price * float64(requested) * microsPerUnit)),
+		Unit:   fact.UnitImage,
+	}
 }
 
 // Supports accepts the candidates whose provider can serve an images

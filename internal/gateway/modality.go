@@ -156,6 +156,10 @@ type PricingView struct {
 	InputPricePerMillion  float64
 	OutputPricePerMillion float64
 	RequestPrice          float64
+	// ImageTiers is the head candidate's per-image price table, parsed;
+	// nil when it declares none a parser can read. An estimate that prices
+	// images reads this, not the token rates.
+	ImageTiers *ImagePricingTiers
 }
 
 // CostEstimate is what a request might cost before it runs.
