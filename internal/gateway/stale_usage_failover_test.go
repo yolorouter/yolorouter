@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -57,22 +56,22 @@ func TestUsageDoesNotSurviveTheLastCandidate(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	if err := db.Create(&model.ModelCandidate{
+	if err := db.Create(&ModelCandidate{
 		ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "claude-3-5-sonnet-20241022",
 		InputPrice: 1.0, OutputPrice: 2.0, MaxOutput: 4096,
 		SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-		ManagementStatus:   model.ModelCandidateStatusEnabled,
+		ManagementStatus:   ModelCandidateStatusEnabled,
 		SortOrder:          1,
-		VerificationStatus: model.ModelVerificationStatusPassed,
+		VerificationStatus: ModelVerificationStatusPassed,
 		CreatedAt:          now, UpdatedAt: now,
 	}).Error; err != nil {
 		t.Fatalf("seed candidate: %v", err)
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -129,24 +128,24 @@ func TestUsageDoesNotSurviveAFailedCandidate(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, true)
 
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	for i, p := range []*model.Provider{p1, p2} {
-		if err := db.Create(&model.ModelCandidate{
+	for i, p := range []*Provider{p1, p2} {
+		if err := db.Create(&ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "claude-3-5-sonnet-20241022",
 			InputPrice: 1.0, OutputPrice: 2.0, MaxOutput: 4096,
 			SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-			ManagementStatus:   model.ModelCandidateStatusEnabled,
+			ManagementStatus:   ModelCandidateStatusEnabled,
 			SortOrder:          i + 1,
-			VerificationStatus: model.ModelVerificationStatusPassed,
+			VerificationStatus: ModelVerificationStatusPassed,
 			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %d: %v", i, err)
 		}
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -210,24 +209,24 @@ func TestUpstreamBodyDoesNotSurviveAFailedCandidate(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p2.ID, "sk-2", "k1", 1, true)
 
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	for i, p := range []*model.Provider{p1, p2} {
-		if err := db.Create(&model.ModelCandidate{
+	for i, p := range []*Provider{p1, p2} {
+		if err := db.Create(&ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "real-model",
 			InputPrice: 0, OutputPrice: 0, MaxOutput: 4096,
 			SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-			ManagementStatus:   model.ModelCandidateStatusEnabled,
+			ManagementStatus:   ModelCandidateStatusEnabled,
 			SortOrder:          i + 1,
-			VerificationStatus: model.ModelVerificationStatusPassed,
+			VerificationStatus: ModelVerificationStatusPassed,
 			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %d: %v", i, err)
 		}
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -302,22 +301,22 @@ func TestUpstreamBodyDoesNotSurviveAKeyRotation(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-b", "key-b", 2, true)
 
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	if err := db.Create(&model.ModelCandidate{
+	if err := db.Create(&ModelCandidate{
 		ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "real-model",
 		InputPrice: 0, OutputPrice: 0, MaxOutput: 4096,
 		SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-		ManagementStatus:   model.ModelCandidateStatusEnabled,
+		ManagementStatus:   ModelCandidateStatusEnabled,
 		SortOrder:          1,
-		VerificationStatus: model.ModelVerificationStatusPassed,
+		VerificationStatus: ModelVerificationStatusPassed,
 		CreatedAt:          now, UpdatedAt: now,
 	}).Error; err != nil {
 		t.Fatalf("seed candidate: %v", err)
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }

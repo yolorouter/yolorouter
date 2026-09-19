@@ -7,6 +7,65 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-09-11
+
+### Added
+
+- Observed rate limits. When an upstream rejects with a 429, the gateway
+  now parses what that response says about the key's own limits —
+  OpenAI-style and Anthropic-style rate-limit headers, and Gemini's
+  RetryInfo/QuotaFailure error body — and remembers them per key
+  (requests and tokens meters) in a new admin page (the Rate Limits
+  entry under the Models group). The remembered ceiling only ever moves
+  down, so one malformed response cannot raise it; deleting a row resets
+  it to be learned again. The same evidence makes the bench
+  window-aware: a reset header naming a window beyond the ten-minute
+  Retry-After clamp benches the key through that window instead of
+  re-firing into a daily wall every ten minutes (capped at 24h; a lone
+  Retry-After keeps the standing clamp), and Gemini's structured
+  retryDelay lengthens the same verdict's bench once the body is read.
+  A quota-flavored 429 still takes the key out for the persistent retest
+  path.
+
+- Paired pick-before-export for the CC-Switch hand-off. Both export
+  entries used to fire the deep link with half the information guessed or
+  missing — the models page exported a profile with no credential, and
+  the API-keys page auto-picked a model from gateway discovery. Both now
+  open a shared dialog that fixes the half you clicked from and asks for
+  the other: the models page lists only your OWN active keys whose routing
+  scope covers that model (options show the key remark, or the prefix when
+  there is none; models that are management-disabled hide the entry
+  entirely since no key can route to them), while the API-keys page lists
+  the models the key can actually route to — gateway discovery authed with
+  that key, annotated with admin-catalog availability, falling back to the
+  catalog-scoped list or manual entry (empty allowed) when discovery
+  flakes, with an in-modal retry rather than a silent downgrade. The
+  dialog opens before any data arrives, prefetches everything during
+  selection (switching a key re-arms the confirm gate until the new
+  credential settles — an export can never carry one key's plaintext
+  under another's name), and Confirm fires with zero awaits so the
+  external-protocol navigation leaves while the click's user activation
+  is still live. Legacy keys that predate plaintext storage import with
+  the placeholder plus an in-modal paste-by-hand notice; transient
+  failures surface in-dialog with retry and never degrade to the
+  placeholder.
+
+### Fixed
+
+- The CC-Switch export dialog's model picker was unusable whenever it
+  had options to show: the dropdown's options rendered as unclickable
+  inline text. The availability tag was attached through a per-option
+  `render` property, which in naive-ui replaces the ENTIRE option node —
+  discarding the clickable, styled `.n-base-select-option` wrapper. The
+  tag now flows through the component-level `render-label` (wrapper
+  preserved), with inline styles because the menu portal lands outside
+  the component's scoped-style subtree.
+
+- The embedded price-catalog seed re-syncs from a cleaned live catalog:
+  deepseek's pricing page had leaked a footnote suffix into a model id
+  ("deepseek-v4-pro(2)"), which the data pipeline now strips before it
+  reaches the catalog.
+
 ## [Unreleased]
 
 ## [0.2.3] - 2026-09-05
@@ -712,7 +771,8 @@ failover, and observe usage and cost.
 - Single binary with the web console embedded via `go:embed`; SQLite or PostgreSQL storage; upstream keys encrypted at rest (AES-256).
 - Self-update via the `update` command and update-check API.
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/yolorouter/yolorouter/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/yolorouter/yolorouter/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/yolorouter/yolorouter/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/yolorouter/yolorouter/compare/v0.2.0...v0.2.1

@@ -7,6 +7,7 @@ export default {
   groupModels: '模型管理',
   providers: '供应商管理',
   models: '大模型管理',
+  rateLimits: '限额管理',
   tokens: '令牌管理',
   costOptimization: '成本优化',
   groupAccounts: '账号管理',

@@ -945,7 +945,8 @@ func (e *StreamEncoder) makeEvent(eventType string, data map[string]interface{})
 	return protocols.SSEEvent{Data: string(d)}
 }
 
-// ID generators for Responses API
+// generateResponsesResponseID and its siblings are the ID generators for
+// the Responses API wire shape.
 func generateResponsesResponseID() string { return "resp_" + protocols.RandomString(32) }
 func generateResponsesItemID() string     { return "rs_" + protocols.RandomString(24) }
 func generateResponsesMessageID() string  { return "msg_" + protocols.RandomString(24) }

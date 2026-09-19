@@ -4,8 +4,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // gatewayAPIKeyKey is the gin.Context key under which APIKeyAuth stores the
@@ -14,7 +12,7 @@ const gatewayAPIKeyKey = "gateway_api_key"
 
 // SetGatewayAuth stores the authenticated API key on the context — called
 // by middleware.APIKeyAuth on a successful credential resolution.
-func SetGatewayAuth(c *gin.Context, apiKey *model.APIKey) {
+func SetGatewayAuth(c *gin.Context, apiKey *APIKey) {
 	c.Set(gatewayAPIKeyKey, apiKey)
 }
 
@@ -67,7 +65,7 @@ func PostChatCompletions(svc *Service) gin.HandlerFunc {
 			WriteIngressError(c, ingress, http.StatusInternalServerError, errTypeServer, "missing gateway auth context", requestID)
 			return
 		}
-		apiKey, ok := v.(*model.APIKey)
+		apiKey, ok := v.(*APIKey)
 		if !ok {
 			WriteIngressError(c, ingress, http.StatusInternalServerError, errTypeServer, "invalid gateway auth context", requestID)
 			return

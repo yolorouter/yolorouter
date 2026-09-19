@@ -17,7 +17,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/testutil"
@@ -175,7 +174,7 @@ func TestNon2xxErrorBodySlowTrickle503_BoundedByShortBudget(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 
@@ -247,7 +246,7 @@ func TestUnauthorized401_CASPersistsKeyFailureBeforeBodyRead(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-dead", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, _ := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -261,9 +260,9 @@ func TestUnauthorized401_CASPersistsKeyFailureBeforeBodyRead(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("expected 1 key, got %d", len(keys))
 	}
-	if keys[0].VerificationStatus != model.VerificationStatusFailed {
+	if keys[0].VerificationStatus != VerificationStatusFailed {
 		t.Errorf("key verification_status = %d, want %d (CAS must persist before error body read exhausts ctx)",
-			keys[0].VerificationStatus, model.VerificationStatusFailed)
+			keys[0].VerificationStatus, VerificationStatusFailed)
 	}
 }
 
@@ -358,7 +357,7 @@ func TestASlowCallerOnACrossProtocolStreamIsBlamedForTheirOwnTimeout(t *testing.
 	p := createAnthropicProvider(t, db, "claude-p", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// Use a real http.Server so SetWriteDeadline is honored through
 	// http.NewResponseController.
@@ -459,7 +458,7 @@ func TestABrokenProviderOnACrossProtocolStreamIsStillFiledAsPartial(t *testing.T
 	p := createAnthropicProvider(t, db, "claude-p2", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude2", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-2", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

@@ -21,8 +21,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/fact"
+	"github.com/yolorouter/yolorouter/internal/gateway/rows"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
+	"github.com/yolorouter/yolorouter/internal/protocols/images"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -30,7 +33,7 @@ import (
 // modality list, the way the admin API's update would.
 func setOutputModalities(t *testing.T, db *gorm.DB, modelID uint, list string) {
 	t.Helper()
-	if err := db.Model(&model.Model{}).Where("id = ?", modelID).Update("output_modalities", list).Error; err != nil {
+	if err := db.Model(&Model{}).Where("id = ?", modelID).Update("output_modalities", list).Error; err != nil {
 		t.Fatalf("set output modalities: %v", err)
 	}
 }
@@ -42,9 +45,9 @@ func setOutputModalities(t *testing.T, db *gorm.DB, modelID uint, list string) {
 type imageRig struct {
 	svc      *Service
 	db       *gorm.DB
-	key      *model.APIKey
+	key      *APIKey
 	modelID  uint
-	provider *model.Provider
+	provider *Provider
 	hits     atomic.Int64
 	// lastPath / lastAuth / lastBody record what the upstream saw, written
 	// from the handler goroutine and read after Handle returns.
@@ -87,7 +90,7 @@ func newImageRigWith(t *testing.T, answer func(w http.ResponseWriter, r *http.Re
 	m := createModelAndCandidate(t, rig.db, p, "image-model", "image-model-real", false, false, 1)
 	setOutputModalities(t, rig.db, m.ID, `["image"]`)
 	rig.modelID = m.ID
-	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	rig.key = createAPIKey(t, rig.db, APIKeyStatusActive, []uint{m.ID})
 	return rig
 }
 
@@ -353,7 +356,7 @@ func TestImageB64ResponseIsAuditedRedacted(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 	m := createModelAndCandidate(t, db, p, "image-model", "image-model-real", false, false, 1)
 	setOutputModalities(t, db, m.ID, `["image"]`)
-	key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := imageRequest(`{"model":"image-model","prompt":"a fox","response_format":"b64_json"}`)
 	c.Set("request_id", "req-image-b64")
@@ -412,4 +415,76 @@ func TestImageRequestRedactionHasNoLengthFloor(t *testing.T) {
 	if !strings.Contains(out, "[base64 image omitted:") {
 		t.Errorf("redaction note missing: %s", out)
 	}
+}
+
+// estimatePV builds a priced basis around a serialized tier table, the way
+// the relay's pricing view carries it.
+func estimatePV(tiers string) PricingView {
+	return PricingView{ImageTiers: rows.ParseImagePricingTiers(tiers)}
+}
+
+// The image estimate prices the ask: the table resolved against the
+// request's own axes, floored at one image, with the table's default
+// pricing an unmatched pair.
+func TestImageEstimateCostMatrix(t *testing.T) {
+	// Ordered the way a real table is: specific tiers ahead of the plain
+	// one, because resolution is first-match-wins and a plainer tier first
+	// would shadow the specific one. The ordering is part of the contract,
+	// not an accident here.
+	const table = `{"mode":"per_image","tiers":[
+		{"quality":"high","size":"1024x1024","price":0.20},
+		{"size":"1024x1024","price":0.11},
+		{"size":"","price":0.05}],
+	"default_price":0.02}`
+	leg := func(name string, got CostEstimate, wantMicros int64, wantKnown bool) {
+		t.Helper()
+		want := CostEstimate{Known: wantKnown, Micros: wantMicros, Unit: fact.UnitImage}
+		if got != want {
+			t.Errorf("%s: got %+v, want %+v", name, got, want)
+		}
+	}
+
+	p := &imagePayload{req: &images.Request{Model: "m", Size: "1024x1024"}}
+	leg("explicit tier, n floored to one",
+		p.EstimateCost(estimatePV(table)), 110_000, true)
+
+	p = &imagePayload{req: &images.Request{Model: "m", Size: "1024x1024", N: 3}}
+	leg("explicit tier × n",
+		p.EstimateCost(estimatePV(table)), 330_000, true)
+
+	p = &imagePayload{req: &images.Request{Model: "m", Quality: "high", Size: "1024x1024"}}
+	leg("specific tier ahead of the plain one",
+		p.EstimateCost(estimatePV(table)), 200_000, true)
+
+	p = &imagePayload{req: &images.Request{Model: "m", Size: "2048x2048"}}
+	leg("empty-size tier is the wildcard",
+		p.EstimateCost(estimatePV(table)), 50_000, true)
+
+	// "*" is a literal size, not a wildcard — only an empty axis is.
+	const starTable = `{"mode":"per_image","tiers":[{"size":"*","price":0.05}],"default_price":0.02}`
+	p = &imagePayload{req: &images.Request{Model: "m", Size: "2048x2048"}}
+	leg("star tier is literal → default prices",
+		p.EstimateCost(estimatePV(starTable)), 20_000, true)
+
+	// No wildcard, no default: unpriced, not free.
+	const noDefault = `{"mode":"per_image","tiers":[{"size":"1024x1024","price":0.11}]}`
+	p = &imagePayload{req: &images.Request{Model: "m", Size: "2048x2048"}}
+	leg("no match, no default → unknown",
+		p.EstimateCost(estimatePV(noDefault)), 0, false)
+
+	// No table at all (token-priced image model, or tiers that failed to
+	// parse): the token rates are not this modality's vocabulary.
+	p = &imagePayload{req: &images.Request{Model: "m"}}
+	leg("no table → unknown",
+		p.EstimateCost(PricingView{InputPricePerMillion: 3}), 0, false)
+
+	// The edits half carries its own axes and prices on the same terms.
+	p = &imagePayload{edit: &images.EditRequest{Model: "m", N: 2, Size: "1024x1024"}}
+	leg("edit axes × n",
+		p.EstimateCost(estimatePV(noDefault)), 220_000, true)
+
+	// Tiers a parser cannot read are no table: unknown, not free.
+	p = &imagePayload{req: &images.Request{Model: "m", Size: "1024x1024"}}
+	leg("malformed table → unknown",
+		p.EstimateCost(estimatePV(`{"tiers":[`)), 0, false)
 }

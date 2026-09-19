@@ -18,7 +18,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/testutil"
@@ -74,7 +73,7 @@ func TestAnUpstreamDeadlineIsNotACallerWriteTimeout(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-p-stall", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-stall", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-stall", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -183,7 +182,7 @@ func TestUnauthorized401_CASSurvivesAttemptContextExpiry(t *testing.T) {
 	p := createProvider(t, db, "p-cas-expiry", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-dead-cas", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-cas-expiry", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, _ := newCtx([]byte(`{"model":"gpt-4o-cas-expiry","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -197,9 +196,9 @@ func TestUnauthorized401_CASSurvivesAttemptContextExpiry(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("expected 1 key, got %d", len(keys))
 	}
-	if keys[0].VerificationStatus != model.VerificationStatusFailed {
+	if keys[0].VerificationStatus != VerificationStatusFailed {
 		t.Errorf("key verification_status = %d, want %d (CAS must survive attempt ctx expiry via detached context)",
-			keys[0].VerificationStatus, model.VerificationStatusFailed)
+			keys[0].VerificationStatus, VerificationStatusFailed)
 	}
 }
 
@@ -256,7 +255,7 @@ func TestUnauthorized401_CASSurvivesClientCancel(t *testing.T) {
 	p := createProvider(t, db, "p-cas-cancel", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-dead-cancel", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o-cas-cancel", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -319,9 +318,9 @@ func TestUnauthorized401_CASSurvivesClientCancel(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("expected 1 key, got %d", len(keys))
 	}
-	if keys[0].VerificationStatus != model.VerificationStatusFailed {
+	if keys[0].VerificationStatus != VerificationStatusFailed {
 		t.Errorf("key verification_status = %d, want %d (CAS must survive client cancel via detached context)",
-			keys[0].VerificationStatus, model.VerificationStatusFailed)
+			keys[0].VerificationStatus, VerificationStatusFailed)
 	}
 }
 
@@ -464,9 +463,9 @@ func TestACallerDisconnectOnTheIRPathIsNotBlamedOnTheProvider(t *testing.T) {
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p-mid-disconnect", "http://upstream.invalid")
 	m := createModelAndCandidate(t, db, p, "gpt-4o-mid-disconnect", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var cand model.ModelCandidate
+	var cand ModelCandidate
 	if err := db.Where("model_id = ?", m.ID).First(&cand).Error; err != nil {
 		t.Fatalf("load seeded candidate: %v", err)
 	}
@@ -496,7 +495,7 @@ func TestACallerDisconnectOnTheIRPathIsNotBlamedOnTheProvider(t *testing.T) {
 	d := payload.settleStream(DeliveryTools{Client: client, RequestID: rc.requestID}, resp, nil, err)
 	rc.attempt.BeginCandidate(&cand)
 	rc.attempt.BindProvider(p)
-	rc.attempt.BindKey(&model.ProviderKey{})
+	rc.attempt.BindKey(&ProviderKey{})
 	result := svc.recordAndSettle(c, rc, admitted{payload: payload}, d,
 		resp.StatusCode, time.Now())
 
@@ -531,9 +530,9 @@ func TestALiveCallerStillGetsTheStreamClosedOffOnAProviderFailure(t *testing.T) 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p-mid-live", "http://upstream.invalid")
 	m := createModelAndCandidate(t, db, p, "gpt-4o-mid-live", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var cand model.ModelCandidate
+	var cand ModelCandidate
 	if err := db.Where("model_id = ?", m.ID).First(&cand).Error; err != nil {
 		t.Fatalf("load seeded candidate: %v", err)
 	}
@@ -557,7 +556,7 @@ func TestALiveCallerStillGetsTheStreamClosedOffOnAProviderFailure(t *testing.T) 
 	d := payload.settleStream(DeliveryTools{Client: client, RequestID: rc.requestID}, resp, nil, err)
 	rc.attempt.BeginCandidate(&cand)
 	rc.attempt.BindProvider(p)
-	rc.attempt.BindKey(&model.ProviderKey{})
+	rc.attempt.BindKey(&ProviderKey{})
 	result := svc.recordAndSettle(c, rc, admitted{payload: payload}, d,
 		resp.StatusCode, time.Now())
 

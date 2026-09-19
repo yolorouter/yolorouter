@@ -7,6 +7,7 @@ export default {
   groupModels: 'Model Management',
   providers: 'Providers',
   models: 'Models',
+  rateLimits: 'Rate Limits',
   tokens: 'Tokens',
   costOptimization: 'Cost Optimization',
   groupAccounts: 'Account Management',

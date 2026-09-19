@@ -15,11 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"gorm.io/gorm"
-
-	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/gateway/rows"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
-	"github.com/yolorouter/yolorouter/internal/repository"
 )
 
 // Querier is how the service asks an upstream about one task. The real
@@ -30,11 +27,11 @@ import (
 // in the normalized vocabulary; mapping vendor spellings (including a
 // vendor's "unknown task" onto expiry) is the implementation's job.
 type Querier interface {
-	QueryTask(ctx context.Context, task model.VideoTask) (QueryResult, error)
+	QueryTask(ctx context.Context, task rows.VideoTask) (QueryResult, error)
 }
 
 // QueryResult is one upstream observation, normalized. Status is a
-// model.VideoTask* spelling; the URL and usage fields are only read when
+// rows.VideoTask* spelling; the URL and usage fields are only read when
 // it is completed.
 type QueryResult struct {
 	Status       string
@@ -43,6 +40,26 @@ type QueryResult struct {
 	UsageSeconds int
 	ErrorCode    string
 	ErrorMessage string
+}
+
+// Store is every database touch this domain makes, behind one port. A
+// deployment implements it against its own storage, converting rows to
+// the rows-leaf vocabulary; the domain never sees a query.
+type Store interface {
+	FindModelByName(ctx context.Context, name string) (*rows.Model, error)
+	ListModelCandidatesByModelID(ctx context.Context, modelID uint) ([]rows.ModelCandidate, error)
+	FindModelCandidateByID(ctx context.Context, id uint) (*rows.ModelCandidate, error)
+	FindAPIKeyByID(ctx context.Context, id uint) (*rows.APIKey, error)
+	CreateVideoTask(ctx context.Context, task *rows.VideoTask) error
+	FindVideoTaskForOwner(ctx context.Context, apiKeyID uint, id string) (*rows.VideoTask, error)
+	SaveVideoTaskPollResult(ctx context.Context, id string, result map[string]any, now time.Time) (bool, error)
+	ClaimVideoTaskPoll(ctx context.Context, apiKeyID uint, id string, prev, next time.Time) (bool, error)
+	ChargeVideoTask(ctx context.Context, id string, micros int64, now time.Time) (bool, error)
+	UpdateRequestLogVideoSettlement(ctx context.Context, requestID string, micros int64, seconds int) error
+	ExpireStaleVideoTasks(ctx context.Context, now time.Time) (int64, error)
+	ExpireProviderInFlightVideoTasks(ctx context.Context, providerID uint, newDestinationVersion int, now time.Time) (int64, error)
+	SumInFlightVideoEstimated(ctx context.Context, apiKeyID uint) (int64, error)
+	ListUnbilledCompletedVideoTasks(ctx context.Context) ([]rows.VideoTask, error)
 }
 
 // microsPerYuan is the micro-yuan per yuan fixed point this package
@@ -71,7 +88,7 @@ var ErrQuerierUnavailable = errors.New("no video task querier is wired")
 // calls except for the in-process poll single-flight, which exists so
 // concurrent GETs of one hot task cost one upstream query, not N.
 type Service struct {
-	db       *gorm.DB
+	store    Store
 	querier  Querier
 	interval time.Duration
 
@@ -82,8 +99,8 @@ type Service struct {
 // NewService builds the state machine. querier may be nil until a dialect
 // is wired; polls then fail with ErrQuerierUnavailable, and everything
 // that does not ask an upstream (create, read, expiry) still works.
-func NewService(db *gorm.DB, querier Querier) *Service {
-	return &Service{db: db, querier: querier, interval: DefaultPollInterval, flights: map[string]*sync.Mutex{}}
+func NewService(store Store, querier Querier) *Service {
+	return &Service{store: store, querier: querier, interval: DefaultPollInterval, flights: map[string]*sync.Mutex{}}
 }
 
 // NewTaskID mints a caller-facing job id: vid_ plus 128 random bits in
@@ -119,15 +136,15 @@ func (e *BudgetExceededError) Error() string {
 // Unpriced returns ok=false: a candidate with no table for this resolution
 // bills nothing and reserves nothing, the same "unpriced is not free, it is
 // unknown" reading the image settlement takes.
-func unitMicros(cand *model.ModelCandidate, size string) (int64, bool) {
-	if model.NormalizeBillingMode(cand.BillingMode) != model.BillingModeVideo {
+func unitMicros(cand *rows.ModelCandidate, size string) (int64, bool) {
+	if rows.NormalizeBillingMode(cand.BillingMode) != rows.BillingModeVideo {
 		return 0, false
 	}
 	resolution, _, ok := videos.MapDashScopeSize(size)
 	if !ok {
 		return 0, false
 	}
-	price, ok := model.ParseVideoPricingTiers(cand.VideoPricingTiers).ResolveSellPrice(resolution)
+	price, ok := rows.ParseVideoPricingTiers(cand.VideoPricingTiers).ResolveSellPrice(resolution)
 	if !ok || price < 0 {
 		return 0, false
 	}
@@ -137,10 +154,10 @@ func unitMicros(cand *model.ModelCandidate, size string) (int64, bool) {
 // priceMicros resolves what one accepted task costs at submit time: the
 // routed candidate's own per-second tier price (unitMicros) multiplied by
 // the seconds the caller asked for.
-func (s *Service) priceMicros(ctx context.Context, task *model.VideoTask) (int64, bool, error) {
-	cand, err := repository.FindModelCandidateByID(s.db.WithContext(ctx), task.CandidateID)
+func (s *Service) priceMicros(ctx context.Context, task *rows.VideoTask) (int64, bool, error) {
+	cand, err := s.store.FindModelCandidateByID(ctx, task.CandidateID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, rows.ErrNotFound) {
 			// The candidate row vanished between routing and this create —
 			// deleted mid-flight, or a fixture with no pricing surface.
 			// Read as unpriced rather than failed: the task still exists,
@@ -159,12 +176,12 @@ func (s *Service) priceMicros(ctx context.Context, task *model.VideoTask) (int64
 // against the key's limit with every unfinished task's reservation
 // counted, pending, and on the clock. ID and horizon are filled here when
 // empty so a caller cannot mint its own.
-func (s *Service) Create(ctx context.Context, task *model.VideoTask, now time.Time) error {
+func (s *Service) Create(ctx context.Context, task *rows.VideoTask, now time.Time) error {
 	if task.ID == "" {
 		task.ID = NewTaskID()
 	}
 	if task.Status == "" {
-		task.Status = model.VideoTaskPending
+		task.Status = rows.VideoTaskPending
 	}
 	if task.ExpiresAt == nil {
 		horizon := now.Add(ZombieHorizon)
@@ -181,7 +198,7 @@ func (s *Service) Create(ctx context.Context, task *model.VideoTask, now time.Ti
 			return err
 		}
 	}
-	return repository.CreateVideoTask(s.db.WithContext(ctx), task)
+	return s.store.CreateVideoTask(ctx, task)
 }
 
 // PrecheckBudget answers whether a create call could pass the budget gate
@@ -196,9 +213,9 @@ func (s *Service) Create(ctx context.Context, task *model.VideoTask, now time.Ti
 // candidates price differently (or a race between two submits) is still
 // caught there rather than slipping through this coarser read.
 func (s *Service) PrecheckBudget(ctx context.Context, apiKeyID uint, modelName, size string, seconds int) error {
-	m, err := repository.FindModelByName(s.db.WithContext(ctx), modelName)
+	m, err := s.store.FindModelByName(ctx, modelName)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, rows.ErrNotFound) {
 			// Routing will answer a name it cannot resolve; a precheck
 			// cannot price a model that does not exist, and refusing here
 			// would shadow that answer with a budget-shaped one.
@@ -206,7 +223,7 @@ func (s *Service) PrecheckBudget(ctx context.Context, apiKeyID uint, modelName, 
 		}
 		return err
 	}
-	cands, err := repository.ListModelCandidatesByModelID(s.db.WithContext(ctx), m.ID)
+	cands, err := s.store.ListModelCandidatesByModelID(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -218,10 +235,10 @@ func (s *Service) PrecheckBudget(ctx context.Context, apiKeyID uint, modelName, 
 	unpricedEnabled := false
 	for i := range cands {
 		cand := &cands[i]
-		if cand.ManagementStatus != model.ModelCandidateStatusEnabled {
+		if cand.ManagementStatus != rows.ModelCandidateStatusEnabled {
 			continue
 		}
-		if model.NormalizeBillingMode(cand.BillingMode) != model.BillingModeVideo {
+		if rows.NormalizeBillingMode(cand.BillingMode) != rows.BillingModeVideo {
 			continue
 		}
 		unit, priced := unitMicros(cand, size)
@@ -249,14 +266,14 @@ func (s *Service) PrecheckBudget(ctx context.Context, apiKeyID uint, modelName, 
 // are both known at submit — the one billing shape that can promise its
 // bound. Unpriced tasks skip the gate: there is no number to hold.
 func (s *Service) checkBudget(ctx context.Context, apiKeyID uint, ask int64) error {
-	key, err := repository.FindAPIKeyByID(s.db.WithContext(ctx), apiKeyID)
+	key, err := s.store.FindAPIKeyByID(ctx, apiKeyID)
 	if err != nil {
 		return err
 	}
 	if key.BudgetLimitMicros == nil || *key.BudgetLimitMicros <= 0 {
 		return nil
 	}
-	inFlight, err := repository.SumInFlightVideoEstimated(s.db.WithContext(ctx), apiKeyID)
+	inFlight, err := s.store.SumInFlightVideoEstimated(ctx, apiKeyID)
 	if err != nil {
 		return err
 	}
@@ -273,17 +290,17 @@ func (s *Service) checkBudget(ctx context.Context, apiKeyID uint, ask int64) err
 // Get returns one task for its owner, refreshing it from upstream if the
 // poll interval has elapsed. A foreign or unknown id is the same miss —
 // ErrNotFound — so the caller can answer 404 without confirming which.
-func (s *Service) Get(ctx context.Context, apiKeyID uint, id string, now time.Time) (*model.VideoTask, error) {
-	task, err := repository.FindVideoTaskForOwner(s.db.WithContext(ctx), apiKeyID, id)
+func (s *Service) Get(ctx context.Context, apiKeyID uint, id string, now time.Time) (*rows.VideoTask, error) {
+	task, err := s.store.FindVideoTaskForOwner(ctx, apiKeyID, id)
 	if err != nil {
 		return nil, err
 	}
-	if model.VideoTaskTerminal(task.Status) {
+	if rows.VideoTaskTerminal(task.Status) {
 		// The settlement backstop: a task whose completion was recorded
 		// but whose charge never landed — a crash between the two writes,
 		// or a settle that errored — is settled here, on read, from the
 		// same snapshot. The billed compare-and-set keeps it once-only.
-		if task.Status == model.VideoTaskCompleted && !task.Billed {
+		if task.Status == rows.VideoTaskCompleted && !task.Billed {
 			s.settle(ctx, task, now)
 		}
 		return task, nil
@@ -291,8 +308,8 @@ func (s *Service) Get(ctx context.Context, apiKeyID uint, id string, now time.Ti
 	if task.ExpiresAt != nil && now.After(*task.ExpiresAt) {
 		// The window closed between sweeps; expire on sight rather than
 		// paying one more upstream query for a task nothing can answer.
-		_, _ = repository.SaveVideoTaskPollResult(s.db.WithContext(ctx), task.ID, terminalUpdate(model.VideoTaskExpired, "task_expired", now), now)
-		task.Status = model.VideoTaskExpired
+		_, _ = s.store.SaveVideoTaskPollResult(ctx, task.ID, terminalUpdate(rows.VideoTaskExpired, "task_expired", now), now)
+		task.Status = rows.VideoTaskExpired
 		return task, nil
 	}
 	if !s.pollDue(task, now) {
@@ -304,7 +321,7 @@ func (s *Service) Get(ctx context.Context, apiKeyID uint, id string, now time.Ti
 
 // pollDue reports whether the interval has elapsed since the last poll.
 // A never-polled task is always due.
-func (s *Service) pollDue(task *model.VideoTask, now time.Time) bool {
+func (s *Service) pollDue(task *rows.VideoTask, now time.Time) bool {
 	return task.LastPolledAt == nil || now.Sub(*task.LastPolledAt) >= s.interval
 }
 
@@ -313,7 +330,7 @@ func (s *Service) pollDue(task *model.VideoTask, now time.Time) bool {
 // and the stamp claim inside decides whether the winner still owes the
 // upstream a query. A lost race, an unavailable querier, or an upstream
 // error leaves the task as it was — a poll failure is not a task failure.
-func (s *Service) refresh(ctx context.Context, task *model.VideoTask, now time.Time) {
+func (s *Service) refresh(ctx context.Context, task *rows.VideoTask, now time.Time) {
 	s.mu.Lock()
 	flight, ok := s.flights[task.ID]
 	if !ok {
@@ -329,7 +346,7 @@ func (s *Service) refresh(ctx context.Context, task *model.VideoTask, now time.T
 	if task.LastPolledAt != nil {
 		prev = *task.LastPolledAt
 	}
-	claimed, err := repository.ClaimVideoTaskPoll(s.db.WithContext(ctx), task.APIKeyID, task.ID, prev, now)
+	claimed, err := s.store.ClaimVideoTaskPoll(ctx, task.APIKeyID, task.ID, prev, now)
 	if err != nil || !claimed {
 		return
 	}
@@ -342,12 +359,12 @@ func (s *Service) refresh(ctx context.Context, task *model.VideoTask, now time.T
 	}
 	updates := map[string]any{"status": result.Status, "error_code": result.ErrorCode, "error_message": result.ErrorMessage, "updated_at": now}
 	switch result.Status {
-	case model.VideoTaskCompleted:
+	case rows.VideoTaskCompleted:
 		updates["result_url"] = result.ResultURL
 		updates["cover_url"] = result.CoverURL
 		updates["usage_seconds"] = result.UsageSeconds
 		updates["upstream_completed_at"] = now
-	case model.VideoTaskPending, model.VideoTaskProcessing, model.VideoTaskFailed, model.VideoTaskCancelled, model.VideoTaskExpired:
+	case rows.VideoTaskPending, rows.VideoTaskProcessing, rows.VideoTaskFailed, rows.VideoTaskCancelled, rows.VideoTaskExpired:
 		// No result fields beyond the status and its error text.
 	default:
 		// A querier answering outside the vocabulary is a dialect bug;
@@ -358,7 +375,7 @@ func (s *Service) refresh(ctx context.Context, task *model.VideoTask, now time.T
 	// The one-way guard lives in the store's WHERE clause: if the task
 	// became terminal while the query was in flight, this update matches
 	// zero rows and the terminal state stands.
-	applied, err := repository.SaveVideoTaskPollResult(s.db.WithContext(ctx), task.ID, updates, now)
+	applied, err := s.store.SaveVideoTaskPollResult(ctx, task.ID, updates, now)
 	if err != nil {
 		return
 	}
@@ -366,7 +383,7 @@ func (s *Service) refresh(ctx context.Context, task *model.VideoTask, now time.T
 		task.Status = result.Status
 		task.ErrorCode = result.ErrorCode
 		task.ErrorMessage = result.ErrorMessage
-		if result.Status == model.VideoTaskCompleted {
+		if result.Status == rows.VideoTaskCompleted {
 			task.ResultURL = result.ResultURL
 			task.CoverURL = result.CoverURL
 			task.UsageSeconds = result.UsageSeconds
@@ -383,13 +400,13 @@ func (s *Service) refresh(ctx context.Context, task *model.VideoTask, now time.T
 // that unit. A crash between the observation and this call loses nothing:
 // the next poll of a completed task is a no-op read, and the billed
 // compare-and-set in the store is what makes the once-only.
-func (s *Service) settle(ctx context.Context, task *model.VideoTask, now time.Time) {
+func (s *Service) settle(ctx context.Context, task *rows.VideoTask, now time.Time) {
 	micros := int64(0)
 	if task.EstimatedMicros > 0 && task.Seconds > 0 {
 		unit := task.EstimatedMicros / int64(task.Seconds)
 		micros = int64(task.UsageSeconds) * unit
 	}
-	applied, err := repository.ChargeVideoTask(s.db.WithContext(ctx), task.ID, micros, now)
+	applied, err := s.store.ChargeVideoTask(ctx, task.ID, micros, now)
 	if err != nil {
 		// A settlement failure is logged by nobody on purpose: the row is
 		// still unbilled, and the next poll's completion re-runs this —
@@ -409,7 +426,7 @@ func (s *Service) settle(ctx context.Context, task *model.VideoTask, now time.Ti
 	// effort on purpose: the projection failing must never roll back or
 	// re-run the charge itself, and the next completion observation does
 	// not come — billed rows are settled for good.
-	_ = repository.UpdateRequestLogVideoSettlement(s.db.WithContext(ctx), task.RequestID, micros, task.UsageSeconds)
+	_ = s.store.UpdateRequestLogVideoSettlement(ctx, task.RequestID, micros, task.UsageSeconds)
 }
 
 // terminalUpdate is the service-side spelling of a terminal transition's
@@ -427,11 +444,11 @@ func terminalUpdate(status, code string, now time.Time) map[string]any {
 // task nobody polls again still bills. Rows are never deleted here or
 // anywhere — the row is the billing evidence.
 func (s *Service) SweepExpired(ctx context.Context, now time.Time) (int64, error) {
-	moved, err := repository.ExpireStaleVideoTasks(s.db.WithContext(ctx), now)
+	moved, err := s.store.ExpireStaleVideoTasks(ctx, now)
 	if err != nil {
 		return moved, err
 	}
-	unbilled, err := repository.ListUnbilledCompletedVideoTasks(s.db.WithContext(ctx))
+	unbilled, err := s.store.ListUnbilledCompletedVideoTasks(ctx)
 	if err != nil {
 		return moved, err
 	}
@@ -447,7 +464,7 @@ func (s *Service) SweepExpired(ctx context.Context, now time.Time) (int64, error
 // destination, and pretending otherwise would strand it until the
 // horizon anyway.
 func (s *Service) ExpireProviderTasks(ctx context.Context, providerID uint, newDestinationVersion int, now time.Time) (int64, error) {
-	return repository.ExpireProviderInFlightVideoTasks(s.db.WithContext(ctx), providerID, newDestinationVersion, now)
+	return s.store.ExpireProviderInFlightVideoTasks(ctx, providerID, newDestinationVersion, now)
 }
 
 // StartReaper runs SweepExpired on a ticker until the context is

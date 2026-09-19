@@ -26,7 +26,7 @@ import (
 type dashScopeRig struct {
 	svc      *Service
 	db       *gorm.DB
-	key      *model.APIKey
+	key      *APIKey
 	lastPath string
 	lastBody []byte
 }
@@ -46,13 +46,13 @@ func newDashScopeRig(t *testing.T, upstream http.HandlerFunc) *dashScopeRig {
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-dashscope-up", "dashscope-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "qwen-image-test", "qwen-image-plus", false, false, 1)
 	setOutputModalities(t, rig.db, m.ID, `["image"]`)
-	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
-		"billing_mode":        model.BillingModeImage,
+	if err := rig.db.Model(&ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
+		"billing_mode":        BillingModeImage,
 		"image_pricing_tiers": `{"mode":"per_image","default_price":0.02}`,
 	}).Error; err != nil {
 		t.Fatalf("seed billing: %v", err)
 	}
-	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	rig.key = createAPIKey(t, rig.db, APIKeyStatusActive, []uint{m.ID})
 	return rig
 }
 
@@ -204,7 +204,7 @@ func TestImageSizeSeparatorCapability(t *testing.T) {
 		createProviderKey(t, db, svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 		m := createModelAndCandidate(t, db, p, "image-model", "wan2.2-image", false, false, 1)
 		setOutputModalities(t, db, m.ID, `["image"]`)
-		key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+		key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 		c, w := imageRequest(`{"model":"image-model","prompt":"a fox","size":"1024x1024"}`)
 		c.Set("request_id", "req-sizeaxis-conv")
@@ -231,7 +231,7 @@ func TestImageSizeSeparatorCapability(t *testing.T) {
 		createProviderKey(t, db, svc.secrets, p.ID, "sk-image-up", "image-key", 1, true)
 		m := createModelAndCandidate(t, db, p, "image-model", "gpt-image-2", false, false, 1)
 		setOutputModalities(t, db, m.ID, `["image"]`)
-		key := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+		key := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 		c, w := imageRequest(`{"model":"image-model","prompt":"a fox","size":"1024x1024"}`)
 		c.Set("request_id", "req-sizeaxis-keep")

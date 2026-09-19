@@ -95,7 +95,7 @@ func (u *speechUpstream) lastBody(t *testing.T) map[string]any {
 type speechRig struct {
 	svc      *Service
 	db       *gorm.DB
-	key      *model.APIKey
+	key      *APIKey
 	upstream *speechUpstream
 	server   *httptest.Server
 	modelID  uint
@@ -128,14 +128,14 @@ func newSpeechRig(t *testing.T, pricePerMillion float64) *speechRig {
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-speech-up", "speech-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "speech-model", "speech-01", false, false, 1)
 	setOutputModalities(t, rig.db, m.ID, `["audio"]`)
-	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]any{
-		"billing_mode":     model.BillingModeAudio,
+	if err := rig.db.Model(&ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]any{
+		"billing_mode":     BillingModeAudio,
 		"audio_unit_price": pricePerMillion,
 	}).Error; err != nil {
 		t.Fatalf("seed audio candidate pricing: %v", err)
 	}
 	rig.modelID = m.ID
-	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	rig.key = createAPIKey(t, rig.db, APIKeyStatusActive, []uint{m.ID})
 	return rig
 }
 
@@ -337,10 +337,10 @@ func TestSpeechUpstreamErrorDoesNotFailOver(t *testing.T) {
 	p2 := createProvider(t, rig.db, "speech-provider-2", "https://other-upstream.example.com")
 	createProviderKey(t, rig.db, rig.svc.secrets, p2.ID, "sk-speech-2", "speech-key-2", 2, true)
 	now := time.Now().UTC()
-	if err := rig.db.Create(&model.ModelCandidate{
+	if err := rig.db.Create(&ModelCandidate{
 		ModelID: rig.modelID, ProviderID: p2.ID, ProviderModelName: "speech-01",
-		BillingMode: model.BillingModeAudio, ManagementStatus: model.ModelCandidateStatusEnabled,
-		VerificationStatus: model.ModelVerificationStatusPassed, SortOrder: 2,
+		BillingMode: BillingModeAudio, ManagementStatus: ModelCandidateStatusEnabled,
+		VerificationStatus: ModelVerificationStatusPassed, SortOrder: 2,
 		CreatedAt: now, UpdatedAt: now,
 	}).Error; err != nil {
 		t.Fatalf("seed second candidate: %v", err)
@@ -394,7 +394,7 @@ func TestSpeech200WithoutAudioIsTerminal(t *testing.T) {
 func TestSpeechBudgetPrecheckRefusesBeforeDialling(t *testing.T) {
 	rig := newSpeechRig(t, 200)
 	limit := int64(10)
-	if err := rig.db.Model(&model.APIKey{}).Where("id = ?", rig.key.ID).Updates(map[string]any{
+	if err := rig.db.Model(&APIKey{}).Where("id = ?", rig.key.ID).Updates(map[string]any{
 		"budget_limit_micros": limit, "budget_spent_micros": int64(9),
 	}).Error; err != nil {
 		t.Fatalf("seed key budget: %v", err)
@@ -611,7 +611,7 @@ func TestSpeechMiniMaxSettlementCorrectsEstimateToOfficial(t *testing.T) {
 	// ceiling the estimate cleared.
 	rig := newMiniMaxSpeechRig(t, 350, hexEncode(t, "x"), 7)
 	limit := int64(2000)
-	if err := rig.db.Model(&model.APIKey{}).Where("id = ?", rig.key.ID).
+	if err := rig.db.Model(&APIKey{}).Where("id = ?", rig.key.ID).
 		Update("budget_limit_micros", limit).Error; err != nil {
 		t.Fatalf("seed key budget: %v", err)
 	}
@@ -659,7 +659,7 @@ func TestSpeechCutMidStreamBillsAndSettlesTruncated(t *testing.T) {
 	createProviderKey(t, rig.db, rig.svc.secrets, provider.ID, "sk-cut", "cut-key", 2, true)
 	// The walk only ever tries the head candidate, so retarget the head's
 	// provider rather than appending.
-	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", rig.modelID).
+	if err := rig.db.Model(&ModelCandidate{}).Where("model_id = ?", rig.modelID).
 		Update("provider_id", provider.ID).Error; err != nil {
 		t.Fatalf("retarget candidate: %v", err)
 	}
@@ -711,7 +711,7 @@ func TestSpeechRotatesKeysWithinTheProvider(t *testing.T) {
 
 func mustProviderID(t *testing.T, db *gorm.DB, name string) uint {
 	t.Helper()
-	var p model.Provider
+	var p Provider
 	if err := db.Where("name = ?", name).First(&p).Error; err != nil {
 		t.Fatalf("load provider %q: %v", name, err)
 	}

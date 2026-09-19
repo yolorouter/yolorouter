@@ -11,7 +11,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/model"
-	"github.com/yolorouter/yolorouter/internal/pricecatalog"
 	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
@@ -379,19 +378,17 @@ func TestImportProviderModelsRollsBackOnMidBatchFailure(t *testing.T) {
 	}
 }
 
-func TestSuggestCandidatePricesBatchReturnsHistorySeedAndEmpty(t *testing.T) {
+func TestSuggestCandidatePricesBatchReturnsHistoryAndEmpty(t *testing.T) {
 	providerService, db, client := newTestProviderService(t)
 	prov := seedProviderWithBaseURL(t, providerService, "deepseek", catalogSeededHost)
 	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
 	now := time.Now().UTC()
-	seedName := catalogSeededModel(t)
-
-	// History for a name the catalog ALSO carries, priced differently — proving
-	// history outranks the catalog in the batch path too.
-	const historyName = "deepseek-v4-pro"
-	if _, ok := pricecatalog.Lookup(catalogSeededHost, historyName); !ok {
-		t.Fatalf("the seed catalog no longer carries %s; pick another name", historyName)
-	}
+	// History for the name the catalog ALSO carries, priced differently —
+	// proving history outranks the catalog in the batch path too. (The
+	// catalog-passthrough leg lives in the single-suggestion and handler
+	// tests; deepseek's catalog row shrank to one model, so a three-way
+	// batch of distinct names no longer exists on this host.)
+	historyName := catalogSeededModel(t)
 	view, err := svc.CreateModel(modeladmin.CreateModelInput{Name: historyName}, now)
 	if err != nil {
 		t.Fatalf("seed CreateModel failed: %v", err)
@@ -402,22 +399,15 @@ func TestSuggestCandidatePricesBatchReturnsHistorySeedAndEmpty(t *testing.T) {
 		t.Fatalf("seed CreateModelCandidate failed: %v", err)
 	}
 
-	got, err := svc.SuggestCandidatePrices(prov.ID, []string{historyName, seedName, "no-such-model"})
+	got, err := svc.SuggestCandidatePrices(prov.ID, []string{historyName, "no-such-model"})
 	if err != nil {
 		t.Fatalf("SuggestCandidatePrices failed: %v", err)
 	}
-	if len(got) != 3 {
+	if len(got) != 2 {
 		t.Fatalf("expected one entry per requested name, got %+v", got)
 	}
 	if got[historyName].Source != "history" || got[historyName].InputPrice != 42 {
 		t.Fatalf("expected the provider's own price to outrank the catalog, got %+v", got[historyName])
-	}
-	if got[seedName].Source != "seed" {
-		t.Fatalf("expected a catalog hit for %s, got %+v", seedName, got[seedName])
-	}
-	want, _ := pricecatalog.Lookup(catalogSeededHost, seedName)
-	if got[seedName].InputPrice != want.Input || got[seedName].OutputPrice != want.Output {
-		t.Fatalf("catalog figures must pass through, want %v/%v got %+v", want.Input, want.Output, got[seedName])
 	}
 	if got["no-such-model"].Source != "" {
 		t.Fatalf("a miss must come back with an empty source, got %+v", got["no-such-model"])

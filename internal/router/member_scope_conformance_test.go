@@ -47,6 +47,10 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/providers/:id/candidates",
 		"/api/admin/providers/:id/impact",
 		"/api/admin/providers/:id/models",
+		// Learned per-key rate-limit evidence describes upstream
+		// accounts, which members never see — same dimension as the
+		// provider routes above.
+		"/api/admin/rate-limits",
 		"/api/admin/request-logs",
 		"/api/admin/request-logs/:requestId",
 		"/api/admin/request-logs/:requestId/body/stream",

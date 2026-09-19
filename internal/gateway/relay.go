@@ -14,17 +14,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/decision"
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/gateway/circuit"
 	"github.com/yolorouter/yolorouter/internal/loopback"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
-	"github.com/yolorouter/yolorouter/internal/repository"
-	"github.com/yolorouter/yolorouter/internal/service/videotask"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
@@ -104,7 +100,7 @@ var testHookHandleDone func(*Exchange)
 // for decrypting provider keys, an upstream HTTP client, and the in-memory
 // rate limiter.
 type Service struct {
-	db      *gorm.DB
+	store   Store
 	secrets crypto.SecretBox
 	client  *UpstreamClient
 	// settingsProvider is the read-only window into the cached global custom
@@ -136,11 +132,20 @@ type Service struct {
 	// admin model view (the per-candidate binding counts).
 	bindings *BindingRegistry
 
+	// state is the placement-seam OVERRIDE slot: nil in this binary,
+	// where st() derives the faces from the concrete fields above on
+	// every access (state.go). A build whose process state lives
+	// elsewhere would assign its StateStore here and the kernel would
+	// serve from it instead; the concrete fields remain for
+	// construction, the Bindings accessor, and tests — including tests
+	// that replace a component wholesale after construction.
+	state StateStore
+
 	// videoTasks is the video task domain: the poll-side state machine the
 	// job resource routes read through, and the store the video modality's
 	// delivery persists accepted jobs into (via the package-level
 	// videoTasks sink, which NewService points at this same service).
-	videoTasks *videotask.Service
+	videoTasks VideoTasks
 
 	// secondaryFetch is the shared client for downloading responses an upstream
 	// referred to rather than returned. Built once, on first use: a transport
@@ -200,7 +205,7 @@ type Service struct {
 // the upstream transport's TCP dial bound and its HeaderTimeout seeds the
 // ResponseHeaderTimeout, while the remaining fields are read by the
 // per-attempt timeout orchestration.
-func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp SettingsProvider, gatewayCfg config.GatewayConfig) *Service {
+func NewService(store Store, video VideoTasks, secrets crypto.SecretBox, allowPrivate bool, sp SettingsProvider, gatewayCfg config.GatewayConfig) *Service {
 	// Normalise the count budgets here rather than at every read: a config
 	// assembled without them (unit tests, older config files) means the
 	// defaults, not a request that stops before its first dispatch.
@@ -223,7 +228,7 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 		gatewayCfg.KeyRateLimitCooldown = config.DefaultKeyRateLimitCooldown
 	}
 	svc := &Service{
-		db:               db,
+		store:            store,
 		secrets:          secrets,
 		client:           NewUpstreamClient(allowPrivate, gatewayCfg.HeaderTimeout, gatewayCfg.ConnectTimeout, gatewayCfg.TLSHandshakeTimeout),
 		settingsProvider: sp,
@@ -240,12 +245,8 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 	// db/secrets/client, and the modality's delivery-side sink points at
 	// the same instance so a job persisted at submit and a job polled at
 	// GET share one state machine.
-	taskDomain := videotask.NewService(db, &videoTaskQuerier{
-		db: db, secrets: secrets,
-		client: upstreamDoer{client: svc.client},
-	})
-	svc.videoTasks = taskDomain
-	videoTasks = taskDomain
+	svc.videoTasks = video
+	videoTasks = video
 	// The speech door's budget pre-gate rides the same instance's db, and
 	// hangs off a package-level seam for the same reason videoTasks does:
 	// the modality is stateless and the door is not.
@@ -254,7 +255,7 @@ func NewService(db *gorm.DB, secrets crypto.SecretBox, allowPrivate bool, sp Set
 	// same db/secrets/client triple, for the same reason the video
 	// poller does: one transport rule set, one key-resolution rule.
 	klingImagePoll = &klingImagePoller{
-		db: db, secrets: secrets,
+		store: store, secrets: secrets,
 		client: upstreamDoer{client: svc.client},
 	}
 	return svc
@@ -319,7 +320,7 @@ func isClientDisconnected(c *gin.Context) bool {
 // runs the full pipeline: pre-checks → model lookup → allowlist →
 // validate → candidate chain with Key rotation + failover → response rewrite
 // → log. Every exit path writes exactly one request_logs row via finalize.
-func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
+func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 	start := time.Now()
 	rc := &Exchange{
 		requestID:        requestIDFor(c),
@@ -548,7 +549,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 
 	// Step 4: model exists and is enabled. A model disabled by an admin
 	// must not route even if its candidates are still enabled.
-	m, err := repository.FindModelByName(s.db.WithContext(requestCtx), rc.originalModel)
+	m, err := s.store.FindModelByName(requestCtx, rc.originalModel)
 	if err != nil {
 		if isClientDisconnected(c) {
 			// The client hung up while this query was in flight — a
@@ -557,7 +558,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 			s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
 			return
 		}
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, ErrNotFound) {
 			s.rejectRequest(c, rc, http.StatusNotFound, errTypeNotFound, "model does not exist", "model_not_found", fact.FaultClient, start)
 			return
 		}
@@ -565,7 +566,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 		s.rejectRequest(c, rc, http.StatusInternalServerError, errTypeServer, "internal error", "db_model: "+err.Error(), fact.FaultGateway, start)
 		return
 	}
-	if m.ManagementStatus != model.ModelStatusEnabled {
+	if m.ManagementStatus != ModelStatusEnabled {
 		s.rejectRequest(c, rc, http.StatusNotFound, errTypeNotFound, "model does not exist", "model_disabled", fact.FaultClient, start)
 		return
 	}
@@ -589,7 +590,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// code checks exactly that instead of trusting the marker alone; the
 	// marker is process-token-gated on top.
 	if !apiKey.AllowAllModels && (!rc.visionFallbackSubCall || m.Name != rc.settings.VisionFallbackModel) {
-		allowed, err := repository.HasAPIKeyModelAccess(s.db.WithContext(requestCtx), apiKey.ID, m.ID)
+		allowed, err := s.store.HasAPIKeyModelAccess(requestCtx, apiKey.ID, m.ID)
 		if err != nil {
 			if isClientDisconnected(c) {
 				s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
@@ -606,7 +607,7 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	}
 
 	// Step 7: candidates filtered by requested capability.
-	allCandidates, err := repository.ListModelCandidatesByModelID(s.db.WithContext(requestCtx), m.ID)
+	allCandidates, err := s.store.ListModelCandidatesByModelID(requestCtx, m.ID)
 	if err != nil {
 		if isClientDisconnected(c) {
 			s.abandonRequest(rc, "client_disconnected", start, settleOptions{})
@@ -642,12 +643,14 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 	// it; the field's own note says why not. Read BEFORE the balanced reorder
 	// below, so the basis is the admin's sort_order head for every request of
 	// a model — a per-key bound provider must not make the estimate drift
-	// between callers. Nothing consumes the estimate today (the text modality
-	// answers that it cannot say), so the head-vs-walked-candidate gap is
-	// presently harmless either way.
+	// between callers. Nothing consumes the estimate's return today (the
+	// text modality answers that it cannot say; the image modality answers
+	// from ImageTiers), so the head-vs-walked-candidate gap is presently
+	// harmless either way.
 	rc.pricingBasis = PricingView{
 		InputPricePerMillion:  routable[0].InputPrice,
 		OutputPricePerMillion: routable[0].OutputPrice,
+		ImageTiers:            ParseImagePricingTiers(routable[0].ImagePricingTiers),
 	}
 
 	// Balanced models reorder the chain per caller key before the walk enters
@@ -699,8 +702,8 @@ func (s *Service) Handle(c *gin.Context, apiKey *model.APIKey) {
 // called on each rejection (these three checks all run
 // before Handle's normal body read, so the audit row would otherwise have an
 // empty request_body).
-func (s *Service) checkKeyStateAndLimits(c *gin.Context, rc *Exchange, apiKey *model.APIKey, start time.Time) bool {
-	if apiKey.Status == model.APIKeyStatusRevoked {
+func (s *Service) checkKeyStateAndLimits(c *gin.Context, rc *Exchange, apiKey *APIKey, start time.Time) bool {
+	if apiKey.Status == APIKeyStatusRevoked {
 		captureRejectedBody(c, rc)
 		s.rejectRequest(c, rc, http.StatusUnauthorized, errTypeAuthentication, "API key revoked", "revoked", fact.FaultClient, start)
 		return false
@@ -738,14 +741,15 @@ func (s *Service) executeCircuit(rc *Exchange, eff decision.CircuitEffect) {
 	if p == nil {
 		return
 	}
+	ledger := s.st().Breaker()
 	switch eff {
 	case decision.CircuitPenalize:
-		s.breaker.RecordFailure(p.ID, rc.circuitGen)
+		ledger.RecordFailure(p.ID, rc.circuitGen)
 	case decision.CircuitPenalizeSoft:
-		s.breaker.RecordSoftFailure(p.ID, rc.circuitGen)
+		ledger.RecordSoftFailure(p.ID, rc.circuitGen)
 
 	case decision.CircuitReset:
-		s.breaker.RecordSuccess(p.ID, rc.circuitGen)
+		ledger.RecordSuccess(p.ID, rc.circuitGen)
 		// The key's bench is NOT released here: that already happened on
 		// the 2xx status line in attemptOne, where the acceptance is known
 		// minutes before this delivery verdict — and is known even when the
@@ -768,7 +772,7 @@ func (s *Service) exhaustedBudget(rc *Exchange) bool {
 // candidate it loads the provider's enabled keys, decrypts them one at a
 // time, and sends the upstream request; Key rotation and candidate failover
 // decisions come back from tryKeys.
-func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, candidates []model.ModelCandidate, start time.Time) {
+func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, candidates []ModelCandidate, start time.Time) {
 	// A no-failover payload serves from the first provider or fails: every
 	// later candidate is by construction a different provider (one mapping
 	// per provider and model), and a different provider would answer with
@@ -792,7 +796,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 	// rotations inside a candidate deliberately spend nothing (the
 	// key-unusable row's call): a provider with several unusable keys must
 	// not eat the walk budget without the candidate itself being abandoned.
-	skipCandidate := func(cand model.ModelCandidate, provider *model.Provider, outcome, note string) {
+	skipCandidate := func(cand ModelCandidate, provider *Provider, outcome, note string) {
 		rc.spendBudget(decision.BudgetConsumeProbe)
 		rc.recordAttempt(cand, provider, nil, 0, outcome, note)
 	}
@@ -810,9 +814,9 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 	// egress verdicts) and transient errors say nothing about the
 	// provider's health, and the breaker's own refusal is the recovery path
 	// working, not a dead end.
-	skipDeadEndCandidate := func(cand model.ModelCandidate, provider *model.Provider, outcome, note string) {
+	skipDeadEndCandidate := func(cand ModelCandidate, provider *Provider, outcome, note string) {
 		skipCandidate(cand, provider, outcome, note)
-		s.bindings.Quarantine(cand.ProviderID)
+		s.st().Bindings().Quarantine(cand.ProviderID)
 		if rc.binding.candidateID != 0 && cand.ID == rc.binding.candidateID {
 			rc.binding.invalidated = true
 		}
@@ -870,7 +874,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 			skipDeadEndCandidate(cand, nil, AttemptBadStatus, "provider missing (preload)")
 			continue
 		}
-		if provider.ManagementStatus != model.ProviderStatusEnabled {
+		if provider.ManagementStatus != ProviderStatusEnabled {
 			skipDeadEndCandidate(cand, provider, AttemptBadStatus, "provider disabled")
 			continue
 		}
@@ -879,7 +883,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 		// moments ago, and walking it again would spend keys, rewrites and
 		// an attempt on an answer the record already knows. After the open
 		// window, Allow admits a bounded number of requests as the probes.
-		allowed, circuitGen := s.breaker.Allow(provider.ID, provider.DestinationVersion)
+		allowed, circuitGen := s.st().Breaker().Allow(provider.ID, provider.DestinationVersion)
 		if !allowed {
 			skipCandidate(cand, provider, AttemptBadStatus, skipReasonCircuitRefused)
 			continue
@@ -887,7 +891,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 		rc.circuitGen = circuitGen
 		rc.attempt.BindProvider(provider)
 
-		keys, err := repository.ListProviderKeysByProvider(s.db.WithContext(rc.requestCtx), provider.ID)
+		keys, err := s.keyRows(rc.requestCtx, provider.ID)
 		if err != nil {
 			if isClientDisconnected(c) {
 				// The client is gone — stop walking the candidate chain
@@ -1054,7 +1058,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 		// cursor advances per walk: consuming a turn for a candidate that
 		// then never reaches its keys would skew consecutive real dispatches
 		// onto the same key.
-		enabled = s.keyPool.walkOrder(provider.ID, enabled)
+		enabled = s.st().Keys().walkOrder(provider.ID, enabled)
 		attemptsBefore := rc.attemptsSpent
 		if s.tryKeys(c, rc, adm, enabled, plain, egress, outBody, url, call, start) == outcomeDone {
 			// The response was written by this candidate — a success, or a
@@ -1068,7 +1072,7 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 			// candidate, so a disconnect keeps the old affinity too.
 			if rc.binding.invalidated && !isClientDisconnected(c) {
 				if served := rc.attempt.Candidate(); served != nil {
-					s.bindings.Rebind(rc.apiKeyID, rc.binding.modelID, served.ProviderID, served.ID, rc.binding.candidateID)
+					s.st().Bindings().Rebind(rc.apiKeyID, rc.binding.modelID, served.ProviderID, served.ID, rc.binding.candidateID)
 					rc.binding.invalidated = false
 				}
 			}
@@ -1156,7 +1160,7 @@ const (
 // has been written to the client, or outcomeNextCandidate when every key on
 // this provider failed with a key-rotation error and the chain should move
 // to the next candidate (same-provider no usable key, THEN failover).
-func (s *Service) tryKeys(c *gin.Context, rc *Exchange, adm admitted, keys []model.ProviderKey, plain map[uint]string, egress *EgressDecision, outBody []byte, url string, call *UpstreamCall, start time.Time) relayOutcome {
+func (s *Service) tryKeys(c *gin.Context, rc *Exchange, adm admitted, keys []ProviderKey, plain map[uint]string, egress *EgressDecision, outBody []byte, url string, call *UpstreamCall, start time.Time) relayOutcome {
 	provider := rc.attempt.Provider()
 	// Indexed by hand because one iteration can legitimately not advance: a
 	// repaired-body retry re-enters the same key with the new body. One
@@ -1182,7 +1186,7 @@ func (s *Service) tryKeys(c *gin.Context, rc *Exchange, adm admitted, keys []mod
 		// breaker, and rotating on would dispatch to a provider the record
 		// just declared down — with results that arrive pre-revocation
 		// stamped stale and discarded. A pure read, so it costs no probe.
-		if !s.breaker.StillAllowed(provider.ID, rc.circuitGen) {
+		if !s.st().Breaker().StillAllowed(provider.ID, rc.circuitGen) {
 			return outcomeNextCandidate
 		}
 		pk := keys[i]
@@ -1480,6 +1484,7 @@ func foldUpstreamDecision(observed decision.Resolved, statusCode int, hasRepair,
 // and pre-first-byte stream failures are candidate-level (failover); 401/429
 // are key-level (rotate); 2xx is success; other 4xx is terminal (caller's
 // problem).
+
 // NoteKeyRetestPassed records a completed, PASSED retest of a provider key:
 // proof of recovery, delivered by the provider service's commit path (the
 // only place proof exists — TestGeneration alone advances when a retest is
@@ -1489,7 +1494,7 @@ func foldUpstreamDecision(observed decision.Resolved, statusCode int, hasRepair,
 // probe and this delayed callback stays the newer evidence: like a served
 // request, the proof releases only benches older than itself.
 func (s *Service) NoteKeyRetestPassed(keyID uint, configVersion int, observedAt time.Time) {
-	s.keyPool.clearKey(keyID, configVersion, observedAt)
+	s.st().Keys().clearKey(keyID, configVersion, observedAt)
 }
 
 // markProviderKeyForRetest persists a key-scoped upstream rejection as a
@@ -1503,15 +1508,15 @@ func (s *Service) NoteKeyRetestPassed(keyID uint, configVersion int, observedAt 
 // a stuck DB so it cannot hang the goroutine indefinitely. The CAS's own
 // version guard (expectedDestinationVersion) already protects against
 // concurrent edits, so the detached context is safe.
-func (s *Service) markProviderKeyForRetest(ctx context.Context, rc *Exchange, pk *model.ProviderKey, provider *model.Provider) {
+func (s *Service) markProviderKeyForRetest(ctx context.Context, rc *Exchange, pk *ProviderKey, provider *Provider) {
 	// The invalidation's observation time, taken before the CAS: should this
 	// goroutine stall through the DB write, a retest, and fresh verdicts on
 	// the recovered key, the late dropKey below must count against the
 	// moment the invalidating response was seen, not against now-at-last.
-	observed := s.keyPool.stamp()
+	observed := s.st().Keys().stamp()
 	casCtx, casCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer casCancel()
-	if applied, mErr := repository.MarkProviderKeyVerificationFailedIfCurrent(s.db.WithContext(casCtx), pk.ID, provider.DestinationVersion, pk.ConfigVersion, pk.TestGeneration, time.Now()); mErr != nil {
+	if applied, mErr := s.store.MarkProviderKeyVerificationFailedIfCurrent(casCtx, pk.ID, provider.DestinationVersion, pk.ConfigVersion, pk.TestGeneration, time.Now()); mErr != nil {
 		logger.Warn("gateway: mark provider key failed",
 			zap.Uint("key_id", pk.ID), zap.String("request_id", rc.requestID), zap.Error(mErr))
 	} else if !applied {
@@ -1527,8 +1532,58 @@ func (s *Service) markProviderKeyForRetest(ctx context.Context, rc *Exchange, pk
 		// still match after a successful retest and demote the recovered key
 		// until expiry. On a DB error the key stays routable — and possibly
 		// still rate-limited — so the bench stays too.
-		s.keyPool.dropKey(pk.ID, pk.ConfigVersion, observed)
+		s.st().Keys().dropKey(pk.ID, pk.ConfigVersion, observed)
 	}
+}
+
+// recordRateLimitObservation turns a 429's rate-limit evidence into
+// learned rows and, for the body dialect that names a long window
+// (Gemini's RetryInfo), a lengthening of the bench this same verdict
+// booked. It is a recorder on the failure path: a DB error logs and the
+// request proceeds untouched — the observation is telemetry for the pool
+// order and the admin surface, never a gate anything waits on.
+func (s *Service) recordRateLimitObservation(ctx context.Context, rc *Exchange, pk *ProviderKey, header http.Header, body []byte) {
+	now := time.Now().UTC()
+	evidence := parseRateLimitHeaderEvidence(header, now)
+	gemini, geminiOK := parseGeminiRateLimitBody(body)
+	if len(evidence) == 0 && !geminiOK {
+		return
+	}
+	obsCtx, obsCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer obsCancel()
+	for _, ev := range evidence {
+		if err := s.store.UpsertObservedRateLimit(obsCtx, pk.ID, ev.Meter, ev.Limit, ev.WindowSecs, ev.Remaining, resetOrNull(ev.ResetAt), now); err != nil {
+			logger.Warn("gateway: record observed rate limit failed",
+				zap.Uint("key_id", pk.ID), zap.String("meter", ev.Meter),
+				zap.String("request_id", rc.requestID), zap.Error(err))
+		}
+	}
+	// Gemini's evidence is body-side, so it arrives after the header-stage
+	// bench booking; a structured retryDelay becomes a lengthen candidate,
+	// and lengthenKeyBench applies it only where it actually extends the
+	// standing bench. WindowSecs is stored for the admin surface — the
+	// delay is the only honest duration to bench on.
+	if geminiOK {
+		if gemini.WindowSecs > 0 {
+			window := gemini.WindowSecs
+			if err := s.store.UpsertObservedRateLimit(obsCtx, pk.ID, MeterRequests, nil, &window, nil, nil, now); err != nil {
+				logger.Warn("gateway: record observed rate limit window failed",
+					zap.Uint("key_id", pk.ID), zap.String("request_id", rc.requestID), zap.Error(err))
+			}
+		}
+		if d := geminiLongWindowBench(gemini); d > 0 {
+			s.st().Keys().lengthenKeyBench(pk.ID, pk.ConfigVersion, rc.keyDispatchedAt, d)
+		}
+	}
+}
+
+// resetOrNull maps the zero time (no parseable reset) to a NULL column —
+// a stored zero reset would read as "the window reopened at the epoch".
+func resetOrNull(at time.Time) *time.Time {
+	if at.IsZero() {
+		return nil
+	}
+	return &at
 }
 
 func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plaintext string, egress *EgressDecision, outBody []byte, url string, call *UpstreamCall, start time.Time, repairAllowed bool) (attemptResult, []byte) {
@@ -1543,7 +1598,7 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	// Stamped from the pool's clock, before the send: if a bench lands on
 	// this key between here and the response, the stamp already predates it
 	// and this attempt's success cannot release it.
-	rc.keyDispatchedAt = s.keyPool.stamp()
+	rc.keyDispatchedAt = s.st().Keys().stamp()
 
 	// Per-attempt deadline = min(attempt_timeout, remaining request budget).
 	// The request-level budget (RequestDeadline, set at Handle entry) spans
@@ -1686,7 +1741,7 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 		// it entirely, keeping a key the upstream just accepted demoted.
 		// Acceptance already refutes a rate limit; how delivery ends
 		// cannot un-refute it.
-		s.keyPool.clearKey(pk.ID, pk.ConfigVersion, rc.keyDispatchedAt)
+		s.st().Keys().clearKey(pk.ID, pk.ConfigVersion, rc.keyDispatchedAt)
 		return s.deliverAndSettle(c, rc, adm, resp, call, start), nil
 	}
 
@@ -1700,16 +1755,23 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	}
 
 	// A 429's bench is likewise booked from the headers, BEFORE the error
-	// body is read: the status line and Retry-After carry the whole verdict,
-	// and the bounded body read below can still take the full
+	// body is read: the status line and Retry-After carry the whole
+	// verdict, and the bounded body read below can still take the full
 	// errorBodyTotalBudget against a slow-trickle upstream — waiting would
 	// leave concurrent requests dispatching the limited key for that whole
-	// window and then start the stated Retry-After late. If the body then
-	// reveals an exhausted quota, the invalidation path below drops this
-	// bench again — that key is leaving rotation entirely.
+	// window and then start the stated Retry-After late. rateLimitBenchDuration
+	// keeps that rule for everything that does not name a concrete longer
+	// window: when a rate-limit reset header itself says the wall stands
+	// for more than the Retry-After ceiling (an hourly or daily quota),
+	// the bench follows that window, capped at observedBenchCeiling — a
+	// daily wall is not a ten-minute wall, and re-dispatching into it every
+	// ten minutes burns attempts for a day. If the body then reveals an
+	// exhausted quota, the invalidation path below drops this bench again —
+	// that key is leaving rotation entirely.
 	if statusCode == http.StatusTooManyRequests {
-		s.keyPool.coolKey(pk.ID, pk.ConfigVersion, rc.keyDispatchedAt,
-			cooldownFromRetryAfter(resp.Header.Get("Retry-After"), s.keyPool.stamp(), s.gateway.KeyRateLimitCooldown))
+		pool := s.st().Keys()
+		pool.coolKey(pk.ID, pk.ConfigVersion, rc.keyDispatchedAt,
+			rateLimitBenchDuration(resp.Header, pool.stamp(), s.gateway.KeyRateLimitCooldown))
 	}
 
 	// Capture the obtainable upstream error body before close, verbatim.
@@ -1740,6 +1802,16 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	// only reorders later walks.
 	if statusCode == http.StatusTooManyRequests && quotaExhaustedBody(errBody) {
 		s.markProviderKeyForRetest(ctx, rc, pk, provider)
+	}
+
+	// Learn what this 429 said about the key's own limits. After the
+	// quota check on purpose: when that path just invalidated the key, the
+	// dropKey inside it has removed the bench, and the lengthen inside
+	// this call is refused by its ordering gates — the retest verdict owns
+	// the key now. Recording the evidence still happens either way; rows
+	// about a key leaving rotation are harmless and die with its cascade.
+	if statusCode == http.StatusTooManyRequests {
+		s.recordRateLimitObservation(ctx, rc, pk, resp.Header, errBody)
 	}
 	_ = resp.Body.Close()
 
@@ -1893,7 +1965,7 @@ func (s *Service) allCandidatesFailed(c *gin.Context, rc *Exchange, start time.T
 // A zero return from Route (no bindings wired, or every provider currently
 // dead) keeps the caller's slice untouched: sort_order order, failover
 // behaviour — the degrade is "not balanced right now", never "not routed".
-func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []model.ModelCandidate) []model.ModelCandidate {
+func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []ModelCandidate) []ModelCandidate {
 	if len(candidates) < 2 {
 		// A single-candidate chain has nothing to balance; Route would bind
 		// it all the same, but the binding would only burn LRU capacity —
@@ -1910,8 +1982,8 @@ func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []model
 			destByProvider[cand.ProviderID] = cand.Provider.DestinationVersion
 		}
 	}
-	first := s.bindings.Route(rc.apiKeyID, modelID, candidates, func(providerID uint) bool {
-		return s.breaker.IsOpen(providerID, destByProvider[providerID])
+	first := s.st().Bindings().Route(rc.apiKeyID, modelID, candidates, func(providerID uint) bool {
+		return s.st().Breaker().IsOpen(providerID, destByProvider[providerID])
 	})
 	if first == 0 {
 		return candidates
@@ -1924,7 +1996,7 @@ func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []model
 		if i == 0 {
 			return candidates
 		}
-		out := make([]model.ModelCandidate, 0, len(candidates))
+		out := make([]ModelCandidate, 0, len(candidates))
 		out = append(out, candidates[i])
 		out = append(out, candidates[:i]...)
 		out = append(out, candidates[i+1:]...)
@@ -1954,7 +2026,7 @@ func (s *Service) reorderBalanced(rc *Exchange, modelID uint, candidates []model
 // candidate on a switched-off provider counts toward neither: it is
 // configuration an operator turned down — the "no enabled route" answer — not
 // a route waiting on verification.
-func filterCandidates(all []model.ModelCandidate) (routable []model.ModelCandidate, anyEnabled bool) {
+func filterCandidates(all []ModelCandidate) (routable []ModelCandidate, anyEnabled bool) {
 	for _, c := range all {
 		// The provider gate comes first, as it does in
 		// modeladmin.CandidateBlockedBy, which also rules on the provider
@@ -1965,10 +2037,10 @@ func filterCandidates(all []model.ModelCandidate) (routable []model.ModelCandida
 		// of a live provider can spend the whole budget before the request
 		// reaches the provider that would have served it. A nil provider
 		// (broken association, a missed preload) falls to the same gate.
-		if c.Provider == nil || c.Provider.ManagementStatus != model.ProviderStatusEnabled {
+		if c.Provider == nil || c.Provider.ManagementStatus != ProviderStatusEnabled {
 			continue
 		}
-		if c.ManagementStatus != model.ModelCandidateStatusEnabled {
+		if c.ManagementStatus != ModelCandidateStatusEnabled {
 			continue
 		}
 		anyEnabled = true
@@ -1978,7 +2050,7 @@ func filterCandidates(all []model.ModelCandidate) (routable []model.ModelCandida
 		// routability check (modeladmin.CandidateBlockedBy) already rejects these, so the
 		// gateway must match that gate or it routes a mapping known to be
 		// unverified.
-		if c.VerificationStatus != model.ModelVerificationStatusPassed {
+		if c.VerificationStatus != ModelVerificationStatusPassed {
 			continue
 		}
 		routable = append(routable, c)
@@ -1990,10 +2062,10 @@ func filterCandidates(all []model.ModelCandidate) (routable []model.ModelCandida
 // verification-passed (the gateway must match ModelService's routability
 // gate). anyEnabled lets the caller distinguish "all keys disabled" from
 // "enabled but none verified" for an accurate log reason.
-func filterEnabledKeys(keys []model.ProviderKey) (out []model.ProviderKey, anyEnabled bool) {
-	out = make([]model.ProviderKey, 0, len(keys))
+func filterEnabledKeys(keys []ProviderKey) (out []ProviderKey, anyEnabled bool) {
+	out = make([]ProviderKey, 0, len(keys))
 	for _, k := range keys {
-		if k.ManagementStatus != model.ProviderKeyStatusEnabled {
+		if k.ManagementStatus != ProviderKeyStatusEnabled {
 			continue
 		}
 		anyEnabled = true
@@ -2001,7 +2073,7 @@ func filterEnabledKeys(keys []model.ProviderKey) (out []model.ProviderKey, anyEn
 		// is not Passed (never tested, or failed a retest) must not be
 		// sent to the upstream — the gateway would otherwise keep using a
 		// credential already known to be invalid.
-		if k.VerificationStatus != model.VerificationStatusPassed {
+		if k.VerificationStatus != VerificationStatusPassed {
 			continue
 		}
 		out = append(out, k)
@@ -2034,7 +2106,7 @@ func (rc *Exchange) recordCurrentAttempt(status int, outcome, failReason string)
 // per candidate in relayCandidates and set in attemptOne, so it reflects the
 // current attempt: empty for attempts that failed before any request was
 // sent.
-func (rc *Exchange) recordAttempt(cand model.ModelCandidate, provider *model.Provider, key *model.ProviderKey, status int, outcome, failReason string) {
+func (rc *Exchange) recordAttempt(cand ModelCandidate, provider *Provider, key *ProviderKey, status int, outcome, failReason string) {
 	rec := AttemptRecord{
 		CandidateID:       cand.ID,
 		ProviderModelName: cand.ProviderModelName,

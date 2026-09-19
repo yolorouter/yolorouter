@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -24,11 +23,11 @@ import (
 func seedCandidate(t *testing.T, db *gorm.DB, modelID, providerID uint, providerModelName string, order, verification int) {
 	t.Helper()
 	now := time.Now().UTC()
-	if err := db.Create(&model.ModelCandidate{
+	if err := db.Create(&ModelCandidate{
 		ModelID: modelID, ProviderID: providerID, ProviderModelName: providerModelName,
 		InputPrice: 1.0, OutputPrice: 2.0, MaxOutput: 4096,
 		SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-		ManagementStatus:   model.ModelCandidateStatusEnabled,
+		ManagementStatus:   ModelCandidateStatusEnabled,
 		SortOrder:          order,
 		VerificationStatus: verification,
 		CreatedAt:          now, UpdatedAt: now,
@@ -70,7 +69,7 @@ func TestDisabledProviderCandidatesDoNotEnterTheChain(t *testing.T) {
 
 	svc := newSvc(t, db)
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
@@ -81,13 +80,13 @@ func TestDisabledProviderCandidatesDoNotEnterTheChain(t *testing.T) {
 		p := createProvider(t, db, fmt.Sprintf("disabled-%d", i), disabledUpstream.URL)
 		disableProvider(t, db, p.ID)
 		createProviderKey(t, db, svc.secrets, p.ID, "sk-disabled", fmt.Sprintf("k-%d", i), 1, true)
-		seedCandidate(t, db, m.ID, p.ID, "real-model", i, model.ModelVerificationStatusPassed)
+		seedCandidate(t, db, m.ID, p.ID, "real-model", i, ModelVerificationStatusPassed)
 	}
 	live := createProvider(t, db, "live", upstream.URL)
 	createProviderKey(t, db, svc.secrets, live.ID, "sk-live", "k-live", 1, true)
-	seedCandidate(t, db, m.ID, live.ID, "real-model", 4, model.ModelVerificationStatusPassed)
+	seedCandidate(t, db, m.ID, live.ID, "real-model", 4, ModelVerificationStatusPassed)
 
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -123,7 +122,7 @@ func TestAllRoutesOnDisabledProvidersSaysNoEnabledRoute(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
 	disableProvider(t, db, p.ID)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -154,8 +153,8 @@ func TestDisabledProviderRoutePlusUnverifiedSaysNotVerifiedYet(t *testing.T) {
 
 	live := createProvider(t, db, "pending-probe", "http://127.0.0.1:0")
 	createProviderKey(t, db, svc.secrets, live.ID, "sk-live", "k-live", 1, true)
-	seedCandidate(t, db, m.ID, live.ID, "gpt-4o-real", 2, model.ModelVerificationStatusUntested)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	seedCandidate(t, db, m.ID, live.ID, "gpt-4o-real", 2, ModelVerificationStatusUntested)
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -183,11 +182,11 @@ func TestRelayCandidatesGuardsUnfilteredSlice(t *testing.T) {
 	m := createModelAndCandidate(t, db, off, "gpt-4o", "gpt-4o-real", true, true, 1)
 	disableProvider(t, db, off.ID)
 
-	var onDisabled model.ModelCandidate
+	var onDisabled ModelCandidate
 	if err := db.Where("model_id = ?", m.ID).First(&onDisabled).Error; err != nil {
 		t.Fatalf("load seeded candidate: %v", err)
 	}
-	off.ManagementStatus = model.ProviderStatusDisabled
+	off.ManagementStatus = ProviderStatusDisabled
 	onDisabled.Provider = off
 	noProvider := onDisabled
 	noProvider.Provider = nil
@@ -211,7 +210,7 @@ func TestRelayCandidatesGuardsUnfilteredSlice(t *testing.T) {
 		t.Fatalf("Admit refused a valid body: %+v", rej)
 	}
 	svc.relayCandidates(c, rc, admitted{payload: newOrderedPayload(payload, rc.requestID)},
-		[]model.ModelCandidate{noProvider, onDisabled}, time.Now())
+		[]ModelCandidate{noProvider, onDisabled}, time.Now())
 
 	if len(rc.attempts) != 2 {
 		t.Fatalf("attempts = %+v, want exactly the two guard skip rows", rc.attempts)

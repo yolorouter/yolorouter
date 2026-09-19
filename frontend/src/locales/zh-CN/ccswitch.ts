@@ -4,9 +4,7 @@ export default {
   opening: '正在打开 CC Switch...',
   plaintextUnavailable: '该 Key 无法回读完整明文（旧版本创建），已用占位符导入，请在 CC-Switch 中手动粘贴密钥',
   openSuccess: 'CC-Switch 导入成功，请填写正确的 API Key',
-  confirmLaunchTitle: '打开 CC-Switch',
   confirmLaunchContent: '导入数据已准备就绪，点击下方按钮打开 CC-Switch 完成导入。',
-  confirmLaunchButton: '打开 CC-Switch',
   modalTitle: '导出到 CC-Switch',
   keyLabel: '密钥',
   modelLabel: '模型',
@@ -17,4 +15,7 @@ export default {
   statusAvailable: '可用',
   statusUnavailable: '不可用',
   discoveryFailedHint: '自动获取模型列表失败，当前为备用选项；可重试获取。',
+  keysLoading: '正在获取可用密钥…',
+  keysEmptyTitle: '没有能使用该模型的密钥',
+  keysEmptyHint: '创建一个状态可用、路由范围包含该模型的密钥后再来导出。',
 }

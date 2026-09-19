@@ -12,6 +12,12 @@
 # checks (native + windows cross-build). The frontend embed build is NOT
 # run here — run `make embed-frontend` yourself before a release push.
 #
+# Before any of that, it lints commit SUBJECTS: the public history is
+# English conventional subjects that describe the change itself (see
+# CONTRIBUTING.md "Commits & pull requests"). Chinese subjects and
+# internal review-loop bookkeeping ("loop-review round 3", "R4
+# convergence") drifted in once; this stands in front of a repeat.
+#
 # One-time activation per clone: git config core.hooksPath .githooks
 set -euo pipefail
 
@@ -21,6 +27,34 @@ if [ "$remote" != "github" ]; then
 fi
 
 cd "$(git rev-parse --show-toplevel)"
+
+# Subject lint needs no toolchain, so it runs even before the
+# golangci-lint availability check. The ref names are discarded — only
+# the SHAs pick the range.
+while read -r _ local_sha _ remote_sha; do
+  case "$local_sha" in
+    0000000000000000000000000000000000000000) continue ;; # branch deletion
+  esac
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    # New branch: no remote SHA to range against, so lint the tip's
+    # recent history instead. A 50-commit window is the tradeoff between
+    # catching pre-gate drift and blocking a branch that forked from
+    # history this gate would now reject and cannot fix by rebasing.
+    subjects="$(git log --format='%h %s' -50 "$local_sha")"
+  else
+    subjects="$(git log --format='%h %s' "$remote_sha..$local_sha")"
+  fi
+  # CJK coverage: Han + Ext-A + kana + Hangul + CJK punctuation and
+  # full-width forms. Word boundaries keep "background 2" /
+  # "playground 4" off the round-N pattern.
+  bad="$(printf '%s\n' "$subjects" | perl -CSD -ne 'print if /[\x{3000}-\x{30FF}\x{3400}-\x{4DBF}\x{4E00}-\x{9FFF}\x{AC00}-\x{D7AF}\x{FF01}-\x{FF5E}]/ || /loop-review/i || /\bround\s*[0-9]/i || /\bR[0-9]+\s*(?:round|convergence)(?![\w-])/i')"
+  if [ -n "$bad" ]; then
+    echo "!! commit subjects violate the public-history rules (English, conventional, describe the change — not the process):" >&2
+    printf '%s\n' "$bad" >&2
+    echo "   see CONTRIBUTING.md \"Commits & pull requests\"; rebase/amend and push again" >&2
+    exit 1
+  fi
+done
 
 if ! command -v golangci-lint > /dev/null 2>&1; then
   echo "!! golangci-lint is not installed — the gate cannot run." >&2

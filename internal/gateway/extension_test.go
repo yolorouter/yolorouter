@@ -14,7 +14,6 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/decision"
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -45,8 +44,8 @@ func TestObserveUpstreamStampsProvenance(t *testing.T) {
 	rc := &Exchange{
 		attempts: make([]AttemptRecord, 2), // two attempts already recorded
 	}
-	rc.attempt.BeginCandidate(&model.ModelCandidate{ID: 77})
-	rc.attempt.BindProvider(&model.Provider{ID: 42})
+	rc.attempt.BeginCandidate(&ModelCandidate{ID: 77})
+	rc.attempt.BindProvider(&Provider{ID: 42})
 
 	got := svc.observeUpstreamError(context.Background(), rc, fact.Upstream{StatusCode: 400})
 	if got.Loop != decision.LoopNextCandidate {
@@ -661,10 +660,10 @@ func settleOneDelivery(t *testing.T, svc *Service, rc *Exchange, d fact.Delivery
 	adm := admitFor(t, protocols.ProtocolOpenAI, "/v1/chat/completions",
 		`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`,
 		Candidate{ProviderModelName: "m", EgressProtocol: protocols.ProtocolOpenAI, Passthrough: true})
-	cand := model.ModelCandidate{}
+	cand := ModelCandidate{}
 	rc.attempt.BeginCandidate(&cand)
-	rc.attempt.BindProvider(&model.Provider{})
-	rc.attempt.BindKey(&model.ProviderKey{})
+	rc.attempt.BindProvider(&Provider{})
+	rc.attempt.BindKey(&ProviderKey{})
 	return svc.recordAndSettle(nil, rc, adm, d, 200, time.Now())
 }
 
@@ -731,22 +730,22 @@ func TestASettlementAfterItsOwnAttemptIsRecordedAgainstThatAttempt(t *testing.T)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	if err := db.Create(&model.ModelCandidate{
+	if err := db.Create(&ModelCandidate{
 		ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "claude-3-5-sonnet-20241022",
 		InputPrice: 1.0, OutputPrice: 2.0, MaxOutput: 4096,
 		SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-		ManagementStatus:   model.ModelCandidateStatusEnabled,
+		ManagementStatus:   ModelCandidateStatusEnabled,
 		SortOrder:          1,
-		VerificationStatus: model.ModelVerificationStatusPassed,
+		VerificationStatus: ModelVerificationStatusPassed,
 		CreatedAt:          now, UpdatedAt: now,
 	}).Error; err != nil {
 		t.Fatalf("seed candidate: %v", err)
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }

@@ -14,7 +14,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -25,12 +24,12 @@ import (
 // every other gateway test
 // exercises. Mirrors createProvider (relay_test.go) with the type field
 // overridden.
-func createAnthropicProvider(t *testing.T, db *gorm.DB, name, baseURL string) *model.Provider {
+func createAnthropicProvider(t *testing.T, db *gorm.DB, name, baseURL string) *Provider {
 	t.Helper()
 	now := time.Now().UTC()
-	p := &model.Provider{
+	p := &Provider{
 		Name: name, ProviderType: "anthropic", BaseURL: baseURL,
-		ManagementStatus: model.ProviderStatusEnabled, DestinationVersion: 1,
+		ManagementStatus: ProviderStatusEnabled, DestinationVersion: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(p).Error; err != nil {
@@ -45,12 +44,12 @@ func createAnthropicProvider(t *testing.T, db *gorm.DB, name, baseURL string) *m
 // Gemini ingress caller (/v1beta/...) is same-protocol passthrough — no IR
 // round trip — exercising the decoding pump's Gemini branch and, on a
 // mid-stream upstream failure, writeStreamErrorEvent's Gemini branch.
-func createGeminiProvider(t *testing.T, db *gorm.DB, name, baseURL string) *model.Provider {
+func createGeminiProvider(t *testing.T, db *gorm.DB, name, baseURL string) *Provider {
 	t.Helper()
 	now := time.Now().UTC()
-	p := &model.Provider{
+	p := &Provider{
 		Name: name, ProviderType: "gemini", BaseURL: baseURL,
-		ManagementStatus: model.ProviderStatusEnabled, DestinationVersion: 1,
+		ManagementStatus: ProviderStatusEnabled, DestinationVersion: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(p).Error; err != nil {
@@ -64,12 +63,12 @@ func createGeminiProvider(t *testing.T, db *gorm.DB, name, baseURL string) *mode
 // protocols.ProtocolResponses, so a request against this provider from a
 // native Responses ingress caller (/v1/responses) is same-protocol
 // passthrough — no IR round trip.
-func createResponsesProvider(t *testing.T, db *gorm.DB, name, baseURL string) *model.Provider {
+func createResponsesProvider(t *testing.T, db *gorm.DB, name, baseURL string) *Provider {
 	t.Helper()
 	now := time.Now().UTC()
-	p := &model.Provider{
+	p := &Provider{
 		Name: name, ProviderType: "responses", BaseURL: baseURL,
-		ManagementStatus: model.ProviderStatusEnabled, DestinationVersion: 1,
+		ManagementStatus: ProviderStatusEnabled, DestinationVersion: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(p).Error; err != nil {
@@ -121,7 +120,7 @@ func TestCrossProtocolOpenAIToAnthropicNonStream(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"gpt-4o","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"What is 2+2?"}]}`)
 	c, w := newCtx(reqBody)
@@ -219,7 +218,7 @@ func TestCrossProtocolOpenAIToAnthropicStream(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	c, w := newCtx(reqBody)
@@ -306,7 +305,7 @@ func TestCrossProtocolOpenAIToAnthropicStream_IncludeUsage(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`)
 	c, w := newCtx(reqBody)
@@ -375,7 +374,7 @@ func TestCrossProtocolOpenAIToAnthropicNonStream_CapturesResponseBody(t *testing
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -455,24 +454,24 @@ func TestCrossProtocolStreamPreFirstEventFailover(t *testing.T) {
 	// Both candidates back the same external model, in sort_order so the
 	// empty candidate is tried first.
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	for i, p := range []*model.Provider{p1, p2} {
-		if err := db.Create(&model.ModelCandidate{
+	for i, p := range []*Provider{p1, p2} {
+		if err := db.Create(&ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "claude-3-5-sonnet-20241022",
 			InputPrice: 1.0, OutputPrice: 2.0, MaxOutput: 4096,
 			SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-			ManagementStatus:   model.ModelCandidateStatusEnabled,
+			ManagementStatus:   ModelCandidateStatusEnabled,
 			SortOrder:          i + 1,
-			VerificationStatus: model.ModelVerificationStatusPassed,
+			VerificationStatus: ModelVerificationStatusPassed,
 			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %d: %v", i, err)
 		}
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -570,7 +569,7 @@ func TestCrossProtocolStreamCaptureMatchesClientBytes(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	dir := t.TempDir()
 	var captured *Exchange

@@ -91,7 +91,7 @@ func (textModality) Admit(_ context.Context, in Ingress) (Payload, *Rejection) {
 		}
 	}
 
-	return &textPayload{ingress: in.Protocol, body: in.Body, meta: meta}, nil
+	return &textPayload{ingress: in.Protocol, body: in.Body, meta: meta, path: in.Path}, nil
 }
 
 // textPayload is one text request.
@@ -105,6 +105,11 @@ type textPayload struct {
 	ingress protocols.ProtocolID
 	body    []byte
 	meta    *ingressMeta
+	// path is the caller's raw request path. On an openai-family passthrough
+	// the caller's path — not the encoder's canonical one — is the egress
+	// path, so a legacy /v1/completions caller reaches the upstream's own
+	// completions endpoint rather than being retitled into chat.
+	path string
 	// cand is the candidate PrepareUpstream built for, read back by the
 	// delivery that follows. The kernel guarantees the two run in that order
 	// and for the same candidate.
@@ -178,6 +183,17 @@ func (p *textPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 	}
 
 	path := egress.RequestEncoder.EgressPath(cand.ProviderModelName, p.meta.Stream)
+	if cand.Passthrough && cand.EgressProtocol == protocols.ProtocolOpenAI {
+		// Preserve the caller's original path on an openai-family
+		// passthrough (key: a legacy /v1/completions caller must reach the
+		// upstream's own completions endpoint, not be retitled into the chat
+		// one). Trailing "/" is trimmed because some OpenAI-compatible
+		// upstreams 404 on the doubled slash; an unexpected empty path falls
+		// back to the encoder's canonical default.
+		if trimmed := strings.TrimRight(p.path, "/"); trimmed != "" {
+			path = trimmed
+		}
+	}
 	if cand.EgressProtocol == protocols.ProtocolGemini && p.meta.Stream {
 		path = strings.Replace(path, ":generateContent", ":streamGenerateContent?alt=sse", 1)
 	}

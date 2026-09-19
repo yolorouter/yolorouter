@@ -3,7 +3,6 @@ package gateway
 import (
 	"testing"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 )
 
@@ -86,7 +85,7 @@ func TestIngressProtocol_GeminiPrefixWithoutRecognizedActionFallsBackToOpenAI(t 
 }
 
 func TestNegotiate_OpenAIIngressOnOpenAIProvider_Passthrough(t *testing.T) {
-	p := &model.Provider{ProviderType: "openai", BaseURL: "https://api.openai.com"}
+	p := &Provider{ProviderType: "openai", BaseURL: "https://api.openai.com"}
 
 	decision, err := Negotiate(protocols.ProtocolOpenAI, p)
 	if err != nil {
@@ -101,7 +100,7 @@ func TestNegotiate_OpenAIIngressOnOpenAIProvider_Passthrough(t *testing.T) {
 }
 
 func TestNegotiate_OpenAIIngressOnAnthropicProvider_FallsBackToPrimary(t *testing.T) {
-	p := &model.Provider{ProviderType: "anthropic", BaseURL: "https://api.anthropic.com"}
+	p := &Provider{ProviderType: "anthropic", BaseURL: "https://api.anthropic.com"}
 
 	decision, err := Negotiate(protocols.ProtocolOpenAI, p)
 	if err != nil {
@@ -116,7 +115,7 @@ func TestNegotiate_OpenAIIngressOnAnthropicProvider_FallsBackToPrimary(t *testin
 }
 
 func TestNegotiate_EmptyProviderTypeTreatedAsOpenAI(t *testing.T) {
-	p := &model.Provider{ProviderType: "", BaseURL: "https://example.com"}
+	p := &Provider{ProviderType: "", BaseURL: "https://example.com"}
 
 	decision, err := Negotiate(protocols.ProtocolOpenAI, p)
 	if err != nil {
@@ -138,7 +137,7 @@ func TestNegotiate_NilProviderReturnsError(t *testing.T) {
 }
 
 func TestNegotiate_MultiProtocolProvider_BothIngressesPassthroughWithProviderBaseURL(t *testing.T) {
-	p := &model.Provider{
+	p := &Provider{
 		ProviderType:      "openai",
 		BaseURL:           "https://api.openai.com",
 		ProtocolEndpoints: `{"anthropic":""}`,
@@ -169,7 +168,7 @@ func TestNegotiate_MultiProtocolProvider_BothIngressesPassthroughWithProviderBas
 }
 
 func TestNegotiate_PerProtocolBaseURL_UsedWhenNonEmpty(t *testing.T) {
-	p := &model.Provider{
+	p := &Provider{
 		ProviderType:      "openai",
 		BaseURL:           "https://api.openai.com",
 		ProtocolEndpoints: `{"anthropic":"https://claude.gw/v1"}`,
@@ -199,7 +198,7 @@ func TestNegotiate_PerProtocolBaseURL_UsedWhenNonEmpty(t *testing.T) {
 }
 
 func TestNegotiate_MalformedProtocolEndpoints_DegradesToPrimaryOnly(t *testing.T) {
-	p := &model.Provider{
+	p := &Provider{
 		ProviderType:      "openai",
 		BaseURL:           "https://api.openai.com",
 		ProtocolEndpoints: "{bad json",
@@ -224,7 +223,7 @@ func TestNegotiate_MalformedProtocolEndpoints_DegradesToPrimaryOnly(t *testing.T
 }
 
 func TestNegotiate_AnthropicPrimaryProvider_OpenAIIngressFallsBackToClaude(t *testing.T) {
-	p := &model.Provider{ProviderType: "anthropic", BaseURL: "https://api.anthropic.com"}
+	p := &Provider{ProviderType: "anthropic", BaseURL: "https://api.anthropic.com"}
 
 	decision, err := Negotiate(protocols.ProtocolOpenAI, p)
 	if err != nil {
@@ -242,7 +241,7 @@ func TestNegotiate_AnthropicPrimaryProvider_OpenAIIngressFallsBackToClaude(t *te
 }
 
 func TestNegotiate_AnthropicProviderWithOpenAIEndpoint_MixedBaseURLs(t *testing.T) {
-	p := &model.Provider{
+	p := &Provider{
 		ProviderType:      "anthropic",
 		BaseURL:           "https://api.anthropic.com",
 		ProtocolEndpoints: `{"openai":"https://oai.gw/v1"}`,

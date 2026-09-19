@@ -18,6 +18,7 @@ import ModelDetailPage from '../views/models/ModelDetailPage.vue'
 import ApiKeyListPage from '../views/apikeys/ApiKeyListPage.vue'
 import OAuthProviderListPage from '../views/oauth/OAuthProviderListPage.vue'
 import UserListPage from '../views/users/UserListPage.vue'
+import RateLimitListPage from '../views/ratelimits/RateLimitListPage.vue'
 import SystemInfoPage from '../views/system/SystemInfoPage.vue'
 import { useAuthStore } from '../store/auth'
 
@@ -51,6 +52,7 @@ export const router = createRouter({
         { path: 'providers/:id', component: ProviderDetailPage },
         { path: 'models', component: ModelListPage },
         { path: 'models/:id', component: ModelDetailPage },
+        { path: 'rate-limits', component: RateLimitListPage },
         { path: 'api-keys', component: ApiKeyListPage, meta: { memberAllowed: true } },
         { path: 'oauth-providers', component: OAuthProviderListPage },
         { path: 'users', component: UserListPage },

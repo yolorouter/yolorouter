@@ -18,21 +18,22 @@
 package attempt
 
 import (
+	"github.com/yolorouter/yolorouter/internal/gateway/rows"
+
 	"github.com/yolorouter/yolorouter/internal/decision"
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // State is the current attempt's identity and outcome. The zero value is
 // ready to use.
 type State struct {
-	candidate *model.ModelCandidate
+	candidate *rows.ModelCandidate
 	// provider is set only once the candidate's provider proved usable, so a
 	// candidate dropped early never shows a provider it did not reach.
-	provider *model.Provider
+	provider *rows.Provider
 	// key is the provider key the current rotation step holds, set as each
 	// key is entered, so any exit taken after the entry reports this key
 	// rather than an earlier one.
-	key *model.ProviderKey
+	key *rows.ProviderKey
 	// upstreamURL is the redacted URL of the current dispatch; empty until a
 	// request was actually built.
 	upstreamURL string
@@ -43,7 +44,7 @@ type State struct {
 // BeginCandidate enters a candidate: the whole state is replaced, so a field
 // added to this struct later is reset here by construction rather than by
 // someone remembering to extend a list of clears.
-func (s *State) BeginCandidate(cand *model.ModelCandidate) {
+func (s *State) BeginCandidate(cand *rows.ModelCandidate) {
 	*s = State{candidate: cand}
 }
 
@@ -54,10 +55,10 @@ func (s *State) BeginCandidate(cand *model.ModelCandidate) {
 func (s *State) ClearVerdict() { s.verdict = decision.StickyVerdict{} }
 
 // BindProvider records that this candidate's provider proved usable.
-func (s *State) BindProvider(p *model.Provider) { s.provider = p }
+func (s *State) BindProvider(p *rows.Provider) { s.provider = p }
 
 // BindKey records the key the rotation loop is currently holding.
-func (s *State) BindKey(k *model.ProviderKey) { s.key = k }
+func (s *State) BindKey(k *rows.ProviderKey) { s.key = k }
 
 // BeginUpstreamAttempt clears the dispatch URL so a build that fails before
 // sending never inherits the previous attempt's URL in its record.
@@ -73,14 +74,14 @@ func (s *State) SetUpstreamURL(redacted string) { s.upstreamURL = redacted }
 func (s *State) HoldVerdict(v decision.StickyVerdict) { s.verdict = v }
 
 // Candidate is the candidate being attempted, nil before the first one.
-func (s *State) Candidate() *model.ModelCandidate { return s.candidate }
+func (s *State) Candidate() *rows.ModelCandidate { return s.candidate }
 
 // Provider is the usable provider of the current candidate, nil until bound.
-func (s *State) Provider() *model.Provider { return s.provider }
+func (s *State) Provider() *rows.Provider { return s.provider }
 
 // Key is the provider key the current rotation step holds, nil before the
 // first key of a candidate is entered.
-func (s *State) Key() *model.ProviderKey { return s.key }
+func (s *State) Key() *rows.ProviderKey { return s.key }
 
 // UpstreamURL is the redacted URL of the last dispatch, empty when none was
 // built.

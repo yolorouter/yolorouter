@@ -21,6 +21,38 @@ export interface CCSwitchCatalogModel {
   running_status: string
 }
 
+// Structural slice of key rows the compatible-key filter reads. The full
+// APIKey type satisfies it; tests can build minimal rows.
+export interface CCSwitchKeyRow {
+  id: number
+  key_prefix: string
+  remark: string
+  owner_username: string
+  display_status: string
+  allow_all_models: boolean
+  model_ids: number[]
+}
+
+// Which keys the model page's export picker offers: the viewer's OWN keys
+// (username match — /auth/me carries no numeric id, and the username is the
+// unique login identity), in the one routable display status (active —
+// revoked/expired/budget_exhausted all fail at the gateway), whose scope
+// covers the model being exported (allow-all, or the model's id in the
+// key's allowlist). Anything else would export a profile that fails the
+// moment CC-Switch uses it.
+export function filterCCSwitchCompatibleKeys(
+  rows: CCSwitchKeyRow[],
+  modelId: number,
+  ownerUsername: string,
+): CCSwitchKeyRow[] {
+  return rows.filter(
+    (k) =>
+      k.owner_username === ownerUsername &&
+      k.display_status === 'active' &&
+      (k.allow_all_models || k.model_ids.includes(modelId)),
+  )
+}
+
 // The pair the export dialog hands its opener on confirm — the deep-link
 // params minus the profile name, which the opening page owns (each page
 // names its rows its own way).

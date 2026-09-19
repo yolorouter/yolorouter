@@ -15,12 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"gorm.io/gorm"
-
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
-	"github.com/yolorouter/yolorouter/internal/repository"
-	"github.com/yolorouter/yolorouter/internal/service/videotask"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 )
 
@@ -36,7 +31,7 @@ type taskDoer interface {
 // destination version, pick a key — then the dialect's own route and
 // parser.
 type videoTaskQuerier struct {
-	db      *gorm.DB
+	store   Store
 	secrets crypto.SecretBox
 	client  taskDoer
 }
@@ -51,25 +46,26 @@ const videoPollTimeout = 15 * time.Second
 // provider-change hook retires it.
 var errNoUsableVideoKey = errors.New("no provider key authorized for this destination")
 
-// QueryTask implements videotask.Querier.
-func (q *videoTaskQuerier) QueryTask(ctx context.Context, task model.VideoTask) (videotask.QueryResult, error) {
-	var provider model.Provider
-	if err := q.db.WithContext(ctx).First(&provider, "id = ?", task.ProviderID).Error; err != nil {
-		return videotask.QueryResult{}, fmt.Errorf("load provider %d: %w", task.ProviderID, err)
+// QueryTask polls one upstream task, kernel-vocabulary in and out.
+func (q *videoTaskQuerier) QueryTask(ctx context.Context, task VideoTask) (QueryResult, error) {
+	pprovider, err := q.store.FindProviderByID(ctx, task.ProviderID)
+	if err != nil {
+		return QueryResult{}, fmt.Errorf("load provider %d: %w", task.ProviderID, err)
 	}
 	// A task issued by an older destination cannot be known at the new
 	// one; the provider-change hook normally retires these first, and
 	// this check is the backstop that never asks a foreign destination.
+	provider := *pprovider
 	if int(provider.DestinationVersion) != task.DestinationVersion {
-		return videotask.QueryResult{
-			Status: model.VideoTaskExpired, ErrorCode: "provider_destination_changed",
+		return QueryResult{
+			Status: VideoTaskExpired, ErrorCode: "provider_destination_changed",
 			ErrorMessage: "the provider address changed after this task was submitted",
 		}, nil
 	}
 
-	plaintext, err := authorizedTaskKey(ctx, q.db, q.secrets, provider)
+	plaintext, err := authorizedTaskKey(ctx, q.store, q.secrets, provider)
 	if err != nil {
-		return videotask.QueryResult{}, err
+		return QueryResult{}, err
 	}
 
 	if isArkBase(provider.BaseURL) {
@@ -85,7 +81,7 @@ func (q *videoTaskQuerier) QueryTask(ctx context.Context, task model.VideoTask) 
 }
 
 // pollDashScope asks the dashscope task route and normalizes its answer.
-func (q *videoTaskQuerier) pollDashScope(ctx context.Context, provider model.Provider, task model.VideoTask, plaintext string) (videotask.QueryResult, error) {
+func (q *videoTaskQuerier) pollDashScope(ctx context.Context, provider Provider, task VideoTask, plaintext string) (QueryResult, error) {
 	obs, biz, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID,
 		func(id string) string { return videos.DashScopeTaskPathPrefix + id }, "dashscope",
 		func(body []byte) (taskObservation, *videos.Refusal, error) {
@@ -93,20 +89,20 @@ func (q *videoTaskQuerier) pollDashScope(ctx context.Context, provider model.Pro
 			return taskObservation{Status: parsed.Status, VideoURL: parsed.VideoURL, UsageSecs: parsed.UsageSecs, ErrorCode: parsed.ErrorCode, ErrorMessage: parsed.ErrorMessage}, refusal(biz), perr
 		})
 	if err != nil {
-		return videotask.QueryResult{}, err
+		return QueryResult{}, err
 	}
 	if biz != nil {
 		// A business refusal inside a 200: the task itself is refused,
 		// which is a terminal observation for the caller, not a poll error.
-		return videotask.QueryResult{
-			Status: model.VideoTaskFailed, ErrorCode: biz.Code, ErrorMessage: biz.Message,
+		return QueryResult{
+			Status: VideoTaskFailed, ErrorCode: biz.Code, ErrorMessage: biz.Message,
 		}, nil
 	}
 	return obs.result(), nil
 }
 
 // pollKling asks the kling task query route and normalizes its answer.
-func (q *videoTaskQuerier) pollKling(ctx context.Context, provider model.Provider, task model.VideoTask, plaintext string) (videotask.QueryResult, error) {
+func (q *videoTaskQuerier) pollKling(ctx context.Context, provider Provider, task VideoTask, plaintext string) (QueryResult, error) {
 	obs, biz, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID,
 		videos.KlingTaskRoute, "kling",
 		func(body []byte) (taskObservation, *videos.Refusal, error) {
@@ -114,13 +110,13 @@ func (q *videoTaskQuerier) pollKling(ctx context.Context, provider model.Provide
 			return taskObservation{Status: parsed.Status, VideoURL: parsed.VideoURL, UsageSecs: parsed.UsageSecs, ErrorCode: parsed.ErrorCode, ErrorMessage: parsed.ErrorMessage}, klingRefusal(biz), perr
 		})
 	if err != nil {
-		return videotask.QueryResult{}, err
+		return QueryResult{}, err
 	}
 	if biz != nil {
 		// A business refusal inside a 200: the same terminal reading the
 		// dashscope poll gives one.
-		return videotask.QueryResult{
-			Status: model.VideoTaskFailed, ErrorCode: biz.Code, ErrorMessage: biz.Message,
+		return QueryResult{
+			Status: VideoTaskFailed, ErrorCode: biz.Code, ErrorMessage: biz.Message,
 		}, nil
 	}
 	// The delivered duration string is the billable seconds; a completion
@@ -138,7 +134,7 @@ func (q *videoTaskQuerier) pollKling(ctx context.Context, provider model.Provide
 // path answers them), and the duration-echo fallback lives in the
 // dialect's own parse — the echo rides in the same body as the usage,
 // unlike the kling and ark bodies the querier-level fallbacks patch.
-func (q *videoTaskQuerier) pollMiniMax(ctx context.Context, provider model.Provider, task model.VideoTask, plaintext string) (videotask.QueryResult, error) {
+func (q *videoTaskQuerier) pollMiniMax(ctx context.Context, provider Provider, task VideoTask, plaintext string) (QueryResult, error) {
 	obs, _, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID,
 		videos.MiniMaxTaskRoute, "minimax",
 		func(body []byte) (taskObservation, *videos.Refusal, error) {
@@ -152,19 +148,19 @@ func (q *videoTaskQuerier) pollMiniMax(ctx context.Context, provider model.Provi
 			// with 400 "invalid task_id" — the same reading the kling half
 			// gives its empty-data array: expired on sight and unbilled,
 			// not a poll error limping on until the zombie horizon.
-			return videotask.QueryResult{
-				Status:       model.VideoTaskExpired,
+			return QueryResult{
+				Status:       VideoTaskExpired,
 				ErrorCode:    videos.ErrCodeTaskExpired,
 				ErrorMessage: "task id is unknown to the upstream (the minimax query window is 7 days)",
 			}, nil
 		}
-		return videotask.QueryResult{}, err
+		return QueryResult{}, err
 	}
 	return obs.result(), nil
 }
 
 // pollArk asks the Ark task route and normalizes its answer.
-func (q *videoTaskQuerier) pollArk(ctx context.Context, provider model.Provider, task model.VideoTask, plaintext string) (videotask.QueryResult, error) {
+func (q *videoTaskQuerier) pollArk(ctx context.Context, provider Provider, task VideoTask, plaintext string) (QueryResult, error) {
 	obs, _, err := q.getTask(ctx, provider, plaintext, task.ProviderTaskID,
 		func(id string) string { return videos.ArkTaskPathPrefix + id }, "ark",
 		func(body []byte) (taskObservation, *videos.Refusal, error) {
@@ -172,7 +168,7 @@ func (q *videoTaskQuerier) pollArk(ctx context.Context, provider model.Provider,
 			return taskObservation{Status: parsed.Status, VideoURL: parsed.VideoURL, UsageSecs: parsed.UsageSecs, ErrorCode: parsed.ErrorCode, ErrorMessage: parsed.ErrorMessage}, nil, perr
 		})
 	if err != nil {
-		return videotask.QueryResult{}, err
+		return QueryResult{}, err
 	}
 	// Ark reports no seconds field of its own — the billable duration is
 	// the task's echo of what was asked. A completion that arrives
@@ -196,8 +192,8 @@ type taskObservation struct {
 	ErrorMessage string
 }
 
-func (o taskObservation) result() videotask.QueryResult {
-	return videotask.QueryResult{
+func (o taskObservation) result() QueryResult {
+	return QueryResult{
 		Status: o.Status, ResultURL: o.VideoURL, UsageSeconds: o.UsageSecs,
 		ErrorCode: o.ErrorCode, ErrorMessage: o.ErrorMessage,
 	}
@@ -226,7 +222,7 @@ func klingRefusal(biz *videos.KlingBizError) *videos.Refusal {
 // builder rather than a prefix because the dialects do not agree on the
 // shape — the first two append the id to a path, kling carries it as a
 // query parameter — and the skeleton takes no side in that.
-func (q *videoTaskQuerier) getTask(ctx context.Context, provider model.Provider, plaintext, taskID string,
+func (q *videoTaskQuerier) getTask(ctx context.Context, provider Provider, plaintext, taskID string,
 	route func(taskID string) string, vendor string,
 	parse func(body []byte) (taskObservation, *videos.Refusal, error),
 ) (taskObservation, *videos.Refusal, error) {
@@ -282,14 +278,14 @@ func (e *taskHTTPError) Error() string {
 // the poll that settles its bill. The first authorized key wins: a poll
 // is a read, any working key asks it equally well, and spreading polls
 // across a pool buys nothing.
-func authorizedTaskKey(ctx context.Context, db *gorm.DB, secrets crypto.SecretBox, provider model.Provider) (string, error) {
-	keys, err := repository.ListProviderKeysByProvider(db.WithContext(ctx), provider.ID)
+func authorizedTaskKey(ctx context.Context, store Store, secrets crypto.SecretBox, provider Provider) (string, error) {
+	keys, err := store.ListProviderKeysByProvider(ctx, provider.ID)
 	if err != nil {
 		return "", err
 	}
 	for i := range keys {
 		k := &keys[i]
-		if k.ManagementStatus != model.ProviderKeyStatusEnabled {
+		if k.ManagementStatus != ProviderKeyStatusEnabled {
 			continue
 		}
 		if k.AuthorizedDestinationVersion != provider.DestinationVersion {
@@ -302,4 +298,22 @@ func authorizedTaskKey(ctx context.Context, db *gorm.DB, secrets crypto.SecretBo
 		return plaintext, nil
 	}
 	return "", errNoUsableVideoKey
+}
+
+// NewVideoTaskPoller builds the kernel-side task poller for a deployment
+// to hand its video job domain. The client is the deployment's own
+// upstream transport; the poller asks through the Store and the key
+// decryption box like every other kernel path.
+func NewVideoTaskPoller(store Store, secrets crypto.SecretBox, client *UpstreamClient) *videoTaskQuerier {
+	return &videoTaskQuerier{
+		store:   store,
+		secrets: secrets,
+		client:  upstreamDoer{client: client},
+	}
+}
+
+// PollTask is the exported poll entry a deployment's adapter calls after
+// converting its task row into the kernel vocabulary.
+func (q *videoTaskQuerier) PollTask(ctx context.Context, task VideoTask) (QueryResult, error) {
+	return q.QueryTask(ctx, task)
 }

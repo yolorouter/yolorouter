@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -29,7 +28,7 @@ import (
 
 // TestMessagesIngressNonStreamSuccess covers the non-stream success path. It
 // also stands in for "valid X-Api-Key succeeds": svc.Handle receives exactly
-// the *model.APIKey middleware.APIKeyAuth would have resolved from a caller's
+// the *APIKey middleware.APIKeyAuth would have resolved from a caller's
 // X-Api-Key header (see internal/middleware/api_key_auth.go's resolveAPIKey)
 // — Handle itself does not re-read auth headers, so driving it with an
 // already-resolved key IS the post-auth behavior a valid X-Api-Key produces.
@@ -71,7 +70,7 @@ func TestMessagesIngressNonStreamSuccess(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"claude-3-5-sonnet","max_tokens":1024,"system":"You are a helpful assistant.","messages":[{"role":"user","content":"What is 2+2?"}]}`)
 	c, w := newCtxPath("/v1/messages", reqBody)
@@ -160,7 +159,7 @@ func TestMessagesIngressStreamSuccess(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -322,7 +321,7 @@ func TestMessagesIngressMalformedBodyRejected(t *testing.T) {
 			p := createProvider(t, db, "openai-provider", upstream.URL)
 			createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 			m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
-			apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+			apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 			c, w := newCtxPath("/v1/messages", tc.body)
 			svc.Handle(c, apiKey)
@@ -377,7 +376,7 @@ func TestMessagesIngressMidStreamFailure(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"claude-3-5-sonnet","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	c, w := newCtxPath("/v1/messages", reqBody)
@@ -430,7 +429,7 @@ func TestMessagesIngressStreamAuditMatchesClientBytes(t *testing.T) {
 	p := createProvider(t, db, "openai-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-openai-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	dir := t.TempDir()
 	var captured *Exchange

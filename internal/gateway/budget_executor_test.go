@@ -25,28 +25,28 @@ func budgetGatewayConfig(maxAttempts, maxProbes int) config.GatewayConfig {
 
 // seedNCandidates wires one external model onto n providers (one key each),
 // all pointing at upstreamURL, in sort order c1..cn.
-func seedNCandidates(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string, n int) *model.APIKey {
+func seedNCandidates(t *testing.T, svc *Service, db *gorm.DB, upstreamURL string, n int) *APIKey {
 	t.Helper()
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
 	for i := 0; i < n; i++ {
 		p := createProvider(t, db, "p"+string(rune('1'+i)), upstreamURL)
 		createProviderKey(t, db, svc.secrets, p.ID, "sk-"+string(rune('1'+i)), "k1", 1, true)
-		if err := db.Create(&model.ModelCandidate{
+		if err := db.Create(&ModelCandidate{
 			ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "c" + string(rune('1'+i)) + "-model",
 			InputPrice: 0, OutputPrice: 0, MaxOutput: 4096,
 			SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-			ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: i + 1,
-			VerificationStatus: model.ModelVerificationStatusPassed,
+			ManagementStatus: ModelCandidateStatusEnabled, SortOrder: i + 1,
+			VerificationStatus: ModelVerificationStatusPassed,
 			CreatedAt:          now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed candidate %d: %v", i, err)
 		}
 	}
-	return createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	return createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 }
 
 // The attempt budget bounds upstream dispatches across candidates: with a
@@ -116,7 +116,7 @@ func TestAttemptBudgetBoundsKeyRotationAndStickyStillWins(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-2", "k2", 2, true)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-3", "k3", 3, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -279,7 +279,7 @@ func TestUndispatchableKeysSpendAProbe(t *testing.T) {
 	svc := newSvcWithGateway(t, db, budgetGatewayConfig(3, 2))
 	apiKey := seedNCandidates(t, svc, db, upstream.URL, 3)
 	// Corrupt every stored key so decryption fails and no key ever dispatches.
-	if err := db.Model(&model.ProviderKey{}).Where("1 = 1").
+	if err := db.Model(&ProviderKey{}).Where("1 = 1").
 		Update("encrypted_key", "not-a-ciphertext").Error; err != nil {
 		t.Fatalf("corrupt keys: %v", err)
 	}

@@ -76,7 +76,7 @@ const (
 // will branch on and find nothing. What used to protect this was a caller that
 // only ever asked on the one path that filled it in; that protection is not
 // something the type can state, so the type states the value instead.
-//
+
 // upstreamStatusClass is the full classification attemptOne needs from one
 // upstream HTTP status: which branch to take, what outcome label to log,
 // and (for terminal 4xx) which OpenAI error type to surface.

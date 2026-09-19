@@ -7,6 +7,37 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，版本号遵循
 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.2.4] - 2026-09-11
+
+### 新增
+
+- 观测限额。上游以 429 拒绝时，网关会解析响应中关于该密钥自身限额的陈述——OpenAI 系与
+  Anthropic 系的限流响应头、以及 Gemini 错误体里的 RetryInfo/QuotaFailure——并按密钥
+  （次数与 token 两种计量）记住它们，落在新的管理页面（模型管理分组下的限额管理）。
+  记住的上限只降不升，单次畸形响应无法抬高它；删行即重置、之后重新学习。同一份证据
+  还让降位具备窗口感知：当重置头给出的窗口超过十分钟 Retry-After 上限时，密钥按该
+  窗口降位歇满，而不是每十分钟向「每天」的墙重打一次（封顶 24 小时；仅凭单个
+  Retry-After 仍维持原钳制）；Gemini 的结构化 retryDelay 在错误体读完后延长同一裁决的
+  降位。配额耗尽类的 429 仍走持久的复核下线路径。
+
+- CC-Switch 移交改为「先选另一半再导出」。两个导出入口此前都以一半信息直接发射深
+  链——模型页导出的档案不带密钥，密钥页则按网关发现自动猜一个模型。现在两者都先弹共
+  用对话框，固定你点击的那一半、让你选另一半：模型页只列出你自己账户、状态可用、路
+  由范围覆盖该模型的密钥（选项展示密钥备注，无备注回退前缀；未上架的模型直接隐藏导
+  出入口）；密钥页列出该密钥真实可路由的模型——以该密钥鉴权的网关发现为主源，管理目
+  录交叉标注可用性，发现抖动时回退目录范围列表或手动输入，并以模态内重试替代静默降
+  级。确认零等待发射，外部协议跳转趁点击激活窗口仍在时离开；旧密钥以占位符导入并附
+  手动粘贴提示，瞬态失败模态内可重试、绝不降级为占位符。
+
+### 修复
+
+- CC-Switch 导出对话框的模型下拉凡有选项即不可用：选项渲染成了不可点击的行内文本。
+  可用性标签此前挂在选项的 `render` 属性上，而 naive-ui 里该属性会整体替换选项节点。
+  标签现在改走组件级 `render-label`（保留标准包装），样式内联。
+
+- 嵌入价格目录种子从清理后的线上目录重新同步：deepseek 定价页的脚注后缀曾泄漏进模型
+  名（"deepseek-v4-pro(2)"），数据管线现在在入目之前剥掉它。
+
 ## [Unreleased]
 
 ## [0.2.3] - 2026-09-05
@@ -589,7 +620,8 @@ Yolorouter 走向多协议：现在接受四种线上协议，并能在去往供
   静态加密（AES-256）。
 - 经 `update` 命令与更新检查 API 自更新。
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/yolorouter/yolorouter/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/yolorouter/yolorouter/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/yolorouter/yolorouter/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/yolorouter/yolorouter/compare/v0.2.0...v0.2.1

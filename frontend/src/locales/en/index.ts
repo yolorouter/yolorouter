@@ -15,6 +15,7 @@ import requestLogs from './requestLogs'
 import system from './system'
 import users from './users'
 import oauthProviders from './oauthProviders'
+import rateLimits from './rateLimits'
 
 export default {
   common,
@@ -33,5 +34,6 @@ export default {
   system,
   users,
   oauthProviders,
+  rateLimits,
   errcodes,
 }

@@ -17,9 +17,6 @@ import (
 	"fmt"
 	"time"
 
-	"gorm.io/gorm"
-
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/protocols/images"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
@@ -37,7 +34,7 @@ const (
 
 // klingImagePoller is the delivery-side task driver, wired by NewService.
 type klingImagePoller struct {
-	db      *gorm.DB
+	store   Store
 	secrets crypto.SecretBox
 	client  taskDoer
 }
@@ -53,14 +50,15 @@ var klingImagePoll *klingImagePoller
 // its own face; everything else that goes wrong is an error the caller is
 // told about, not a failover signal.
 func (p *klingImagePoller) Poll(ctx context.Context, providerID uint, destinationVersion int, taskID, taskPathPrefix string) (images.KlingImageTask, []byte, *images.KlingImageBizError, error) {
-	var provider model.Provider
-	if err := p.db.WithContext(ctx).First(&provider, "id = ?", providerID).Error; err != nil {
+	pprovider, err := p.store.FindProviderByID(ctx, providerID)
+	if err != nil {
 		return images.KlingImageTask{}, nil, nil, fmt.Errorf("load provider %d: %w", providerID, err)
 	}
+	provider := *pprovider
 	if int(provider.DestinationVersion) != destinationVersion {
 		return images.KlingImageTask{}, nil, nil, fmt.Errorf("the provider address changed under the image task")
 	}
-	plaintext, err := authorizedTaskKey(ctx, p.db, p.secrets, provider)
+	plaintext, err := authorizedTaskKey(ctx, p.store, p.secrets, provider)
 	if err != nil {
 		return images.KlingImageTask{}, nil, nil, err
 	}
@@ -88,7 +86,7 @@ func (p *klingImagePoller) Poll(ctx context.Context, providerID uint, destinatio
 
 // getTask performs one bounded status read and parses it in the dialect,
 // handing the raw body back beside the parse.
-func (p *klingImagePoller) getTask(ctx context.Context, provider model.Provider, plaintext, taskID, taskPathPrefix string) (images.KlingImageTask, []byte, *images.KlingImageBizError, error) {
+func (p *klingImagePoller) getTask(ctx context.Context, provider Provider, plaintext, taskID, taskPathPrefix string) (images.KlingImageTask, []byte, *images.KlingImageBizError, error) {
 	body, err := fetchTaskBounded(ctx, p.client, protocols.OriginURL(provider.BaseURL, taskPathPrefix+taskID), plaintext, "kling image")
 	if err != nil {
 		return images.KlingImageTask{}, nil, nil, err

@@ -178,6 +178,7 @@ import {
   Languages,
   LogIn,
   LayoutGrid,
+  Gauge,
   Menu,
   Receipt,
   ScrollText,
@@ -276,8 +277,8 @@ const navItems = computed<NavItem[]>(() => {
     { key: 'group-models', label: t('nav.groupModels'), group: true },
     { key: 'providers', label: t('nav.providers'), icon: Server, to: '/providers' },
     { key: 'models', label: t('nav.models'), icon: Box, to: '/models' },
-
     { key: 'tokens', label: t('nav.tokens'), icon: Key, to: '/api-keys' },
+    { key: 'rate-limits', label: t('nav.rateLimits'), icon: Gauge, to: '/rate-limits' },
 
     { key: 'cost-optimization', label: t('nav.costOptimization'), icon: TrendingDown, to: '/cost-optimization', tag: t('nav.saveBadge') },
 

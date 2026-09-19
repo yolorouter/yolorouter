@@ -31,7 +31,7 @@ import (
 type klingImageRig struct {
 	svc          *Service
 	db           *gorm.DB
-	key          *model.APIKey
+	key          *APIKey
 	upstreamURL  string
 	lastPath     string
 	lastBody     []byte
@@ -71,13 +71,13 @@ func newKlingImageRig(t *testing.T, providerModel string) *klingImageRig {
 	createProviderKey(t, rig.db, rig.svc.secrets, p.ID, "sk-kling-up", "kling-key", 1, true)
 	m := createModelAndCandidate(t, rig.db, p, "kling-image-test", providerModel, false, false, 1)
 	setOutputModalities(t, rig.db, m.ID, `["image"]`)
-	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
-		"billing_mode":        model.BillingModeImage,
+	if err := rig.db.Model(&ModelCandidate{}).Where("model_id = ?", m.ID).Updates(map[string]interface{}{
+		"billing_mode":        BillingModeImage,
 		"image_pricing_tiers": `{"mode":"per_image","default_price":0.02}`,
 	}).Error; err != nil {
 		t.Fatalf("seed billing: %v", err)
 	}
-	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	rig.key = createAPIKey(t, rig.db, APIKeyStatusActive, []uint{m.ID})
 	rig.taskAnswer.Store(`{"code":0,"data":{"task_status":"succeed","final_unit_deduction":"0.04","task_result":{"images":[{"index":0,"url":"https://x.test/1.png"},{"index":1,"url":"https://x.test/2.png"}]}}}`)
 	return rig
 }
@@ -184,7 +184,7 @@ func TestKlingImageBusinessRefusalIsAnswered(t *testing.T) {
 	prev := isKlingBase
 	isKlingBase = func(baseURL string) bool { return baseURL == refused.URL }
 	t.Cleanup(func() { isKlingBase = prev })
-	if err := rig.db.Model(&model.Provider{}).Where("id = ?", 1).Update("base_url", refused.URL).Error; err != nil {
+	if err := rig.db.Model(&Provider{}).Where("id = ?", 1).Update("base_url", refused.URL).Error; err != nil {
 		t.Fatalf("repoint provider: %v", err)
 	}
 	// The provider row the poller would load carries the fake base; the
@@ -266,11 +266,11 @@ func TestKlingImagePerCandidateRefusals(t *testing.T) {
 
 	// A model off the endpoint list is refused the same way — the submit
 	// body's model_name must never carry a name the endpoint would refuse.
-	var cand model.ModelCandidate
+	var cand ModelCandidate
 	if err := rig.db.First(&cand, "model_id = ?", 1).Error; err != nil {
 		t.Fatalf("load candidate: %v", err)
 	}
-	if err := rig.db.Model(&model.ModelCandidate{}).Where("id = ?", cand.ID).Update("provider_model_name", "kling-v1").Error; err != nil {
+	if err := rig.db.Model(&ModelCandidate{}).Where("id = ?", cand.ID).Update("provider_model_name", "kling-v1").Error; err != nil {
 		t.Fatalf("retarget candidate: %v", err)
 	}
 	c, w = imageRequest(`{"model":"kling-image-test","prompt":"a fox"}`)

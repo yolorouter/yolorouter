@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -41,7 +40,7 @@ func TestResponsesIngressToAnthropicUpstream_NonStream(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"gpt-4o","input":"hi"}`)
 	c, w := newCtxPath("/v1/responses", reqBody)
@@ -149,7 +148,7 @@ func TestResponsesIngressToAnthropicUpstream_Stream(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"gpt-4o","input":"hi","stream":true}`)
 	c, w := newCtxPath("/v1/responses", reqBody)
@@ -244,7 +243,7 @@ func TestResponsesIngressToResponsesProvider_Passthrough(t *testing.T) {
 	p := createResponsesProvider(t, db, "responses-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-responses-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"gpt-4o","input":"hi"}`)
 	c, w := newCtxPath("/v1/responses", reqBody)
@@ -330,7 +329,7 @@ func TestResponsesIngressToResponsesProvider_PassthroughStream(t *testing.T) {
 	p := createResponsesProvider(t, db, "responses-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-responses-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	dir := t.TempDir()
 	var captured *Exchange

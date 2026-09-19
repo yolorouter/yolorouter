@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/yolorouter/yolorouter/internal/decision"
-	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/gateway/rows"
 )
 
 // fullState builds a State with every field populated, through the public
@@ -12,8 +12,8 @@ import (
 // that existed when they were written.
 func fullState() State {
 	var s State
-	s.BeginCandidate(&model.ModelCandidate{ID: 1})
-	s.BindProvider(&model.Provider{ID: 2})
+	s.BeginCandidate(&rows.ModelCandidate{ID: 1})
+	s.BindProvider(&rows.Provider{ID: 2})
 	s.SetUpstreamURL("https://api.example.com/v1/chat")
 	s.HoldVerdict(decision.StickyVerdict{Status: 429, ErrType: "rate_limit_error", Reason: "throttled"})
 	return s
@@ -26,7 +26,7 @@ func fullState() State {
 // exists to make impossible, one field at a time.
 func TestBeginCandidateReplacesTheWholeState(t *testing.T) {
 	s := fullState()
-	next := &model.ModelCandidate{ID: 9}
+	next := &rows.ModelCandidate{ID: 9}
 	s.BeginCandidate(next)
 
 	if s.Candidate() != next {

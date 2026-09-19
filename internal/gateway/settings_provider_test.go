@@ -69,7 +69,7 @@ func TestResolveSettingsOverrideShortCircuitsTheGlobalRead(t *testing.T) {
 		return settings.CustomSystemPromptSetting{}, nil
 	}
 
-	key := &model.APIKey{
+	key := &APIKey{
 		CompressEnabledOverride:           true,
 		CompressEnabled:                   true,
 		CustomSystemPromptEnabledOverride: true,
@@ -96,7 +96,7 @@ func TestResolveSettingsKeepsLastKnownGoodOnReadError(t *testing.T) {
 		return settings.VisionFallbackSetting{Model: "m1", Prompt: "p1"}, errors.New("db down")
 	}
 
-	got := resolveRequestSettings(context.Background(), probed, &model.APIKey{}, "req-1")
+	got := resolveRequestSettings(context.Background(), probed, &APIKey{}, "req-1")
 	if !got.CompressEnabled {
 		t.Error("compress: last-known-good (true) dropped alongside the error")
 	}
@@ -122,7 +122,7 @@ func TestResolveSettingsColdCacheYieldsZeroOnReadError(t *testing.T) {
 		return settings.VisionFallbackSetting{}, errors.New("db down")
 	}
 
-	got := resolveRequestSettings(context.Background(), probed, &model.APIKey{}, "req-1")
+	got := resolveRequestSettings(context.Background(), probed, &APIKey{}, "req-1")
 	if got.CompressEnabled || got.CustomSystemPromptEnabled || got.CustomSystemPrompt != "" ||
 		got.VisionFallbackModel != "" || got.VisionFallbackPrompt != "" {
 		t.Fatalf("cold cache with error should yield the zero settings, got %+v", got)
@@ -151,13 +151,13 @@ func TestSettingsReadErrorDoesNotBlockTheRequest(t *testing.T) {
 		},
 	}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(db, ycrypto.NewSecretBox(masterKey), false, failing, testGatewayConfig())
+	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, failing, testGatewayConfig())
 	svc.client.httpClient.Transport = &http.Transport{}
 
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -174,7 +174,7 @@ func TestSettingsReadErrorDoesNotBlockTheRequest(t *testing.T) {
 // guard: a service built without a settings provider still serves override
 // keys and never panics; only the global branches go quiet.
 func TestResolveSettingsNilProviderKeepsOverridesAndZeroesTheRest(t *testing.T) {
-	key := &model.APIKey{
+	key := &APIKey{
 		CompressEnabledOverride:           true,
 		CompressEnabled:                   true,
 		CustomSystemPromptEnabledOverride: true,
@@ -189,7 +189,7 @@ func TestResolveSettingsNilProviderKeepsOverridesAndZeroesTheRest(t *testing.T) 
 		t.Errorf("vision fallback has no override layer; a nil provider must leave it zero, got %+v", got)
 	}
 
-	zero := resolveRequestSettings(context.Background(), nil, &model.APIKey{}, "req-1")
+	zero := resolveRequestSettings(context.Background(), nil, &APIKey{}, "req-1")
 	if zero != (requestSettings{}) {
 		t.Fatalf("nil provider with no overrides should yield the zero settings, got %+v", zero)
 	}
@@ -216,7 +216,7 @@ func TestResolveSettingsCombinationGrid(t *testing.T) {
 		t.Run("compress: "+tc.name, func(t *testing.T) {
 			probed := quietProbe()
 			probed.compress = func() (bool, error) { return tc.globalValue, nil }
-			key := &model.APIKey{CompressEnabledOverride: tc.keyOverride, CompressEnabled: tc.keyValue}
+			key := &APIKey{CompressEnabledOverride: tc.keyOverride, CompressEnabled: tc.keyValue}
 			got := resolveRequestSettings(context.Background(), probed, key, "req-1")
 			if got.CompressEnabled != tc.wantCompress {
 				t.Fatalf("CompressEnabled = %v, want %v (winner: %s)", got.CompressEnabled, tc.wantCompress, tc.wantFromLayer)
@@ -244,7 +244,7 @@ func TestResolveSettingsCombinationGrid(t *testing.T) {
 			probed.prompt = func() (settings.CustomSystemPromptSetting, error) {
 				return settings.CustomSystemPromptSetting{Enabled: tc.globalOn, Text: "from-global"}, nil
 			}
-			key := &model.APIKey{
+			key := &APIKey{
 				CustomSystemPromptEnabledOverride: tc.keyOverride,
 				CustomSystemPromptEnabled:         tc.keyEnabled,
 				CustomSystemPrompt:                tc.keyText,
@@ -263,7 +263,7 @@ func TestResolveSettingsCombinationGrid(t *testing.T) {
 			return settings.VisionFallbackSetting{Model: "global-model", Prompt: "global-prompt"}, nil
 		}
 		// Every override flag the key could carry is set; none may matter.
-		key := &model.APIKey{
+		key := &APIKey{
 			CompressEnabledOverride:           true,
 			CustomSystemPromptEnabledOverride: true,
 			CustomSystemPromptEnabled:         true,
@@ -315,7 +315,7 @@ func TestSettingsResolveRunsBeforeTheBodyIsValidated(t *testing.T) {
 	stub := stubSettingsProvider{}
 	counting := &countingProvider{inner: stub}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(db, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig())
+	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig())
 	svc.client.httpClient.Transport = &http.Transport{}
 	// A bare Service records nothing; the recorder is wired here because the
 	// settled reason below is asserted from the persisted row, as production
@@ -325,7 +325,7 @@ func TestSettingsResolveRunsBeforeTheBodyIsValidated(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	// Passes the cheap meta check (non-empty messages, positive max_tokens),
 	// fails the full decoder (content is an object, not a string or block
@@ -371,7 +371,7 @@ func TestSettingsResolveRunsBeforeAnIngressRewriterRefuses(t *testing.T) {
 	stub := stubSettingsProvider{}
 	counting := &countingProvider{inner: stub}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(db, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig())
+	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig())
 	svc.client.httpClient.Transport = &http.Transport{}
 	// Wired for the same reason as the validation twin: the settled reason is
 	// asserted from the persisted row.
@@ -387,7 +387,7 @@ func TestSettingsResolveRunsBeforeAnIngressRewriterRefuses(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)

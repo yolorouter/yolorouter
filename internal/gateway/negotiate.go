@@ -6,7 +6,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/protocols/images"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
@@ -115,8 +114,8 @@ func IsChatEndpoint(requestPath string) bool {
 
 // providerSupportedProtocols returns the set of wire protocols a provider
 // accepts on egress — providerproto owns the reading of provider_type and
-// protocol_endpoints, this is just the model.Provider adapter.
-func providerSupportedProtocols(p *model.Provider) map[protocols.ProtocolID]bool {
+// protocol_endpoints, this is just the Provider adapter.
+func providerSupportedProtocols(p *Provider) map[protocols.ProtocolID]bool {
 	return providerproto.SupportedSet(p.ProviderType, p.ProtocolEndpoints)
 }
 
@@ -126,7 +125,7 @@ func providerSupportedProtocols(p *model.Provider) map[protocols.ProtocolID]bool
 // expose independent upstream URLs per supported protocol (e.g. an
 // OpenAI-compatible gateway that proxies Claude requests to a different
 // host).
-func egressBaseURL(p *model.Provider, proto protocols.ProtocolID) string {
+func egressBaseURL(p *Provider, proto protocols.ProtocolID) string {
 	return providerproto.ResolveURL(providerproto.ParseEndpoints(p.ProtocolEndpoints), proto, p.BaseURL)
 }
 
@@ -148,7 +147,7 @@ type EgressDecision struct {
 // through unchanged (no IR round-trip). Otherwise it falls back to the
 // provider's primary protocol, which is always in its supported set, so
 // this never fails to find a route.
-func Negotiate(ingress protocols.ProtocolID, p *model.Provider) (*EgressDecision, error) {
+func Negotiate(ingress protocols.ProtocolID, p *Provider) (*EgressDecision, error) {
 	if p == nil {
 		return nil, errors.New("gateway: negotiate requires a non-nil provider")
 	}

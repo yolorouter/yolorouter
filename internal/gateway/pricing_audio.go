@@ -13,7 +13,6 @@ import (
 	"math"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // audioPricingSnapshot is what a per-character settlement records alongside
@@ -30,7 +29,7 @@ type audioPricingSnapshot struct {
 	Meter string `json:"meter,omitempty"`
 }
 
-// computeAudioCost prices one audio-mode candidate's settled delivery.
+// audioMicros prices one audio-mode candidate's settled delivery.
 //
 // Unknown, not zero, in every case where no price could be resolved
 // honestly: no report, no count, a report that is not counting characters
@@ -54,7 +53,7 @@ func audioMicros(price float64, count int) int64 {
 	return int64(micros)
 }
 
-func computeAudioCost(cand *model.ModelCandidate, report *fact.UsageReported) costBreakdown {
+func computeAudioCost(cand *ModelCandidate, report *fact.UsageReported) costBreakdown {
 	if cand == nil || report == nil || report.Unit != fact.UnitCharacter || report.Count <= 0 {
 		return costBreakdown{}
 	}
@@ -70,7 +69,7 @@ func computeAudioCost(cand *model.ModelCandidate, report *fact.UsageReported) co
 		return costBreakdown{}
 	}
 	snap := audioPricingSnapshot{
-		BillingMode: model.BillingModeAudio,
+		BillingMode: BillingModeAudio,
 		Characters:  report.Count,
 		UnitPrice:   price,
 		Unit:        report.Unit.String(),

@@ -5,9 +5,7 @@ export default {
     'CC-Switch is not installed or the protocol handler is not registered. Please install CC-Switch first or manually copy the API key.',
   plaintextUnavailable: 'This key predates plaintext storage and cannot be read back; imported with a placeholder — paste the key inside CC-Switch',
   openSuccess: 'CC-Switch import successful. Please enter the correct API Key.',
-  confirmLaunchTitle: 'Open CC-Switch',
   confirmLaunchContent: 'The import data is ready. Click the button below to open CC-Switch and finish the import.',
-  confirmLaunchButton: 'Open CC-Switch',
   modalTitle: 'Export to CC-Switch',
   keyLabel: 'Key',
   modelLabel: 'Model',
@@ -19,4 +17,7 @@ export default {
   statusAvailable: 'Available',
   statusUnavailable: 'Unavailable',
   discoveryFailedHint: 'Automatic model discovery failed; fallback options shown. You can retry.',
+  keysLoading: 'Fetching usable keys…',
+  keysEmptyTitle: 'No key can use this model',
+  keysEmptyHint: 'Create an active key whose routing scope covers this model, then come back to export.',
 }

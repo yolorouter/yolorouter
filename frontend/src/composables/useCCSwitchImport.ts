@@ -71,9 +71,9 @@ export function useCCSwitchImport() {
     const activation = window.navigator.userActivation
     if (activation && !activation.isActive) {
       dialog.info({
-        title: t('ccswitch.confirmLaunchTitle'),
+        title: t('common.confirm'),
         content: t('ccswitch.confirmLaunchContent'),
-        positiveText: t('ccswitch.confirmLaunchButton'),
+        positiveText: t('common.confirm'),
         negativeText: t('common.cancel'),
         onPositiveClick: () => launchCCS(p),
       })

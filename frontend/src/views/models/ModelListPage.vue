@@ -85,6 +85,13 @@
     <NewModelModal v-model:show="showCreate" />
     <ModelEditModal v-model:show="showEditModel" :model="editingModel" @updated="onEdited" />
     <VisionFallbackModal v-model:show="showVisionFallback" />
+    <CCSwitchImportModal
+      v-model:show="showCCSImport"
+      mode="key"
+      :model-row="ccsModelRow"
+      :owner-username="authStore.username ?? ''"
+      @confirm="onCCSConfirm"
+    />
   </div>
 </template>
 
@@ -118,6 +125,10 @@ import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
 import { ccsProfileName } from '../../utils/format'
 import { useCCSwitchImport } from '../../composables/useCCSwitchImport'
+import { useRowModal } from '../../composables/useRowModal'
+import { useAuthStore } from '../../store/auth'
+import CCSwitchImportModal from '../../components/ccswitch/CCSwitchImportModal.vue'
+import type { CCSwitchConfirmPayload } from '../../utils/ccswitchExport'
 
 const { t, te } = useI18n()
 const isMobile = useIsMobile()
@@ -128,6 +139,24 @@ const toggleStatusWithConfirm = useConfirmedStatusToggle(dialog)
 const message = useMessage()
 const store = useModelsStore()
 const { importToCCS } = useCCSwitchImport()
+
+// --- CC-Switch export (key mode) -------------------------------------------
+// The row action opens the shared export dialog in key mode: the model is
+// fixed, the viewer picks one of THEIR OWN compatible keys, and the dialog
+// prefetched that key's plaintext before Confirm arms. The confirm payload
+// reaches the deep link here, synchronously in the click's own handler.
+const authStore = useAuthStore()
+const { row: ccsModelRow, show: showCCSImport } = useRowModal<Model>()
+
+function openCCSImport(row: Model) {
+  ccsModelRow.value = row
+}
+
+function onCCSConfirm(payload: CCSwitchConfirmPayload) {
+  const row = ccsModelRow.value
+  if (!row) return
+  importToCCS({ name: ccsProfileName(row.name), apiKey: payload.apiKey, model: row.name })
+}
 const showCreate = ref(false)
 const showVisionFallback = ref(false)
 // Inline row edit: reuse the same edit modal the detail page uses, opened
@@ -428,13 +457,18 @@ const sharedColumns = computed<DataTableColumns<Model>>(() => [
               options: [
                 { label: t('models.editModel'), key: 'edit' },
                 { label: t('costs.detail.viewCost'), key: 'viewCost' },
-                { label: t('ccswitch.importAction'), key: 'importCCSImport' },
+                // A management-disabled model is not routable (the gateway
+                // lists enabled models only), so no key is compatible with
+                // it — the export entry would only land the picker in its
+                // empty state, whose "create a key" guidance would mislead.
+                ...(row.management_status === 1
+                  ? [{ label: t('ccswitch.importAction'), key: 'importCCSImport' }]
+                  : []),
               ],
               onSelect: (key: string) => {
                 if (key === 'edit') openEditModel(row)
                 else if (key === 'viewCost') router.push(modelCostDetailLocation(row.name))
-                else if (key === 'importCCSImport')
-                  importToCCS({ name: ccsProfileName(row.name), model: row.name })
+                else if (key === 'importCCSImport') openCCSImport(row)
               },
             },
             {

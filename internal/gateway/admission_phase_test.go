@@ -14,7 +14,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/settings"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -201,11 +200,11 @@ func TestTheSecondPhaseIsNotAskedWhenNothingIsRoutable(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := newSvc(t, db)
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var log []string
 	RegisterAdmission(svc, pricedAdmission{name: "money", log: &log}, AdmitWhenPriced, exchangeView)
@@ -332,7 +331,7 @@ func TestThePricingBasisIsNotNecessarilyTheCandidateThatServes(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, second.ID, "sk-2", "k2", 1, true)
 	addCandidateAtPrice(t, db, m, second, "gpt-4o-real", 2, 50.0, 100.0)
 
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	var captured *Exchange
 	testHookHandleDone = func(rc *Exchange) { captured = rc }
@@ -357,15 +356,15 @@ func TestThePricingBasisIsNotNecessarilyTheCandidateThatServes(t *testing.T) {
 // addCandidateAtPrice adds a second candidate to an existing model at rates the
 // caller chooses, which is what lets a test tell "priced against" apart from
 // "served by".
-func addCandidateAtPrice(t *testing.T, db *gorm.DB, m *model.Model, provider *model.Provider, providerModelName string, order int, in, out float64) {
+func addCandidateAtPrice(t *testing.T, db *gorm.DB, m *Model, provider *Provider, providerModelName string, order int, in, out float64) {
 	t.Helper()
 	now := time.Now().UTC()
-	cand := &model.ModelCandidate{
+	cand := &ModelCandidate{
 		ModelID: m.ID, ProviderID: provider.ID, ProviderModelName: providerModelName,
 		InputPrice: in, OutputPrice: out, MaxOutput: 4096,
 		SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-		ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: order,
-		VerificationStatus: model.ModelVerificationStatusPassed,
+		ManagementStatus: ModelCandidateStatusEnabled, SortOrder: order,
+		VerificationStatus: ModelVerificationStatusPassed,
 		CreatedAt:          now, UpdatedAt: now,
 	}
 	if err := db.Create(cand).Error; err != nil {

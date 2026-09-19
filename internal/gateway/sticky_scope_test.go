@@ -11,7 +11,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -271,7 +270,7 @@ func TestUndecryptableKeyIsFilteredNotDispatched(t *testing.T) {
 	createProviderKey(t, db, svc.secrets, p1.ID, "sk-2", "k2", 2, true)
 	// The second key's ciphertext is corrupted, so it is skipped without
 	// ever being dispatched: decryption fails after the key is entered.
-	if err := db.Model(&model.ProviderKey{}).Where("label = ?", "k2").
+	if err := db.Model(&ProviderKey{}).Where("label = ?", "k2").
 		Update("encrypted_key", "corrupt-ciphertext").Error; err != nil {
 		t.Fatalf("corrupt the second key: %v", err)
 	}
@@ -292,21 +291,21 @@ func TestUndecryptableKeyIsFilteredNotDispatched(t *testing.T) {
 
 // seedModelOnProvider wires one model to one provider, leaving the provider's
 // keys to the caller — which is what the key-lifetime tests vary.
-func seedModelOnProvider(t *testing.T, db *gorm.DB, p *model.Provider) *model.APIKey {
+func seedModelOnProvider(t *testing.T, db *gorm.DB, p *Provider) *APIKey {
 	t.Helper()
 	now := time.Now().UTC()
-	m := &model.Model{Name: "gpt-4o", ManagementStatus: model.ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
+	m := &Model{Name: "gpt-4o", ManagementStatus: ModelStatusEnabled, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	if err := db.Create(&model.ModelCandidate{
+	if err := db.Create(&ModelCandidate{
 		ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "c1-model",
 		MaxOutput: 4096, SupportsStreaming: boolPtr(true), SupportsFunctionCalling: boolPtr(true),
-		ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: 1,
-		VerificationStatus: model.ModelVerificationStatusPassed,
+		ManagementStatus: ModelCandidateStatusEnabled, SortOrder: 1,
+		VerificationStatus: ModelVerificationStatusPassed,
 		CreatedAt:          now, UpdatedAt: now,
 	}).Error; err != nil {
 		t.Fatalf("seed candidate: %v", err)
 	}
-	return createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	return createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 }

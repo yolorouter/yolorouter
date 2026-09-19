@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
@@ -39,9 +38,9 @@ func TestANonStreamResponseTheCallerNeverReceivedIsNotRecordedAsDelivered(t *tes
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", "http://upstream.invalid")
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var cand model.ModelCandidate
+	var cand ModelCandidate
 	if err := db.Where("model_id = ?", m.ID).First(&cand).Error; err != nil {
 		t.Fatalf("load seeded candidate: %v", err)
 	}
@@ -64,7 +63,7 @@ func TestANonStreamResponseTheCallerNeverReceivedIsNotRecordedAsDelivered(t *tes
 
 	rc.attempt.BeginCandidate(&cand)
 	rc.attempt.BindProvider(p)
-	rc.attempt.BindKey(&model.ProviderKey{})
+	rc.attempt.BindKey(&ProviderKey{})
 	result := svc.deliverAndSettle(c, rc, adm, resp, &UpstreamCall{Path: "/v1/chat/completions", ContentType: "application/json"}, time.Now())
 
 	if result != attemptSuccess {
@@ -105,9 +104,9 @@ func TestANonStreamResponseTheCallerReceivedIsRecordedAsDelivered(t *testing.T) 
 	svc := newSvc(t, db)
 	p := createProvider(t, db, "p1", "http://upstream.invalid")
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", false, false, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
-	var cand model.ModelCandidate
+	var cand ModelCandidate
 	if err := db.Where("model_id = ?", m.ID).First(&cand).Error; err != nil {
 		t.Fatalf("load seeded candidate: %v", err)
 	}
@@ -130,7 +129,7 @@ func TestANonStreamResponseTheCallerReceivedIsRecordedAsDelivered(t *testing.T) 
 
 	rc.attempt.BeginCandidate(&cand)
 	rc.attempt.BindProvider(p)
-	rc.attempt.BindKey(&model.ProviderKey{})
+	rc.attempt.BindKey(&ProviderKey{})
 	result := svc.deliverAndSettle(c, rc, adm, resp, &UpstreamCall{Path: "/v1/chat/completions", ContentType: "application/json"}, time.Now())
 
 	if result != attemptSuccess {

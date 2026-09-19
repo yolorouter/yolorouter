@@ -1,9 +1,26 @@
 import { describe, expect, it } from 'vitest'
 
-import { planCCSwitchModelChoices, type CCSwitchCatalogModel } from './ccswitchExport'
+import {
+  filterCCSwitchCompatibleKeys,
+  planCCSwitchModelChoices,
+  type CCSwitchCatalogModel,
+  type CCSwitchKeyRow,
+} from './ccswitchExport'
 
 function catalogRow(id: number, name: string, running_status: string): CCSwitchCatalogModel {
   return { id, name, running_status }
+}
+
+function keyRow(over: Partial<CCSwitchKeyRow> & { id: number }): CCSwitchKeyRow {
+  return {
+    key_prefix: `sk-yr-prefix${over.id}`,
+    remark: '',
+    owner_username: 'alice',
+    display_status: 'active',
+    allow_all_models: false,
+    model_ids: [],
+    ...over,
+  }
 }
 
 const CATALOG = [
@@ -117,5 +134,31 @@ describe('planCCSwitchModelChoices', () => {
         key: { allow_all_models: false, model_ids: [1] },
       }),
     ).toEqual({ mode: 'manual' })
+  })
+})
+
+describe('filterCCSwitchCompatibleKeys', () => {
+  const MODEL_ID = 7
+
+  it('keeps own, active, in-scope keys and drops each violation', () => {
+    const rows = [
+      keyRow({ id: 1, allow_all_models: true }),                              // ✓ allow-all
+      keyRow({ id: 2, model_ids: [MODEL_ID] }),                               // ✓ scoped
+      keyRow({ id: 3, model_ids: [99] }),                                     // ✗ scope
+      keyRow({ id: 4, allow_all_models: true, owner_username: 'bob' }),       // ✗ owner
+      keyRow({ id: 5, allow_all_models: true, display_status: 'revoked' }),   // ✗ status
+      keyRow({ id: 6, allow_all_models: true, display_status: 'expired' }),   // ✗ status
+      keyRow({ id: 8, allow_all_models: true, display_status: 'budget_exhausted' }), // ✗ status
+    ]
+    expect(filterCCSwitchCompatibleKeys(rows, MODEL_ID, 'alice').map((k) => k.id)).toEqual([1, 2])
+  })
+
+  it('matches the owner by exact username', () => {
+    const rows = [keyRow({ id: 1, owner_username: 'alice2', allow_all_models: true })]
+    expect(filterCCSwitchCompatibleKeys(rows, MODEL_ID, 'alice')).toEqual([])
+  })
+
+  it('returns empty when nothing qualifies', () => {
+    expect(filterCCSwitchCompatibleKeys([], MODEL_ID, 'alice')).toEqual([])
   })
 })

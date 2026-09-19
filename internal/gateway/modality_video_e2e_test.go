@@ -206,7 +206,7 @@ func (u *wanUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type videoRig struct {
 	svc      *Service
 	db       *gorm.DB
-	key      *model.APIKey
+	key      *APIKey
 	upstream *wanUpstream
 	server   *httptest.Server
 	modelID  uint
@@ -232,7 +232,7 @@ func newVideoRig(t *testing.T, providerModel string) *videoRig {
 	m := createModelAndCandidate(t, rig.db, p, "video-model", providerModel, false, false, 1)
 	setOutputModalities(t, rig.db, m.ID, `["video"]`)
 	rig.modelID = m.ID
-	rig.key = createAPIKey(t, rig.db, model.APIKeyStatusActive, []uint{m.ID})
+	rig.key = createAPIKey(t, rig.db, APIKeyStatusActive, []uint{m.ID})
 	return rig
 }
 
@@ -293,7 +293,7 @@ func (r *videoRig) submit(t *testing.T, body string) (*gin.Context, *httptest.Re
 
 // poll drives the job resource route the way the router would, for the
 // rig's caller key or a foreign one.
-func (r *videoRig) poll(t *testing.T, key *model.APIKey, jobID string) *httptest.ResponseRecorder {
+func (r *videoRig) poll(t *testing.T, key *APIKey, jobID string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -324,7 +324,7 @@ func (r *videoRig) agePoll(t *testing.T, jobID string) {
 	// Read-then-write through gorm rather than raw SQL: the claim's
 	// compare-and-set matches the stored stamp by value, and a raw
 	// datetime() string would not round-trip to the same bytes gorm binds.
-	var task model.VideoTask
+	var task VideoTask
 	if err := r.db.Where("id = ?", jobID).First(&task).Error; err != nil {
 		t.Fatalf("load task: %v", err)
 	}
@@ -332,7 +332,7 @@ func (r *videoRig) agePoll(t *testing.T, jobID string) {
 		t.Fatal("fixture bug: aging a task that was never polled")
 	}
 	aged := task.LastPolledAt.Add(-10 * time.Second)
-	if err := r.db.Model(&model.VideoTask{}).Where("id = ?", jobID).Update("last_polled_at", aged).Error; err != nil {
+	if err := r.db.Model(&VideoTask{}).Where("id = ?", jobID).Update("last_polled_at", aged).Error; err != nil {
 		t.Fatalf("age poll stamp: %v", err)
 	}
 }
@@ -361,11 +361,12 @@ func TestVideoSubmitAndPollEndToEnd(t *testing.T) {
 		t.Fatalf("submit status = %d, want 200; body = %s", w.Code, w.Body.String())
 	}
 	var created struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Status  string `json:"status"`
-		Size    string `json:"size"`
-		Seconds string `json:"seconds"`
+		ID        string `json:"id"`
+		Object    string `json:"object"`
+		Status    string `json:"status"`
+		Size      string `json:"size"`
+		Seconds   string `json:"seconds"`
+		CreatedAt int64  `json:"created_at"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
 		t.Fatalf("submit answer is not a job resource: %v", err)
@@ -376,6 +377,9 @@ func TestVideoSubmitAndPollEndToEnd(t *testing.T) {
 	jobID := created.ID
 	if !strings.HasPrefix(jobID, "vid_") {
 		t.Fatalf("job id must be gateway-minted, got %q", jobID)
+	}
+	if created.CreatedAt == 0 {
+		t.Fatal("submit answer must carry the domain-minted created_at; a zero means the adapter dropped it on the writeback")
 	}
 
 	// The submit reached the upstream in the native dialect: the async
@@ -406,11 +410,11 @@ func TestVideoSubmitAndPollEndToEnd(t *testing.T) {
 	}
 
 	// The task row exists in pending with the sanitized snapshot.
-	var task model.VideoTask
+	var task VideoTask
 	if err := rig.db.Where("id = ?", jobID).First(&task).Error; err != nil {
 		t.Fatalf("task row missing: %v", err)
 	}
-	if task.Status != model.VideoTaskPending || task.ProviderTaskID != "up-task-1" || task.APIKeyID != rig.key.ID {
+	if task.Status != VideoTaskPending || task.ProviderTaskID != "up-task-1" || task.APIKeyID != rig.key.ID {
 		t.Fatalf("task row wrong: %+v", task)
 	}
 	if !strings.Contains(task.RequestSnapshot, "calico cat") {
@@ -517,7 +521,7 @@ func TestVideoReferenceImageReachesUpstream(t *testing.T) {
 	// the re-encoded native spelling is where a caller-side-only
 	// redactor would let them back in.
 	jobID := jobIDOf(t, w)
-	var task model.VideoTask
+	var task VideoTask
 	_ = rig.db.Where("id = ?", jobID).First(&task).Error
 	if strings.Contains(task.RequestSnapshot, pixels) {
 		t.Fatalf("the snapshot must redact reference pixels")
@@ -587,7 +591,7 @@ func TestVideoOwnershipIsANotFound(t *testing.T) {
 	_, w := rig.submit(t, `{"model":"video-model","prompt":"p"}`)
 	jobID := jobIDOf(t, w)
 	now := time.Now().UTC()
-	foreign := &model.APIKey{KeyHash: ycrypto.HashToken("sk-yr-video-foreign"), KeyPrefix: "sk-yr-video-foreign", Status: model.APIKeyStatusActive, CreatedAt: now, UpdatedAt: now}
+	foreign := &APIKey{KeyHash: ycrypto.HashToken("sk-yr-video-foreign"), KeyPrefix: "sk-yr-video-foreign", Status: APIKeyStatusActive, CreatedAt: now, UpdatedAt: now}
 	if err := rig.db.Create(foreign).Error; err != nil {
 		t.Fatalf("seed foreign key: %v", err)
 	}
@@ -617,19 +621,19 @@ func TestVideoSubmitFailoverToSecondCandidate(t *testing.T) {
 	t.Cleanup(broken.Close)
 	brokenProvider := createProvider(t, rig.db, "video-broken", broken.URL)
 	createProviderKey(t, rig.db, rig.svc.secrets, brokenProvider.ID, "sk-video-broken", "broken-key", 1, true)
-	var healthy model.Provider
+	var healthy Provider
 	if err := rig.db.Where("name = ?", "video-provider").First(&healthy).Error; err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	if err := rig.db.Model(&model.ModelCandidate{}).Where("model_id = ?", rig.modelID).Update("sort_order", 2).Error; err != nil {
+	if err := rig.db.Model(&ModelCandidate{}).Where("model_id = ?", rig.modelID).Update("sort_order", 2).Error; err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
 	now := time.Now().UTC()
-	brokenCand := &model.ModelCandidate{
+	brokenCand := &ModelCandidate{
 		ModelID: rig.modelID, ProviderID: brokenProvider.ID, ProviderModelName: "wan2.7-t2v",
 		InputPrice: 1, OutputPrice: 2, MaxOutput: 4096,
-		ManagementStatus: model.ModelCandidateStatusEnabled, SortOrder: 1,
-		VerificationStatus: model.ModelVerificationStatusPassed, CreatedAt: now, UpdatedAt: now,
+		ManagementStatus: ModelCandidateStatusEnabled, SortOrder: 1,
+		VerificationStatus: ModelVerificationStatusPassed, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := rig.db.Create(brokenCand).Error; err != nil {
 		t.Fatalf("seed broken candidate: %v", err)
@@ -654,7 +658,7 @@ func TestVideoBusinessRefusalIsAnsweredNotFailedOver(t *testing.T) {
 		t.Fatalf("a refused submit must not answer 200, body %s", w.Body.String())
 	}
 	var taskCount int64
-	rig.db.Model(&model.VideoTask{}).Count(&taskCount)
+	rig.db.Model(&VideoTask{}).Count(&taskCount)
 	if taskCount != 0 {
 		t.Fatalf("a refused submit must leave no task row, got %d", taskCount)
 	}
@@ -671,12 +675,12 @@ func (r *videoRig) priceVideo(t *testing.T, sellPrice float64, limitMicros *int6
 	if err != nil {
 		t.Fatalf("marshal tiers: %v", err)
 	}
-	if err := r.db.Model(&model.ModelCandidate{}).Where("model_id = ?", r.modelID).
-		Updates(map[string]any{"billing_mode": model.BillingModeVideo, "video_pricing_tiers": tiers}).Error; err != nil {
+	if err := r.db.Model(&ModelCandidate{}).Where("model_id = ?", r.modelID).
+		Updates(map[string]any{"billing_mode": BillingModeVideo, "video_pricing_tiers": tiers}).Error; err != nil {
 		t.Fatalf("price candidate: %v", err)
 	}
 	if limitMicros != nil {
-		if err := r.db.Model(&model.APIKey{}).Where("id = ?", r.key.ID).
+		if err := r.db.Model(&APIKey{}).Where("id = ?", r.key.ID).
 			Update("budget_limit_micros", *limitMicros).Error; err != nil {
 			t.Fatalf("limit key: %v", err)
 		}
@@ -685,7 +689,7 @@ func (r *videoRig) priceVideo(t *testing.T, sellPrice float64, limitMicros *int6
 
 func (r *videoRig) keySpent(t *testing.T) int64 {
 	t.Helper()
-	var key model.APIKey
+	var key APIKey
 	if err := r.db.Where("id = ?", r.key.ID).First(&key).Error; err != nil {
 		t.Fatalf("reload key: %v", err)
 	}
@@ -705,7 +709,7 @@ func TestVideoPricedSubmitSettlesExactlyOnce(t *testing.T) {
 		t.Fatalf("priced submit must pass, got %d %s", w.Code, w.Body.String())
 	}
 	jobID := jobIDOf(t, w)
-	var task model.VideoTask
+	var task VideoTask
 	_ = rig.db.Where("id = ?", jobID).First(&task).Error
 	if task.EstimatedMicros != 4_000_000 {
 		t.Fatalf("the submit-time bound must land on the row, got %d", task.EstimatedMicros)
@@ -734,7 +738,7 @@ func TestVideoBudgetExceededAnswers429(t *testing.T) {
 		t.Fatalf("an over-budget submit must answer 429, got %d %s", w.Code, w.Body.String())
 	}
 	var taskCount int64
-	rig.db.Model(&model.VideoTask{}).Count(&taskCount)
+	rig.db.Model(&VideoTask{}).Count(&taskCount)
 	if taskCount != 0 {
 		t.Fatalf("a refused submit must leave no task row, got %d", taskCount)
 	}
@@ -1212,7 +1216,7 @@ func TestMiniMaxReferenceDataURIIsNormalizedNotStripped(t *testing.T) {
 	// snapshot and the stored upstream request body — the re-encoded native
 	// spelling is where a caller-side-only redactor would let them back in.
 	jobID := jobIDOf(t, w)
-	var task model.VideoTask
+	var task VideoTask
 	_ = rig.db.Where("id = ?", jobID).First(&task).Error
 	if strings.Contains(task.RequestSnapshot, pixels) {
 		t.Fatalf("the snapshot must redact reference pixels")

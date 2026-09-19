@@ -99,7 +99,7 @@ func (s *imageStreamState) consume(line []byte, completedEvent string) {
 	}
 }
 
-// report states the billable quantities of a whole stream: the images that
+// streamReport states the billable quantities of a whole stream: the images that
 // completed (the count that bills), what was asked for, the pricing axes,
 // and the token sub-counts when the events carried them. Nil when nothing
 // completed — an empty stream is not a delivery, and must not bill as one.

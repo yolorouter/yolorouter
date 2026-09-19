@@ -15,8 +15,6 @@ package gateway
 import (
 	"sync"
 	"time"
-
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // bindingCapacity bounds the registry. Each entry is tens of bytes and one
@@ -131,14 +129,14 @@ func NewBindingRegistry(now func() time.Time) *BindingRegistry {
 // Returns the candidateID to put first, or 0 when the caller should keep its
 // own order (empty chain, or every provider dead — in which case the chain
 // walk will skip them all anyway and no binding should pin a loser).
-func (r *BindingRegistry) Route(apiKeyID, modelID uint, candidates []model.ModelCandidate, providerDead func(uint) bool) uint {
+func (r *BindingRegistry) Route(apiKeyID, modelID uint, candidates []ModelCandidate, providerDead func(uint) bool) uint {
 	if r == nil || len(candidates) == 0 || providerDead == nil {
 		return 0
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	eligible := make([]model.ModelCandidate, 0, len(candidates))
+	eligible := make([]ModelCandidate, 0, len(candidates))
 	eligibleIDs := make(map[uint]struct{}, len(candidates))
 	for _, c := range candidates {
 		if providerDead(c.ProviderID) || r.deadEndLocked(c.ProviderID) {

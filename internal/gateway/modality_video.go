@@ -23,9 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yolorouter/yolorouter/internal/fact"
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
-	"github.com/yolorouter/yolorouter/internal/service/videotask"
 )
 
 // ModalityVideo names the video modality. The spelling is the model row's
@@ -105,7 +103,7 @@ func (videoModality) Admit(ctx context.Context, in Ingress) (Payload, *Rejection
 	// the exact gate in Create still runs.
 	if videoTasks != nil {
 		if err := videoTasks.PrecheckBudget(ctx, in.APIKeyID, req.Model, payload.effectiveSize(), payload.effectiveSeconds()); err != nil {
-			var budget *videotask.BudgetExceededError
+			var budget *BudgetExceededError
 			if errors.As(err, &budget) {
 				return nil, &Rejection{
 					Status: http.StatusTooManyRequests, ErrorType: errTypeInsufficientQuota,
@@ -372,7 +370,7 @@ func (p *videoPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 // videoTaskStore is the slice of the videotask service a delivery needs;
 // a narrow seam so the modality stays testable without a whole service.
 type videoTaskStore interface {
-	Create(ctx context.Context, task *model.VideoTask, now time.Time) error
+	Create(ctx context.Context, task *VideoTask, now time.Time) error
 	// PrecheckBudget is the create call's budget gate asked before any
 	// upstream submit: a certain refusal (every enabled candidate's
 	// estimate breaks the key's ceiling) is answered here so no provider
@@ -424,7 +422,7 @@ func (p *videoPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 	if videoTasks == nil {
 		return fact.HandedOn(fact.FaultGateway, "video task store is not wired", nil)
 	}
-	task := &model.VideoTask{
+	task := &VideoTask{
 		APIKeyID: p.apiKeyID,
 		ModelID:  p.cand.ModelID, ModelName: p.req.Model,
 		CandidateID: p.cand.CandidateID, ProviderID: p.cand.ProviderID,
@@ -439,7 +437,7 @@ func (p *videoPayload) Deliver(tools DeliveryTools, resp *http.Response) fact.De
 	// the create must land even if the caller hangs up mid-response —
 	// caller-lifetime contexts are exactly the wrong scope for it.
 	if err := videoTasks.Create(context.Background(), task, time.Now()); err != nil {
-		var budget *videotask.BudgetExceededError
+		var budget *BudgetExceededError
 		if errors.As(err, &budget) {
 			// The caller's own ceiling, not any candidate's health:
 			// answered 429 and settled here so the attempt loop does not

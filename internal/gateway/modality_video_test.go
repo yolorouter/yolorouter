@@ -16,9 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
-	"github.com/yolorouter/yolorouter/internal/service/videotask"
 )
 
 func admitVideo(t *testing.T, contentType string, body []byte) (Payload, *Rejection) {
@@ -253,7 +251,7 @@ type stubVideoStore struct {
 	precheckErr error
 }
 
-func (s *stubVideoStore) Create(context.Context, *model.VideoTask, time.Time) error {
+func (s *stubVideoStore) Create(context.Context, *VideoTask, time.Time) error {
 	return nil
 }
 
@@ -269,7 +267,7 @@ func withVideoStore(t *testing.T, store videoTaskStore) {
 }
 
 func TestVideoAdmitBudgetPrecheckRefuses(t *testing.T) {
-	withVideoStore(t, &stubVideoStore{precheckErr: &videotask.BudgetExceededError{
+	withVideoStore(t, &stubVideoStore{precheckErr: &BudgetExceededError{
 		Limit: 1_000_000, Spent: 0, InFlight: 0, Ask: 2_800_000,
 	}})
 	_, rej := admitVideo(t, "application/json", videoJSON(t, map[string]any{

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
@@ -59,7 +58,7 @@ func TestRelayStreamMidFailureOpenAIIngress(t *testing.T) {
 	p := createProvider(t, db, "p1", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-1", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	c, w := newCtx([]byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	svc.Handle(c, apiKey)
@@ -96,7 +95,7 @@ func TestRelayStreamMidFailureClaudeIngress(t *testing.T) {
 	p := createAnthropicProvider(t, db, "claude-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-claude-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "claude-3-5-sonnet", "claude-3-5-sonnet-20241022", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"claude-3-5-sonnet","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
 	c, w := newCtxPath("/v1/messages", reqBody)
@@ -135,7 +134,7 @@ func TestRelayStreamMidFailureGeminiIngress(t *testing.T) {
 	p := createGeminiProvider(t, db, "gemini-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-gemini-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gemini-2.0-flash", "gemini-2.0-flash-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 	c, w := newCtxPath("/v1beta/models/gemini-2.0-flash:streamGenerateContent", reqBody)
@@ -178,7 +177,7 @@ func TestRelayStreamMidFailureResponsesIngress(t *testing.T) {
 	p := createResponsesProvider(t, db, "responses-provider", upstream.URL)
 	createProviderKey(t, db, svc.secrets, p.ID, "sk-responses-upstream", "k1", 1, true)
 	m := createModelAndCandidate(t, db, p, "gpt-4o", "gpt-4o-real", true, true, 1)
-	apiKey := createAPIKey(t, db, model.APIKeyStatusActive, []uint{m.ID})
+	apiKey := createAPIKey(t, db, APIKeyStatusActive, []uint{m.ID})
 
 	reqBody := []byte(`{"model":"gpt-4o","stream":true,"input":"hi"}`)
 	c, w := newCtxPath("/v1/responses", reqBody)

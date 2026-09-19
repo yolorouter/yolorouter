@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/gateway/rows"
 	"github.com/yolorouter/yolorouter/internal/protocols/videos"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/testutil"
@@ -27,7 +27,7 @@ type stubQuerier struct {
 	blockFor time.Duration
 }
 
-func (q *stubQuerier) QueryTask(_ context.Context, _ model.VideoTask) (QueryResult, error) {
+func (q *stubQuerier) QueryTask(_ context.Context, _ rows.VideoTask) (QueryResult, error) {
 	q.calls.Add(1)
 	if q.blockFor > 0 {
 		time.Sleep(q.blockFor)
@@ -42,9 +42,9 @@ func (q *stubQuerier) QueryTask(_ context.Context, _ model.VideoTask) (QueryResu
 	return ans, nil
 }
 
-func newTask(t *testing.T, apiKeyID, providerID uint) *model.VideoTask {
+func newTask(t *testing.T, apiKeyID, providerID uint) *rows.VideoTask {
 	t.Helper()
-	return &model.VideoTask{
+	return &rows.VideoTask{
 		APIKeyID: apiKeyID, ModelID: 1, ModelName: "sora-2",
 		CandidateID: 1, ProviderID: providerID, ProviderModelName: "wan2.7-t2v",
 		ProviderTaskID: "up-1", DestinationVersion: 1,
@@ -57,12 +57,12 @@ func TestStatusSpellingsMatchDialect(t *testing.T) {
 	// purpose (the model imports nothing); this pin is what keeps the two
 	// vocabularies from drifting apart silently.
 	pairs := map[string]string{
-		model.VideoTaskPending:    videos.StatusPending,
-		model.VideoTaskProcessing: videos.StatusProcessing,
-		model.VideoTaskCompleted:  videos.StatusCompleted,
-		model.VideoTaskFailed:     videos.StatusFailed,
-		model.VideoTaskCancelled:  videos.StatusCancelled,
-		model.VideoTaskExpired:    videos.StatusExpired,
+		rows.VideoTaskPending:    videos.StatusPending,
+		rows.VideoTaskProcessing: videos.StatusProcessing,
+		rows.VideoTaskCompleted:  videos.StatusCompleted,
+		rows.VideoTaskFailed:     videos.StatusFailed,
+		rows.VideoTaskCancelled:  videos.StatusCancelled,
+		rows.VideoTaskExpired:    videos.StatusExpired,
 	}
 	for modelSpelling, dialectSpelling := range pairs {
 		if modelSpelling != dialectSpelling {
@@ -74,16 +74,16 @@ func TestStatusSpellingsMatchDialect(t *testing.T) {
 func TestLifecyclePendingProcessingCompleted(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	q := &stubQuerier{answers: []QueryResult{
-		{Status: model.VideoTaskProcessing},
-		{Status: model.VideoTaskCompleted, ResultURL: "https://up.test/v.mp4", CoverURL: "https://up.test/c.jpg", UsageSeconds: 8},
+		{Status: rows.VideoTaskProcessing},
+		{Status: rows.VideoTaskCompleted, ResultURL: "https://up.test/v.mp4", CoverURL: "https://up.test/c.jpg", UsageSeconds: 8},
 	}}
-	svc := NewService(db, q)
+	svc := NewService(testStoreFrom(db), q)
 	now := time.Now()
 	task := newTask(t, 1, 1)
 	if err := svc.Create(context.Background(), task, now); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if task.ID == "" || task.Status != model.VideoTaskPending {
+	if task.ID == "" || task.Status != rows.VideoTaskPending {
 		t.Fatalf("create must mint an id and set pending, got %q %q", task.ID, task.Status)
 	}
 
@@ -91,14 +91,14 @@ func TestLifecyclePendingProcessingCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if first.Status != model.VideoTaskProcessing {
+	if first.Status != rows.VideoTaskProcessing {
 		t.Fatalf("first poll must observe processing, got %q", first.Status)
 	}
 	second, err := svc.Get(context.Background(), 1, task.ID, now.Add(3*time.Second))
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if second.Status != model.VideoTaskCompleted || second.ResultURL == "" || second.UsageSeconds != 8 {
+	if second.Status != rows.VideoTaskCompleted || second.ResultURL == "" || second.UsageSeconds != 8 {
 		t.Fatalf("completion must carry result and usage, got %+v", second)
 	}
 	if q.calls.Load() != 2 {
@@ -109,20 +109,20 @@ func TestLifecyclePendingProcessingCompleted(t *testing.T) {
 func TestTerminalTasksAreNeverRequeried(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	q := &stubQuerier{answers: []QueryResult{
-		{Status: model.VideoTaskFailed, ErrorCode: "upstream_rejected", ErrorMessage: "content policy"},
+		{Status: rows.VideoTaskFailed, ErrorCode: "upstream_rejected", ErrorMessage: "content policy"},
 	}}
-	svc := NewService(db, q)
+	svc := NewService(testStoreFrom(db), q)
 	now := time.Now()
 	task := newTask(t, 1, 1)
 	_ = svc.Create(context.Background(), task, now)
 
 	first, _ := svc.Get(context.Background(), 1, task.ID, now.Add(time.Second))
-	if first.Status != model.VideoTaskFailed || first.ErrorCode != "upstream_rejected" {
+	if first.Status != rows.VideoTaskFailed || first.ErrorCode != "upstream_rejected" {
 		t.Fatalf("failure must carry the upstream's error, got %+v", first)
 	}
 	for i := 0; i < 3; i++ {
 		again, _ := svc.Get(context.Background(), 1, task.ID, now.Add(time.Duration(i+2)*time.Second))
-		if again.Status != model.VideoTaskFailed {
+		if again.Status != rows.VideoTaskFailed {
 			t.Fatalf("terminal state must hold, got %q", again.Status)
 		}
 	}
@@ -134,7 +134,7 @@ func TestTerminalTasksAreNeverRequeried(t *testing.T) {
 func TestQuerierErrorIsNotATaskFailure(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	q := &stubQuerier{} // no scripted answers: every call errors
-	svc := NewService(db, q)
+	svc := NewService(testStoreFrom(db), q)
 	now := time.Now()
 	task := newTask(t, 1, 1)
 	_ = svc.Create(context.Background(), task, now)
@@ -143,14 +143,14 @@ func TestQuerierErrorIsNotATaskFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Status != model.VideoTaskPending {
+	if got.Status != rows.VideoTaskPending {
 		t.Fatalf("a failed poll must leave the task's last known state, got %q", got.Status)
 	}
 }
 
 func TestOwnershipIsAFortyFour(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewService(db, nil)
+	svc := NewService(testStoreFrom(db), nil)
 	now := time.Now()
 	task := newTask(t, 1, 1)
 	_ = svc.Create(context.Background(), task, now)
@@ -162,8 +162,8 @@ func TestOwnershipIsAFortyFour(t *testing.T) {
 
 func TestPollIntervalThrottles(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	q := &stubQuerier{answers: []QueryResult{{Status: model.VideoTaskProcessing}}}
-	svc := NewService(db, q)
+	q := &stubQuerier{answers: []QueryResult{{Status: rows.VideoTaskProcessing}}}
+	svc := NewService(testStoreFrom(db), q)
 	now := time.Now()
 	task := newTask(t, 1, 1)
 	_ = svc.Create(context.Background(), task, now)
@@ -179,8 +179,8 @@ func TestConcurrentGetsSingleFlight(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	// The query blocks long enough for every goroutine to pile onto the
 	// flight lock; only the claim winner reaches it.
-	q := &stubQuerier{answers: []QueryResult{{Status: model.VideoTaskProcessing}}, blockFor: 60 * time.Millisecond}
-	svc := NewService(db, q)
+	q := &stubQuerier{answers: []QueryResult{{Status: rows.VideoTaskProcessing}}, blockFor: 60 * time.Millisecond}
+	svc := NewService(testStoreFrom(db), q)
 	now := time.Now()
 	task := newTask(t, 1, 1)
 	_ = svc.Create(context.Background(), task, now)
@@ -201,7 +201,7 @@ func TestConcurrentGetsSingleFlight(t *testing.T) {
 
 func TestSweepExpiresOnlyStaleNonTerminal(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewService(db, nil)
+	svc := NewService(testStoreFrom(db), nil)
 	now := time.Now()
 
 	stale := newTask(t, 1, 1)
@@ -218,7 +218,7 @@ func TestSweepExpiresOnlyStaleNonTerminal(t *testing.T) {
 	_ = svc.Create(context.Background(), fresh, now)
 	terminal := newTask(t, 1, 1)
 	terminal.ProviderTaskID = "up-3"
-	terminal.Status = model.VideoTaskFailed
+	terminal.Status = rows.VideoTaskFailed
 	_ = svc.Create(context.Background(), terminal, now)
 
 	moved, err := svc.SweepExpired(context.Background(), now)
@@ -226,15 +226,15 @@ func TestSweepExpiresOnlyStaleNonTerminal(t *testing.T) {
 		t.Fatalf("sweep must expire exactly the stale task, got moved=%d err=%v", moved, err)
 	}
 	got, _ := svc.Get(context.Background(), 1, stale.ID, now)
-	if got.Status != model.VideoTaskExpired {
+	if got.Status != rows.VideoTaskExpired {
 		t.Fatalf("stale task must be expired, got %q", got.Status)
 	}
 	got, _ = svc.Get(context.Background(), 1, fresh.ID, now)
-	if got.Status != model.VideoTaskPending {
+	if got.Status != rows.VideoTaskPending {
 		t.Fatalf("fresh task must be untouched, got %q", got.Status)
 	}
 	var terminalCount int64
-	db.Model(&model.VideoTask{}).Where("id = ?", terminal.ID).Count(&terminalCount)
+	db.Model(&rows.VideoTask{}).Where("id = ?", terminal.ID).Count(&terminalCount)
 	if terminalCount != 1 {
 		t.Fatalf("terminal rows must never be deleted, count=%d", terminalCount)
 	}
@@ -242,7 +242,7 @@ func TestSweepExpiresOnlyStaleNonTerminal(t *testing.T) {
 
 func TestProviderDestinationChangeExpiresOldTasks(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewService(db, nil)
+	svc := NewService(testStoreFrom(db), nil)
 	now := time.Now()
 
 	oldDest := newTask(t, 1, 7)
@@ -258,18 +258,18 @@ func TestProviderDestinationChangeExpiresOldTasks(t *testing.T) {
 		t.Fatalf("hook must expire exactly the old-destination task, got moved=%d err=%v", moved, err)
 	}
 	got, _ := svc.Get(context.Background(), 1, oldDest.ID, now)
-	if got.Status != model.VideoTaskExpired || got.ErrorCode != "provider_destination_changed" {
+	if got.Status != rows.VideoTaskExpired || got.ErrorCode != "provider_destination_changed" {
 		t.Fatalf("old-destination task must expire with the hook's code, got %+v", got)
 	}
 	got, _ = svc.Get(context.Background(), 1, newDest.ID, now)
-	if got.Status != model.VideoTaskPending {
+	if got.Status != rows.VideoTaskPending {
 		t.Fatalf("current-destination task must be untouched, got %q", got.Status)
 	}
 }
 
 func TestOnSightExpiryAfterHorizon(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewService(db, nil)
+	svc := NewService(testStoreFrom(db), nil)
 	now := time.Now()
 	task := newTask(t, 1, 1)
 	_ = svc.Create(context.Background(), task, now)
@@ -281,14 +281,14 @@ func TestOnSightExpiryAfterHorizon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Status != model.VideoTaskExpired {
+	if got.Status != rows.VideoTaskExpired {
 		t.Fatalf("a task read past its horizon must expire on sight, got %q", got.Status)
 	}
 }
 
 func TestNilQuerierPollsFailSoftly(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewService(db, nil)
+	svc := NewService(testStoreFrom(db), nil)
 	now := time.Now()
 	task := newTask(t, 1, 1)
 	_ = svc.Create(context.Background(), task, now)
@@ -297,7 +297,7 @@ func TestNilQuerierPollsFailSoftly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get with no querier must not fail the read: %v", err)
 	}
-	if got.Status != model.VideoTaskPending {
+	if got.Status != rows.VideoTaskPending {
 		t.Fatalf("task must keep its state, got %q", got.Status)
 	}
 }
@@ -305,13 +305,13 @@ func TestNilQuerierPollsFailSoftly(t *testing.T) {
 func TestVocabularyGuardDropsUnknownStatus(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	q := &stubQuerier{answers: []QueryResult{{Status: "succeed"}}} // a vendor spelling, unmapped
-	svc := NewService(db, q)
+	svc := NewService(testStoreFrom(db), q)
 	now := time.Now()
 	task := newTask(t, 1, 1)
 	_ = svc.Create(context.Background(), task, now)
 
 	got, _ := svc.Get(context.Background(), 1, task.ID, now.Add(time.Second))
-	if got.Status != model.VideoTaskPending {
+	if got.Status != rows.VideoTaskPending {
 		t.Fatalf("an out-of-vocabulary observation must be dropped, got %q", got.Status)
 	}
 }

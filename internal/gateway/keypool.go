@@ -26,8 +26,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/yolorouter/yolorouter/internal/model"
 )
 
 // The bench a Retry-After header can buy is clamped at both ends: below the
@@ -144,7 +142,7 @@ func newKeyPool(now func() time.Time) *keyPool {
 // The input order (sort_order from the repository) is the tiebreaker within
 // each group, and a pool with fewer than two keys is returned untouched —
 // there is nothing to rotate.
-func (p *keyPool) walkOrder(providerID uint, keys []model.ProviderKey) []model.ProviderKey {
+func (p *keyPool) walkOrder(providerID uint, keys []ProviderKey) []ProviderKey {
 	// Empty comes back untouched too — before the cursor arithmetic, whose
 	// modulo would divide by zero. Today's only caller filters empties
 	// first; the method's own contract must not depend on that.
@@ -170,11 +168,11 @@ func (p *keyPool) walkOrder(providerID uint, keys []model.ProviderKey) []model.P
 	// [1,2,3] and 1 cooling, consecutive walks would start 2,2,3, serving
 	// one healthy key double traffic exactly when part of the pool is
 	// already limited.
-	ready := make([]model.ProviderKey, 0, len(keys))
+	ready := make([]ProviderKey, 0, len(keys))
 	// benched carries the expiry alongside the key so the tail can be sorted
 	// soonest-first without a second lookup per comparison.
 	type benched struct {
-		key    model.ProviderKey
+		key    ProviderKey
 		expiry time.Time
 	}
 	var tail []benched
@@ -205,7 +203,7 @@ func (p *keyPool) walkOrder(providerID uint, keys []model.ProviderKey) []model.P
 	// The cursor rotates the healthy subset only, modulo its CURRENT size —
 	// the same "survives size changes" arithmetic the whole-pool rotation
 	// uses when keys come and go.
-	order := make([]model.ProviderKey, 0, len(keys))
+	order := make([]ProviderKey, 0, len(keys))
 	if len(ready) > 0 {
 		start := int(cur % uint64(len(ready)))
 		order = append(order, ready[start:]...)
@@ -249,6 +247,39 @@ func (p *keyPool) coolKey(keyID uint, cfg int, dispatchedAt time.Time, d time.Du
 	}
 	now := p.now()
 	s.benchUntil, s.benchInstalled, s.limitedAt = now.Add(d), now, dispatchedAt
+}
+
+// lengthenKeyBench extends a standing bench to a later expiry, on behalf
+// of evidence from the SAME verdict that booked it — dispatchedAt equal
+// to the recorded limitedAt — arriving after the bench was booked (the
+// 429's error body is read after the header-stage booking). It only ever
+// moves benchUntil later: the header stage booked a floor from what it
+// could see, and body evidence naming a longer window is strictly more
+// information. A bench that no longer stands (quota path dropped it,
+// success released it) is left alone — lengthening nothing is correct
+// there, and the same ordering gates as coolKey refuse verdicts that a
+// newer invalidation or recovery has already outrun.
+func (p *keyPool) lengthenKeyBench(keyID uint, cfg int, dispatchedAt time.Time, d time.Duration) {
+	if p == nil || d <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.stateFor(keyID, cfg)
+	if s == nil || !s.benched() {
+		return
+	}
+	// dispatchedAt must be the verdict that owns the standing bench (or a
+	// newer one); Before means an older verdict's straggler evidence and
+	// is refused exactly like coolKey refuses it.
+	if !dispatchedAt.After(s.invalidatedAt) ||
+		!dispatchedAt.After(s.recoveredAt) ||
+		dispatchedAt.Before(s.limitedAt) {
+		return
+	}
+	if until := p.now().Add(d); until.After(s.benchUntil) {
+		s.benchUntil = until
+	}
 }
 
 // dropKey books a persistent invalidation (quota 429, 401 — the retest
