@@ -47,8 +47,9 @@ var ErrClientWrite = errors.New("downstream client write failure")
 // otherwise return an arbitrarily large body; without this cap
 // io.ReadAll would grow the buffer until OOM before the request timeout
 // fires (the response body has no bodylimit guard the way the request body
-// does). Mirrors the gateway's same-protocol passthrough bound
-// (maxNonStreamResponseBytes in internal/gateway/relay.go). A package var
+// does). Mirrors the same 32 MiB bound the gateway's same-protocol
+// passthrough path historically enforced (maxNonStreamResponseBytes in the
+// hosted relay.go that retired with the F03 chat cutover). A package var
 // (not const) so tests can shrink it instead of buffering a real 32 MiB
 // body.
 var maxIRResponseBytes int64 = 32 * 1024 * 1024

@@ -30,6 +30,11 @@ func TestParsedRequestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid", `{"model":"m","messages":[{"role":"user","content":"hi"}]}`, false},
+		{"legacy prompt string", `{"model":"m","prompt":"hi"}`, false},
+		{"legacy prompt array", `{"model":"m","prompt":["a","b"]}`, false},
+		{"legacy prompt empty string", `{"model":"m","prompt":""}`, true},
+		{"legacy prompt empty array", `{"model":"m","prompt":[]}`, true},
+		{"legacy prompt null", `{"model":"m","prompt":null}`, true},
 		{"missing messages", `{"model":"m"}`, true},
 		{"empty messages", `{"model":"m","messages":[]}`, true},
 		{"messages not array", `{"model":"m","messages":"x"}`, true},

@@ -17,6 +17,11 @@ type parsedRequest struct {
 	WantsStreamUsage bool              // caller set stream_options.include_usage=true
 	Messages         []json.RawMessage // parsed from the "messages" array
 	Tools            []parsedTool      // parsed from the "tools" array
+	// LegacyPrompt reports whether the body carries the legacy completions
+	// "prompt" field (string or array) instead of "messages". Such a body is
+	// routed verbatim by path on egress, so its structural validity is the
+	// upstream's judgement, not the chat decoder's.
+	LegacyPrompt bool
 }
 
 type parsedTool struct {
@@ -34,7 +39,7 @@ func (p *parsedRequest) hasTools() bool { return len(p.Tools) > 0 }
 // fields are NOT validated here — they
 // pass through to the upstream.
 func (p *parsedRequest) validate() error {
-	if len(p.Messages) == 0 {
+	if len(p.Messages) == 0 && !p.LegacyPrompt {
 		return fmt.Errorf("messages must be a non-empty array")
 	}
 	for i, t := range p.Tools {
@@ -56,6 +61,7 @@ func parseRequest(body []byte) (*parsedRequest, error) {
 		Model         string          `json:"model"`
 		Stream        bool            `json:"stream"`
 		Messages      json.RawMessage `json:"messages"`
+		Prompt        json.RawMessage `json:"prompt"`
 		Tools         json.RawMessage `json:"tools"`
 		StreamOptions json.RawMessage `json:"stream_options"`
 	}
@@ -67,6 +73,15 @@ func parseRequest(body []byte) (*parsedRequest, error) {
 		if err := json.Unmarshal(raw.Messages, &p.Messages); err != nil {
 			return nil, fmt.Errorf("messages must be an array: %w", err)
 		}
+	}
+	// The legacy completions prompt: any non-empty "prompt" value (the
+	// OpenAI spelling is a string or an array of strings, but the pre-kernel
+	// path never inspected it — the upstream's judgement, kept verbatim here).
+	// It means the caller is on /v1/completions and the body is forwarded
+	// unchanged; an empty or absent prompt leaves LegacyPrompt false so the
+	// messages rule above keeps its teeth.
+	if s := string(raw.Prompt); s != "" && s != "null" && s != `""` && s != "[]" {
+		p.LegacyPrompt = true
 	}
 	if len(raw.Tools) > 0 && string(raw.Tools) != "null" {
 		if err := json.Unmarshal(raw.Tools, &p.Tools); err != nil {
