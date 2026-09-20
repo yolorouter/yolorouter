@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-11",
+  "updated_at": "2026-09-19",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
@@ -112,15 +112,21 @@
       }
     },
     "api.siliconflow.cn": {
-      "Qwen/Qwen3.8-27B": {
-        "input": 1.8,
-        "output": 14.4,
+      "zai-org/GLM-5.2": {
+        "input": 6,
+        "output": 28,
         "cache_write": null,
         "cache_read": null
       },
-      "nex-agi/Nex-N2-Pro": {
-        "input": 1.75,
-        "output": 7,
+      "tencent/Hy4-preview": {
+        "input": 6,
+        "output": 18,
+        "cache_write": null,
+        "cache_read": null
+      },
+      "Qwen/Qwen3.8-27B": {
+        "input": 1.8,
+        "output": 14.4,
         "cache_write": null,
         "cache_read": null
       },
@@ -166,12 +172,6 @@
         "cache_write": null,
         "cache_read": null
       },
-      "zai-org/GLM-5.2": {
-        "input": 6,
-        "output": 28,
-        "cache_write": null,
-        "cache_read": null
-      },
       "Qwen/Qwen2.5-14B-Instruct": {
         "input": 0.7,
         "output": 0.7,
@@ -196,12 +196,6 @@
         "cache_write": null,
         "cache_read": null
       },
-      "MiniMaxAI/MiniMax-M2.5": {
-        "input": 2.1,
-        "output": 8.4,
-        "cache_write": null,
-        "cache_read": null
-      },
       "Qwen/Qwen3.5-27B": {
         "input": 1.8,
         "output": 14.4,
@@ -211,12 +205,6 @@
       "Qwen/Qwen3.5-122B-A10B": {
         "input": 2,
         "output": 16,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "Qwen/Qwen3.5-397B-A17B": {
-        "input": 2,
-        "output": 1.2,
         "cache_write": null,
         "cache_read": null
       },
