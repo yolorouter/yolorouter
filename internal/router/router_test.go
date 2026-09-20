@@ -467,6 +467,63 @@ func TestGeminiRouteWithoutAPIKeyIsUnauthorized(t *testing.T) {
 	}
 }
 
+// TestGeminiRouteUnknownActionReturnsRouteNotFound locks in the treatment of
+// a wildcard-matched but unrecognized gemini action: the route pattern
+// accepts any {model}:{action} segment, so a typo'd method name
+// (:streamGenerateReply, a bare model with no action, ...) reaches the
+// gateway handler and must get the same 404 the NoRoute handler gives
+// unrouted gateway paths — not a chat-shaped reply from the OpenAI protocol
+// fallback.
+func TestGeminiRouteUnknownActionReturnsRouteNotFound(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedAPIKey(t, db, "sk-yr-gemini-route")
+	r, err := New(testDeps(t, db))
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.0-flash:streamGenerateReply", bytes.NewReader([]byte(`{"contents":[{"parts":[{"text":"hi"}]}]}`)))
+	req.Header.Set("X-Api-Key", "sk-yr-gemini-route")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unknown gemini action, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal error body: %v, body: %s", err, w.Body.String())
+	}
+	if body.Error.Code != "route_not_found" || body.Error.Type != "invalid_request_error" {
+		t.Fatalf("expected the NoRoute envelope (route_not_found/invalid_request_error), got code=%q type=%q body=%s",
+			body.Error.Code, body.Error.Type, w.Body.String())
+	}
+}
+
+// TestGeminiRouteUnknownActionWithoutAPIKeyStillUnauthorized pins the order:
+// authentication runs before the unknown-action 404, so an unauthenticated
+// probe of a typo'd method name still answers 401 — the security property
+// TestGeminiRouteWithoutAPIKeyIsUnauthorized guards is not weakened by the
+// 404 guard.
+func TestGeminiRouteUnknownActionWithoutAPIKeyStillUnauthorized(t *testing.T) {
+	r := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.0-flash:streamGenerateReply", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an unauthenticated unknown-action request, got %d, body: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestGeminiRouteWithSlashInModelSegmentDoesNotRoute documents (and locks
 // in) an actual limitation of the /v1beta/models/:modelaction route: a model
 // segment containing a percent-encoded slash, like a tuned model's

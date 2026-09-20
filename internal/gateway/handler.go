@@ -2,8 +2,11 @@ package gateway
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/yolorouter/yolorouter/internal/protocols"
 )
 
 // gatewayAPIKeyKey is the gin.Context key under which APIKeyAuth stores the
@@ -60,6 +63,17 @@ func PostChatCompletions(svc *Service) gin.HandlerFunc {
 		// not the OpenAI shape.
 		ingress := IngressProtocol(c.Request.URL.Path)
 		requestID := requestIDFor(c)
+		// The gemini route is a wildcard over the whole {model}:{action}
+		// segment, so a typo'd action name still matches it and would
+		// otherwise fall through to the OpenAI protocol default below —
+		// answering a chat-shaped reply from a gemini URL. Give the
+		// unrecognized action the same 404 the router's NoRoute handler
+		// gives paths it cannot match at all. Known actions classify as
+		// Gemini and never reach this branch.
+		if ingress != protocols.ProtocolGemini && strings.HasPrefix(c.Request.URL.Path, geminiIngressPathPrefix) {
+			WriteUnknownRouteError(c, ingress, requestID)
+			return
+		}
 		v, ok := c.Get(gatewayAPIKeyKey)
 		if !ok {
 			WriteIngressError(c, ingress, http.StatusInternalServerError, errTypeServer, "missing gateway auth context", requestID)

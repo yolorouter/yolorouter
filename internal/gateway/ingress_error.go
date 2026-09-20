@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter/internal/protocols"
@@ -52,5 +54,40 @@ func WriteIngressError(c *gin.Context, ingress protocols.ProtocolID, status int,
 		rc.bodies.SetResponse(body)
 	}
 	c.Data(status, "application/json; charset=utf-8", body)
+	c.Abort()
+}
+
+// unknownRouteError mirrors middleware's gatewayError/gatewayErrorBody field
+// order so the serialized bytes stay identical to the NoRoute handler's
+// OpenAI-surface envelope — encoding/json preserves struct field order,
+// while a gin.H map would sort the keys alphabetically.
+type unknownRouteError struct {
+	Error unknownRouteErrorBody `json:"error"`
+}
+
+type unknownRouteErrorBody struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+}
+
+// WriteUnknownRouteError emits the 404 an unrouted gateway path receives
+// from the router's NoRoute dispatcher: the plain gateway error body for the
+// OpenAI-compatible surface, the caller's protocol envelope for Claude and
+// Gemini. It re-implements that dispatch instead of importing the middleware
+// helper because middleware imports this package; the branch structure and
+// payloads mirror WriteNamespacedError's gateway half so a wildcard-matched
+// path this serves stays byte-identical with the paths the router itself
+// rejects.
+func WriteUnknownRouteError(c *gin.Context, ingress protocols.ProtocolID, requestID string) {
+	if ingress == protocols.ProtocolClaude || ingress == protocols.ProtocolGemini {
+		WriteIngressError(c, ingress, http.StatusNotFound, "invalid_request_error", "route not found", requestID)
+		return
+	}
+	c.JSON(http.StatusNotFound, unknownRouteError{Error: unknownRouteErrorBody{
+		Message: "route not found",
+		Type:    "invalid_request_error",
+		Code:    "route_not_found",
+	}})
 	c.Abort()
 }

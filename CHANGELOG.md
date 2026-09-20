@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clear operation relies on it), and the console form, which posts the
   whole record, is unaffected.
 
+- An unrecognized action on the native Gemini route now answers 404. The
+  route matches any `{model}:{action}` segment, so a typo'd method name
+  used to fall through to the OpenAI protocol default — an unauthenticated
+  probe got "missing API key" (indistinguishable from a real auth problem)
+  and a valid key got a chat-shaped reply from a gemini URL. Unknown
+  actions now receive the same `route_not_found` 404 envelope the gateway
+  gives unrouted paths; the two known actions (`:generateContent`,
+  `:streamGenerateContent`) and the auth-before-routing order are
+  unchanged.
+
 ## [0.2.4] - 2026-09-11
 
 ### Added
