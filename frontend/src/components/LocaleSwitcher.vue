@@ -77,11 +77,11 @@ const options = computed<DropdownOption[]>(() =>
   })),
 )
 
-function onLocaleChange(value: 'zh-CN' | 'en') {
+function onLocaleChange(value: 'zh-CN' | 'en' | 'ru-RU') {
   locale.setLocale(value)
 }
 
-function onSheetSelect(value: 'zh-CN' | 'en') {
+function onSheetSelect(value: 'zh-CN' | 'en' | 'ru-RU') {
   locale.setLocale(value)
 }
 </script>

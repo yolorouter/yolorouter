@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { zhCN, enUS, dateZhCN, dateEnUS, type GlobalThemeOverrides } from 'naive-ui'
+import { zhCN, enUS, dateZhCN, dateEnUS, ruRU, dateRuRU, type GlobalThemeOverrides } from 'naive-ui'
 import { useLocaleStore } from './store/locale'
 
 const localeStore = useLocaleStore()
-const naiveLocale = computed(() => (localeStore.locale === 'en' ? enUS : zhCN))
-const naiveDateLocale = computed(() => (localeStore.locale === 'en' ? dateEnUS : dateZhCN))
+const naiveLocale = computed(() =>
+  localeStore.locale === 'en' ? enUS : localeStore.locale === 'ru-RU' ? ruRU : zhCN,
+)
+const naiveDateLocale = computed(() =>
+  localeStore.locale === 'en' ? dateEnUS : localeStore.locale === 'ru-RU' ? dateRuRU : dateZhCN,
+)
 
 // The product's one accent color, used verbatim so every surface reads as
 // the same product rather than a second, differently-branded tool.

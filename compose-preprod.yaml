@@ -1,0 +1,18 @@
+# Pre-prod Yolorouter с русской локалью (форк VladYourich/yolorouter)
+# Бинарник собран на хосте: go build -tags "release embed" (web/dist = frontend/dist с ru-RU)
+services:
+  yolorouter-ru:
+    image: alpine:3.20
+    container_name: yolorouter-preprod
+    restart: unless-stopped
+    entrypoint: ["/bin/yolorouter", "serve", "-config", "/yolorouter/configs/config.yaml"]
+    volumes:
+      - ./bin/yolorouter-ru:/bin/yolorouter:ro
+      - ./preprod-data:/yolorouter
+    ports:
+      - "127.0.0.1:8086:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
