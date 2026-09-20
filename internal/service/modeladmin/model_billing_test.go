@@ -90,7 +90,7 @@ func TestCandidateBillingDeclaration(t *testing.T) {
 		// Switch to image mode carrying the table in the same edit.
 		mode := model.BillingModeImage
 		result, err := svc.UpdateModelCandidate(t.Context(), candidateID, modeladmin.UpdateCandidateInput{
-			ProviderModelName: "priced-four-real",
+			ProviderModelName: ptrString("priced-four-real"),
 			BillingMode:       &mode,
 			ImagePricingTiers: &model.ImagePricingTiers{DefaultPrice: ptrFloat(0.02)},
 		}, time.Now().UTC())
@@ -103,7 +103,7 @@ func TestCandidateBillingDeclaration(t *testing.T) {
 
 		// A later edit that submits neither half keeps the declaration.
 		result, err = svc.UpdateModelCandidate(t.Context(), candidateID, modeladmin.UpdateCandidateInput{
-			ProviderModelName: "priced-four-real",
+			ProviderModelName: ptrString("priced-four-real"),
 		}, time.Now().UTC())
 		if err != nil {
 			t.Fatalf("plain update: %v", err)
@@ -117,7 +117,7 @@ func TestCandidateBillingDeclaration(t *testing.T) {
 		// submitted — token mode has no table.
 		token := model.BillingModeToken
 		result, err = svc.UpdateModelCandidate(t.Context(), candidateID, modeladmin.UpdateCandidateInput{
-			ProviderModelName: "priced-four-real",
+			ProviderModelName: ptrString("priced-four-real"),
 			BillingMode:       &token,
 		}, time.Now().UTC())
 		if err != nil {
@@ -176,7 +176,7 @@ func TestCandidateVideoBillingDeclaration(t *testing.T) {
 
 		video := model.BillingModeVideo
 		result, err := svc.UpdateModelCandidate(t.Context(), view.ID, modeladmin.UpdateCandidateInput{
-			ProviderModelName: "video-priced-two-real",
+			ProviderModelName: ptrString("video-priced-two-real"),
 			BillingMode:       &video,
 			VideoPricingTiers: &model.VideoPricingTiers{
 				Tiers: []model.VideoPricingTier{{Resolution: "720P", PurchasePrice: 0.3, SellPrice: 0.4}},
@@ -192,7 +192,7 @@ func TestCandidateVideoBillingDeclaration(t *testing.T) {
 
 		// An edit that submits neither half keeps the declaration.
 		result, err = svc.UpdateModelCandidate(t.Context(), view.ID, modeladmin.UpdateCandidateInput{
-			ProviderModelName: "video-priced-two-real",
+			ProviderModelName: ptrString("video-priced-two-real"),
 		}, time.Now().UTC())
 		if err != nil {
 			t.Fatalf("plain update: %v", err)
@@ -204,7 +204,7 @@ func TestCandidateVideoBillingDeclaration(t *testing.T) {
 		// Switching to token clears the table — token mode has none.
 		token := model.BillingModeToken
 		result, err = svc.UpdateModelCandidate(t.Context(), view.ID, modeladmin.UpdateCandidateInput{
-			ProviderModelName: "video-priced-two-real",
+			ProviderModelName: ptrString("video-priced-two-real"),
 			BillingMode:       &token,
 		}, time.Now().UTC())
 		if err != nil {

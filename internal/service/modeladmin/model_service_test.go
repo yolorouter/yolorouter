@@ -268,13 +268,83 @@ func TestUpdateModelCandidateDefaultsProviderModelNameToModelNameWhenBlank(t *te
 	}
 
 	updated, err := svc.UpdateModelCandidate(context.Background(), created.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "", InputPrice: 3, OutputPrice: 4,
+		ProviderModelName: ptrString(""), InputPrice: ptrFloat(3), OutputPrice: ptrFloat(4),
 	}, now)
 	if err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
 	}
 	if updated.Candidate.ProviderModelName != "smart" {
 		t.Fatalf("expected blank provider_model_name to default to the model's own name %q, got %q", "smart", updated.Candidate.ProviderModelName)
+	}
+}
+
+// A PATCH that only touches prices must leave everything it does not mention
+// alone: the upstream target keeps its stored name (no silent mirror-to-public
+// rename), the row keeps its verified+enabled state, and no probe fires — a
+// price says nothing about whether the mapping works. This is the regression
+// test for the API footgun where a price-only PATCH zeroed the name, the next
+// probe called the upstream with the public alias, failed, and knocked the
+// candidate out of routing.
+func TestUpdateModelCandidatePriceOnlyKeepsNameStateAndSkipsProbe(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
+	callsAfterSeed := client.Calls
+
+	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
+		InputPrice: ptrFloat(2), OutputPrice: ptrFloat(4),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.Candidate.ProviderModelName != "gpt-4o" {
+		t.Fatalf("price-only PATCH must keep the stored provider_model_name, got %q", result.Candidate.ProviderModelName)
+	}
+	if result.Candidate.InputPrice != 2 || result.Candidate.OutputPrice != 4 {
+		t.Fatalf("expected prices 2/4, got %v/%v", result.Candidate.InputPrice, result.Candidate.OutputPrice)
+	}
+	if result.Candidate.ManagementStatus != model.ModelCandidateStatusEnabled {
+		t.Fatalf("price-only PATCH must keep the candidate enabled, got %d", result.Candidate.ManagementStatus)
+	}
+	if result.Candidate.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("price-only PATCH must keep the verified verdict, got %d", result.Candidate.VerificationStatus)
+	}
+	if client.Calls != callsAfterSeed {
+		t.Fatalf("price-only PATCH on a verified enabled candidate must not probe, calls went %d -> %d", callsAfterSeed, client.Calls)
+	}
+}
+
+// The mirror case: a PATCH that only renames the target must not zero the
+// prices it does not mention. The rename legitimately re-probes (the target
+// moved), so the row ends verified again through the fake's passing result.
+func TestUpdateModelCandidateNameOnlyKeepsPrices(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	now := time.Now().UTC()
+	provider := seedEnabledProviderForModelTest(t, providerService, "provider-a")
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
+	callsAfterSeed := client.Calls
+
+	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
+	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
+		ProviderModelName: ptrString("gpt-4o-mini"),
+	}, now)
+	if err != nil {
+		t.Fatalf("UpdateModelCandidate failed: %v", err)
+	}
+	if result.Candidate.ProviderModelName != "gpt-4o-mini" {
+		t.Fatalf("expected the rename to land, got %q", result.Candidate.ProviderModelName)
+	}
+	if result.Candidate.InputPrice != 1 || result.Candidate.OutputPrice != 2 || result.Candidate.MaxOutput != candidate.MaxOutput {
+		t.Fatalf("name-only PATCH must keep stored prices/max-output, got %v/%v/%v", result.Candidate.InputPrice, result.Candidate.OutputPrice, result.Candidate.MaxOutput)
+	}
+	if client.Calls == callsAfterSeed {
+		t.Fatalf("a rename must re-probe the new target")
+	}
+	if result.Candidate.VerificationStatus != model.ModelVerificationStatusPassed {
+		t.Fatalf("expected the passing probe to verify the renamed target, got %d", result.Candidate.VerificationStatus)
 	}
 }
 
@@ -1004,7 +1074,7 @@ func TestUpdateModelCandidateProbesWithFreshTokenAfterRetarget(t *testing.T) {
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -1064,7 +1134,7 @@ func TestUpdateModelCandidateReportsSupersededProbe(t *testing.T) {
 	}
 
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -1130,7 +1200,7 @@ func TestUpdateModelCandidateReportsSupersededWhenALaterProbeWinsBeforeReload(t 
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -1163,7 +1233,7 @@ func TestUpdateModelCandidateDoesNotReEnableAfterConcurrentDisable(t *testing.T)
 	// Renaming the target of an already-enabled candidate is what triggers a
 	// probe whose success would otherwise re-enable the row.
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -1268,7 +1338,7 @@ func TestUpdateModelCandidateDoesNotReEnableWhenDisableLandsBeforeItsProbe(t *te
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -1373,7 +1443,7 @@ func TestUpdateModelCandidateDoesNotReEnableWhenNoOpDisableLandsBeforeFreshRead(
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	result, err := svc.UpdateModelCandidate(context.Background(), id, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "some-model", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("some-model"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -1417,7 +1487,7 @@ func TestUpdateModelCandidateLandsVerdictDespiteConcurrentDisable(t *testing.T) 
 	}
 
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -1471,7 +1541,7 @@ func TestUpdateModelCandidateReportsSupersededWhenRetargetedBeforeReload(t *test
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -1642,7 +1712,7 @@ func TestRetestModelCandidateRelandsFailureAfterRealignAndDisable(t *testing.T) 
 		}
 		raced = true
 		if _, err := svc.UpdateModelCandidate(context.Background(), id, modeladmin.UpdateCandidateInput{
-			ProviderModelName: "some-model", InputPrice: 9, OutputPrice: 9,
+			ProviderModelName: ptrString("some-model"), InputPrice: ptrFloat(9), OutputPrice: ptrFloat(9),
 		}, time.Now().UTC()); err != nil {
 			t.Errorf("same-name edit during retest: %v", err)
 		}
@@ -1767,7 +1837,7 @@ func TestUpdateModelCandidateRevokesAutoEnableOnExplicitDisable(t *testing.T) {
 	staleToken := loadCandidate(t, db, id).LastProbeRunID
 
 	result, err := svc.UpdateModelCandidate(context.Background(), id, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "some-model", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("some-model"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: disableStatus(),
 	}, now)
 	if err != nil {
@@ -2075,7 +2145,7 @@ func TestUpdateModelCandidate(t *testing.T) {
 	}
 
 	updated, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-2024", InputPrice: 1.5, OutputPrice: 3, MaxOutput: 4096,
+		ProviderModelName: ptrString("gpt-4o-2024"), InputPrice: ptrFloat(1.5), OutputPrice: ptrFloat(3), MaxOutput: ptrInt(4096),
 	}, now)
 	if err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
@@ -2127,7 +2197,7 @@ func TestUpdateModelCandidateResetsVerificationWhenModelNameChanges(t *testing.T
 	// whole observable effect.
 	seedVerified()
 	if _, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now); err != nil {
 		t.Fatalf("UpdateModelCandidate (name change) failed: %v", err)
 	}
@@ -2142,7 +2212,7 @@ func TestUpdateModelCandidateResetsVerificationWhenModelNameChanges(t *testing.T
 	seedVerified()
 	before := client.CallCountFor("basic")
 	if _, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 9, OutputPrice: 9,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(9), OutputPrice: ptrFloat(9),
 	}, now); err != nil {
 		t.Fatalf("UpdateModelCandidate (same name) failed: %v", err)
 	}
@@ -2163,6 +2233,9 @@ func TestUpdateModelCandidateResetsVerificationWhenModelNameChanges(t *testing.T
 // caller editing only prices sends.
 func enableStatus() *int  { s := model.ModelCandidateStatusEnabled; return &s }
 func disableStatus() *int { s := model.ModelCandidateStatusDisabled; return &s }
+
+func ptrString(v string) *string { return &v }
+func ptrInt(v int) *int          { return &v }
 
 // seedEnabledCandidate returns a candidate that is enabled and verified.
 func seedEnabledCandidate(t *testing.T, svc *modeladmin.ModelService, client *providerclienttest.Fake, providerID uint, now time.Time) *modeladmin.CandidateView {
@@ -2197,7 +2270,7 @@ func TestUpdateModelCandidateHonoursDisableWhenTargetAlsoChanged(t *testing.T) {
 	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
 
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: disableStatus(),
 	}, now)
 	if err != nil {
@@ -2222,7 +2295,7 @@ func TestUpdateModelCandidateLeavesEnablementAloneWhenNotRequested(t *testing.T)
 	candidate := seedEnabledCandidate(t, svc, client, provider.ID, now)
 
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o", InputPrice: 9, OutputPrice: 9,
+		ProviderModelName: ptrString("gpt-4o"), InputPrice: ptrFloat(9), OutputPrice: ptrFloat(9),
 		ManagementStatus: nil,
 	}, now)
 	if err != nil {
@@ -2248,7 +2321,7 @@ func TestUpdateModelCandidateDemotesWhenReprobeFailsOnEnabledCandidate(t *testin
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "does-not-exist", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("does-not-exist"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -2274,7 +2347,7 @@ func TestUpdateModelCandidateReprobesAfterModelNameChange(t *testing.T) {
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: enableStatus(),
 	}, now)
 	if err != nil {
@@ -2303,7 +2376,7 @@ func TestUpdateModelCandidatePersistsFieldsEvenWhenReprobeFails(t *testing.T) {
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestUnreachable}
 	result, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "gpt-4o-mini", InputPrice: 7.5, OutputPrice: 9.5, MaxOutput: 2048,
+		ProviderModelName: ptrString("gpt-4o-mini"), InputPrice: ptrFloat(7.5), OutputPrice: ptrFloat(9.5), MaxOutput: ptrInt(2048),
 	}, now)
 	if err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
@@ -2318,7 +2391,7 @@ func TestUpdateModelCandidatePersistsFieldsEvenWhenReprobeFails(t *testing.T) {
 
 func TestUpdateModelCandidateReturnsNotFoundForUnknownID(t *testing.T) {
 	svc, _, _ := newTestModelService(t)
-	_, err := svc.UpdateModelCandidate(context.Background(), 999999, modeladmin.UpdateCandidateInput{ProviderModelName: "gpt-4o"}, time.Now().UTC())
+	_, err := svc.UpdateModelCandidate(context.Background(), 999999, modeladmin.UpdateCandidateInput{ProviderModelName: ptrString("gpt-4o")}, time.Now().UTC())
 	if !errors.Is(err, errcode.ErrModelCandidateNotFound) {
 		t.Fatalf("expected ErrModelCandidateNotFound, got %v", err)
 	}
@@ -2704,7 +2777,7 @@ func TestUpdateModelCandidateErrorsWhenUpdateFailsForNonUniqueReason(t *testing.
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
 	testutil.BlockTableWrites(t, db, "model_candidates", "UPDATE")
-	if _, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{ProviderModelName: "gpt-4o-2"}, now); err == nil {
+	if _, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{ProviderModelName: ptrString("gpt-4o-2")}, now); err == nil {
 		t.Fatalf("expected an error when the UPDATE statement fails")
 	}
 }
@@ -2921,7 +2994,7 @@ func TestToCandidateViewErrorsWhenProviderKeyLookupFails(t *testing.T) {
 	}
 	testutil.DropTable(t, db, "provider_keys")
 
-	if _, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{ProviderModelName: "gpt-4o-2"}, now); err == nil {
+	if _, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{ProviderModelName: ptrString("gpt-4o-2")}, now); err == nil {
 		t.Fatalf("expected an error when the provider_keys table is missing")
 	}
 }
@@ -3145,7 +3218,7 @@ func TestToCandidateViewErrorsWhenProviderLookupFailsForNonNotFoundReason(t *tes
 	testutil.DropTable(t, db, "provider_keys")
 	testutil.DropTable(t, db, "providers")
 
-	if _, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{ProviderModelName: "gpt-4o-2"}, now); err == nil {
+	if _, err := svc.UpdateModelCandidate(context.Background(), candidate.ID, modeladmin.UpdateCandidateInput{ProviderModelName: ptrString("gpt-4o-2")}, now); err == nil {
 		t.Fatalf("expected an error when the providers table is missing")
 	}
 }
@@ -3460,7 +3533,7 @@ func TestUpdateModelCandidateRetargetWinsTheNextSuggestion(t *testing.T) {
 
 	// Same numbers, different upstream model.
 	if _, err := svc.UpdateModelCandidate(context.Background(), movedCandidate.ID, modeladmin.UpdateCandidateInput{
-		ProviderModelName: "vendor-pro", InputPrice: 1, OutputPrice: 2,
+		ProviderModelName: ptrString("vendor-pro"), InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now.Add(time.Hour)); err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
 	}

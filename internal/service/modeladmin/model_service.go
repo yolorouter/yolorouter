@@ -1500,12 +1500,23 @@ func (s *ModelService) toCandidateView(c model.ModelCandidate) (*CandidateView, 
 }
 
 type UpdateCandidateInput struct {
-	ProviderModelName string
-	InputPrice        float64
-	OutputPrice       float64
-	CacheWritePrice   *float64
-	CacheReadPrice    *float64
-	MaxOutput         int
+	// The scalar editables are pointers so a partial PATCH can leave any of
+	// them alone: an absent field keeps what is stored, a present one
+	// replaces it. With plain values, any caller PATCHing only prices would
+	// send zero values for the rest — silently renaming the upstream target
+	// to the model's public name (an empty string means "mirror it") and
+	// zeroing prices on a name-only edit. The form posts the whole record
+	// either way, so full-record callers are unaffected.
+	ProviderModelName *string
+	InputPrice        *float64
+	OutputPrice       *float64
+	MaxOutput         *int
+	// Cache prices are deliberately NOT part of that convention: they keep
+	// full-record semantics, where an absent field clears the price (the
+	// form's clear operation relies on exactly that), matching how the
+	// repository writes them unconditionally.
+	CacheWritePrice *float64
+	CacheReadPrice  *float64
 	// ManagementStatus is the requested target status, or nil to leave the
 	// current one untouched. It is a pointer because an absent field and a
 	// request to disable must not be the same value: with a plain int, any
@@ -1569,20 +1580,39 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 		}
 		return nil, err
 	}
-	// providerModelName is optional — a blank value means "use the model's
-	// own external name upstream unchanged".
-	providerModelName := input.ProviderModelName
-	if providerModelName == "" {
-		m, err := repository.FindModelByID(s.db, candidate.ModelID)
-		if err != nil {
-			return nil, err
+	// Absent scalars keep what is stored; a present empty provider model
+	// name is the explicit "use the model's own external name upstream
+	// unchanged" instruction, resolved as before.
+	providerModelName := candidate.ProviderModelName
+	if input.ProviderModelName != nil {
+		providerModelName = *input.ProviderModelName
+		if providerModelName == "" {
+			m, err := repository.FindModelByID(s.db, candidate.ModelID)
+			if err != nil {
+				return nil, err
+			}
+			providerModelName = m.Name
 		}
-		providerModelName = m.Name
 	}
 	// Changing the routing target (provider_model_name) invalidates the prior
 	// mapping test, so the candidate must be re-verified before it can route
 	// or be enabled again (repository resets verification + capability flags).
 	targetChanged := providerModelName != candidate.ProviderModelName
+	// Resolve the absent scalars to their stored values first: the change
+	// detection below must compare like for like, and the repository write
+	// needs concrete numbers regardless of what the caller omitted.
+	inputPrice := candidate.InputPrice
+	if input.InputPrice != nil {
+		inputPrice = *input.InputPrice
+	}
+	outputPrice := candidate.OutputPrice
+	if input.OutputPrice != nil {
+		outputPrice = *input.OutputPrice
+	}
+	maxOutput := candidate.MaxOutput
+	if input.MaxOutput != nil {
+		maxOutput = *input.MaxOutput
+	}
 	// The form always posts the whole record, so "a price arrived" is not the
 	// same as "a price changed". Only a real change may advance the price clock
 	// the auto-suggest look-up ranks candidates by.
@@ -1592,8 +1622,8 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 	// about a pair it had never priced. Leaving the clock behind would let some
 	// other candidate's older rate for that pair keep winning the look-up.
 	priceChanged := targetChanged ||
-		input.InputPrice != candidate.InputPrice ||
-		input.OutputPrice != candidate.OutputPrice ||
+		inputPrice != candidate.InputPrice ||
+		outputPrice != candidate.OutputPrice ||
 		!sameOptionalPrice(input.CacheWritePrice, candidate.CacheWritePrice) ||
 		!sameOptionalPrice(input.CacheReadPrice, candidate.CacheReadPrice)
 	wasEnabled := candidate.ManagementStatus == model.ModelCandidateStatusEnabled
@@ -1656,8 +1686,8 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 				return err
 			}
 		}
-		if err := repository.UpdateModelCandidate(tx, id, providerModelName, input.InputPrice, input.OutputPrice,
-			input.CacheWritePrice, input.CacheReadPrice, input.MaxOutput, targetChanged, priceChanged, now); err != nil {
+		if err := repository.UpdateModelCandidate(tx, id, providerModelName, inputPrice, outputPrice,
+			input.CacheWritePrice, input.CacheReadPrice, maxOutput, targetChanged, priceChanged, now); err != nil {
 			return err
 		}
 		if billingMode != candidate.BillingMode || imageTiersJSON != candidate.ImagePricingTiers || videoTiersJSON != candidate.VideoPricingTiers || !sameOptionalPrice(audioPrice, candidate.AudioUnitPrice) {

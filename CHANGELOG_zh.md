@@ -7,6 +7,20 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，版本号遵循
 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### 修复
+
+- 候选的部分字段编辑不再清空未提及的字段。此前
+  `PATCH /api/admin/models/:id/candidates/:candidateId` 请求体把每个未提及的
+  标量字段都当零值处理：只改价格的编辑会把上游模型名悄悄改成对外公共名
+  （下一次探测 404 后候选拿出路由），只改名的编辑会把价格清零。四个标量
+  字段（`provider_model_name`、`input_price`、`output_price`、`max_output`）
+  现在与状态、计费字段一致，遵循“不出现即保留”的约定：不出现保留原值，
+  出现即替换。显式传入空 `provider_model_name` 仍保留文档语义（“镜像模型
+  公共名”）。缓存价格保持既有的全量语义（不出现即清空——表单的清空操作
+  依赖它）；控制台表单本身全量提交，不受影响。
+
 ## [0.2.4] - 2026-09-11
 
 ### 新增

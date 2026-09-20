@@ -7,6 +7,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Partial candidate edits no longer wipe the fields they omit. A
+  `PATCH /api/admin/models/:id/candidates/:candidateId` body mentioning
+  only some fields used to treat every omitted scalar as a zero value:
+  a price-only edit silently renamed the upstream target to the model's
+  public name (knocking the candidate out of routing when the next probe
+  404'd), and a rename-only edit zeroed the prices. The four scalar
+  fields (`provider_model_name`, `input_price`, `output_price`,
+  `max_output`) now follow the same nil-means-leave-alone convention the
+  status and billing fields already had: absent keeps what is stored,
+  present replaces. A present empty `provider_model_name` keeps its
+  documented meaning ("mirror the model's public name"). Cache prices
+  keep their existing full-record semantics (absent clears - the form's
+  clear operation relies on it), and the console form, which posts the
+  whole record, is unaffected.
+
 ## [0.2.4] - 2026-09-11
 
 ### Added

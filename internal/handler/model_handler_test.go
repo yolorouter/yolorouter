@@ -375,6 +375,57 @@ func TestPatchModelCandidateUpdatesFields(t *testing.T) {
 	}
 }
 
+// A partial PATCH body must bind and reach the service: the handler neither
+// rejects a body that omits most fields nor substitutes zero values for the
+// omitted ones (that path silently renamed the upstream target and knocked
+// the candidate out of routing).
+func TestPatchModelCandidateAcceptsPartialBodyAndKeepsStoredTarget(t *testing.T) {
+	providerRouter, db := newProviderTestRouter(t)
+	providerID := createProviderAndKeyForModelTest(t, providerRouter)
+	r := newModelTestRouterSharingProviderDB(t, db, &alwaysSuccessClient{})
+	id := createModelForTest(t, r, "smart")
+	_, env := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/models/%d/candidates", id), map[string]interface{}{
+		"provider_id": providerID, "provider_model_name": "gpt-4o", "input_price": 1, "output_price": 2,
+	}, nil)
+	var c candidateResponse
+	if err := json.Unmarshal(env.Data, &c); err != nil {
+		t.Fatalf("unmarshal candidate response: %v", err)
+	}
+
+	w, _ := doJSON(t, r, http.MethodPatch, fmt.Sprintf("/api/admin/models/%d/candidates/%d", id, c.ID), map[string]interface{}{
+		"input_price": 5,
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for the price-only PATCH, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	var detail struct {
+		Candidates []struct {
+			ID                uint    `json:"id"`
+			ProviderModelName string  `json:"provider_model_name"`
+			InputPrice        float64 `json:"input_price"`
+			OutputPrice       float64 `json:"output_price"`
+		} `json:"candidates"`
+	}
+	w, env = doJSON(t, r, http.MethodGet, fmt.Sprintf("/api/admin/models/%d", id), nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("model GET failed: %d, body: %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(env.Data, &detail); err != nil {
+		t.Fatalf("unmarshal model detail: %v", err)
+	}
+	if len(detail.Candidates) != 1 {
+		t.Fatalf("expected one candidate, got %d", len(detail.Candidates))
+	}
+	got := detail.Candidates[0]
+	if got.ProviderModelName != "gpt-4o" {
+		t.Fatalf("price-only PATCH must keep the stored provider_model_name, got %q", got.ProviderModelName)
+	}
+	if got.InputPrice != 5 || got.OutputPrice != 2 {
+		t.Fatalf("expected prices 5/2 (only input_price sent), got %v/%v", got.InputPrice, got.OutputPrice)
+	}
+}
+
 func TestPatchModelCandidateStatusReturns400WhenUnverified(t *testing.T) {
 	providerRouter, db := newProviderTestRouter(t)
 	providerID := createProviderAndKeyForModelTest(t, providerRouter)

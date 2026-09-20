@@ -130,12 +130,17 @@ func (b *videoPricingTiersBody) toModel() *model.VideoPricingTiers {
 }
 
 type updateCandidateRequest struct {
-	ProviderModelName string   `json:"provider_model_name" binding:"max=200"`
-	InputPrice        float64  `json:"input_price" binding:"min=0"`
-	OutputPrice       float64  `json:"output_price" binding:"min=0"`
-	CacheWritePrice   *float64 `json:"cache_write_price" binding:"omitempty,min=0"`
-	CacheReadPrice    *float64 `json:"cache_read_price" binding:"omitempty,min=0"`
-	MaxOutput         int      `json:"max_output" binding:"min=0"`
+	// The scalar editables follow nil-means-leave-alone: a partial PATCH
+	// keeps whatever it does not mention. A present provider_model_name of
+	// "" keeps its documented meaning ("mirror the model's public name").
+	ProviderModelName *string  `json:"provider_model_name" binding:"omitempty,max=200"`
+	InputPrice        *float64 `json:"input_price" binding:"omitempty,min=0"`
+	OutputPrice       *float64 `json:"output_price" binding:"omitempty,min=0"`
+	// Cache prices are the documented exception: absent clears the price
+	// (the form's clear operation omits them), full-record semantics.
+	CacheWritePrice *float64 `json:"cache_write_price" binding:"omitempty,min=0"`
+	CacheReadPrice  *float64 `json:"cache_read_price" binding:"omitempty,min=0"`
+	MaxOutput       *int     `json:"max_output" binding:"omitempty,min=0"`
 	// A pointer so an omitted field stays distinguishable from a request to
 	// disable. As a plain int, any client PATCHing only prices would send the
 	// zero value and silently take the candidate out of routing.
