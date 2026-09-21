@@ -43,3 +43,6 @@ gui-test-screenshots/
 # docker-compose's default bind-mount target (all container state: generated
 # config + SQLite database) when compose is run from a repo checkout.
 /yolorouter/
+
+# Local scratch directory — never part of the source tree.
+.scratch/
