@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-19",
+  "updated_at": "2026-09-20",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
@@ -368,12 +368,6 @@
       }
     },
     "api.stepfun.com": {
-      "step-3.7-flash": {
-        "input": 1.35,
-        "output": 8.1,
-        "cache_write": null,
-        "cache_read": 0.27
-      },
       "step-3.5-flash": {
         "input": 0.7,
         "output": 2.1,
