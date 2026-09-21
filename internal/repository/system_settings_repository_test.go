@@ -208,3 +208,97 @@ func TestUpdateVisionFallbackReturnsNewSnapshot(t *testing.T) {
 		t.Fatalf("reread = %+v ver %d err %v, want %+v ver %d", got, gotVer, err, s, ver)
 	}
 }
+
+// --- Key auto recovery repository --------------------------------------------
+
+// newKeyAutoRecoveryTestDB seeds the pair at the migration default:
+// enabled + 30 minutes, both rows at v1.
+func newKeyAutoRecoveryTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := newSettingsTestDB(t)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('key_auto_recovery_enabled','true'),('key_auto_recovery_interval_minutes','30')`)
+	return db
+}
+
+func TestGetKeyAutoRecoveryReadsSeededPair(t *testing.T) {
+	db := newKeyAutoRecoveryTestDB(t)
+	// Bump to v3 + changed values to confirm version + both fields are read.
+	db.Exec(`UPDATE system_settings SET value='false' WHERE key='key_auto_recovery_enabled'`)
+	db.Exec(`UPDATE system_settings SET value='45' WHERE key='key_auto_recovery_interval_minutes'`)
+	db.Exec(`UPDATE system_settings SET version=3 WHERE key IN ('key_auto_recovery_enabled','key_auto_recovery_interval_minutes')`)
+	s, ver, err := GetKeyAutoRecovery(db)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if s.Enabled || s.IntervalMinutes != 45 || ver != 3 {
+		t.Fatalf("want disabled/45/v3, got %+v v%d", s, ver)
+	}
+}
+
+// Missing rows (a pre-00048 database) must read as the shipped default, not
+// an error — the probe loop's read path fails open on configuration.
+func TestGetKeyAutoRecoveryMissingRowsReturnDefault(t *testing.T) {
+	db := newSettingsTestDB(t) // no key_auto_recovery rows seeded
+	s, ver, err := GetKeyAutoRecovery(db)
+	if err != nil {
+		t.Fatalf("missing rows: want default, got err=%v", err)
+	}
+	if !s.Enabled || s.IntervalMinutes != settings.KeyAutoRecoveryDefaultIntervalMinutes || ver != 0 {
+		t.Fatalf("want enabled/30/v0 (shipped default), got %+v v%d", s, ver)
+	}
+}
+
+func TestGetKeyAutoRecoveryRejectsCorruptEnabled(t *testing.T) {
+	db := newKeyAutoRecoveryTestDB(t)
+	db.Exec(`UPDATE system_settings SET value='maybe' WHERE key='key_auto_recovery_enabled'`)
+	if _, _, err := GetKeyAutoRecovery(db); err == nil {
+		t.Fatal("expected error for corrupt enabled value, got nil")
+	}
+}
+
+func TestGetKeyAutoRecoveryRejectsCorruptInterval(t *testing.T) {
+	db := newKeyAutoRecoveryTestDB(t)
+	db.Exec(`UPDATE system_settings SET value='soon' WHERE key='key_auto_recovery_interval_minutes'`)
+	if _, _, err := GetKeyAutoRecovery(db); err == nil {
+		t.Fatal("expected error for corrupt interval value, got nil")
+	}
+}
+
+// A lone row of the pair is a torn write, not a default — it must surface as
+// an error so the corruption is visible instead of silently masked.
+func TestGetKeyAutoRecoveryRejectsLoneRow(t *testing.T) {
+	db := newKeyAutoRecoveryTestDB(t)
+	db.Exec(`DELETE FROM system_settings WHERE key='key_auto_recovery_interval_minutes'`)
+	if _, _, err := GetKeyAutoRecovery(db); err == nil {
+		t.Fatal("expected error for a single-row pair, got nil")
+	}
+}
+
+func TestUpdateKeyAutoRecoveryReturnsNewSnapshot(t *testing.T) {
+	db := newKeyAutoRecoveryTestDB(t)
+	s, ver, err := UpdateKeyAutoRecovery(db, 1, false, 15)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if s.Enabled || s.IntervalMinutes != 15 || ver != 2 {
+		t.Fatalf("want disabled/15/v2, got %+v v%d", s, ver)
+	}
+	// Persisted?
+	got, gver, err := GetKeyAutoRecovery(db)
+	if err != nil || got != s || gver != ver {
+		t.Fatalf("read-back mismatch: %+v v%d err=%v", got, gver, err)
+	}
+}
+
+func TestUpdateKeyAutoRecoveryCASConflict(t *testing.T) {
+	db := newKeyAutoRecoveryTestDB(t)
+	// First successful update bumps version 1 -> 2.
+	if _, _, err := UpdateKeyAutoRecovery(db, 1, false, 60); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	// Stale expectedVersion=1 must conflict.
+	_, _, err := UpdateKeyAutoRecovery(db, 1, true, 30)
+	if !errors.Is(err, errcode.ErrKeyAutoRecoveryConflict) {
+		t.Fatalf("want ErrKeyAutoRecoveryConflict, got %v", err)
+	}
+}

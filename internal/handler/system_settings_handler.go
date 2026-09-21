@@ -194,3 +194,67 @@ func PutVisionFallback(svc *systemsettings.SystemSettingsService) gin.HandlerFun
 		response.Success(c, visionFallbackResponse{Model: s.Model, Prompt: s.Prompt, Version: ver})
 	}
 }
+
+// keyAutoRecoveryResponse is the handler-facing response DTO with explicit
+// json tags (enabled/interval_minutes/version), same wrapper pattern as the
+// settings families above.
+type keyAutoRecoveryResponse struct {
+	Enabled         bool  `json:"enabled"`
+	IntervalMinutes int   `json:"interval_minutes"`
+	Version         int64 `json:"version"`
+}
+
+// putKeyAutoRecoveryRequest: pointers make absent fields distinguishable
+// from zero values, so a partial body cannot silently disable the loop or
+// slam the interval to 0.
+type putKeyAutoRecoveryRequest struct {
+	Enabled         *bool  `json:"enabled"`
+	IntervalMinutes *int   `json:"interval_minutes"`
+	Version         *int64 `json:"version"`
+}
+
+// GetKeyAutoRecovery returns the authoritative global state (DB read,
+// bypassing the cache) so the admin always sees the committed value.
+func GetKeyAutoRecovery(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		s, ver, err := svc.GetKeyAutoRecoveryForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		response.Success(c, keyAutoRecoveryResponse{Enabled: s.Enabled, IntervalMinutes: s.IntervalMinutes, Version: ver})
+	}
+}
+
+// PutKeyAutoRecovery validates + CAS-updates the pair. version is required
+// (optimistic lock); enabled and interval_minutes must both be present
+// (pointers). A non-integer or out-of-bounds interval and a CAS miss return
+// the settings family's existing 400/409 forms, with this setting's own
+// business codes so the frontend can route retries to the right control.
+func PutKeyAutoRecovery(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req putKeyAutoRecoveryRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.ParamError(c, err.Error())
+			return
+		}
+		if req.Enabled == nil || req.IntervalMinutes == nil || req.Version == nil || *req.Version < 1 {
+			response.ParamError(c, "enabled, interval_minutes and version (>=1) are all required")
+			return
+		}
+		s, ver, err := svc.UpdateKeyAutoRecovery(c.Request.Context(), *req.Version, *req.Enabled, *req.IntervalMinutes)
+		if err != nil {
+			switch {
+			case errors.Is(err, errcode.ErrKeyAutoRecoveryConflict):
+				// 409 is not produced by httpStatusForCode's range mapping; set it explicitly.
+				response.ErrorStatus(c, http.StatusConflict, errcode.KeyAutoRecoveryConflict, errcode.GetMessage(errcode.KeyAutoRecoveryConflict))
+			case errors.Is(err, errcode.ErrKeyAutoRecoveryIntervalInvalid):
+				response.Error(c, errcode.KeyAutoRecoveryIntervalInvalid, errcode.GetMessage(errcode.KeyAutoRecoveryIntervalInvalid))
+			default:
+				response.InternalError(c, err.Error())
+			}
+			return
+		}
+		response.Success(c, keyAutoRecoveryResponse{Enabled: s.Enabled, IntervalMinutes: s.IntervalMinutes, Version: ver})
+	}
+}

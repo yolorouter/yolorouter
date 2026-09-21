@@ -387,3 +387,30 @@ func TestMemberDashboardOmitsDeploymentSections(t *testing.T) {
 func uintToString(v uint) string {
 	return strconv.FormatUint(uint64(v), 10)
 }
+
+// TestMemberSessionRejectedFromKeyAutoRecoverySetting pins the write side of
+// the admin-only contract for the key-auto-recovery settings pair. The
+// conformance sweep above classifies and probes GET routes only, so the PUT
+// needs its own assertion: a member session must be turned away from BOTH
+// verbs — the feature is an operator concern, not a per-account view.
+func TestMemberSessionRejectedFromKeyAutoRecoverySetting(t *testing.T) {
+	f := newMemberScopeFixture(t)
+
+	w := f.do(t, http.MethodGet, "/api/admin/system-settings/key-auto-recovery", "", f.aliceCk)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("member GET: status = %d, want 403, body: %s", w.Code, w.Body.String())
+	}
+
+	w = f.do(t, http.MethodPut, "/api/admin/system-settings/key-auto-recovery",
+		`{"enabled":false,"interval_minutes":45,"version":1}`, f.aliceCk)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("member PUT: status = %d, want 403, body: %s", w.Code, w.Body.String())
+	}
+
+	// The admin session reaches the same pair — the 403s above are the role
+	// check, not a broken route.
+	w = f.do(t, http.MethodGet, "/api/admin/system-settings/key-auto-recovery", "", f.adminCk)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin GET: status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+}

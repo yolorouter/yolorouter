@@ -21,6 +21,35 @@ type VisionFallbackSetting struct {
 	Prompt string
 }
 
+// KeyAutoRecoverySetting is the typed snapshot of the global key-auto-
+// recovery configuration (the background loop that periodically retests
+// provider keys the system kicked out of rotation), read as a whole for
+// the same torn-read reason as the pairs above. It intentionally has NO
+// json tags — it is an internal transfer type; handlers wrap it in their
+// own response DTO with json tags.
+type KeyAutoRecoverySetting struct {
+	Enabled         bool
+	IntervalMinutes int
+}
+
+// KeyAutoRecoveryDefaultIntervalMinutes is the shipped default interval,
+// mirrored by the seeding migration (goose SQL cannot reference Go
+// constants). Half an hour recovers a quota-reset key well within a
+// monthly reset window while keeping probe traffic negligible.
+const KeyAutoRecoveryDefaultIntervalMinutes = 30
+
+// DefaultKeyAutoRecoverySetting returns the shipped default (enabled, 30
+// minutes). It is served when the rows are absent — a database that
+// predates the seeding migration — and as the fail-open value on a
+// cold-cache refresh failure, so both paths behave exactly like a freshly
+// seeded deployment.
+func DefaultKeyAutoRecoverySetting() KeyAutoRecoverySetting {
+	return KeyAutoRecoverySetting{
+		Enabled:         true,
+		IntervalMinutes: KeyAutoRecoveryDefaultIntervalMinutes,
+	}
+}
+
 // VisionFallbackDefaultPrompt is the runtime fallback describe instruction,
 // used only when the stored prompt is empty (never configured, or cleared on
 // purpose). It is NOT what the console displays: the console prefills its

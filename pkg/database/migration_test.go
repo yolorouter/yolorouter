@@ -861,3 +861,70 @@ func TestMigration00022VisionFallback(t *testing.T) {
 		t.Fatalf("defaults = %q/%q, want empty/empty", source, parent)
 	}
 }
+
+// TestMigration00048KeyAutoRecovery verifies that migration 00048 seeds the
+// key-auto-recovery settings pair — enabled with a 30-minute interval, both
+// rows at the SAME version (the repository reader treats a version mismatch
+// within the pair as corruption) — on a fresh database and on an upgraded
+// one alike, and that the Down removes exactly the two rows.
+func TestMigration00048KeyAutoRecovery(t *testing.T) {
+	assertSeeded := func(t *testing.T, db *sql.DB, context string) {
+		t.Helper()
+		rows, err := db.Query("SELECT key, value, version FROM system_settings WHERE key IN ('key_auto_recovery_enabled','key_auto_recovery_interval_minutes') ORDER BY key")
+		if err != nil {
+			t.Fatalf("%s: query settings pair: %v", context, err)
+		}
+		defer func() { _ = rows.Close() }()
+		got := map[string]struct {
+			value   string
+			version int64
+		}{}
+		for rows.Next() {
+			var k, v string
+			var ver int64
+			if err := rows.Scan(&k, &v, &ver); err != nil {
+				t.Fatalf("%s: scan: %v", context, err)
+			}
+			got[k] = struct {
+				value   string
+				version int64
+			}{v, ver}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: iterate: %v", context, err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("%s: seeded %d key_auto_recovery rows, want 2 (%v)", context, len(got), got)
+		}
+		enabled := got["key_auto_recovery_enabled"]
+		interval := got["key_auto_recovery_interval_minutes"]
+		if enabled.value != "true" || interval.value != "30" {
+			t.Fatalf("%s: seed = %q/%q, want true/30", context, enabled.value, interval.value)
+		}
+		if enabled.version != interval.version {
+			t.Fatalf("%s: seed versions differ: %d vs %d", context, enabled.version, interval.version)
+		}
+	}
+
+	// Fresh database: the full chain including 00048 runs.
+	db := newMemoryDB(t)
+	if err := RunMigrations(db, "sqlite", migrations.SQLiteFS, "sqlite"); err != nil {
+		t.Fatalf("RunMigrations failed: %v", err)
+	}
+	assertSeeded(t, db, "fresh database")
+
+	// Upgrade replay: roll back to 47 (pair gone), then re-run — the seed
+	// must land on an upgraded database exactly as on a fresh one.
+	if err := RollbackTo(db, "sqlite", migrations.SQLiteFS, "sqlite", 47); err != nil {
+		t.Fatalf("RollbackTo(47) failed: %v", err)
+	}
+	var remaining string
+	err := db.QueryRow("SELECT value FROM system_settings WHERE key = 'key_auto_recovery_enabled'").Scan(&remaining)
+	if err == nil {
+		t.Fatalf("key_auto_recovery_enabled still present after rollback: value=%q", remaining)
+	}
+	if err := RunMigrations(db, "sqlite", migrations.SQLiteFS, "sqlite"); err != nil {
+		t.Fatalf("re-running migrations failed: %v", err)
+	}
+	assertSeeded(t, db, "upgraded database")
+}

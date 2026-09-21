@@ -407,6 +407,8 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.PUT("/system-settings/input-compression", handler.PutInputCompression(settingsSvc))
 	protected.GET("/system-settings/vision-fallback", handler.GetVisionFallback(settingsSvc))
 	protected.PUT("/system-settings/vision-fallback", handler.PutVisionFallback(settingsSvc))
+	protected.GET("/system-settings/key-auto-recovery", handler.GetKeyAutoRecovery(settingsSvc))
+	protected.PUT("/system-settings/key-auto-recovery", handler.PutKeyAutoRecovery(settingsSvc))
 
 	// Dashboard / analytics / request logs.
 	// All three are read-only queries over request_logs (written by the

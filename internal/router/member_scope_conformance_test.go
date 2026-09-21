@@ -58,6 +58,7 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/system-settings/custom-system-prompt",
 		"/api/admin/system-settings/input-compression",
 		"/api/admin/system-settings/vision-fallback",
+		"/api/admin/system-settings/key-auto-recovery",
 		"/api/admin/system/version",
 		"/api/admin/analytics/compress-stats",
 		"/api/admin/analytics/cache-stats",

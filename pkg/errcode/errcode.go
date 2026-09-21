@@ -35,24 +35,26 @@ const (
 	AccountProfileEditDenied   = 10022 // profile edits (display name, email) are reserved to the bootstrap administrator, for other accounts only
 
 	// === API Key errors (11xxx) — "API Key security model" ===
-	APIKeyNotFound             = 11001
-	APIKeyInvalid              = 11002
-	APIKeyExpired              = 11003
-	APIKeyRevoked              = 11004
-	APIKeyRateLimitedRPM       = 11005
-	APIKeyRateLimitedTPM       = 11006
-	APIKeyRateLimitedConc      = 11007
-	APIKeyBudgetExceeded       = 11008
-	APIKeyEmptyAllowlist       = 11009
-	CustomSystemPromptTooLong  = 11010 // custom system prompt text exceeds the max rune length
-	CustomSystemPromptEmpty    = 11011 // enabled is true but the prompt text is empty
-	CustomSystemPromptConflict = 11012 // optimistic-lock CAS miss on system_settings PUT (another writer committed first)
-	APIKeyConflict             = 11013 // optimistic-lock CAS miss on api_keys PATCH (another writer committed first)
-	InputCompressionConflict   = 11014 // optimistic-lock CAS miss on input_compression_enabled PUT (another writer committed first)
-	CompressEnabledRequired    = 11015 // compress_enabled_override is true but compress_enabled is not supplied
-	APIKeyPlaintextUnavailable = 11016 // the key predates the encrypted_key column (migration 00021), so its plaintext was never stored and cannot be revealed
-	VisionFallbackConflict     = 11017 // optimistic-lock CAS miss on the vision_fallback settings pair PUT (another writer committed first)
-	VisionFallbackModelUnknown = 11018 // vision_fallback_model names a model this gateway has no record of
+	APIKeyNotFound                 = 11001
+	APIKeyInvalid                  = 11002
+	APIKeyExpired                  = 11003
+	APIKeyRevoked                  = 11004
+	APIKeyRateLimitedRPM           = 11005
+	APIKeyRateLimitedTPM           = 11006
+	APIKeyRateLimitedConc          = 11007
+	APIKeyBudgetExceeded           = 11008
+	APIKeyEmptyAllowlist           = 11009
+	CustomSystemPromptTooLong      = 11010 // custom system prompt text exceeds the max rune length
+	CustomSystemPromptEmpty        = 11011 // enabled is true but the prompt text is empty
+	CustomSystemPromptConflict     = 11012 // optimistic-lock CAS miss on system_settings PUT (another writer committed first)
+	APIKeyConflict                 = 11013 // optimistic-lock CAS miss on api_keys PATCH (another writer committed first)
+	InputCompressionConflict       = 11014 // optimistic-lock CAS miss on input_compression_enabled PUT (another writer committed first)
+	CompressEnabledRequired        = 11015 // compress_enabled_override is true but compress_enabled is not supplied
+	APIKeyPlaintextUnavailable     = 11016 // the key predates the encrypted_key column (migration 00021), so its plaintext was never stored and cannot be revealed
+	VisionFallbackConflict         = 11017 // optimistic-lock CAS miss on the vision_fallback settings pair PUT (another writer committed first)
+	VisionFallbackModelUnknown     = 11018 // vision_fallback_model names a model this gateway has no record of
+	KeyAutoRecoveryConflict        = 11019 // optimistic-lock CAS miss on the key_auto_recovery settings pair PUT (another writer committed first)
+	KeyAutoRecoveryIntervalInvalid = 11020 // key_auto_recovery interval_minutes is not a whole number of minutes within [1, 1440]
 
 	// === Provider errors (12xxx) ===
 	ProviderNotFound   = 12001
@@ -158,24 +160,26 @@ var ErrorMessages = map[int]string{
 	AccountPasswordResetDenied: "operation refused: only the setup administrator may reset other local accounts' passwords",
 	AccountProfileEditDenied:   "operation refused: only the setup administrator may edit other accounts' profiles",
 
-	APIKeyNotFound:             "api key not found",
-	APIKeyInvalid:              "api key invalid",
-	APIKeyExpired:              "api key expired",
-	APIKeyRevoked:              "api key revoked",
-	APIKeyRateLimitedRPM:       "rate limit exceeded (requests per minute)",
-	APIKeyRateLimitedTPM:       "rate limit exceeded (tokens per minute)",
-	APIKeyRateLimitedConc:      "rate limit exceeded (concurrent requests)",
-	APIKeyBudgetExceeded:       "budget limit exceeded",
-	APIKeyEmptyAllowlist:       "model_ids must contain at least one model unless allow_all_models is true",
-	CustomSystemPromptTooLong:  "custom system prompt is too long",
-	CustomSystemPromptEmpty:    "custom system prompt text must not be empty when enabled",
-	CustomSystemPromptConflict: "custom system prompt was modified concurrently, please refresh and retry",
-	APIKeyConflict:             "api key was modified concurrently, please refresh and retry",
-	InputCompressionConflict:   "input compression setting was modified concurrently, please refresh and retry",
-	CompressEnabledRequired:    "compress_enabled must be set when compress_enabled_override is true",
-	APIKeyPlaintextUnavailable: "this key was created before the reveal feature and its full value cannot be recovered, please create a new one",
-	VisionFallbackConflict:     "vision fallback settings were modified concurrently, please refresh and retry",
-	VisionFallbackModelUnknown: "vision fallback model is not a model configured on this gateway",
+	APIKeyNotFound:                 "api key not found",
+	APIKeyInvalid:                  "api key invalid",
+	APIKeyExpired:                  "api key expired",
+	APIKeyRevoked:                  "api key revoked",
+	APIKeyRateLimitedRPM:           "rate limit exceeded (requests per minute)",
+	APIKeyRateLimitedTPM:           "rate limit exceeded (tokens per minute)",
+	APIKeyRateLimitedConc:          "rate limit exceeded (concurrent requests)",
+	APIKeyBudgetExceeded:           "budget limit exceeded",
+	APIKeyEmptyAllowlist:           "model_ids must contain at least one model unless allow_all_models is true",
+	CustomSystemPromptTooLong:      "custom system prompt is too long",
+	CustomSystemPromptEmpty:        "custom system prompt text must not be empty when enabled",
+	CustomSystemPromptConflict:     "custom system prompt was modified concurrently, please refresh and retry",
+	APIKeyConflict:                 "api key was modified concurrently, please refresh and retry",
+	InputCompressionConflict:       "input compression setting was modified concurrently, please refresh and retry",
+	CompressEnabledRequired:        "compress_enabled must be set when compress_enabled_override is true",
+	APIKeyPlaintextUnavailable:     "this key was created before the reveal feature and its full value cannot be recovered, please create a new one",
+	VisionFallbackConflict:         "vision fallback settings were modified concurrently, please refresh and retry",
+	VisionFallbackModelUnknown:     "vision fallback model is not a model configured on this gateway",
+	KeyAutoRecoveryConflict:        "key auto recovery setting was modified concurrently, please refresh and retry",
+	KeyAutoRecoveryIntervalInvalid: "key auto recovery interval must be a whole number of minutes between 1 and 1440",
 
 	ProviderNotFound:         "provider not found",
 	ProviderNameTaken:        "provider name already taken",
@@ -249,24 +253,26 @@ var (
 	ErrOAuthProviderConfigInvalid = errors.New(ErrorMessages[OAuthProviderConfigInvalid])
 	ErrOAuthDiscoveryFailed       = errors.New(ErrorMessages[OAuthDiscoveryFailed])
 
-	ErrAPIKeyNotFound             = errors.New(ErrorMessages[APIKeyNotFound])
-	ErrAPIKeyInvalid              = errors.New(ErrorMessages[APIKeyInvalid])
-	ErrAPIKeyExpired              = errors.New(ErrorMessages[APIKeyExpired])
-	ErrAPIKeyRevoked              = errors.New(ErrorMessages[APIKeyRevoked])
-	ErrAPIKeyRateLimitedRPM       = errors.New(ErrorMessages[APIKeyRateLimitedRPM])
-	ErrAPIKeyRateLimitedTPM       = errors.New(ErrorMessages[APIKeyRateLimitedTPM])
-	ErrAPIKeyRateLimitedConc      = errors.New(ErrorMessages[APIKeyRateLimitedConc])
-	ErrAPIKeyBudgetExceeded       = errors.New(ErrorMessages[APIKeyBudgetExceeded])
-	ErrAPIKeyEmptyAllowlist       = errors.New(ErrorMessages[APIKeyEmptyAllowlist])
-	ErrCustomSystemPromptTooLong  = errors.New(ErrorMessages[CustomSystemPromptTooLong])
-	ErrCustomSystemPromptEmpty    = errors.New(ErrorMessages[CustomSystemPromptEmpty])
-	ErrCustomSystemPromptConflict = errors.New(ErrorMessages[CustomSystemPromptConflict])
-	ErrAPIKeyConflict             = errors.New(ErrorMessages[APIKeyConflict])
-	ErrInputCompressionConflict   = errors.New(ErrorMessages[InputCompressionConflict])
-	ErrCompressEnabledRequired    = errors.New(ErrorMessages[CompressEnabledRequired])
-	ErrAPIKeyPlaintextUnavailable = errors.New(ErrorMessages[APIKeyPlaintextUnavailable])
-	ErrVisionFallbackConflict     = errors.New(ErrorMessages[VisionFallbackConflict])
-	ErrVisionFallbackModelUnknown = errors.New(ErrorMessages[VisionFallbackModelUnknown])
+	ErrAPIKeyNotFound                 = errors.New(ErrorMessages[APIKeyNotFound])
+	ErrAPIKeyInvalid                  = errors.New(ErrorMessages[APIKeyInvalid])
+	ErrAPIKeyExpired                  = errors.New(ErrorMessages[APIKeyExpired])
+	ErrAPIKeyRevoked                  = errors.New(ErrorMessages[APIKeyRevoked])
+	ErrAPIKeyRateLimitedRPM           = errors.New(ErrorMessages[APIKeyRateLimitedRPM])
+	ErrAPIKeyRateLimitedTPM           = errors.New(ErrorMessages[APIKeyRateLimitedTPM])
+	ErrAPIKeyRateLimitedConc          = errors.New(ErrorMessages[APIKeyRateLimitedConc])
+	ErrAPIKeyBudgetExceeded           = errors.New(ErrorMessages[APIKeyBudgetExceeded])
+	ErrAPIKeyEmptyAllowlist           = errors.New(ErrorMessages[APIKeyEmptyAllowlist])
+	ErrCustomSystemPromptTooLong      = errors.New(ErrorMessages[CustomSystemPromptTooLong])
+	ErrCustomSystemPromptEmpty        = errors.New(ErrorMessages[CustomSystemPromptEmpty])
+	ErrCustomSystemPromptConflict     = errors.New(ErrorMessages[CustomSystemPromptConflict])
+	ErrAPIKeyConflict                 = errors.New(ErrorMessages[APIKeyConflict])
+	ErrInputCompressionConflict       = errors.New(ErrorMessages[InputCompressionConflict])
+	ErrCompressEnabledRequired        = errors.New(ErrorMessages[CompressEnabledRequired])
+	ErrAPIKeyPlaintextUnavailable     = errors.New(ErrorMessages[APIKeyPlaintextUnavailable])
+	ErrVisionFallbackConflict         = errors.New(ErrorMessages[VisionFallbackConflict])
+	ErrVisionFallbackModelUnknown     = errors.New(ErrorMessages[VisionFallbackModelUnknown])
+	ErrKeyAutoRecoveryConflict        = errors.New(ErrorMessages[KeyAutoRecoveryConflict])
+	ErrKeyAutoRecoveryIntervalInvalid = errors.New(ErrorMessages[KeyAutoRecoveryIntervalInvalid])
 
 	ErrProviderNotFound         = errors.New(ErrorMessages[ProviderNotFound])
 	ErrProviderNameTaken        = errors.New(ErrorMessages[ProviderNameTaken])

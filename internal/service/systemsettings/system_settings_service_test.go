@@ -44,6 +44,15 @@ func newSvcTestDBWithIC(t *testing.T) *gorm.DB {
 	return db
 }
 
+// newSvcTestDBWithKAR returns a test DB with the key-auto-recovery pair
+// seeded at the migration default: enabled + 30 minutes, both rows at v1.
+func newSvcTestDBWithKAR(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := newSvcTestDB(t)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('key_auto_recovery_enabled','true'),('key_auto_recovery_interval_minutes','30')`)
+	return db
+}
+
 // --- CSP regression (behavior must be unchanged by the generic-cache refactor) ---
 
 func TestSystemSettingsServiceReadReturnsSeededDisabled(t *testing.T) {
@@ -647,5 +656,291 @@ func TestInputCompressionRefreshReturnsCurrentSnapshotOnConcurrentPublish(t *tes
 	// enabled=false / v1.
 	if !got || res.version != 2 {
 		t.Fatalf("want cache current snapshot (enabled=true, v2); got (enabled=%v, v%d) — refresh leaked the reader's stale value", got, res.version)
+	}
+}
+
+// --- Key auto recovery cache tests -------------------------------------------
+
+// TestKeyAutoRecoveryReadReturnsSeededDefault verifies the cold-cache read
+// path primes from the seeded enabled/30 rows.
+func TestKeyAutoRecoveryReadReturnsSeededDefault(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithKAR(t))
+	s, ver, err := svc.GetKeyAutoRecovery(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !s.Enabled || s.IntervalMinutes != 30 || ver != 1 {
+		t.Fatalf("want enabled/30/v1, got %+v v%d", s, ver)
+	}
+}
+
+// TestKeyAutoRecoveryMissingRowsReturnDefault verifies that a not-yet-migrated
+// database (pair absent) reads as the shipped default with version 0 — the
+// fallback path only; the PUT handler still refuses version < 1, so the row
+// can only ever be created by the seeding migration.
+func TestKeyAutoRecoveryMissingRowsReturnDefault(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDB(t)) // no KAR rows seeded
+	s, ver, err := svc.GetKeyAutoRecovery(context.Background())
+	if err != nil {
+		t.Fatalf("read on missing rows: want nil err, got %v", err)
+	}
+	if !s.Enabled || s.IntervalMinutes != 30 || ver != 0 {
+		t.Fatalf("want enabled/30/v0 (shipped default), got %+v v%d", s, ver)
+	}
+}
+
+// TestKeyAutoRecoveryUpdatePublishesImmediately verifies that a CAS update
+// publishes the new snapshot to the cache so the next loop read sees it
+// without an invalidate round-trip.
+func TestKeyAutoRecoveryUpdatePublishesImmediately(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithKAR(t))
+	got, ver, err := svc.UpdateKeyAutoRecovery(context.Background(), 1, false, 45)
+	if err != nil || got.Enabled || got.IntervalMinutes != 45 || ver != 2 {
+		t.Fatalf("update: got %+v v%d err=%v", got, ver, err)
+	}
+	// Cached read sees the new value immediately.
+	s, _, err := svc.GetKeyAutoRecovery(context.Background())
+	if err != nil || s.Enabled || s.IntervalMinutes != 45 {
+		t.Fatalf("read after update: want disabled/45, got %+v err=%v", s, err)
+	}
+}
+
+// TestKeyAutoRecoveryUpdateConflict verifies the CAS conflict path: a second
+// save with the stale version must return ErrKeyAutoRecoveryConflict.
+func TestKeyAutoRecoveryUpdateConflict(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithKAR(t))
+	if _, _, err := svc.UpdateKeyAutoRecovery(context.Background(), 1, false, 45); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	_, _, err := svc.UpdateKeyAutoRecovery(context.Background(), 1, true, 30)
+	if !errors.Is(err, errcode.ErrKeyAutoRecoveryConflict) {
+		t.Fatalf("want ErrKeyAutoRecoveryConflict, got %v", err)
+	}
+}
+
+// TestKeyAutoRecoveryRejectsIntervalOutOfBounds verifies the interval bounds
+// (whole minutes, 1..1440) at every edge: the inclusive endpoints pass, and
+// 0 / negative / 1441 are rejected with the setting's own validation error.
+func TestKeyAutoRecoveryRejectsIntervalOutOfBounds(t *testing.T) {
+	for _, bad := range []int{0, -1, 1441} {
+		svc := NewSystemSettingsService(newSvcTestDBWithKAR(t))
+		_, _, err := svc.UpdateKeyAutoRecovery(context.Background(), 1, true, bad)
+		if !errors.Is(err, errcode.ErrKeyAutoRecoveryIntervalInvalid) {
+			t.Fatalf("interval %d: want ErrKeyAutoRecoveryIntervalInvalid, got %v", bad, err)
+		}
+	}
+	// The inclusive endpoints pass; each accepted update advances the
+	// version, so the second save carries the first one's new version.
+	svc := NewSystemSettingsService(newSvcTestDBWithKAR(t))
+	if _, ver, err := svc.UpdateKeyAutoRecovery(context.Background(), 1, true, 1); err != nil || ver != 2 {
+		t.Fatalf("interval 1: want accepted at v2, got ver=%d err=%v", ver, err)
+	}
+	if _, ver, err := svc.UpdateKeyAutoRecovery(context.Background(), 2, true, 1440); err != nil || ver != 3 {
+		t.Fatalf("interval 1440: want accepted at v3, got ver=%d err=%v", ver, err)
+	}
+}
+
+// TestKeyAutoRecoveryHandlerReadBypassesCache verifies that
+// GetKeyAutoRecoveryForHandler reads straight from the DB (ignoring the
+// cache) so the admin always sees authoritative state.
+func TestKeyAutoRecoveryHandlerReadBypassesCache(t *testing.T) {
+	db := newSvcTestDBWithKAR(t)
+	svc := NewSystemSettingsService(db)
+
+	// Prime the cache with the seeded enabled/30/v1.
+	if s, _, err := svc.GetKeyAutoRecovery(context.Background()); err != nil || !s.Enabled || s.IntervalMinutes != 30 {
+		t.Fatalf("prime read: %+v err=%v", s, err)
+	}
+
+	// Mutate the DB OUT FROM UNDER the cache (no service call, so the cache
+	// stays stale at enabled/30/v1).
+	if res := db.Exec(`UPDATE system_settings SET value='false' WHERE key='key_auto_recovery_enabled'`); res.Error != nil {
+		t.Fatalf("raw update: %v", res.Error)
+	}
+
+	// Handler read must see the committed disabled, not the cached enabled.
+	s, ver, err := svc.GetKeyAutoRecoveryForHandler(context.Background())
+	if err != nil || s.Enabled || ver != 1 {
+		t.Fatalf("handler read: want enabled=false/v1, got %+v v%d err=%v", s, ver, err)
+	}
+}
+
+// TestKeyAutoRecoveryConcurrentPUTsMonotonic verifies that two concurrent
+// updates collapse to exactly one winner; the loser sees Conflict and the
+// cache ends on the winner's snapshot+version (monotonic publish).
+func TestKeyAutoRecoveryConcurrentPUTsMonotonic(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithKAR(t))
+	var wg sync.WaitGroup
+	var conflicts atomic.Int32
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := svc.UpdateKeyAutoRecovery(context.Background(), 1, false, 45)
+			if errors.Is(err, errcode.ErrKeyAutoRecoveryConflict) {
+				conflicts.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if conflicts.Load() != 1 {
+		t.Fatalf("want exactly 1 conflict, got %d", conflicts.Load())
+	}
+	s, ver, err := svc.GetKeyAutoRecovery(context.Background())
+	if err != nil || s.Enabled || s.IntervalMinutes != 45 || ver != 2 {
+		t.Fatalf("cache not at winner v2 disabled/45: %+v v%d err=%v", s, ver, err)
+	}
+}
+
+// TestKeyAutoRecoveryRefreshFailureDoesNotHammer verifies the negative-TTL
+// fail-open path on a warm cache: the first stale read triggers one refresh
+// (fails, returns last-known-good + error), and subsequent reads within the
+// failure window return last-known-good silently (nil error, no DB query).
+func TestKeyAutoRecoveryRefreshFailureDoesNotHammer(t *testing.T) {
+	db := newSvcTestDBWithKAR(t)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("underlying *sql.DB: %v", err)
+	}
+	svc := NewSystemSettingsService(db)
+
+	// Warm the cache with disabled/45 via a real update.
+	if _, _, err := svc.UpdateKeyAutoRecovery(context.Background(), 1, false, 45); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if s, _, err := svc.GetKeyAutoRecovery(context.Background()); err != nil || s.Enabled || s.IntervalMinutes != 45 {
+		t.Fatalf("warm read: %+v err=%v", s, err)
+	}
+
+	// Force the cache stale so the next read triggers a refresh.
+	kar := svc.keyAutoRecoveryEntry()
+	svc.mu.Lock()
+	kar.refreshExpiry = time.Now().Add(-time.Second)
+	svc.mu.Unlock()
+
+	// Break the DB so the refresh will fail.
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	// First call: triggers refresh, fails, sets failure window, returns
+	// last-known-good + error.
+	s1, _, err1 := svc.GetKeyAutoRecovery(context.Background())
+	if err1 == nil {
+		t.Fatalf("first stale read: want error, got nil")
+	}
+	if s1.Enabled || s1.IntervalMinutes != 45 {
+		t.Fatalf("first stale read: want last-known-good disabled/45, got %+v", s1)
+	}
+
+	// Verify failure window is active.
+	svc.mu.RLock()
+	failureUntil := kar.refreshFailureUntil
+	svc.mu.RUnlock()
+	if !time.Now().Before(failureUntil) {
+		t.Fatalf("failure window not set or already expired: %v", failureUntil)
+	}
+
+	// Subsequent calls within the failure window: no refresh, no error,
+	// return last-known-good. If these calls hit the DB they would error
+	// (the DB is closed), so a nil error proves no DB query happened.
+	for i := 0; i < 5; i++ {
+		s2, _, err2 := svc.GetKeyAutoRecovery(context.Background())
+		if err2 != nil {
+			t.Fatalf("call %d: want nil error in failure window, got %v", i, err2)
+		}
+		if s2.Enabled || s2.IntervalMinutes != 45 {
+			t.Fatalf("call %d: want last-known-good disabled/45, got %+v", i, s2)
+		}
+	}
+}
+
+// TestKeyAutoRecoveryRefreshFailureColdStartDoesNotHammer verifies the
+// cold-start failure path: the first call triggers one refresh (fails,
+// returns the shipped default + error), and subsequent calls within the
+// failure window return the default silently (nil error, no DB query) —
+// fail-open to the default, never block.
+func TestKeyAutoRecoveryRefreshFailureColdStartDoesNotHammer(t *testing.T) {
+	db := newSvcTestDBWithKAR(t)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("underlying *sql.DB: %v", err)
+	}
+	svc := NewSystemSettingsService(db)
+
+	// Close the DB before the first read — cold start with a broken DB.
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	// First call: triggers refresh, fails, sets failure window, returns the
+	// shipped default + error.
+	s1, _, err1 := svc.GetKeyAutoRecovery(context.Background())
+	if err1 == nil {
+		t.Fatalf("first cold read: want error, got nil")
+	}
+	if !s1.Enabled || s1.IntervalMinutes != 30 {
+		t.Fatalf("first cold read: want shipped default enabled/30, got %+v", s1)
+	}
+
+	// Verify failure window is active.
+	kar := svc.keyAutoRecoveryEntry()
+	svc.mu.RLock()
+	failureUntil := kar.refreshFailureUntil
+	svc.mu.RUnlock()
+	if !time.Now().Before(failureUntil) {
+		t.Fatalf("failure window not set or already expired: %v", failureUntil)
+	}
+
+	// Subsequent calls within the failure window: no refresh, no error,
+	// shipped default. If these calls hit the DB they would error (the DB is
+	// closed), so a nil error proves no DB query happened.
+	for i := 0; i < 5; i++ {
+		s2, _, err2 := svc.GetKeyAutoRecovery(context.Background())
+		if err2 != nil {
+			t.Fatalf("call %d: want nil error in failure window, got %v", i, err2)
+		}
+		if !s2.Enabled || s2.IntervalMinutes != 30 {
+			t.Fatalf("call %d: want shipped default enabled/30, got %+v", i, s2)
+		}
+	}
+}
+
+// TestKeyAutoRecoveryCacheSlotIsolation verifies that the key-auto-recovery
+// slot is independent of the other settings' slots: priming and breaking the
+// KAR cache has no effect on the CSP cache lane and vice versa (invariant 5:
+// cache keys isolate singleflight lanes and entries).
+func TestKeyAutoRecoveryCacheSlotIsolation(t *testing.T) {
+	db := newSvcTestDBWithKAR(t)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("underlying *sql.DB: %v", err)
+	}
+	svc := NewSystemSettingsService(db)
+
+	// Prime both caches.
+	if _, _, err := svc.CustomSystemPrompt(context.Background()); err != nil {
+		t.Fatalf("prime csp: %v", err)
+	}
+	if _, _, err := svc.GetKeyAutoRecovery(context.Background()); err != nil {
+		t.Fatalf("prime kar: %v", err)
+	}
+
+	// Force ONLY the KAR slot stale, then break the DB: the next KAR read
+	// must fail (refresh attempted), while a CSP read inside the KAR failure
+	// window still serves its own fresh snapshot without error.
+	kar := svc.keyAutoRecoveryEntry()
+	svc.mu.Lock()
+	kar.refreshExpiry = time.Now().Add(-time.Second)
+	svc.mu.Unlock()
+
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	if _, _, err := svc.GetKeyAutoRecovery(context.Background()); err == nil {
+		t.Fatal("stale KAR read against a closed DB: want error, got nil")
+	}
+	if _, _, err := svc.CustomSystemPrompt(context.Background()); err != nil {
+		t.Fatalf("fresh CSP read must not be affected by the KAR failure window: %v", err)
 	}
 }

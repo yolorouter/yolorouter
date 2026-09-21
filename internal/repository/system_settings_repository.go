@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/yolorouter/yolorouter/internal/settings"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
@@ -294,4 +295,97 @@ func RenameVisionFallbackModel(db *gorm.DB, oldName, newName string) error {
 			Where("key IN ?", []string{visionFallbackModelKey, visionFallbackPromptKey}).
 			Update("version", gorm.Expr("version + 1")).Error
 	})
+}
+
+// The key-auto-recovery settings pair is seeded by migration 00048 and
+// shares one version, same contract as the custom-system-prompt pair.
+const (
+	keyAutoRecoveryEnabledKey  = "key_auto_recovery_enabled"
+	keyAutoRecoveryIntervalKey = "key_auto_recovery_interval_minutes"
+)
+
+// GetKeyAutoRecovery reads both key-auto-recovery rows as one snapshot.
+// Missing rows (a database migrated before 00048, where seeding has not
+// run yet) degrade to the shipped default rather than erroring — the
+// background loop's read path must never fail-closed on configuration.
+// A lone row of the pair, a version mismatch, a non-boolean enabled, or a
+// non-positive-integer interval is corrupt data and surfaces as an error.
+func GetKeyAutoRecovery(db *gorm.DB) (settings.KeyAutoRecoverySetting, int64, error) {
+	var rows []struct {
+		Key     string
+		Value   string
+		Version int64
+	}
+	if err := db.Table("system_settings").
+		Select("key, value, version").
+		Where("key IN ?", []string{keyAutoRecoveryEnabledKey, keyAutoRecoveryIntervalKey}).
+		Find(&rows).Error; err != nil {
+		return settings.KeyAutoRecoverySetting{}, 0, err
+	}
+	if len(rows) == 0 {
+		return settings.DefaultKeyAutoRecoverySetting(), 0, nil
+	}
+	if len(rows) != 2 {
+		return settings.KeyAutoRecoverySetting{}, 0, fmt.Errorf("system_settings: expected 2 key_auto_recovery rows, got %d", len(rows))
+	}
+	var s settings.KeyAutoRecoverySetting
+	ver := rows[0].Version
+	for _, r := range rows {
+		if r.Version != ver {
+			return settings.KeyAutoRecoverySetting{}, 0, errors.New("system_settings: version mismatch between key_auto_recovery rows")
+		}
+		switch r.Key {
+		case keyAutoRecoveryEnabledKey:
+			switch r.Value {
+			case "true":
+				s.Enabled = true
+			case "false":
+				s.Enabled = false
+			default:
+				return settings.KeyAutoRecoverySetting{}, 0, fmt.Errorf("system_settings: corrupt %s value %q", keyAutoRecoveryEnabledKey, r.Value)
+			}
+		case keyAutoRecoveryIntervalKey:
+			n, err := strconv.Atoi(r.Value)
+			if err != nil || n < 1 {
+				return settings.KeyAutoRecoverySetting{}, 0, fmt.Errorf("system_settings: corrupt %s value %q", keyAutoRecoveryIntervalKey, r.Value)
+			}
+			s.IntervalMinutes = n
+		}
+	}
+	return s, ver, nil
+}
+
+// UpdateKeyAutoRecovery CAS-updates both rows in one statement; RowsAffected
+// == 2 is the CAS witness (both rows share the version, enforced by the read
+// path — same shape as UpdateCustomSystemPrompt). Returns the committed
+// snapshot + new version so the handler can hand the fresh version back to
+// the caller; a second save with the stale version would otherwise always
+// conflict.
+func UpdateKeyAutoRecovery(db *gorm.DB, expectedVersion int64, enabled bool, intervalMinutes int) (settings.KeyAutoRecoverySetting, int64, error) {
+	enabledVal := "false"
+	if enabled {
+		enabledVal = "true"
+	}
+	intervalVal := strconv.Itoa(intervalMinutes)
+	var newVersion int64
+	err := db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Table("system_settings").
+			Where("key IN ? AND version = ?", []string{keyAutoRecoveryEnabledKey, keyAutoRecoveryIntervalKey}, expectedVersion).
+			Updates(map[string]interface{}{
+				"value":   gorm.Expr("CASE key WHEN ? THEN ? WHEN ? THEN ? END", keyAutoRecoveryEnabledKey, enabledVal, keyAutoRecoveryIntervalKey, intervalVal),
+				"version": gorm.Expr("version + 1"),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 2 {
+			return errcode.ErrKeyAutoRecoveryConflict
+		}
+		newVersion = expectedVersion + 1
+		return nil
+	})
+	if err != nil {
+		return settings.KeyAutoRecoverySetting{}, 0, err
+	}
+	return settings.KeyAutoRecoverySetting{Enabled: enabled, IntervalMinutes: intervalMinutes}, newVersion, nil
 }

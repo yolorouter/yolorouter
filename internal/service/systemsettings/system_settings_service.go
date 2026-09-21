@@ -38,6 +38,17 @@ const (
 	cspCacheKey              = "csp"
 	inputCompressionCacheKey = "input_compression"
 	visionFallbackCacheKey   = "vision_fallback"
+	keyAutoRecoveryCacheKey  = "key_auto_recovery"
+)
+
+// Bounds for the key-auto-recovery probe interval, in whole minutes. One
+// minute keeps the loop from hammering an upstream that is merely slow;
+// one day caps how long an admin can ask it to sleep. Enforced in the
+// service layer so both the handler PUT and any internal writer hit the
+// same rule.
+const (
+	MinKeyAutoRecoveryIntervalMinutes = 1
+	MaxKeyAutoRecoveryIntervalMinutes = 1440
 )
 
 // settingEntry holds the cached state for one setting key. The cache is shared
@@ -102,6 +113,7 @@ func NewSystemSettingsService(db *gorm.DB) *SystemSettingsService {
 			cspCacheKey:              {},
 			inputCompressionCacheKey: {},
 			visionFallbackCacheKey:   {},
+			keyAutoRecoveryCacheKey:  {},
 		},
 	}
 }
@@ -119,6 +131,11 @@ func (s *SystemSettingsService) inputCompressionEntry() *settingEntry {
 // visionFallbackEntry returns the vision-fallback cache slot.
 func (s *SystemSettingsService) visionFallbackEntry() *settingEntry {
 	return s.entries[visionFallbackCacheKey]
+}
+
+// keyAutoRecoveryEntry returns the key-auto-recovery cache slot.
+func (s *SystemSettingsService) keyAutoRecoveryEntry() *settingEntry {
+	return s.entries[keyAutoRecoveryCacheKey]
 }
 
 // readCached is the shared hot-path read for any registered setting. It serves
@@ -370,5 +387,46 @@ func (s *SystemSettingsService) UpdateVisionFallback(ctx context.Context, expect
 		return settings.VisionFallbackSetting{}, 0, err
 	}
 	s.publishIfNewer(s.visionFallbackEntry(), got, ver)
+	return got, ver, nil
+}
+
+// --- Key auto recovery ------------------------------------------------------
+
+// GetKeyAutoRecovery returns the cached snapshot (non-blocking, fail-open to
+// the shipped default of enabled + 30 minutes) — the background probe loop's
+// read. On cold cache or stale snapshot it triggers a singleflight refresh
+// with a strict short timeout; on failure it returns last-known-good + error.
+func (s *SystemSettingsService) GetKeyAutoRecovery(ctx context.Context) (settings.KeyAutoRecoverySetting, int64, error) {
+	v, ver, err := s.readCached(ctx, keyAutoRecoveryCacheKey, s.keyAutoRecoveryEntry(),
+		func(ctx context.Context) (any, int64, error) {
+			snap, v, e := repository.GetKeyAutoRecovery(s.db.WithContext(ctx))
+			return snap, v, e
+		},
+		settings.DefaultKeyAutoRecoverySetting())
+	if err != nil {
+		return v.(settings.KeyAutoRecoverySetting), ver, err
+	}
+	return v.(settings.KeyAutoRecoverySetting), ver, nil
+}
+
+// GetKeyAutoRecoveryForHandler is the authoritative read for the handler GET:
+// straight from the DB, bound to the request ctx so a client disconnect
+// cancels the in-flight DB call.
+func (s *SystemSettingsService) GetKeyAutoRecoveryForHandler(ctx context.Context) (settings.KeyAutoRecoverySetting, int64, error) {
+	return repository.GetKeyAutoRecovery(s.db.WithContext(ctx))
+}
+
+// UpdateKeyAutoRecovery validates the interval bounds, CAS-updates the pair,
+// and publishes the committed snapshot to the cache so the probe loop sees
+// the change within one heartbeat + cache TTL, without a restart.
+func (s *SystemSettingsService) UpdateKeyAutoRecovery(ctx context.Context, expectedVersion int64, enabled bool, intervalMinutes int) (settings.KeyAutoRecoverySetting, int64, error) {
+	if intervalMinutes < MinKeyAutoRecoveryIntervalMinutes || intervalMinutes > MaxKeyAutoRecoveryIntervalMinutes {
+		return settings.KeyAutoRecoverySetting{}, 0, errcode.ErrKeyAutoRecoveryIntervalInvalid
+	}
+	got, ver, err := repository.UpdateKeyAutoRecovery(s.db.WithContext(ctx), expectedVersion, enabled, intervalMinutes)
+	if err != nil {
+		return settings.KeyAutoRecoverySetting{}, 0, err
+	}
+	s.publishIfNewer(s.keyAutoRecoveryEntry(), got, ver)
 	return got, ver, nil
 }

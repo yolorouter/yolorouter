@@ -296,3 +296,168 @@ func TestPutVisionFallbackSuccessAndStaleVersion409(t *testing.T) {
 		t.Fatalf("disable put: status = %d, body: %s", w.Code, w.Body.String())
 	}
 }
+
+// setupKeyAutoRecoveryRouter seeds the key-auto-recovery pair at the
+// migration default (enabled + 30 minutes) so the KAR tests mirror how the
+// other families' tests rely on their seeded state.
+func setupKeyAutoRecoveryRouter(t *testing.T) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.Exec(`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('key_auto_recovery_enabled','true'),('key_auto_recovery_interval_minutes','30')`)
+	svc := systemsettings.NewSystemSettingsService(db)
+	r := gin.New()
+	r.GET("/api/admin/system-settings/key-auto-recovery", GetKeyAutoRecovery(svc))
+	r.PUT("/api/admin/system-settings/key-auto-recovery", PutKeyAutoRecovery(svc))
+	return r
+}
+
+func TestGetKeyAutoRecoveryReturnsSeeded(t *testing.T) {
+	r := setupKeyAutoRecoveryRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/admin/system-settings/key-auto-recovery", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			Enabled         bool  `json:"enabled"`
+			IntervalMinutes int   `json:"interval_minutes"`
+			Version         int64 `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !resp.Data.Enabled || resp.Data.IntervalMinutes != 30 || resp.Data.Version != 1 {
+		t.Fatalf("unexpected payload: %+v", resp.Data)
+	}
+}
+
+func TestPutKeyAutoRecoveryMissingFields400(t *testing.T) {
+	r := setupKeyAutoRecoveryRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/api/admin/system-settings/key-auto-recovery", bytes.NewBufferString(`{}`)))
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+// TestPutKeyAutoRecoveryZeroVersion400 verifies the no-first-write rule: a
+// version of 0 (what a missing-row read would report on a not-yet-migrated
+// database) is rejected, so the row can only ever be created by the seeding
+// migration — the PUT handler stays as strict as the other settings.
+func TestPutKeyAutoRecoveryZeroVersion400(t *testing.T) {
+	r := setupKeyAutoRecoveryRouter(t)
+	body, _ := json.Marshal(map[string]interface{}{"enabled": true, "interval_minutes": 30, "version": int64(0)})
+	req := httptest.NewRequest("PUT", "/api/admin/system-settings/key-auto-recovery", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+// A non-integer interval or a non-boolean enabled fails JSON binding and is
+// rejected with the existing param-error form.
+func TestPutKeyAutoRecoveryNonIntegerInterval400(t *testing.T) {
+	r := setupKeyAutoRecoveryRouter(t)
+	body, _ := json.Marshal(map[string]interface{}{"enabled": true, "interval_minutes": 3.5, "version": int64(1)})
+	req := httptest.NewRequest("PUT", "/api/admin/system-settings/key-auto-recovery", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400 for interval 3.5, body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPutKeyAutoRecoveryNonBooleanEnabled400(t *testing.T) {
+	r := setupKeyAutoRecoveryRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/api/admin/system-settings/key-auto-recovery", bytes.NewBufferString(`{"enabled":"yes","interval_minutes":30,"version":1}`)))
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400 for string enabled, body: %s", w.Code, w.Body.String())
+	}
+}
+
+// Out-of-range integers pass binding and are rejected by the service-layer
+// bounds check with this setting's own business code (11020), the same
+// 400-with-errcode form the vision-fallback family uses for validation.
+func TestPutKeyAutoRecoveryIntervalOutOfBoundsEmits11020(t *testing.T) {
+	r := setupKeyAutoRecoveryRouter(t)
+	for _, bad := range []int{0, -1, 1441} {
+		body, _ := json.Marshal(map[string]interface{}{"enabled": true, "interval_minutes": bad, "version": int64(1)})
+		req := httptest.NewRequest("PUT", "/api/admin/system-settings/key-auto-recovery", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != 400 {
+			t.Fatalf("interval %d: status = %d, want 400, body: %s", bad, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Code int `json:"code"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("interval %d: unmarshal: %v", bad, err)
+		}
+		if resp.Code != 11020 {
+			t.Fatalf("interval %d: errcode = %d, want 11020 (KeyAutoRecoveryIntervalInvalid)", bad, resp.Code)
+		}
+	}
+}
+
+func TestPutKeyAutoRecoverySuccessReturnsNewVersion(t *testing.T) {
+	r := setupKeyAutoRecoveryRouter(t)
+	body, _ := json.Marshal(map[string]interface{}{"enabled": false, "interval_minutes": 45, "version": int64(1)})
+	req := httptest.NewRequest("PUT", "/api/admin/system-settings/key-auto-recovery", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Enabled         bool  `json:"enabled"`
+			IntervalMinutes int   `json:"interval_minutes"`
+			Version         int64 `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Data.Enabled || resp.Data.IntervalMinutes != 45 || resp.Data.Version != 2 {
+		t.Fatalf("want disabled/45/v2, got %+v", resp.Data)
+	}
+}
+
+// TestPutKeyAutoRecoveryConflictEmits11019 verifies the 409 response carries
+// errcode 11019 (KeyAutoRecoveryConflict), distinct from the other settings'
+// conflict codes so the frontend can route the retry to the right control.
+func TestPutKeyAutoRecoveryConflictEmits11019(t *testing.T) {
+	r := setupKeyAutoRecoveryRouter(t)
+	body, _ := json.Marshal(map[string]interface{}{"enabled": false, "interval_minutes": 45, "version": int64(99)})
+	req := httptest.NewRequest("PUT", "/api/admin/system-settings/key-auto-recovery", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 409 {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	var resp struct {
+		Code int `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Code != 11019 {
+		t.Fatalf("errcode = %d, want 11019 (KeyAutoRecoveryConflict)", resp.Code)
+	}
+}
