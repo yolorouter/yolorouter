@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Models can be deleted. `DELETE /api/admin/models/:id` removes the
+  model row together with, in one transaction, every provider candidate
+  under it (prices and probe history included) and every API-key model
+  allowlist entry pointing at it; when the model is the one the
+  vision-fallback setting designates, that setting is cleared in the
+  same transaction so the feature settles back to off instead of
+  dangling. No pre-disable is required, and a model deleted mid-flight
+  behaves like a disabled one: in-flight requests finish, new requests
+  404. Request history is fully retained under the model's name — logs
+  and every per-model report key on `model_name`, not the row id — so
+  totals and rows survive the deletion, and recreating the model under
+  the same name seamlessly continues that history. (Provider deletion
+  renders its retained history namelessly instead; the difference is
+  the storage key — provider logs key on the id, model logs on the
+  name — not a product stance.) The confirm dialog previews the blast
+  radius — provider candidate count (disabled candidates counted too;
+  the cascade does not discriminate), the allowlisting API keys by
+  name (folding past five into a +N), allow-all keys when present, and
+  the request volume of the last 7 days — alongside a fixed note that
+  history is retained; no name retyping is asked for. Entries live in
+  the model list's row menu and on the detail page; deleting from the
+  detail page lands back on the list.
+
+- The analytics model filter reaches deleted history. The dropdown's
+  options are now the live model catalog unioned with every model name
+  that appears on request logs from the last 90 days (new
+  `GET /api/admin/analytics/history-model-names`), so a deleted model
+  stays selectable and its history stays reportable without knowing
+  the name in advance; a name surviving in both sources merges into a
+  single option, same name meaning the same history. The desktop
+  dropdown also accepts free-typed entries for names older than the
+  window; the mobile bottom-sheet picker does not (accepted gap — the
+  merged list itself works on both).
+
 ### Fixed
 
 - Partial candidate edits no longer wipe the fields they omit. A

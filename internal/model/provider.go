@@ -52,9 +52,11 @@ const (
 	LastTestResultTimeout = 9
 )
 
-// Provider is one upstream connection target. Deleting a
-// provider is not supported by design — only management_status
-// toggles it off.
+// Provider is one upstream connection target. Deleting one is a hard
+// cascade: its keys and model candidates go in the same transaction as
+// the row itself, while request history stays behind keyed on the id
+// (reports render it under an empty name). management_status only
+// toggles routing off — it removes nothing.
 type Provider struct {
 	ID   uint   `gorm:"column:id;primaryKey" json:"id"`
 	Name string `gorm:"column:name" json:"name"`
