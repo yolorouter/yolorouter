@@ -167,6 +167,48 @@ func ListProviderKeysByProviderIDs(db *gorm.DB, providerIDs []uint) ([]model.Pro
 	return keys, nil
 }
 
+// AutoRecoveryCandidate is one row of the key-auto-recovery scan set: a
+// key whose management switch is on and whose verification status is
+// failed (the population the system itself kicked out of rotation),
+// joined with the parent-provider fields the caller's in-memory filter
+// and log lines need. Which of these rows actually get probed is decided
+// by the caller: needs-reentry keys (AuthorizedDestinationVersion !=
+// ProviderDestinationVersion) and keys under a management-disabled
+// provider are filtered out there, per the auto-recovery rules.
+type AutoRecoveryCandidate struct {
+	model.ProviderKey
+	ProviderName               string `gorm:"column:provider_name"`
+	ProviderManagementStatus   int    `gorm:"column:provider_management_status"`
+	ProviderDestinationVersion int    `gorm:"column:provider_destination_version"`
+}
+
+// ListAutoRecoveryCandidates returns every provider key that is
+// management-enabled and verification-failed, with its provider's name,
+// management status, and destination version attached — the scan set the
+// key-auto-recovery loop retests each round. Management-disabled keys are
+// excluded HERE (never even enter the scan set) because an admin's manual
+// disable is the final verdict; the needs-reentry and provider-disabled
+// exclusions happen in the caller's memory. Ordered by (provider_id,
+// sort_order) so a round probes keys in a stable, human-predictable order.
+func ListAutoRecoveryCandidates(db *gorm.DB) ([]AutoRecoveryCandidate, error) {
+	var rows []AutoRecoveryCandidate
+	err := db.Raw(`
+		SELECT provider_keys.*,
+		       providers.name AS provider_name,
+		       providers.management_status AS provider_management_status,
+		       providers.destination_version AS provider_destination_version
+		FROM provider_keys
+		JOIN providers ON providers.id = provider_keys.provider_id
+		WHERE provider_keys.management_status = ?
+		  AND provider_keys.verification_status = ?
+		ORDER BY provider_keys.provider_id ASC, provider_keys.sort_order ASC
+	`, model.ProviderKeyStatusEnabled, model.VerificationStatusFailed).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // NextSortOrder returns 1 + the current maximum sort_order for a provider
 // (1 if it has no keys yet) — the position a newly appended key should
 // take.

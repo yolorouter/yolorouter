@@ -140,6 +140,13 @@ type Deps struct {
 	// context) and passes it in; a nil queue — router tests that never
 	// exercise imports — simply skips enqueueing.
 	ProbeQueue *modeladmin.ProbeQueue
+	// ProviderSvc is the provider service the admin routes serve through.
+	// Constructed by the caller (serve assembly) rather than here so the
+	// key-auto-recovery background loop can probe through the SAME instance:
+	// the retest-passed listener wired below releases the gateway key pool's
+	// rate-limit bench, and a loop probing through any second instance would
+	// flip the database row without ever firing that listener.
+	ProviderSvc *provider.ProviderService
 	// Gateway carries the relay timeouts and limits, threaded through so the
 	// wiring stays identical to production instead of a zero struct.
 	Gateway config.GatewayConfig
@@ -328,7 +335,7 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.PATCH("/users/:id/status", handler.PatchUserStatus(db))
 	protected.PATCH("/users/:id/role", handler.PatchUserRole(db))
 
-	providerSvc := provider.NewProviderService(db, secrets, providerclient.NewHTTPProviderClient(allowPrivateUpstreams))
+	providerSvc := deps.ProviderSvc
 	protected.GET("/providers", handler.GetProviders(providerSvc))
 	protected.POST("/providers", handler.PostProvider(providerSvc))
 	protected.POST("/providers/test-key", handler.PostProviderTestKey(providerSvc))

@@ -29,7 +29,9 @@ import (
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/router"
 	"github.com/yolorouter/yolorouter/internal/service/analytics"
+	"github.com/yolorouter/yolorouter/internal/service/provider"
 	"github.com/yolorouter/yolorouter/internal/testutil"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
 )
 
 // Local names for the shared testutil helpers, so the test bodies below
@@ -66,6 +68,7 @@ func newAnalyticsFixture(t *testing.T) (*gin.Engine, *gorm.DB, *http.Cookie) {
 	db := testutil.NewSQLiteDB(t)
 	r, err := router.New(router.Deps{
 		DB:                db,
+		ProviderSvc:       provider.NewProviderService(db, crypto.NewSecretBox(testutil.ProviderMasterKey()), nil),
 		ProviderMasterKey: testutil.ProviderMasterKey(),
 		BodiesDir:         t.TempDir(),
 		Update:            config.UpdateConfig{Enabled: true},

@@ -15,12 +15,14 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
+	"github.com/yolorouter/yolorouter/internal/keyrecovery"
 	"github.com/yolorouter/yolorouter/internal/pricecatalog"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/router"
 	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/internal/service/provider"
 	"github.com/yolorouter/yolorouter/internal/service/providerclient"
+	"github.com/yolorouter/yolorouter/internal/service/systemsettings"
 	"github.com/yolorouter/yolorouter/internal/service/videotask"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/database"
@@ -153,6 +155,15 @@ func runServe(ctx context.Context, args []string) error {
 	// own API; the loopback base is derived from the same port the server is
 	// about to listen on.
 	loopbackBase := fmt.Sprintf("http://localhost:%d", app.Config.Server.Port)
+	// The one provider service shared by the admin routes AND the key
+	// auto-recovery loop started further below: the router wires its
+	// retest-passed listener to the gateway's key pool, and a recovery probe
+	// that ran through any other instance would restore the database row
+	// without ever firing that listener — leaving the gateway's in-memory
+	// demotion benched. Same construction the router used to do internally;
+	// hoisted here only so both consumers hold the same instance.
+	providerSvc := provider.NewProviderService(app.DB, crypto.NewSecretBox(masterKey),
+		providerclient.NewHTTPProviderClient(app.Config.Security.AllowPrivateUpstreams))
 	r, err := router.New(router.Deps{
 		DB:                    app.DB,
 		ProviderMasterKey:     masterKey,
@@ -163,6 +174,7 @@ func runServe(ctx context.Context, args []string) error {
 		LoopbackBase:          loopbackBase,
 		ExternalURL:           app.Config.Server.ExternalURL,
 		ProbeQueue:            probeQueue,
+		ProviderSvc:           providerSvc,
 	})
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
@@ -325,6 +337,32 @@ func runServe(ctx context.Context, args []string) error {
 	// works); it dies with serve's ctx like the probe queue above.
 	videoTaskSvc := videotask.NewService(osswire.NewVideoStore(app.DB), nil)
 	videoTaskSvc.StartReaper(ctx, time.Minute)
+
+	// The key auto-recovery loop: periodically retests provider keys the
+	// system itself kicked out of rotation (management on, verification
+	// failed) through the SAME provider service the admin routes use, so a
+	// passing probe releases the gateway's in-memory demotion exactly like
+	// an admin-pressed retest. Started here, after the migration and
+	// master-key checks above, for the same reason the probe queue waits:
+	// a loop probing with a wrong master key or against an unmigrated
+	// schema would spend upstream calls from a process about to exit. Its
+	// own settings-service instance keeps the loop's cached snapshot reads
+	// off the request-path instance; both caches read the same rows, and a
+	// saved change reaches the loop within one cache TTL plus one
+	// heartbeat. Like the price-catalog refresh, the loop runs on a
+	// context derived from serve's own ctx and is awaited by a deferred
+	// cancel + stop so the goroutine exits before the process does.
+	recoveryLoop := keyrecovery.NewLoop(keyrecovery.Config{
+		DB:        app.DB,
+		Settings:  systemsettings.NewSystemSettingsService(app.DB),
+		Providers: providerSvc,
+	})
+	recoveryCtx, recoveryCancel := context.WithCancel(ctx)
+	stopRecovery := recoveryLoop.Start(recoveryCtx)
+	defer func() {
+		recoveryCancel()
+		stopRecovery()
+	}()
 
 	serveErrCh := make(chan error, 1)
 	go func() {

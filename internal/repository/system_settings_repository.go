@@ -309,7 +309,11 @@ const (
 // run yet) degrade to the shipped default rather than erroring — the
 // background loop's read path must never fail-closed on configuration.
 // A lone row of the pair, a version mismatch, a non-boolean enabled, or a
-// non-positive-integer interval is corrupt data and surfaces as an error.
+// non-integer / negative interval is corrupt data and surfaces as an
+// error. The interval deliberately carries NO positive floor here: the
+// 1..1440 bounds are the write path's rule (service-layer validation on
+// every update), and a hand-edited 0 is honored as "scan point always
+// reached" instead of being treated as corruption.
 func GetKeyAutoRecovery(db *gorm.DB) (settings.KeyAutoRecoverySetting, int64, error) {
 	var rows []struct {
 		Key     string
@@ -346,7 +350,7 @@ func GetKeyAutoRecovery(db *gorm.DB) (settings.KeyAutoRecoverySetting, int64, er
 			}
 		case keyAutoRecoveryIntervalKey:
 			n, err := strconv.Atoi(r.Value)
-			if err != nil || n < 1 {
+			if err != nil || n < 0 {
 				return settings.KeyAutoRecoverySetting{}, 0, fmt.Errorf("system_settings: corrupt %s value %q", keyAutoRecoveryIntervalKey, r.Value)
 			}
 			s.IntervalMinutes = n

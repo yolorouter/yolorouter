@@ -16,6 +16,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/service/provider"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
@@ -36,7 +37,9 @@ func newTestRouter(t *testing.T) *gin.Engine {
 func testDeps(t *testing.T, db *gorm.DB) Deps {
 	t.Helper()
 	return Deps{
-		DB:                db,
+		DB: db,
+		ProviderSvc: provider.NewProviderService(db,
+			crypto.NewSecretBox(testutil.ProviderMasterKey()), nil),
 		ProviderMasterKey: testutil.ProviderMasterKey(),
 		BodiesDir:         t.TempDir(),
 		Update:            testUpdateConfig(),
