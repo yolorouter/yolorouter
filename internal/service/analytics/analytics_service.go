@@ -235,10 +235,6 @@ func (s *AnalyticsService) GetOverview(filter *repository.RequestLogFilter, opts
 	}, nil
 }
 
-// GetCacheStats aggregates the settled cache columns into the cache
-// visibility DTO. Clamps the filter window on the day-bucket cap so the
-// figures cover the same range as the sibling compress-stats call the page
-// renders beside them.
 // maxCacheStatsRangeDays mirrors the dashboard's custom-range cap — this
 // endpoint feeds the dashboard's cache KPI row, so an explicit range must be
 // honored up to the same year bound the surrounding KPI cards use. Clamping
@@ -246,6 +242,10 @@ func (s *AnalyticsService) GetOverview(filter *repository.RequestLogFilter, opts
 // four cards that covered only the last quarter.
 const maxCacheStatsRangeDays = 365
 
+// GetCacheStats aggregates the settled cache columns into the cache
+// visibility DTO. Clamps the filter window on the day-bucket cap so the
+// figures cover the same range as the sibling compress-stats call the page
+// renders beside them.
 func (s *AnalyticsService) GetCacheStats(ctx context.Context, filter *repository.RequestLogFilter, opts AnalyticsOptions, now time.Time) (*CacheStatsResult, error) {
 	if filter.StartTime != nil && filter.EndTime != nil {
 		if filter.EndTime.Sub(*filter.StartTime) > time.Duration(maxCacheStatsRangeDays)*24*time.Hour {
@@ -574,5 +574,44 @@ func (s *AnalyticsService) GetCompressStats(ctx context.Context, filter *reposit
 		TopProviders:        topProviders,
 		CompressorHits:      compressorHits,
 		DailySeries:         daily,
+	}, nil
+}
+
+// historyModelNamesWindow is how far back the analytics model filter's
+// history supplement reaches: every name that appears on a request log at
+// or after now-window is offered in the dropdown, so a deleted model stays
+// filterable for as long as its history is. The value deliberately matches
+// the report pipeline's day-bucket lookback cap (repository's
+// maxDayLookbackDays) — a name older than that can no longer be displayed
+// at day granularity anyway, so offering it would be a dead option.
+const historyModelNamesWindow = 90 * 24 * time.Hour
+
+// HistoryModelNamesResult is the analytics filter dropdown's history
+// supplement: distinct model names seen in request logs inside the window.
+// Names is the exact wire list — deduplicated, ascending, non-nil (empty
+// [] on an empty window, never JSON null).
+type HistoryModelNamesResult struct {
+	Names      []string `json:"names"`
+	WindowDays int      `json:"window_days"`
+}
+
+// ListHistoryModelNames returns the distinct model names that carried
+// traffic within historyModelNamesWindow of now. It reads request_logs
+// only — the models catalog is not consulted — because the point is
+// history: names whose configuration rows are long gone still belong in
+// the filter. The window's lower edge is inclusive (a row logged exactly
+// window before now still counts), mirroring the impact preview's
+// "created_at >= since" convention.
+func (s *AnalyticsService) ListHistoryModelNames(now time.Time) (*HistoryModelNamesResult, error) {
+	names, err := repository.ListDistinctModelNamesSince(s.db, now.Add(-historyModelNamesWindow))
+	if err != nil {
+		return nil, err
+	}
+	if names == nil {
+		names = []string{}
+	}
+	return &HistoryModelNamesResult{
+		Names:      names,
+		WindowDays: int(historyModelNamesWindow / (24 * time.Hour)),
 	}, nil
 }

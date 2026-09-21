@@ -2,19 +2,25 @@
 // Thin HTTP adapter over AnalyticsService — all composition lives in the
 // service, all SQL lives in the repository.
 //
-// Five routes:
+// Seven routes:
 //   - GET /api/admin/analytics/overview        aggregate MetricTotals for filter
 //   - GET /api/admin/analytics/report          dimension-grouped aggregates
 //   - GET /api/admin/analytics/export          CSV stream of the same report
 //   - GET /api/admin/analytics/compress-stats  input-compression roll-up
+//   - GET /api/admin/analytics/cache-stats     verified cache economics
+//     roll-up for the dashboard's cache KPI cards
 //   - GET /api/admin/analytics/concise-output-projection  priced output
 //     volume + the window's projected savings for the cost-optimization
 //     page's concise-output card
+//   - GET /api/admin/analytics/history-model-names  distinct model names seen
+//     in request logs inside the history window, the filter dropdown's
+//     supplement to the models catalog
 //
-// Filter shape is identical across the five (start/end/api_key_id/model_name/
-// provider_id/status); ?dimension selects the report aggregate, ?bucket
-// selects the time-bucket granularity for dimension=time only, ?limit
-// selects the per-api-key Top-N row count for compress-stats.
+// Filter shape is identical across the first six (start/end/api_key_id/
+// model_name/provider_id/status); ?dimension selects the report aggregate,
+// ?bucket selects the time-bucket granularity for dimension=time only,
+// ?limit selects the per-api-key Top-N row count for compress-stats. The
+// history-model-names route takes no params — its window is a code constant.
 package handler
 
 import (
@@ -191,6 +197,26 @@ func GetConciseOutputProjection(svc *analytics.AnalyticsService) gin.HandlerFunc
 		result, err := svc.GetConciseOutputProjection(c.Request.Context(), &filter, opts, timeNow())
 		if err != nil {
 			writeServiceError(c, err)
+			return
+		}
+		response.Success(c, result)
+	}
+}
+
+// GetAnalyticsHistoryModelNames handles GET /api/admin/analytics/history-
+// model-names — the distinct model names that appear on request logs inside
+// the 90-day window, deduplicated and sorted. The analytics page merges
+// them into the model filter dropdown so history stays filterable after a
+// model is deleted. It sits on the admin-only group like compress-stats,
+// cache-stats and concise-output-projection — only overview/report/export
+// are member-scoped — because the models catalog it supplements is itself
+// admin-only. No query params: the window is a code constant owned by the
+// service.
+func GetAnalyticsHistoryModelNames(svc *analytics.AnalyticsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		result, err := svc.ListHistoryModelNames(timeNow())
+		if err != nil {
+			response.Error(c, errcode.InternalError, errcode.GetMessage(errcode.InternalError))
 			return
 		}
 		response.Success(c, result)

@@ -15,6 +15,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -2219,5 +2220,43 @@ func TestGetConciseOutputProjectionReturnsPricedVolumeAndTotals(t *testing.T) {
 	}
 	if d.Coefficient != analytics.ConciseOutputCoefficient {
 		t.Errorf("coefficient = %v, want %v", d.Coefficient, analytics.ConciseOutputCoefficient)
+	}
+}
+
+// === History model names =================================================
+
+// The route exists on the real admin table, answers the success envelope,
+// and its payload carries the windowed distinct names plus the disclosed
+// window length. Seeding stays clear of the window's exact edge on purpose:
+// the handler reads the live clock, so a row seeded at "exactly 90 days
+// before seed time" could fall either side of the cutoff by the time the
+// request runs — the edge itself is pinned precisely (same-constant seeding,
+// injected clock) by the service tests.
+func TestGetAnalyticsHistoryModelNames(t *testing.T) {
+	r, db, ck := newAnalyticsFixture(t)
+	now := time.Now().UTC()
+	seedRequestLog(t, db, "hist-in-1", now.Add(-time.Hour), func(rl *model.RequestLog) { rl.ModelName = "kept-name" })
+	seedRequestLog(t, db, "hist-in-2", now.Add(-2*time.Hour), func(rl *model.RequestLog) { rl.ModelName = "kept-name" })
+	seedRequestLog(t, db, "hist-out", now.Add(-120*24*time.Hour), func(rl *model.RequestLog) { rl.ModelName = "dropped-name" })
+
+	w, _ := doJSON(t, r, http.MethodGet, "/api/admin/analytics/history-model-names", nil, ck)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var env struct {
+		Code int                               `json:"code"`
+		Data analytics.HistoryModelNamesResult `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if env.Code != 0 {
+		t.Fatalf("code = %d, want 0", env.Code)
+	}
+	if !reflect.DeepEqual(env.Data.Names, []string{"kept-name"}) {
+		t.Fatalf("names = %v, want [kept-name] (in-window rows deduped, out-of-window dropped)", env.Data.Names)
+	}
+	if env.Data.WindowDays != 90 {
+		t.Fatalf("window_days = %d, want 90", env.Data.WindowDays)
 	}
 }

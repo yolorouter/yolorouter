@@ -62,6 +62,10 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/analytics/compress-stats",
 		"/api/admin/analytics/cache-stats",
 		"/api/admin/analytics/concise-output-projection",
+		// History model names are the admin filter dropdown's supplement to
+		// the (admin-only) models catalog; members derive their own options
+		// from their report rows and never see this list.
+		"/api/admin/analytics/history-model-names",
 		// The video task list is an operator-wide view across every
 		// caller's tasks; there is no member-scoped reading of it.
 		"/api/admin/video-tasks",

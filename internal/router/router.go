@@ -423,6 +423,9 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.GET("/analytics/compress-stats", handler.GetCompressStats(analyticsSvc))
 	protected.GET("/analytics/cache-stats", handler.GetCacheStats(analyticsSvc))
 	protected.GET("/analytics/concise-output-projection", handler.GetConciseOutputProjection(analyticsSvc))
+	// History model names supplement the analytics filter dropdown from
+	// request-log history; admin-only like the models catalog they extend.
+	protected.GET("/analytics/history-model-names", handler.GetAnalyticsHistoryModelNames(analyticsSvc))
 
 	requestLogSvc := requestlog.NewRequestLogService(db)
 	protected.GET("/request-logs", handler.GetRequestLogs(requestLogSvc))

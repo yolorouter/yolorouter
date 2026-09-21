@@ -390,3 +390,25 @@ func CountRequestLogsForModelSince(db *gorm.DB, modelName string, since time.Tim
 		Count(&cnt).Error
 	return cnt, err
 }
+
+// ListDistinctModelNamesSince returns every model name carried by a request
+// log at or after the cutoff, deduplicated and ordered ascending. The
+// analytics filter dropdown merges this history supplement into its options
+// so a deleted model stays selectable for as long as the window reaches —
+// log rows keep the name, and by-name filtering keeps working on it. The
+// lower edge is inclusive (created_at >= since), the same convention
+// CountRequestLogsForModelSince uses for "after a cutoff".
+//
+// SQLite satisfies the DISTINCT + ORDER BY from idx_request_logs_model_name
+// (an ordered list of every indexed name) instead of building a temp b-tree;
+// verified against the migrated schema with EXPLAIN QUERY PLAN.
+func ListDistinctModelNamesSince(db *gorm.DB, since time.Time) ([]string, error) {
+	var names []string
+	err := db.Model(&model.RequestLog{}).
+		Where("created_at >= ?", since).
+		Distinct().Order("model_name ASC").Pluck("model_name", &names).Error
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
+}
