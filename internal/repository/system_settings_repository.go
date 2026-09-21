@@ -239,6 +239,34 @@ func UpdateVisionFallback(db *gorm.DB, expectedVersion int64, model, prompt stri
 	return settings.VisionFallbackSetting{Model: model, Prompt: prompt}, newVersion, nil
 }
 
+// ClearVisionFallbackModel follows a model deletion into the vision-fallback
+// setting: when the stored describe model is the deleted one, the reference
+// is cleared so the setting cannot point at a model that no longer exists —
+// an empty model means the feature is off, the same state as never having
+// configured it. The prompt text survives: it says how to describe images,
+// not which model does it, so the next configure reuses it. A no-match is a
+// clean no-op — most deletions aren't the fallback model. Same shared-version
+// advance as RenameVisionFallbackModel, for the same CAS/cache reasons.
+func ClearVisionFallbackModel(db *gorm.DB, name string) error {
+	if name == "" {
+		return nil
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Table("system_settings").
+			Where("key = ? AND value = ?", visionFallbackModelKey, name).
+			Update("value", "")
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return nil
+		}
+		return tx.Table("system_settings").
+			Where("key IN ?", []string{visionFallbackModelKey, visionFallbackPromptKey}).
+			Update("version", gorm.Expr("version + 1")).Error
+	})
+}
+
 // RenameVisionFallbackModel follows a model rename into the vision-fallback
 // setting: when the stored describe model is the renamed one, the reference
 // is rewritten and the pair's shared version advances so CAS writers and

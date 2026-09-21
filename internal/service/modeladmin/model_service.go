@@ -34,15 +34,15 @@ const (
 	ModelRunningStatusUnavailable   = "unavailable"
 )
 
-// Slashes are allowed as SEGMENT SEPARATORS because upstream catalogs
-// routinely namespace model ids (Qwen/Qwen3-..., deepseek-ai/DeepSeek-...) and
-// bulk import keeps the external name equal to the upstream name. Leading,
-// trailing, and doubled slashes are rejected: no real upstream id has them,
-// and the discovery route trims boundary slashes from its catch-all parameter,
-// so a name like "foo/" could never be retrieved as itself. Known limit: a
-// slash-named model cannot be addressed through the Gemini-native ingress,
-// whose URL shape embeds the model name in a path segment — such models are
-// called via the JSON-body protocols.
+// modelNamePattern allows slashes as SEGMENT SEPARATORS because upstream
+// catalogs routinely namespace model ids (Qwen/Qwen3-...,
+// deepseek-ai/DeepSeek-...) and bulk import keeps the external name equal to
+// the upstream name. Leading, trailing, and doubled slashes are rejected: no
+// real upstream id has them, and the discovery route trims boundary slashes
+// from its catch-all parameter, so a name like "foo/" could never be
+// retrieved as itself. Known limit: a slash-named model cannot be addressed
+// through the Gemini-native ingress, whose URL shape embeds the model name
+// in a path segment — such models are called via the JSON-body protocols.
 var modelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)*$`)
 
 type ModelService struct {
@@ -790,16 +790,6 @@ type TestAndCreateResult struct {
 	Candidate *CandidateView      `json:"candidate"`
 }
 
-// runCandidateProbes runs the basic mapping probe first and, only when it
-// passes, the two capability probes concurrently.
-//
-// The basic probe gates the others because it is the one that proves the
-// fundamentals — credential, address, model name. When it fails the capability
-// probes cannot produce a meaningful verdict, so running them would spend two
-// more upstream requests to learn nothing, and would risk recording a
-// misleading "not supported" for a mapping that is simply misconfigured. Once
-// the fundamentals hold the remaining two are independent, so they run together
-// to keep the admin's wait to two round trips rather than three.
 // probeShape is which endpoint family a mapping's basic probe speaks.
 // A pair of booleans was tried first and decayed on contact with a third
 // family: one value with three spellings says what a caller may pass
@@ -813,6 +803,16 @@ const (
 	probeShapeAudio
 )
 
+// runCandidateProbes runs the basic mapping probe first and, only when it
+// passes, the two capability probes concurrently.
+//
+// The basic probe gates the others because it is the one that proves the
+// fundamentals — credential, address, model name. When it fails the capability
+// probes cannot produce a meaningful verdict, so running them would spend two
+// more upstream requests to learn nothing, and would risk recording a
+// misleading "not supported" for a mapping that is simply misconfigured. Once
+// the fundamentals hold the remaining two are independent, so they run together
+// to keep the admin's wait to two round trips rather than three.
 func (s *ModelService) runCandidateProbes(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, providerModelName string, shape probeShape) (CandidateTestReport, error) {
 	var report CandidateTestReport
 
@@ -2084,6 +2084,28 @@ func (s *ModelService) SetModelStatus(id uint, enabled bool, now time.Time) erro
 	return repository.UpdateModel(s.db, id, repository.ModelUpdate{Name: m.Name, Status: status}, now)
 }
 
+// DeleteModel removes the model outright, enabled or not — no
+// disable-first precondition, same rule as provider deletion: the status
+// toggle changes what the confirm dialog warns about, never what the delete
+// does. The row, its provider candidates, and the API-key allowlist
+// references go in one transaction; the vision-fallback setting is cleared
+// when this model was the configured describe model. Request history stays
+// behind under the model name, so logs and per-model aggregates are
+// untouched, and a same-name recreate continues where the old row left off.
+// The gateway reads models fresh per request, so the commit is the cutover:
+// in-flight requests finish on the configuration they already resolved,
+// new ones answer not found immediately.
+func (s *ModelService) DeleteModel(id uint) error {
+	deleted, err := repository.DeleteModelCascade(s.db, id)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return errcode.ErrModelNotFound
+	}
+	return nil
+}
+
 // modelImpactRecentWindow is how far back the impact preview counts live
 // traffic. A week catches weekly batch jobs, the slowest cadence a caller
 // realistically runs at, without the count going stale-heavy.
@@ -2097,21 +2119,25 @@ type ModelImpactKeyView struct {
 	KeyPrefix string `json:"key_prefix"`
 }
 
-// ModelImpactView is what disabling or renaming this model touches.
-// AllowlistedKeys are callable keys that name the model explicitly;
-// AllowAllKeyCount is how many callable keys reach it implicitly. Allowlists
-// reference the model by id and survive a rename, so RecentRequestCount
-// carries the rename risk instead: callers ask by name, and this is how many
-// recent requests would have asked for a name that no longer routes.
+// ModelImpactView is what disabling, renaming, or deleting this model
+// touches. AllowlistedKeys are callable keys that name the model explicitly;
+// AllowAllKeyCount is how many callable keys reach it implicitly. CandidateCount
+// is every provider candidate on the model, disabled ones included — the
+// cascade delete removes them all alike, so a smaller figure would understate
+// what deleting takes away. Allowlists reference the model by id and survive a
+// rename, so RecentRequestCount carries the rename risk instead: callers ask
+// by name, and this is how many recent requests would have asked for a name
+// that no longer routes.
 type ModelImpactView struct {
 	AllowlistedKeys    []ModelImpactKeyView `json:"allowlisted_keys"`
 	AllowAllKeyCount   int64                `json:"allow_all_key_count"`
+	CandidateCount     int64                `json:"candidate_count"`
 	RecentRequestCount int64                `json:"recent_request_count"`
 	RecentWindowDays   int                  `json:"recent_window_days"`
 }
 
-// GetModelImpact answers "what breaks if I disable or rename this model" for
-// the confirm dialogs and the impact tab.
+// GetModelImpact answers "what breaks if I disable, rename, or delete this
+// model" for the confirm dialogs and the impact tab.
 func (s *ModelService) GetModelImpact(id uint, now time.Time) (*ModelImpactView, error) {
 	m, err := repository.FindModelByID(s.db, id)
 	if err != nil {
@@ -2132,6 +2158,10 @@ func (s *ModelService) GetModelImpact(id uint, now time.Time) (*ModelImpactView,
 	if err != nil {
 		return nil, err
 	}
+	candidates, err := repository.CountModelCandidatesByModel(s.db, id)
+	if err != nil {
+		return nil, err
+	}
 	recent, err := repository.CountRequestLogsForModelSince(s.db, m.Name, now.Add(-modelImpactRecentWindow))
 	if err != nil {
 		return nil, err
@@ -2139,6 +2169,7 @@ func (s *ModelService) GetModelImpact(id uint, now time.Time) (*ModelImpactView,
 	return &ModelImpactView{
 		AllowlistedKeys:    keyViews,
 		AllowAllKeyCount:   allowAll,
+		CandidateCount:     candidates,
 		RecentRequestCount: recent,
 		RecentWindowDays:   int(modelImpactRecentWindow / (24 * time.Hour)),
 	}, nil

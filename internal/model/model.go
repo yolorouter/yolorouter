@@ -40,8 +40,11 @@ const (
 // LastTestResult* constants, which already cover this exact value set and
 // are reused here rather than duplicated.
 
-// Model is one externally-exposed model name. No delete —
-// only management_status toggles it off.
+// Model is one externally-exposed model name. Deleting one is a hard
+// cascade: its provider candidates and key-allowlist references go in the
+// same transaction as the row itself, while request history stays behind
+// under the name (logs key on model_name, not the id). management_status
+// only toggles routing off — it removes nothing.
 type Model struct {
 	ID               uint   `gorm:"column:id;primaryKey" json:"id"`
 	Name             string `gorm:"column:name" json:"name"`

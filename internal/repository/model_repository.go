@@ -323,32 +323,6 @@ func DemoteUnverifiedEnabledCandidate(db *gorm.DB, id uint, providerModelName st
 	return result.RowsAffected > 0, nil
 }
 
-// FindLatestCandidatePrice returns the most recently PRICED candidate row for
-// the given provider + provider_model_name, used to auto-suggest prices when
-// adding a new candidate for the same model (prices follow the provider).
-// Returns gorm.ErrRecordNotFound when no such candidate exists — the caller
-// then falls back to the built-in seed catalog.
-//
-// Recency is price_updated_at, not updated_at. Enabling, disabling, retesting
-// and probing all bump updated_at without touching a price, so ordering by it
-// would let a retest on an old candidate promote its stale rate over a newer
-// one. Ties break on id so the answer is deterministic rather than
-// storage-order dependent.
-//
-// The name is matched case-insensitively, matching pricecatalog.Lookup: upstream
-// model names are quoted inconsistently ("DeepSeek-V4-Pro" vs "deepseek-v4-pro")
-// and a byte-exact match would miss the provider's own negotiated price and fall
-// through to the catalog's generic figure — inverting the intended precedence.
-// The comparison runs against the stored folded copy rather than a SQL LOWER()
-// of the name, because LOWER() is not the same function on both supported
-// backends and the same data would otherwise match on one and miss on the other.
-// Both sides go through model.FoldModelName, and the predicate stays a plain
-// equality the index can seek on — one row read, not a scan of the provider's
-// whole catalogue on every keystroke in the candidate form.
-//
-// Only the columns needed to answer the question are selected; the row is a
-// price carrier, not a full candidate, so everything else stays zero-valued and
-// must not be relied on.
 // FindLatestCandidatePricesByFoldedNames is the batch form of
 // FindLatestCandidatePrice: one query for a whole import dialog instead of one
 // per row. Keys of the returned map are folded names; a name with no history
@@ -377,6 +351,32 @@ func FindLatestCandidatePricesByFoldedNames(db *gorm.DB, providerID uint, folded
 	return latest, nil
 }
 
+// FindLatestCandidatePrice returns the most recently PRICED candidate row for
+// the given provider + provider_model_name, used to auto-suggest prices when
+// adding a new candidate for the same model (prices follow the provider).
+// Returns gorm.ErrRecordNotFound when no such candidate exists — the caller
+// then falls back to the built-in seed catalog.
+//
+// Recency is price_updated_at, not updated_at. Enabling, disabling, retesting
+// and probing all bump updated_at without touching a price, so ordering by it
+// would let a retest on an old candidate promote its stale rate over a newer
+// one. Ties break on id so the answer is deterministic rather than
+// storage-order dependent.
+//
+// The name is matched case-insensitively, matching pricecatalog.Lookup: upstream
+// model names are quoted inconsistently ("DeepSeek-V4-Pro" vs "deepseek-v4-pro")
+// and a byte-exact match would miss the provider's own negotiated price and fall
+// through to the catalog's generic figure — inverting the intended precedence.
+// The comparison runs against the stored folded copy rather than a SQL LOWER()
+// of the name, because LOWER() is not the same function on both supported
+// backends and the same data would otherwise match on one and miss on the other.
+// Both sides go through model.FoldModelName, and the predicate stays a plain
+// equality the index can seek on — one row read, not a scan of the provider's
+// whole catalogue on every keystroke in the candidate form.
+//
+// Only the columns needed to answer the question are selected; the row is a
+// price carrier, not a full candidate, so everything else stays zero-valued and
+// must not be relied on.
 func FindLatestCandidatePrice(db *gorm.DB, providerID uint, providerModelName string) (*model.ModelCandidate, error) {
 	folded := model.FoldModelName(providerModelName)
 	if folded == "" {
@@ -779,6 +779,59 @@ func SwapModelCandidateSortOrder(db *gorm.DB, modelID, candidateID uint, directi
 
 func DeleteModelCandidate(db *gorm.DB, id uint) error {
 	return db.Where("id = ?", id).Delete(&model.ModelCandidate{}).Error
+}
+
+// DeleteModelCascade removes a model together with every configuration row
+// that references it — its provider candidates and the API-key allowlist
+// entries, whose foreign keys would otherwise reject the models DELETE
+// outright — and clears the vision-fallback setting when the deleted model
+// was the configured describe model, so nothing left behind points at a row
+// that no longer exists. Request logs are deliberately left alone: they
+// carry the model NAME together with their own price snapshot, so per-model
+// history and aggregates keep answering under the deleted name, and a
+// same-name recreate simply continues them. Returns whether a model row
+// actually matched; the whole cascade rolls back on any error.
+func DeleteModelCascade(db *gorm.DB, id uint) (bool, error) {
+	deleted := false
+	err := db.Transaction(func(tx *gorm.DB) error {
+		// The name is needed to match the vision-fallback setting; reading
+		// the row inside the transaction also settles existence before
+		// anything is removed, so a missing id deletes nothing at all.
+		m, err := FindModelByID(tx, id)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if err := tx.Where("model_id = ?", id).Delete(&model.ModelCandidate{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("model_id = ?", id).Delete(&model.APIKeyModel{}).Error; err != nil {
+			return err
+		}
+		if err := ClearVisionFallbackModel(tx, m.Name); err != nil {
+			return err
+		}
+		res := tx.Where("id = ?", id).Delete(&model.Model{})
+		if res.Error != nil {
+			return res.Error
+		}
+		deleted = res.RowsAffected > 0
+		return nil
+	})
+	return deleted, err
+}
+
+// CountModelCandidatesByModel reports how many provider candidates a model
+// has, across management states — the impact preview's figure. The cascade
+// delete removes disabled candidates exactly like enabled ones, so the count
+// deliberately does not filter by status: reporting fewer than the delete
+// removes would understate what the operator is about to lose.
+func CountModelCandidatesByModel(db *gorm.DB, modelID uint) (int64, error) {
+	var n int64
+	err := db.Model(&model.ModelCandidate{}).Where("model_id = ?", modelID).Count(&n).Error
+	return n, err
 }
 
 // ListModelCandidatesByProviderID returns every candidate on one provider,

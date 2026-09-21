@@ -15,6 +15,7 @@ import (
 // own error code rather than the generic bad-request a binding tag would
 // produce — and tags cannot reference the model package's constants, so a
 // tag would also be a second, driftable copy of the vocabulary.
+
 type createModelRequest struct {
 	Name string `json:"name" binding:"required,max=100"`
 	// SchedulingMode is optional; the empty value creates the model with
@@ -481,8 +482,25 @@ func DeleteModelCandidate(svc *modeladmin.ModelService) gin.HandlerFunc {
 	}
 }
 
-// GetModelImpact returns what disabling or renaming the model touches, for
-// the confirm dialogs and the impact tab.
+// DeleteModel removes the model and every configuration row that references
+// it in one transaction. The impact preview is a pure frontend safeguard;
+// this endpoint deletes by id unconditionally, enabled or not.
+func DeleteModel(svc *modeladmin.ModelService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, ok := parseUintParam(c, "id")
+		if !ok {
+			return
+		}
+		if err := svc.DeleteModel(id); err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		response.Success(c, nil)
+	}
+}
+
+// GetModelImpact returns what disabling, renaming, or deleting the model
+// touches, for the confirm dialogs and the impact tab.
 func GetModelImpact(svc *modeladmin.ModelService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")

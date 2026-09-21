@@ -363,6 +363,7 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.GET("/models/:id/impact", handler.GetModelImpact(modelSvc))
 	protected.PATCH("/models/:id", handler.PatchModel(modelSvc))
 	protected.PATCH("/models/:id/status", handler.PatchModelStatus(modelSvc))
+	protected.DELETE("/models/:id", handler.DeleteModel(modelSvc))
 	protected.POST("/models/:id/candidates", handler.PostModelCandidate(modelSvc))
 	// suggest-price takes its subject (provider id + upstream model name) from
 	// the query string rather than the path, because the candidate it is pricing

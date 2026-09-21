@@ -58,6 +58,7 @@ func newModelTestRouterFull(t *testing.T, client providerclient.ProviderClient) 
 	admin.GET("/models/:id", GetModel(svc))
 	admin.PATCH("/models/:id", PatchModel(svc))
 	admin.PATCH("/models/:id/status", PatchModelStatus(svc))
+	admin.DELETE("/models/:id", DeleteModel(svc))
 	admin.POST("/models/:id/candidates", PostModelCandidate(svc))
 	admin.POST("/models/:id/candidates/test-and-create", PostModelCandidateTestAndCreate(svc))
 	admin.PATCH("/models/:id/candidates/:candidateId", PatchModelCandidate(svc))
@@ -667,6 +668,54 @@ func TestPatchModelReturns400ForBadBody(t *testing.T) {
 func TestPatchModelStatusReturns400ForBadID(t *testing.T) {
 	r, _ := newModelTestRouter(t)
 	w, _ := doJSON(t, r, http.MethodPatch, "/api/admin/models/abc/status", map[string]interface{}{"enabled": true}, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+	}
+}
+
+// The happy path over HTTP: a delete returns the success envelope and the
+// models row is actually gone — the handler is a thin wrapper, so the row
+// check is what makes this more than a status-code smoke test.
+func TestDeleteModelReturns200AndRemovesRow(t *testing.T) {
+	r, db := newModelTestRouter(t)
+	id := createModelForTest(t, r, "smart")
+
+	w, env := doJSON(t, r, http.MethodDelete, fmt.Sprintf("/api/admin/models/%d", id), nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.Success {
+		t.Fatalf("expected code %d, got %d", errcode.Success, env.Code)
+	}
+	var n int64
+	if err := db.Table("models").Where("id = ?", id).Count(&n).Error; err != nil {
+		t.Fatalf("count models: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("models row still present after HTTP delete")
+	}
+}
+
+// An unknown id answers with the model-not-found sentinel's existing code in
+// the unified error envelope — no new error code, same shape every admin
+// error shares.
+func TestDeleteModelReturnsErrorEnvelopeWhenNotFound(t *testing.T) {
+	r, _ := newModelTestRouter(t)
+	w, env := doJSON(t, r, http.MethodDelete, "/api/admin/models/99999", nil, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.ModelNotFound {
+		t.Fatalf("expected code %d, got %d", errcode.ModelNotFound, env.Code)
+	}
+	if env.Message == "" {
+		t.Fatalf("expected a non-empty message in the error envelope")
+	}
+}
+
+func TestDeleteModelReturns400ForBadID(t *testing.T) {
+	r, _ := newModelTestRouter(t)
+	w, _ := doJSON(t, r, http.MethodDelete, "/api/admin/models/abc", nil, nil)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
 	}
