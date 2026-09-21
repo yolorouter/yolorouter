@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import zhCN from './zh-CN'
 import en from './en'
+import ruRU from './ru-RU'
 
-// Locale parity gate: zh-CN and en must expose the exact same message tree.
+// Locale parity gate: every locale must expose the exact same message tree.
 // Keys are compared in both directions, and every leaf's named placeholders
 // ({name}, {count}, ...) must match across locales — a missing placeholder
 // renders as a literal hole in the UI and is otherwise silent.
@@ -32,28 +33,38 @@ function placeholderSignature(message: string): string {
   return [...new Set(names)].sort().join(',')
 }
 
+const locales: Record<string, MessageTree> = {
+  'zh-CN': zhCN as MessageTree,
+  en: en as MessageTree,
+  'ru-RU': ruRU as MessageTree,
+}
+
 describe('locale parity', () => {
-  const zh = leafPaths(zhCN as MessageTree)
-  const enPaths = leafPaths(en as MessageTree)
+  const reference = leafPaths(locales['zh-CN'])
+  const referenceName = 'zh-CN'
 
-  it('zh-CN has no keys missing from en', () => {
-    const missing = [...zh.keys()].filter((path) => !enPaths.has(path))
-    expect(missing, 'keys present in zh-CN but absent from en').toEqual([])
-  })
+  for (const [name, tree] of Object.entries(locales)) {
+    const paths = leafPaths(tree)
 
-  it('en has no keys missing from zh-CN', () => {
-    const missing = [...enPaths.keys()].filter((path) => !zh.has(path))
-    expect(missing, 'keys present in en but absent from zh-CN').toEqual([])
-  })
+    it(`${name} has no keys missing from ${referenceName}`, () => {
+      const missing = [...paths.keys()].filter((path) => !reference.has(path))
+      expect(missing, `keys present in ${name} but absent from ${referenceName}`).toEqual([])
+    })
 
-  it('every message uses the same named placeholders in both locales', () => {
-    const drifted: string[] = []
-    for (const [path, message] of zh) {
-      const other = enPaths.get(path)
-      // Missing keys are the two tests above; here only pairs are compared.
-      if (other === undefined) continue
-      if (placeholderSignature(message) !== placeholderSignature(other)) drifted.push(path)
-    }
-    expect(drifted, 'placeholder sets differ between zh-CN and en').toEqual([])
-  })
+    it(`${referenceName} has no keys missing from ${name}`, () => {
+      const missing = [...reference.keys()].filter((path) => !paths.has(path))
+      expect(missing, `keys present in ${referenceName} but absent from ${name}`).toEqual([])
+    })
+
+    it(`every message uses the same named placeholders in ${name} and ${referenceName}`, () => {
+      const drifted: string[] = []
+      for (const [path, message] of reference) {
+        const other = paths.get(path)
+        // Missing keys are the two tests above; here only pairs are compared.
+        if (other === undefined) continue
+        if (placeholderSignature(message) !== placeholderSignature(other)) drifted.push(path)
+      }
+      expect(drifted, `placeholder sets differ between ${referenceName} and ${name}`).toEqual([])
+    })
+  }
 })
