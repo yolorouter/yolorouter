@@ -16,6 +16,7 @@ export default {
   users: 'Users',
   about: 'About',
   language: 'Language',
+  keyAutoRecovery: 'Key Auto Recovery',
   modelPricing: 'Model Pricing',
   comingSoon: 'Coming soon',
   soonBadge: 'Soon',

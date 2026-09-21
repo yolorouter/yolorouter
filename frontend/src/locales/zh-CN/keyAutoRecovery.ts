@@ -1,0 +1,16 @@
+export default {
+  title: 'Key 自动恢复',
+  desc: '验证失败被系统移出轮换的密钥，将通过定期测试自动恢复；手动停用的密钥不受影响。',
+  enabled: '启用自动恢复',
+  enabledTip: '关闭后不再定时探测被系统移出轮换的密钥；手动恢复入口（测试连接）不受影响。',
+  interval: '探测间隔（分钟）',
+  intervalTip: '每轮探测之间的时间间隔，可设 1–1440 分钟（一天）。保存后约一分钟内生效，无需重启服务。',
+  intervalRequired: '请输入探测间隔',
+  intervalWholeNumber: '探测间隔必须是整数分钟',
+  intervalMin: '探测间隔不能小于 1 分钟',
+  intervalMax: '探测间隔不能大于 1440 分钟（一天）',
+  saved: '已保存',
+  loadFailed: '加载当前设置失败',
+  retry: '重试',
+  conflict: '该设置已被他人修改，已重新加载最新版本，请确认后再次保存。',
+}

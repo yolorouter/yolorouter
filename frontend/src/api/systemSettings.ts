@@ -77,3 +77,28 @@ export function updateVisionFallback(payload: {
     body: JSON.stringify(payload),
   })
 }
+
+// Key auto recovery: the background loop that periodically re-tests provider
+// keys removed from rotation for failed verification and puts passing ones
+// straight back. Same authoritative-read + CAS contract as the settings
+// above; a concurrent edit surfaces as errcode 11019 (HTTP 409).
+export interface KeyAutoRecoverySetting {
+  enabled: boolean
+  interval_minutes: number
+  version: number
+}
+
+export function getKeyAutoRecovery(): Promise<KeyAutoRecoverySetting> {
+  return apiFetch('/api/admin/system-settings/key-auto-recovery')
+}
+
+export function updateKeyAutoRecovery(payload: {
+  enabled: boolean
+  interval_minutes: number
+  version: number
+}): Promise<KeyAutoRecoverySetting> {
+  return apiFetch('/api/admin/system-settings/key-auto-recovery', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}

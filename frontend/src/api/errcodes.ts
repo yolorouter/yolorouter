@@ -11,6 +11,8 @@ export const CUSTOM_SYSTEM_PROMPT_CONFLICT = 11012
 export const API_KEY_CONFLICT = 11013
 export const INPUT_COMPRESSION_CONFLICT = 11014
 export const COMPRESS_ENABLED_REQUIRED = 11015
+// Mirrors backend KeyAutoRecoveryConflict (pkg/errcode).
+export const KEY_AUTO_RECOVERY_CONFLICT = 11019
 export const PROVIDER_NOT_FOUND = 12001
 export const PROVIDER_NAME_TAKEN = 12002
 export const PROVIDER_KEY_NOT_FOUND = 12009

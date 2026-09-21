@@ -159,6 +159,10 @@
       @select="onSelectLanguage"
       :height="200"
     />
+
+    <!-- Key auto recovery settings (admin-only menu entry above). Owns its
+         load/save lifecycle; no global state to share, so no store. -->
+    <KeyAutoRecoveryModal v-model:show="showKeyAutoRecovery" />
   </n-layout>
 </template>
 
@@ -181,6 +185,7 @@ import {
   Gauge,
   Menu,
   Receipt,
+  RefreshCw,
   ScrollText,
   UsersRound,
   Server,
@@ -197,6 +202,7 @@ import { passwordStrengthRule, confirmPasswordRule } from '../utils/authValidato
 import HelpLabel from '../components/HelpLabel.vue'
 import OptionSheet from '../components/common/OptionSheet.vue'
 import ModalDrawer from '../components/common/ModalDrawer.vue'
+import KeyAutoRecoveryModal from '../components/system/KeyAutoRecoveryModal.vue'
 import { useIsMobile } from '../composables/useIsMobile'
 import logo from '../assets/logo.svg'
 
@@ -293,6 +299,16 @@ const navItems = computed<NavItem[]>(() => {
 
     { key: 'group-system', label: t('nav.groupSystem'), group: true },
     { key: 'language', label: t('nav.language'), icon: Languages, onClick: () => (showLanguage.value = true) },
+    // Admin-only global setting (members' sidebar branch above is left
+    // untouched), placed right after "Language" and gated the same way —
+    // visible to every admin, no isLocal requirement. Opens the settings
+    // modal instead of navigating.
+    {
+      key: 'key-auto-recovery',
+      label: t('nav.keyAutoRecovery'),
+      icon: RefreshCw,
+      onClick: () => (showKeyAutoRecovery.value = true),
+    },
     // An admin promoted from an OAuth account has no password to change —
     // same is_local gate as the member branch above.
     ...(authStore.isLocal
@@ -358,6 +374,9 @@ function onLogout() {
 // entry in the System Settings group, which opens this modal. The option list
 // (LOCALES) and check-mark treatment are shared with the LocaleSwitcher.
 const showLanguage = ref(false)
+
+// Key auto recovery settings modal, opened by the admin-only sidebar entry.
+const showKeyAutoRecovery = ref(false)
 
 // The mobile OptionSheet takes a flat {label, value} list; LOCALES is already
 // in that shape (label/value), so this just narrows it to what the sheet wants.

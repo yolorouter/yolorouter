@@ -11,6 +11,7 @@ import failReason from './failReason'
 import analytics from './analytics'
 import costs from './costs'
 import costOptimization from './costOptimization'
+import keyAutoRecovery from './keyAutoRecovery'
 import requestLogs from './requestLogs'
 import system from './system'
 import users from './users'
@@ -30,6 +31,7 @@ export default {
   analytics,
   costs,
   costOptimization,
+  keyAutoRecovery,
   requestLogs,
   system,
   users,

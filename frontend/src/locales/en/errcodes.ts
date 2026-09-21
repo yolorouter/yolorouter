@@ -54,4 +54,6 @@ export const errcodes: Record<number, string> = {
   11014: 'The input compression setting was modified concurrently, please refresh and retry',
   11015: 'compress_enabled must be set when compress_enabled_override is true',
   11016: 'This key was created before the reveal feature and its full value cannot be recovered, please create a new one',
+  11019: 'The key auto recovery setting was modified concurrently, please refresh and retry',
+  11020: 'The key auto recovery interval must be a whole number of minutes between 1 and 1440',
 }
