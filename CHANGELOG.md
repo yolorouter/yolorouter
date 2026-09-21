@@ -45,6 +45,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window; the mobile bottom-sheet picker does not (accepted gap — the
   merged list itself works on both).
 
+- Provider keys the system itself kicked out of rotation now recover
+  on their own. A background loop periodically retests every provider
+  key whose management switch is still on but whose verification
+  status is failed — the population decisive failures demote (401
+  auth, a 429 whose body says the account's quota or billing is
+  exhausted) — through the very same single-key retest chain a manual
+  "test connection" click runs: every routable destination, media
+  fallbacks, the anti-race test CAS, and the committed last-tested
+  columns. A passing probe flips verification back to passed, and the
+  key immediately re-enters rotation with the gateway's in-memory
+  demotion released; the management switch is never touched. Keys an
+  admin manually disabled are never probed — the manual verdict is
+  final — and keys awaiting re-submitted plaintext or living under a
+  disabled provider are skipped. Probes within a round run serially
+  with a small gap so a pool of failed keys never bursts the
+  upstream, a freshly started instance waits one full interval before
+  its first round, and probe outcomes land in the existing
+  test-detail columns like any retest. The feature is governed by a
+  new system setting — admin sidebar "System → Key auto recovery"
+  opens a modal with an enable switch and a probe interval of 1–1440
+  whole minutes — shipped enabled with a 30-minute interval, seeded
+  by a paired migration so upgrades need no manual step, and applied
+  within about a minute of saving without a restart (GET/PUT
+  `/api/admin/system-settings/key-auto-recovery`, admin only, with
+  the settings family's optimistic-lock conflict on concurrent
+  saves).
+
 ### Fixed
 
 - Partial candidate edits no longer wipe the fields they omit. A
