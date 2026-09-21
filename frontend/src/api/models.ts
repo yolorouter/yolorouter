@@ -251,6 +251,14 @@ export function setModelStatus(id: number, enabled: boolean): Promise<void> {
   return apiFetch(`/api/admin/models/${id}/status`, { method: 'PATCH', body: JSON.stringify({ enabled }) })
 }
 
+// deleteModel removes the model row together with its candidates, API-key
+// allowlist entries and, on hit, the vision-fallback setting — one
+// transaction server-side. History and stats stay: they are keyed by the
+// model name, not by the row.
+export function deleteModel(id: number): Promise<void> {
+  return apiFetch(`/api/admin/models/${id}`, { method: 'DELETE' })
+}
+
 export interface ModelImpactKey {
   id: number
   remark: string
@@ -258,13 +266,16 @@ export interface ModelImpactKey {
 }
 
 /**
- * What disabling or renaming the model touches. Allowlists reference the model
- * by id and survive a rename, so recent_request_count carries the rename risk:
- * callers ask by name.
+ * What disabling, renaming, or deleting the model touches. Allowlists
+ * reference the model by id and survive a rename, so recent_request_count
+ * carries the rename risk: callers ask by name. candidate_count is the
+ * all-candidates figure (disabled candidates included) the delete dialog
+ * cascades.
  */
 export interface ModelImpact {
   allowlisted_keys: ModelImpactKey[]
   allow_all_key_count: number
+  candidate_count: number
   recent_request_count: number
   recent_window_days: number
 }

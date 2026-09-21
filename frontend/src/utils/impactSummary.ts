@@ -21,11 +21,11 @@ function keyDisplayName(key: ModelImpactKey): string {
   return key.remark || key.key_prefix
 }
 
-// modelImpactOverview is the shared factual part: who references the model and
-// how much live traffic asks for it. The disable confirm shows it truncated;
-// the impact tab shows it with fullNames.
-export function modelImpactOverview(t: Translate, impact: ModelImpact, fullNames = false): string {
-  const limit = fullNames ? undefined : DIALOG_MAX_NAMES
+// The caller-facing reference lines shared by the model disable dialog, the
+// model delete dialog, and the impact tab: which keys allowlist the model,
+// which allow-all keys can also reach it, and how much traffic asked for it
+// recently. `limit` folds the key names (dialogs fold, the tab does not).
+function modelReferenceLines(impact: ModelImpact, t: Translate, limit?: number): string[] {
   const lines: string[] = []
   if (impact.allowlisted_keys.length > 0) {
     lines.push(
@@ -41,7 +41,14 @@ export function modelImpactOverview(t: Translate, impact: ModelImpact, fullNames
     lines.push(t('models.impactAllowAll', { count: impact.allow_all_key_count }))
   }
   lines.push(t('models.impactTraffic', { count: impact.recent_request_count, days: impact.recent_window_days }))
-  return lines.join('\n')
+  return lines
+}
+
+// modelImpactOverview is the shared factual part: who references the model and
+// how much live traffic asks for it. The disable confirm shows it truncated;
+// the impact tab shows it with fullNames.
+export function modelImpactOverview(t: Translate, impact: ModelImpact, fullNames = false): string {
+  return modelReferenceLines(impact, t, fullNames ? undefined : DIALOG_MAX_NAMES).join('\n')
 }
 
 async function modelDisableContent(id: number, t: Translate): Promise<string> {
@@ -77,6 +84,27 @@ export async function modelRenameContent(id: number, oldName: string, t: Transla
     ].join('\n')
   } catch {
     return [intro, t('common.confirmContinue')].join('\n')
+  }
+}
+
+// What the model delete modal shows besides its generic copy: lines (the
+// cascade candidate count, then the shared reference lines) and the fixed
+// retention note, kept apart so the modal can render the note as a distinct
+// callout. No escalation signal exists to compute — unlike a provider
+// delete, nothing gets stranded: every caller of the deleted model simply
+// starts failing alike.
+export interface ModelDeleteImpactView {
+  lines: string[]
+  historyNote: string
+}
+
+export function modelDeleteImpactView(impact: ModelImpact, t: Translate): ModelDeleteImpactView {
+  return {
+    lines: [
+      t('models.deleteModelCandidates', { count: impact.candidate_count }),
+      ...modelReferenceLines(impact, t, DIALOG_MAX_NAMES),
+    ],
+    historyNote: t('models.deleteModelHistoryNote'),
   }
 }
 

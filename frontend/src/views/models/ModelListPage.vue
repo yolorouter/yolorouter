@@ -84,6 +84,7 @@
 
     <NewModelModal v-model:show="showCreate" />
     <ModelEditModal v-model:show="showEditModel" :model="editingModel" @updated="onEdited" />
+    <DeleteModelModal v-model:show="showDeleteModel" :model="deletingModel" @deleted="onModelDeleted" />
     <VisionFallbackModal v-model:show="showVisionFallback" />
     <CCSwitchImportModal
       v-model:show="showCCSImport"
@@ -119,6 +120,7 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import NewModelModal from '../../components/models/NewModelModal.vue'
 import ModelEditModal from '../../components/models/ModelEditModal.vue'
+import DeleteModelModal from '../../components/models/DeleteModelModal.vue'
 import VisionFallbackModal from '../../components/models/VisionFallbackModal.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
@@ -170,6 +172,15 @@ function openEditModel(row: Model) {
 }
 
 function onEdited() {
+  void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
+}
+
+// Row delete: assigning the row opens the modal (useRowModal binds show to
+// the row). After a successful delete the list refreshes in place — the row
+// simply leaves the table, filters and pagination keep their state.
+const { row: deletingModel, show: showDeleteModel } = useRowModal<Model>()
+
+function onModelDeleted() {
   void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
 }
 
@@ -453,7 +464,7 @@ const sharedColumns = computed<DataTableColumns<Model>>(() => [
               trigger: 'click',
               placement: 'bottom-end',
               triggerText: t('common.actions'),
-              height: 200,
+              height: 240,
               options: [
                 { label: t('models.editModel'), key: 'edit' },
                 { label: t('costs.detail.viewCost'), key: 'viewCost' },
@@ -464,11 +475,14 @@ const sharedColumns = computed<DataTableColumns<Model>>(() => [
                 ...(row.management_status === 1
                   ? [{ label: t('ccswitch.importAction'), key: 'importCCSImport' }]
                   : []),
+                { type: 'divider', key: 'd' },
+                { label: t('models.deleteModel'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
               ],
               onSelect: (key: string) => {
                 if (key === 'edit') openEditModel(row)
                 else if (key === 'viewCost') router.push(modelCostDetailLocation(row.name))
                 else if (key === 'importCCSImport') openCCSImport(row)
+                else if (key === 'delete') deletingModel.value = row
               },
             },
             {

@@ -17,6 +17,9 @@
           <n-button size="small" @click="onToggleModelStatus">
             {{ modelData.management_status === 1 ? t('models.statusDisabled') : t('models.statusEnabled') }}
           </n-button>
+          <n-button size="small" type="error" ghost @click="showDeleteModel = true">
+            {{ t('models.deleteModel') }}
+          </n-button>
         </template>
 
         <ResponsiveDropdown
@@ -72,6 +75,7 @@
       @retest="onRetestCandidate"
     />
     <ModelEditModal v-model:show="showEditModel" :model="modelData" @updated="reload" />
+    <DeleteModelModal v-model:show="showDeleteModel" :model="modelData" @deleted="onModelDeleted" />
   </div>
 </template>
 
@@ -99,6 +103,7 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import CandidateEditModal from '../../components/models/CandidateEditModal.vue'
 import ModelEditModal from '../../components/models/ModelEditModal.vue'
+import DeleteModelModal from '../../components/models/DeleteModelModal.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
@@ -133,6 +138,13 @@ const activeTab = ref('route')
 const showAddCandidate = ref(false)
 const showEditCandidate = ref(false)
 const showEditModel = ref(false)
+const showDeleteModel = ref(false)
+
+// The page's subject no longer exists after a delete — leave for the list
+// (its onMounted fetch shows the table without the deleted row).
+function onModelDeleted() {
+  void router.push('/models')
+}
 
 // Client-side pagination for the route-chain candidate table — a single
 // model's candidate list is short, so slice in-page rather than paging
@@ -172,6 +184,7 @@ const headerActionOptions = computed(() => [
     label: modelData.value?.management_status === 1 ? t('models.statusDisabled') : t('models.statusEnabled'),
     key: 'toggleStatus',
   },
+  { label: t('models.deleteModel'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
 ])
 
 function onHeaderAction(key: string) {
@@ -179,6 +192,7 @@ function onHeaderAction(key: string) {
   else if (key === 'viewCost') router.push(modelCostDetailLocation(modelData.value!.name))
   else if (key === 'addCandidate') showAddCandidate.value = true
   else if (key === 'toggleStatus') onToggleModelStatus()
+  else if (key === 'delete') showDeleteModel.value = true
 }
 
 onMounted(() => {

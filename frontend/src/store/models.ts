@@ -63,6 +63,11 @@ export const useModelsStore = defineStore('models', {
     async setStatus(id: number, enabled: boolean) {
       await modelsApi.setModelStatus(id, enabled)
     },
+    // Passthrough only: the list page refreshes itself after a delete, the
+    // detail page leaves for the list, so neither wants a refetch in here.
+    async deleteModel(id: number) {
+      await modelsApi.deleteModel(id)
+    },
     async createCandidate(modelId: number, input: CreateCandidateInput): Promise<ModelCandidate> {
       return modelsApi.createCandidate(modelId, input)
     },
