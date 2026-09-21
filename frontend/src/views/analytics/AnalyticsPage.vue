@@ -56,12 +56,17 @@
           @update:value="(v) => update('api_key_id', v)"
         />
 
+        <!-- `tag` lets desktop users type a name the merged list doesn't
+             carry (older than the history window) straight into the filter;
+             the mobile sheet below doesn't consume it — free input stays a
+             desktop affordance by design. -->
         <FilterSelectField
           :label="t('analytics.model')"
           :value="filter.model_name ?? null"
           :options="modelOptions"
           :placeholder="t('analytics.allModel')"
           filterable
+          tag
           width="100%"
           @update:value="(v) => update('model_name', v)"
         />
@@ -301,6 +306,7 @@ import {
 import { displayMessage } from '../../api/client'
 import {
   exportAnalyticsCSV,
+  getAnalyticsHistoryModelNames,
   getAnalyticsOverview,
   getAnalyticsReport,
   type AnalyticsBucket,
@@ -313,6 +319,7 @@ import {
   type ProviderReportRow,
   type TimeReportRow,
 } from '../../api/analytics'
+import { mergeModelFilterOptions } from '../../utils/modelFilterOptions'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -349,8 +356,11 @@ const bucketOptions = computed<SelectOption[]>(() => [
 // === Filter option lists ==================================================
 //
 // Inlined from the former AnalyticsFilterBar. These are admin-configured
-// catalogs (not request-derived), so the lists are small and change
-// infrequently — fetched once on mount, in parallel.
+// catalogs, so the lists are small and change infrequently — fetched once
+// on mount, in parallel. The model list is the one exception: for admins it
+// merges the catalog with the recent-traffic history names (see
+// loadFilterOptions) so deleted models stay filterable while their logs
+// exist; members derive it from their own report rows in reload().
 const apiKeyOptions = ref<SelectOption[]>([])
 const providerOptions = ref<SelectOption[]>([])
 const modelOptions = ref<SelectOption[]>([])
@@ -569,16 +579,25 @@ async function loadFilterOptions() {
       apiKeyOptions.value = toAPIKeyOptions(apiKeyPage.list)
       return
     }
-    // loadUserOptions assigns and toasts internally; riding in the same
-    // Promise.all keeps all four catalogs loading in parallel.
-    const [providerPage, modelPage, apiKeyPage] = await Promise.all([
+    // loadUserOptions assigns and toasts internally (its void result is the
+    // skipped destructuring slot); riding in the same Promise.all keeps all
+    // five fetches loading in parallel. The history-name fetch is the model
+    // dropdown's supplement (names that carried traffic recently, deleted or
+    // not); its failure degrades to null — catalog-only options — rather
+    // than failing the whole bar, because it's the one catalog here the page
+    // can work without.
+    const [providerPage, modelPage, apiKeyPage, , historyNames] = await Promise.all([
       listProviders(),
       listModels(),
       listAPIKeys({ q: '', status: '', page: 1, pageSize: 200 }),
       loadUserOptions(),
+      getAnalyticsHistoryModelNames().catch(() => null),
     ])
     providerOptions.value = providerPage.list.map((p) => ({ label: p.name, value: p.id }))
-    modelOptions.value = modelPage.list.map((m) => ({ label: m.name, value: m.name }))
+    modelOptions.value = mergeModelFilterOptions(
+      modelPage.list.map((m) => m.name),
+      historyNames?.names ?? null,
+    )
     apiKeyOptions.value = toAPIKeyOptions(apiKeyPage.list)
   } catch (err) {
     message.error(displayMessage(err, t))

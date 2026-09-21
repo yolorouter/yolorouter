@@ -2,9 +2,8 @@ package gateway
 
 // The video vertical, end to end against a scripted wan upstream: submit
 // through the gateway's own Handle, poll through the job resource route,
-// download through the content proxy. Everything the tickets before this
-// one built — the door, the task domain, the dialect — has to hold hands
-// here for any of these to pass.
+// download through the content proxy. The door, the task domain, and the
+// dialect all have to hold hands here for any of these to pass.
 
 import (
 	"bytes"

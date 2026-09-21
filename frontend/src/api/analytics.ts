@@ -322,6 +322,25 @@ export function buildAnalyticsQuery(filter: AnalyticsFilter): URLSearchParams {
   return params
 }
 
+// === History model names ==========================================
+
+// Mirrors internal/service/analytics's HistoryModelNamesResult — the
+// distinct model names that carried request-log traffic within a fixed
+// recent window. `names` is guaranteed non-null on the wire (the backend
+// normalizes nil to an empty array), so call sites can iterate directly.
+export interface HistoryModelNames {
+  names: string[]
+  window_days: number
+}
+
+// getAnalyticsHistoryModelNames feeds the analytics filter dropdown's
+// history supplement: model names whose configuration rows may be long
+// gone but whose logs and stats are still worth filtering by. Admin-only
+// route; takes no params — the window is a server-side constant.
+export function getAnalyticsHistoryModelNames(): Promise<HistoryModelNames> {
+  return apiFetch('/api/admin/analytics/history-model-names')
+}
+
 // === Input-compression stats ======================================
 
 // Mirrors internal/service/analytics_service.go's CompressStatsResult. Every
