@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-20",
+  "updated_at": "2026-09-21",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
@@ -414,6 +414,12 @@
         "cache_write": null,
         "cache_read": 1.2
       },
+      "doubao-seed-2.1-lite": {
+        "input": 0.8,
+        "output": 2.7,
+        "cache_write": null,
+        "cache_read": 0.16
+      },
       "doubao-seed-2.1-turbo": {
         "input": 3,
         "output": 15,
@@ -444,59 +450,11 @@
         "cache_write": null,
         "cache_read": 0.64
       },
-      "doubao-seed-1.8": {
-        "input": 0.8,
-        "output": 2,
-        "cache_write": null,
-        "cache_read": 0.16
-      },
-      "doubao-seed-code": {
-        "input": 1.2,
-        "output": 8,
-        "cache_write": null,
-        "cache_read": 0.24
-      },
-      "doubao-seed-1.6": {
-        "input": 0.8,
-        "output": 2,
-        "cache_write": null,
-        "cache_read": 0.16
-      },
-      "doubao-seed-1.6-lite": {
-        "input": 0.3,
-        "output": 0.6,
-        "cache_write": null,
-        "cache_read": 0.06
-      },
-      "doubao-seed-1.6-flash": {
-        "input": 0.15,
-        "output": 1.5,
-        "cache_write": null,
-        "cache_read": 0.03
-      },
       "doubao-seed-translation": {
         "input": 1.2,
         "output": 3.6,
         "cache_write": null,
         "cache_read": null
-      },
-      "doubao-1.5-pro-32k": {
-        "input": 0.8,
-        "output": 2,
-        "cache_write": null,
-        "cache_read": 0.16
-      },
-      "doubao-1.5-lite-32k": {
-        "input": 0.3,
-        "output": 0.6,
-        "cache_write": null,
-        "cache_read": 0.06
-      },
-      "doubao-pro-32k": {
-        "input": 0.8,
-        "output": 2,
-        "cache_write": null,
-        "cache_read": 0.16
       }
     },
     "dashscope.aliyuncs.com": {
