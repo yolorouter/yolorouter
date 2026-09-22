@@ -237,6 +237,31 @@ func waitFor(t *testing.T, timeout time.Duration, msg string, cond func() bool) 
 	}
 }
 
+// waitForQuiet polls calls() until the count has held steady for a full
+// quiet window and returns the settled value — the sweep in flight when
+// the observed window opened is over, and no new one has started. Freezing
+// an observation mid-stream would credit the previous interval's momentum
+// to the setting under test, so anything that freezes a count settles
+// first. The quiet window must exceed a full sweep on a loaded CI runner
+// (probe + commits + scan query), hence the generous 200ms in callers.
+func waitForQuiet(t *testing.T, timeout time.Duration, quiet time.Duration, calls func() int) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	last := calls()
+	lastChange := time.Now()
+	for time.Since(lastChange) < quiet {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for the probe count to settle (last=%d)", last)
+		}
+		time.Sleep(2 * time.Millisecond)
+		if now := calls(); now != last {
+			last = now
+			lastChange = time.Now()
+		}
+	}
+	return last
+}
+
 // runFor starts the loop with the given settings source, lets it run for
 // the given duration, then stops it and returns. The "nothing must happen"
 // tests are built on this.
@@ -411,9 +436,11 @@ func TestLoopRecomputesTheScanPointWhenTheIntervalChanges(t *testing.T) {
 	waitFor(t, 3*time.Second, "the first sweep", func() bool { return calls() >= 2 })
 
 	// Phase 2: grow the interval — the next scan point moves one minute
-	// out, so the probe count must freeze.
+	// out, so the probe count must freeze. The change binds on the beat
+	// after it lands; a sweep already in flight (past its settings read)
+	// legitimately finishes, so settle first, then observe the freeze.
 	src.set(settings.KeyAutoRecoverySetting{Enabled: true, IntervalMinutes: 1})
-	frozen := calls()
+	frozen := waitForQuiet(t, 5*time.Second, 200*time.Millisecond, calls)
 	time.Sleep(150 * time.Millisecond)
 	if got := calls(); got != frozen {
 		t.Fatalf("probe count moved from %d to %d while the interval was 1 minute, want frozen", frozen, got)
@@ -657,11 +684,20 @@ func TestLoopNeverRecoversOnInconclusiveOutcomes(t *testing.T) {
 
 			fx.setRecoveryRows(t, "true", "0")
 			callsBefore := fx.client.Calls
-			runFor(t, fx, fx.settings, 120*time.Millisecond, 0)
+			loop := keyrecovery.NewLoop(keyrecovery.Config{
+				DB: fx.db, Settings: fx.settings, Providers: fx.prov,
+				Heartbeat: 2 * time.Millisecond, ProbeGap: 0,
+			})
+			stop := loop.Start(context.Background())
+			// Waiting for the second sweep's probe rather than running a
+			// fixed window: a loaded runner can take longer than any fixed
+			// sleep to finish even one sweep, and the assertion needs proof
+			// the loop KEPT probing, not that it managed to inside 120ms.
+			waitFor(t, 3*time.Second, "a second sweep to probe the key again", func() bool {
+				return fx.client.Calls-callsBefore >= 2
+			})
+			stop()
 
-			if got := fx.client.Calls - callsBefore; got < 2 {
-				t.Fatalf("probe calls = %d, want >= 2 (the loop kept probing across sweeps)", got)
-			}
 			if row := keyRow(t, fx.db, keyID); row.VerificationStatus != model.VerificationStatusFailed {
 				t.Fatalf("verification status = %d, want still Failed — an inconclusive probe must not recover a key", row.VerificationStatus)
 			}
@@ -881,10 +917,18 @@ func TestPersistentFailuresDoNotSpamTheLog(t *testing.T) {
 		fx.setRecoveryRows(t, "true", "0")
 
 		callsBefore := fx.client.Calls
-		runFor(t, fx, fx.settings, 150*time.Millisecond, 0)
-		if got := fx.client.Calls - callsBefore; got < 3 {
-			t.Fatalf("test setup: only %d probes ran, need several sweeps to prove de-noising", got)
-		}
+		loop := keyrecovery.NewLoop(keyrecovery.Config{
+			DB: fx.db, Settings: fx.settings, Providers: fx.prov,
+			Heartbeat: 2 * time.Millisecond, ProbeGap: 0,
+		})
+		stop := loop.Start(context.Background())
+		// Same settle-by-event discipline: several sweeps must actually
+		// have run before the log can be judged for de-noising — a fixed
+		// window under-runs on a loaded runner and proves nothing.
+		waitFor(t, 3*time.Second, "several sweeps to run", func() bool {
+			return fx.client.Calls-callsBefore >= 3
+		})
+		stop()
 	})
 
 	if strings.Contains(out, "k-silent") || strings.Contains(out, "silent") {
