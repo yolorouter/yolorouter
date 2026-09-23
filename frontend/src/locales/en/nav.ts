@@ -1,5 +1,8 @@
 export default {
   overview: 'Overview',
+  // The mobile top bar's hamburger aria-label: names what the button does
+  // (opens the nav drawer), not the first entry it leads to.
+  menu: 'Menu',
   groupAnalytics: 'Analytics',
   usage: 'Usage',
   logAudit: 'Log Audit',

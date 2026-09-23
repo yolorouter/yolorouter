@@ -1,5 +1,8 @@
 export default {
   overview: '概览',
+  // The mobile top bar's hamburger aria-label: names what the button does
+  // (opens the nav drawer), not the first entry it leads to.
+  menu: '菜单',
   groupAnalytics: '统计分析',
   usage: '用量统计',
   logAudit: '日志审计',

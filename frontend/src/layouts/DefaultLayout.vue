@@ -46,7 +46,7 @@
       <!-- Mobile top bar: a hamburger opens the nav drawer, since there's no
            persistent sider at this width. -->
       <header v-if="isMobile" class="mobile-topbar">
-        <button class="mobile-topbar__menu" type="button" :aria-label="t('nav.overview')" @click="drawerOpen = true">
+        <button class="mobile-topbar__menu" type="button" :aria-label="t('nav.menu')" @click="drawerOpen = true">
           <NIcon :size="22"><Menu /></NIcon>
         </button>
         <RouterLink to="/" class="mobile-topbar__brand">
@@ -218,11 +218,21 @@ const collapsed = ref(false)
 const updateStore = useUpdateStore()
 
 // Below the mobile breakpoint the persistent sider is dropped for a top bar +
-// slide-in drawer. Leaving mobile with the drawer still open would strand an
-// invisible overlay over the restored desktop sider — close it on the way out.
+// slide-in drawer. Crossing the breakpoint swaps the overlay family this
+// shell renders (nav drawer ⇄ desktop sider, language bottom sheet ⇄ desktop
+// modal), and open state that survives the swap strands an overlay on the
+// branch that just mounted — a resize-to-desktop with the language sheet
+// open leaves the desktop modal's click-blocking .n-modal-mask over the
+// restored sider. Close every shell-owned overlay on the flip instead;
+// re-opening is one tap. (Dialog components own their own equivalent guard:
+// ModalDrawer's dismissable check and each OptionSheet caller's onLeave.)
 const drawerOpen = ref(false)
-const isMobile = useIsMobile(() => {
+const showLanguage = ref(false)
+const isMobile = useIsMobile()
+
+watch(isMobile, () => {
   drawerOpen.value = false
+  showLanguage.value = false
 })
 
 // Navigating from a drawer link must close the drawer; otherwise the overlay
@@ -373,7 +383,8 @@ function onLogout() {
 // Language picker — the corner switcher was removed in favor of a "Language"
 // entry in the System Settings group, which opens this modal. The option list
 // (LOCALES) and check-mark treatment are shared with the LocaleSwitcher.
-const showLanguage = ref(false)
+// (The open state itself is declared next to drawerOpen above so the
+// breakpoint-crossing reset covers both overlays in one place.)
 
 // Key auto recovery settings modal, opened by the admin-only sidebar entry.
 const showKeyAutoRecovery = ref(false)
