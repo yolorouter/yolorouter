@@ -454,11 +454,17 @@ func PostModelCandidateTestAndCreate(svc *modeladmin.ModelService) gin.HandlerFu
 		if !bindJSON(c, &req) {
 			return
 		}
+		// The billing declaration rides along exactly as it does on the
+		// plain create path: dropping it here would silently re-price the
+		// stored mapping back to the per-token default the admin never
+		// chose.
 		result, err := svc.TestAndCreateCandidate(c.Request.Context(), modelID, modeladmin.CreateCandidateInput{
 			ProviderID: req.ProviderID, ProviderModelName: req.ProviderModelName,
 			InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 			CacheWritePrice: req.CacheWritePrice, CacheReadPrice: req.CacheReadPrice,
 			MaxOutput: req.MaxOutput, ManagementStatus: req.ManagementStatus,
+			BillingMode: req.BillingMode, ImagePricingTiers: req.ImagePricingTiers.toModel(),
+			VideoPricingTiers: req.VideoPricingTiers.toModel(), AudioUnitPrice: req.AudioUnitPrice,
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)

@@ -129,6 +129,58 @@ func TestCandidateBillingDeclaration(t *testing.T) {
 	})
 }
 
+// Test-and-create is the third write path a billing declaration can travel
+// (the candidate form's save button). It runs the probe first and only then
+// persists, so the refusal has to come from the resolver inside
+// createCandidateWithProbeResults: an invalid declaration answers with the
+// billing sentinel and leaves no row behind, exactly like the plain create
+// path. Dropping that resolver call lets the row land token-billed with no
+// error, which turns every subtest here red.
+func TestTestAndCreateCandidateRefusesInvalidBillingDeclaration(t *testing.T) {
+	providerService, db, client := newTestProviderService(t)
+	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
+	providerA := seedEnabledProviderForModelTest(t, providerService, "billing-tac")
+	now := time.Now().UTC()
+
+	for _, tc := range []struct {
+		name      string
+		modelName string
+		input     modeladmin.CreateCandidateInput
+	}{
+		{name: "image mode without a table", modelName: "tac-image", input: modeladmin.CreateCandidateInput{
+			BillingMode: model.BillingModeImage,
+		}},
+		{name: "unknown mode", modelName: "tac-unknown", input: modeladmin.CreateCandidateInput{
+			BillingMode: "per_pixel",
+		}},
+		{name: "negative audio price", modelName: "tac-audio", input: modeladmin.CreateCandidateInput{
+			BillingMode: model.BillingModeAudio, AudioUnitPrice: ptrFloat(-1),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			created, err := svc.CreateModel(modeladmin.CreateModelInput{Name: tc.modelName}, now)
+			if err != nil {
+				t.Fatalf("create model: %v", err)
+			}
+			tc.input.ProviderID = providerA.ID
+			result, err := svc.TestAndCreateCandidate(t.Context(), created.ID, tc.input, now)
+			if !errors.Is(err, errcode.ErrModelBillingInvalid) {
+				t.Fatalf("error = %v, want the billing sentinel", err)
+			}
+			if result != nil {
+				t.Fatalf("result = %+v, want nil alongside the refusal", result)
+			}
+			detail, err := svc.GetModelDetail(created.ID)
+			if err != nil {
+				t.Fatalf("get model detail: %v", err)
+			}
+			if len(detail.Candidates) != 0 {
+				t.Fatalf("the refused declaration still stored %d candidates", len(detail.Candidates))
+			}
+		})
+	}
+}
+
 func ptrFloat(v float64) *float64 { return &v }
 
 func TestCandidateVideoBillingDeclaration(t *testing.T) {

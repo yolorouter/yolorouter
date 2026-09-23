@@ -491,6 +491,187 @@ func TestPostModelCandidateTestAndCreateReportsProbesAndCreates(t *testing.T) {
 	}
 }
 
+// Test-and-create is the candidate form's save button for an admin who picked
+// a per-image / per-second / per-character pricing mode, so the stored row
+// must keep the declaration exactly as the plain create and PATCH paths would.
+// Each case sends the billing half of the form and asserts the stored row
+// directly: dropping the forwarding in the handler, or the persistence under
+// it, turns the mode back into the token default and fails every non-token
+// case.
+func TestPostModelCandidateTestAndCreateStoresBillingDeclaration(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]interface{}
+		// check inspects the stored row plus the response view and fails the
+		// subtest when either lost part of the declaration.
+		check func(t *testing.T, row model.ModelCandidate, view billingTestCandidateView)
+	}{
+		{
+			name: "image mode keeps the per-image table",
+			body: map[string]interface{}{
+				"billing_mode": "image",
+				"image_pricing_tiers": map[string]interface{}{
+					"tiers": []map[string]interface{}{
+						{"quality": "standard", "size": "1024x1024", "price": 0.04},
+					},
+					"default_price": 0.05,
+				},
+			},
+			check: func(t *testing.T, row model.ModelCandidate, view billingTestCandidateView) {
+				if row.BillingMode != model.BillingModeImage {
+					t.Fatalf("stored billing mode = %q, want image", row.BillingMode)
+				}
+				tiers := model.ParseImagePricingTiers(row.ImagePricingTiers)
+				if tiers == nil || len(tiers.Tiers) != 1 {
+					t.Fatalf("stored image tiers = %q, want one tier", row.ImagePricingTiers)
+				}
+				got := tiers.Tiers[0]
+				if got.Quality != "standard" || got.Size != "1024x1024" || got.Price != 0.04 {
+					t.Fatalf("stored tier = %+v, want standard/1024x1024/0.04", got)
+				}
+				if tiers.DefaultPrice == nil || *tiers.DefaultPrice != 0.05 {
+					t.Fatalf("stored default price = %v, want 0.05", tiers.DefaultPrice)
+				}
+				if view.BillingMode != model.BillingModeImage || view.ImagePricingTiers == nil {
+					t.Fatalf("view = mode %q tiers %v, want image with a table", view.BillingMode, view.ImagePricingTiers)
+				}
+			},
+		},
+		{
+			name: "video mode keeps the per-second table",
+			body: map[string]interface{}{
+				"billing_mode": "video",
+				"video_pricing_tiers": map[string]interface{}{
+					"tiers": []map[string]interface{}{
+						{"resolution": "720p", "purchase_price": 0.1, "sell_price": 0.2},
+					},
+				},
+			},
+			check: func(t *testing.T, row model.ModelCandidate, view billingTestCandidateView) {
+				if row.BillingMode != model.BillingModeVideo {
+					t.Fatalf("stored billing mode = %q, want video", row.BillingMode)
+				}
+				tiers := model.ParseVideoPricingTiers(row.VideoPricingTiers)
+				if tiers == nil || len(tiers.Tiers) != 1 {
+					t.Fatalf("stored video tiers = %q, want one tier", row.VideoPricingTiers)
+				}
+				got := tiers.Tiers[0]
+				if got.Resolution != "720p" || got.PurchasePrice != 0.1 || got.SellPrice != 0.2 {
+					t.Fatalf("stored tier = %+v, want 720p/0.1/0.2", got)
+				}
+				if view.BillingMode != model.BillingModeVideo || view.VideoPricingTiers == nil {
+					t.Fatalf("view = mode %q tiers %v, want video with a table", view.BillingMode, view.VideoPricingTiers)
+				}
+			},
+		},
+		{
+			name: "audio mode keeps the character price",
+			body: map[string]interface{}{
+				"billing_mode":     "audio",
+				"audio_unit_price": 350,
+			},
+			check: func(t *testing.T, row model.ModelCandidate, view billingTestCandidateView) {
+				if row.BillingMode != model.BillingModeAudio {
+					t.Fatalf("stored billing mode = %q, want audio", row.BillingMode)
+				}
+				if row.AudioUnitPrice == nil || *row.AudioUnitPrice != 350 {
+					t.Fatalf("stored audio price = %v, want 350", row.AudioUnitPrice)
+				}
+				if view.BillingMode != model.BillingModeAudio || view.AudioUnitPrice == nil || *view.AudioUnitPrice != 350 {
+					t.Fatalf("view = mode %q price %v, want audio/350", view.BillingMode, view.AudioUnitPrice)
+				}
+			},
+		},
+		{
+			name: "no declaration keeps the token default",
+			body: map[string]interface{}{},
+			check: func(t *testing.T, row model.ModelCandidate, view billingTestCandidateView) {
+				if row.BillingMode != model.BillingModeToken {
+					t.Fatalf("stored billing mode = %q, want the token default", row.BillingMode)
+				}
+				if row.ImagePricingTiers != "" || row.VideoPricingTiers != "" || row.AudioUnitPrice != nil {
+					t.Fatalf("token row carries a stray declaration: %+v", row)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			providerRouter, db := newProviderTestRouter(t)
+			providerID := createProviderAndKeyForModelTest(t, providerRouter)
+			r := newModelTestRouterSharingProviderDB(t, db, &alwaysSuccessClient{})
+			id := createModelForTest(t, r, "smart")
+
+			body := map[string]interface{}{
+				"provider_id": providerID, "provider_model_name": "gpt-4o", "input_price": 1, "output_price": 2,
+			}
+			for k, v := range tc.body {
+				body[k] = v
+			}
+			w, env := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/models/%d/candidates/test-and-create", id), body, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+			}
+			var resp struct {
+				Created   bool                      `json:"created"`
+				Candidate *billingTestCandidateView `json:"candidate"`
+			}
+			if err := json.Unmarshal(env.Data, &resp); err != nil {
+				t.Fatalf("unmarshal test-and-create response: %v, %s", err, env.Data)
+			}
+			if !resp.Created || resp.Candidate == nil {
+				t.Fatalf("expected the candidate to be created, got %s", env.Data)
+			}
+
+			var row model.ModelCandidate
+			if err := db.First(&row, "id = ?", resp.Candidate.ID).Error; err != nil {
+				t.Fatalf("load stored candidate %d: %v", resp.Candidate.ID, err)
+			}
+			tc.check(t, row, *resp.Candidate)
+		})
+	}
+}
+
+// billingTestCandidateView is the billing slice of CandidateView the
+// test-and-create response embeds.
+type billingTestCandidateView struct {
+	ID                uint                     `json:"id"`
+	BillingMode       string                   `json:"billing_mode"`
+	ImagePricingTiers *model.ImagePricingTiers `json:"image_pricing_tiers"`
+	VideoPricingTiers *model.VideoPricingTiers `json:"video_pricing_tiers"`
+	AudioUnitPrice    *float64                 `json:"audio_unit_price"`
+}
+
+// The refusal half of the same save button: an invalid billing declaration
+// must come back with the billing field's own error envelope — the same 400
+// the plain create path answers with — and leave no stored row, instead of
+// silently creating a token-billed mapping.
+func TestPostModelCandidateTestAndCreateRefusesInvalidBillingDeclaration(t *testing.T) {
+	providerRouter, db := newProviderTestRouter(t)
+	providerID := createProviderAndKeyForModelTest(t, providerRouter)
+	r := newModelTestRouterSharingProviderDB(t, db, &alwaysSuccessClient{})
+	id := createModelForTest(t, r, "smart")
+
+	w, env := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/models/%d/candidates/test-and-create", id), map[string]interface{}{
+		"provider_id": providerID, "provider_model_name": "gpt-4o",
+		"billing_mode": "image",
+	}, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.ModelBillingInvalid {
+		t.Fatalf("expected code %d, got %d", errcode.ModelBillingInvalid, env.Code)
+	}
+	var count int64
+	if err := db.Model(&model.ModelCandidate{}).Where("model_id = ?", id).Count(&count).Error; err != nil {
+		t.Fatalf("count candidates: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("the refused declaration stored %d candidates", count)
+	}
+}
+
 // The retest response serves two client generations at once during a rolling
 // upgrade: browser tabs still running the previous frontend read the candidate
 // fields at the TOP LEVEL of data, while the current frontend reads

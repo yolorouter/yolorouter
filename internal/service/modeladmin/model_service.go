@@ -1020,10 +1020,17 @@ func (s *ModelService) TestAndCreateCandidate(ctx context.Context, modelID uint,
 }
 
 // createCandidateWithProbeResults inserts the row already carrying the verdicts
-// from a probe run that happened before it existed.
+// from a probe run that happened before it existed. The billing declaration
+// goes through the same resolver the plain create path uses, so a mapping
+// saved from a probe lands with the pricing the admin picked, not the token
+// default an unresolved declaration would silently fall back to.
 func (s *ModelService) createCandidateWithProbeResults(
 	modelID uint, input CreateCandidateInput, providerModelName string, report CandidateTestReport, now time.Time,
 ) (*CandidateView, error) {
+	billingMode, tiersJSON, videoTiersJSON, audioPrice, err := resolveBillingDeclaration(input.BillingMode, input.ImagePricingTiers, input.VideoPricingTiers, input.AudioUnitPrice)
+	if err != nil {
+		return nil, err
+	}
 	managementStatus := model.ModelCandidateStatusDisabled
 	if input.ManagementStatus == model.ModelCandidateStatusEnabled && report.Basic.Passed() {
 		managementStatus = model.ModelCandidateStatusEnabled
@@ -1039,6 +1046,7 @@ func (s *ModelService) createCandidateWithProbeResults(
 		ModelID: modelID, ProviderID: input.ProviderID, ProviderModelName: providerModelName,
 		InputPrice: input.InputPrice, OutputPrice: input.OutputPrice,
 		CacheWritePrice: input.CacheWritePrice, CacheReadPrice: input.CacheReadPrice, MaxOutput: input.MaxOutput,
+		BillingMode: billingMode, ImagePricingTiers: tiersJSON, VideoPricingTiers: videoTiersJSON, AudioUnitPrice: audioPrice,
 		ManagementStatus:        managementStatus,
 		VerificationStatus:      verificationStatus,
 		SupportsStreaming:       commit.SupportsStreaming,
