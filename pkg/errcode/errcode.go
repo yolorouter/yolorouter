@@ -24,7 +24,7 @@ const (
 	OAuthExchangeFailed        = 10012 // authorization-code -> token exchange with the identity provider failed
 	OAuthUserinfoFailed        = 10013 // userinfo fetch failed or the mapped user id field was empty
 	OAuthProviderSlugTaken     = 10014 // another provider already uses this slug
-	OAuthProviderConfigInvalid = 10015 // provider configuration rejected: required field blank, or an endpoint is not an absolute http(s) URL
+	OAuthProviderConfigInvalid = 10015 // provider configuration rejected: required field blank, endpoint not an absolute http(s) URL, extra_authorize_params not a "k=v&k2=v2" query string (or using a reserved key), or userinfo_token_header not a valid HTTP header name
 	OAuthDiscoveryFailed       = 10016 // OIDC well-known discovery document fetch/parse failed
 
 	AccountSelfOperation       = 10017 // admins cannot change their own status or role — another admin must do it
@@ -151,7 +151,7 @@ var ErrorMessages = map[int]string{
 	OAuthExchangeFailed:        "identity provider token exchange failed",
 	OAuthUserinfoFailed:        "identity provider did not return a usable user identity",
 	OAuthProviderSlugTaken:     "another login provider already uses this slug",
-	OAuthProviderConfigInvalid: "provider configuration invalid: required field blank or endpoint not an absolute http(s) URL",
+	OAuthProviderConfigInvalid: `provider configuration invalid: required field blank, endpoint not an absolute http(s) URL, extra_authorize_params not a "k=v&k2=v2" query string or using a reserved key (response_type, client_id, redirect_uri, scope, state, code_challenge, code_challenge_method), or userinfo_token_header not a valid HTTP header name`,
 	OAuthDiscoveryFailed:       "OIDC discovery document fetch failed",
 	AccountSelfOperation:       "operation refused: you cannot change your own status or role",
 	AccountUserNotFound:        "user not found",

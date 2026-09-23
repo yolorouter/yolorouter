@@ -95,6 +95,27 @@ within the app's visibility range.
   field naming, custom userinfo auth header, PKCE toggle, extra authorize
   parameters) for any other identity provider.
 
+## REST API notes
+
+Scripts that drive the login-provider API directly (instead of the console)
+hit three shapes worth knowing up front:
+
+- `GET /api/admin/oauth-providers` answers inside the standard envelope —
+  the array lives at `data.providers`, not at the top level:
+
+  ```json
+  {"code": 0, "data": {"providers": [], "callback_base": "https://YOUR-HOST/oauth/callback/"}}
+  ```
+
+- `extra_authorize_params` is a URL-query-shaped **string**
+  (`"corp_id=xxx&prompt=consent"`), never a JSON object, and its keys must
+  stay clear of the flow-owned ones: `response_type`, `client_id`,
+  `redirect_uri`, `scope`, `state`, `code_challenge`,
+  `code_challenge_method`.
+- `token_request_style` / `token_field_style` accept exactly `form`|`json` /
+  `snake`|`camel`; a rejected value comes back with the allowed values in
+  the error message.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

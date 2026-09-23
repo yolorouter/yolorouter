@@ -375,6 +375,14 @@ func TestAPIKeyAuth_ModelsDiscovery_HeaderAwareEnvelope(t *testing.T) {
 // Gemini ingress branch of resolveAPIKey.
 const geminiIngressPath = "/v1beta/models/gemini-1.5-pro:generateContent"
 
+// geminiUnknownActionPath is the same surface with an action name neither
+// IngressProtocol nor parseGeminiPath recognizes: protocol classification
+// falls back to OpenAI, but the path is still on the Gemini surface, so the
+// Google GenAI SDK's credential sources must still be honored — otherwise a
+// typo'd method name answers a misleading 401 "missing API key" instead of
+// the handler's unknown-route 404.
+const geminiUnknownActionPath = "/v1beta/models/gemini-1.5-pro:streamGenerateReply"
+
 // TestAPIKeyAuth_GeminiGoogHeader confirms the Google GenAI SDK's
 // x-goog-api-key header authenticates a caller on the Gemini ingress.
 func TestAPIKeyAuth_GeminiGoogHeader(t *testing.T) {
@@ -495,6 +503,64 @@ func TestAPIKeyAuth_QueryKeyRejectedOffGeminiIngress(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401: ?key= must not authenticate the OpenAI ingress; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestAPIKeyAuth_GeminiGoogSources_UnknownAction confirms the two
+// Google-GenAI-SDK credential sources still authenticate when the action
+// name is unrecognized: the request stays on the Gemini surface, and what
+// happens next (the gateway handler's unknown-route 404) is a routing
+// answer — auth must not preempt it with a misleading "missing API key".
+// Both subtests fail against the old protocol-classification gate, which
+// sent these callers to 401 before routing could answer 404.
+func TestAPIKeyAuth_GeminiGoogSources_UnknownAction(t *testing.T) {
+	cases := []struct {
+		name  string
+		query bool
+	}{
+		{"x-goog-api-key header", false},
+		{"?key= query parameter", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testutil.NewSQLiteDB(t)
+			seedAPIKey(t, db, "sk-yr-goog-unknown-action")
+			r := newAuthRouter(db, geminiUnknownActionPath)
+
+			target := geminiUnknownActionPath
+			if tc.query {
+				target += "?key=sk-yr-goog-unknown-action"
+			}
+			req := httptest.NewRequest(http.MethodPost, target, nil)
+			if !tc.query {
+				req.Header.Set("x-goog-api-key", "sk-yr-goog-unknown-action")
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (authenticated on the Gemini surface despite unknown action); body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestAPIKeyAuth_BearerOnGeminiUnknownAction is the Bearer regression
+// assertion for the surface-based gate: Authorization is accepted on every
+// path, so an unknown-action Gemini request authenticated with Bearer keeps
+// passing auth exactly as before (the handler then 404s the action).
+func TestAPIKeyAuth_BearerOnGeminiUnknownAction(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedAPIKey(t, db, "sk-yr-bearer-unknown-action")
+	r := newAuthRouter(db, geminiUnknownActionPath)
+
+	req := httptest.NewRequest(http.MethodPost, geminiUnknownActionPath, nil)
+	req.Header.Set("Authorization", "Bearer sk-yr-bearer-unknown-action")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (Bearer authenticates on any path); body=%s", w.Code, w.Body.String())
 	}
 }
 

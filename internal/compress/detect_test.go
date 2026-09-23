@@ -9,6 +9,19 @@ func TestDetectBuildOutput(t *testing.T) {
 	}
 }
 
+func TestDetectIndentedGoSubtestResults(t *testing.T) {
+	// go test indents sub-test result lines by four spaces. A run whose
+	// package-level lines were trimmed away (or a -run filter that only ran
+	// sub-tests) leaves the indented lines as the only evidence — they must
+	// still vote for BuildOutput.
+	indented := "    --- PASS: TestOuter/SubA (0.00s)\n" +
+		"    --- PASS: TestOuter/SubB (0.00s)\n" +
+		"    --- PASS: TestOuter/SubC (0.00s)\n"
+	if ct := detectContentType(indented); ct != ContentBuildOutput {
+		t.Fatalf("indented go sub-test results should be detected as BuildOutput, got %v", ct)
+	}
+}
+
 func TestDetectPlainTextFallback(t *testing.T) {
 	if ct := detectContentType("just some prose without log markers"); ct != ContentPlainText {
 		t.Fatalf("plain prose should fall back to PlainText, got %v", ct)

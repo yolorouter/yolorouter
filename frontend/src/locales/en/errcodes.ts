@@ -10,7 +10,7 @@ export const errcodes: Record<number, string> = {
   10012: 'Token exchange with the identity provider failed, please retry',
   10013: 'The identity provider did not return a usable identity',
   10014: 'Another login provider already uses this slug',
-  10015: 'Invalid provider configuration: required field blank or endpoint not an http(s) URL',
+  10015: 'Invalid provider configuration: required field blank, endpoint not an http(s) URL, extra_authorize_params not a "k=v&k2=v2" query string (or using a reserved key), or an invalid userinfo_token_header',
   10016: 'Failed to fetch the OIDC discovery document, check the URL',
   10006: 'Operation refused: would leave no active administrator',
   10017: 'You cannot change your own status or role; ask another administrator',

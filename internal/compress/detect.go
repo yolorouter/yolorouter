@@ -31,7 +31,9 @@ var logPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(WARN|WARNING)\b`),
 	regexp.MustCompile(`^\s*(PASS|FAIL|SKIP)\b`),
 	regexp.MustCompile(`^=== RUN\b`),
-	regexp.MustCompile(`^--- (PASS|FAIL|SKIP):`),
+	// go test indents sub-test result lines ("    --- PASS: TestX/Sub"), so
+	// this anchor tolerates leading whitespace like the ones around it.
+	regexp.MustCompile(`^\s*--- (PASS|FAIL|SKIP):`),
 	regexp.MustCompile(`^ok\s`),
 	regexp.MustCompile(`^\?\s`),
 	// go test -json events: every line is a Time/Action/Package object (in

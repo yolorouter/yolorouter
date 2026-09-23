@@ -5,6 +5,7 @@ package handler
 
 import (
 	"encoding/json"
+	"reflect"
 	"regexp"
 	"strings"
 	"unicode"
@@ -35,7 +36,27 @@ func RegisterValidators() error {
 	if err := v.RegisterValidation("bcrypt_len", validateBcryptLen); err != nil {
 		return err
 	}
+	v.RegisterTagNameFunc(jsonTagName)
 	return v.RegisterValidation("email_or_empty", emailOrEmpty(v))
+}
+
+// jsonTagName names struct fields in validator errors by their wire name —
+// the `json` tag's name part ("key_plaintext" out of
+// "key_plaintext,omitempty") — instead of the Go field name
+// (KeyPlaintext). A caller that misnames a field (sending "plaintext")
+// then sees the exact spelling the API expects in the "field: required"
+// message, rather than a Go identifier that appears nowhere in the wire
+// format. No tag (or "-") returns "" so validator keeps the Go field name;
+// only serialization names belong here.
+func jsonTagName(f reflect.StructField) string {
+	name := f.Tag.Get("json")
+	if name == "" || name == "-" {
+		return ""
+	}
+	if i := strings.IndexByte(name, ','); i >= 0 {
+		name = name[:i]
+	}
+	return name
 }
 
 // validateAlnumDash implements the admin username charset: 3-32 letters,
@@ -147,4 +168,22 @@ func cleanBindValidationError(msg string) string {
 // validator-tag bind-failure path used to.
 func cleanUnmarshalTypeError(err *json.UnmarshalTypeError) string {
 	return err.Field + ": expected " + err.Type.String()
+}
+
+// cleanValidationErrors renders typed validator failures in the same
+// "field: tag" shape cleanBindValidationError's string parsing produces,
+// with one enrichment only the typed error can make: a oneof failure
+// spells out the allowed values, because the bare tag ("token_field_style:
+// oneof") leaves the caller to guess the legal spellings. Multiple failures
+// join with "; " — the string path only ever surfaced the first.
+func cleanValidationErrors(errs validator.ValidationErrors) string {
+	parts := make([]string, 0, len(errs))
+	for _, fe := range errs {
+		if fe.Tag() == "oneof" && fe.Param() != "" {
+			parts = append(parts, fe.Field()+": must be one of "+strings.Join(strings.Fields(fe.Param()), ", "))
+			continue
+		}
+		parts = append(parts, fe.Field()+": "+fe.Tag())
+	}
+	return strings.Join(parts, "; ")
 }

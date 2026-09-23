@@ -45,7 +45,7 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 		ingress := gateway.IngressProtocolForContext(c)
 		requestID := c.GetString(RequestIDKey)
 
-		raw, conflict := resolveAPIKey(c, ingress)
+		raw, conflict := resolveAPIKey(c)
 		if conflict {
 			logAuthRejection(c, db, ingress, http.StatusUnauthorized, "conflicting API key headers", "authentication_error", "conflicting API key headers")
 			gateway.WriteIngressError(c, ingress, http.StatusUnauthorized, "authentication_error", "conflicting API key headers", requestID)
@@ -100,12 +100,16 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 // OpenAI-style Authorization: Bearer header and the Anthropic SDK's
 // X-Api-Key header (c.GetHeader is case-insensitive), so the same key
 // material authenticates both wire protocols without any client-side
-// change. On the Gemini ingress two more sources are checked: the Google
-// GenAI SDK, when pointed at Yolorouter, sends Yolorouter's own API key as
-// x-goog-api-key or as the ?key= query parameter — never as Authorization
-// or X-Api-Key — so those two must be accepted there and ONLY there (an
-// OpenAI/Claude/Responses caller must not be able to authenticate via a
-// query parameter).
+// change. On the Gemini ingress surface two more sources are checked: the
+// Google GenAI SDK, when pointed at Yolorouter, sends Yolorouter's own API
+// key as x-goog-api-key or as the ?key= query parameter — never as
+// Authorization or X-Api-Key — so those two must be accepted there and ONLY
+// there (an OpenAI/Claude/Responses caller must not be able to authenticate
+// via a query parameter). "There" is the path surface (the /v1beta/models/
+// prefix), not the classified protocol: IngressProtocol maps an unrecognized
+// {model}:{action} to OpenAI, but such a caller is still a GenAI SDK user,
+// and stranding it on a 401 "missing API key" hides the 404 unknown-route
+// answer the handler gives for the typo'd action.
 //
 // All applicable sources are checked in sequence and reduced to their
 // distinct non-empty values, without allocating a slice or a set. More than
@@ -115,7 +119,7 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 // key is invisible to the caller. Returns ("", true) on a mismatch
 // (conflict); returns ("", false) when no source carries a value (the
 // ordinary missing-key case, handled by the caller).
-func resolveAPIKey(c *gin.Context, ingress protocols.ProtocolID) (raw string, conflict bool) {
+func resolveAPIKey(c *gin.Context) (raw string, conflict bool) {
 	var found string
 	add := func(v string) (isConflict bool) {
 		if v == "" {
@@ -133,7 +137,7 @@ func resolveAPIKey(c *gin.Context, ingress protocols.ProtocolID) (raw string, co
 	if add(c.GetHeader("X-Api-Key")) {
 		return "", true
 	}
-	if ingress == protocols.ProtocolGemini {
+	if gateway.IsGeminiIngressPath(c.Request.URL.Path) {
 		if add(c.GetHeader("x-goog-api-key")) {
 			return "", true
 		}

@@ -143,12 +143,13 @@ func TestSetupRejectsPasswordWithoutDigit(t *testing.T) {
 	// Guards the earlier leak (raw Gin/validator text exposing the
 	// internal request struct name) staying fixed: a plain status
 	// assertion alone can't catch a regression that only changes the
-	// message body.
+	// message body. The field is named by its JSON tag (RegisterTagNameFunc
+	// via jsonTagName), matching the wire format the caller actually sent.
 	if strings.Contains(env.Message, "setupRequest") || strings.Contains(env.Message, "Key:") {
 		t.Fatalf("expected a cleaned message with no internal struct/field leak, got %q", env.Message)
 	}
-	if env.Message != "Password: alnum_mixed" {
-		t.Fatalf("expected cleaned message %q, got %q", "Password: alnum_mixed", env.Message)
+	if env.Message != "password: alnum_mixed" {
+		t.Fatalf("expected cleaned message %q, got %q", "password: alnum_mixed", env.Message)
 	}
 }
 

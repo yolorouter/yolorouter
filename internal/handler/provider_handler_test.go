@@ -461,6 +461,44 @@ func TestProviderHandlersRejectInvalidRequestBody(t *testing.T) {
 	}
 }
 
+// TestProviderKeyFieldNamesNamedInBindErrors pins the copy for the
+// create-provider-vs-add-key field-name trap: POST /api/admin/providers
+// carries the first key as key_plaintext while POST /providers/:id/keys
+// uses plaintext. A caller who mixes them up must be told the exact JSON
+// field name THIS endpoint expects (not the Go identifier, which appears
+// nowhere in the wire format).
+func TestProviderKeyFieldNamesNamedInBindErrors(t *testing.T) {
+	r, _ := newProviderTestRouter(t)
+	providerID, _ := createProviderForTest(t, r, "field-name-hint-provider")
+
+	// "plaintext" (the add-key spelling) sent to provider create, which
+	// expects key_plaintext.
+	w, env := doJSON(t, r, http.MethodPost, "/api/admin/providers",
+		map[string]interface{}{
+			"name": "wrong-field", "base_url": "https://a.example.com",
+			"key_label": "primary", "plaintext": "sk-abcdefghijklmnopqrstuvwxyz1234", "test_model": "gpt-4o-mini",
+		}, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Message != "key_plaintext: required" {
+		t.Fatalf("provider create should name its own key field, got %q", env.Message)
+	}
+
+	// "key_plaintext" (the create-provider spelling) sent to key add, which
+	// expects plaintext.
+	w, env = doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/providers/%d/keys", providerID),
+		map[string]interface{}{
+			"label": "second", "key_plaintext": "sk-abcdefghijklmnopqrstuvwxyz1234", "test_model": "gpt-4o-mini",
+		}, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+	}
+	if env.Message != "plaintext: required" {
+		t.Fatalf("key add should name its own key field, got %q", env.Message)
+	}
+}
+
 // TestPatchProviderStatusRejectsMalformedJSON and
 // TestPatchProviderKeyStatusRejectsMalformedJSON guard setStatusRequest's
 // bindJSON call specifically: Enabled bool has no validator tags, so a

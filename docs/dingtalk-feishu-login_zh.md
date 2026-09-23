@@ -42,6 +42,19 @@ YoloRouter 成员可以用工作用的钉钉或飞书账号登录。首次登录
 - **账号永不合并。** 一个提供方账号对应一个本地账号。同一个人分别用飞书和钉钉登录就是两个账号，属设计行为；没有按姓名或邮箱的自动关联。
 - **手动配置。** 预设只是预填了值的普通 Provider。「手动配置」方式暴露同样的协议旋钮（令牌请求编码、JSON 字段命名、自定义 userinfo 鉴权头、PKCE 开关、额外授权参数），可接任意其他身份提供方。
 
+## REST API 直连说明
+
+绕过控制台、用脚本直连登录方式 API 时，有三个形状先说清：
+
+- `GET /api/admin/oauth-providers` 返回的是标准信封——数组在 `data.providers`，不在顶层：
+
+  ```json
+  {"code": 0, "data": {"providers": [], "callback_base": "https://YOUR-HOST/oauth/callback/"}}
+  ```
+
+- `extra_authorize_params` 是 URL 查询串形状的**字符串**（`"corp_id=xxx&prompt=consent"`），不是 JSON 对象，且键不得占用流程自留的：`response_type`、`client_id`、`redirect_uri`、`scope`、`state`、`code_challenge`、`code_challenge_method`。
+- `token_request_style` / `token_field_style` 只接受 `form`|`json` / `snake`|`camel`；非法值被拒时，报错信息里会带合法取值。
+
 ## 排错
 
 | 现象 | 原因 | 处理 |

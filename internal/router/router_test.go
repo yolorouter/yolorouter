@@ -510,6 +510,67 @@ func TestGeminiRouteUnknownActionReturnsRouteNotFound(t *testing.T) {
 	}
 }
 
+// TestGeminiRouteUnknownActionWithGoogAPIKeyReturnsRouteNotFound covers the
+// Google GenAI SDK caller shape for the unknown-action 404: the SDK sends
+// its key as x-goog-api-key (never Bearer/X-Api-Key), and the path's action
+// is unrecognized, so protocol classification reads OpenAI. The auth layer
+// must still honor the header — the path is on the Gemini surface — and let
+// the request reach the handler's unknown-route 404, rather than answering
+// a misleading 401 "missing API key" (which told the caller its key was
+// absent when it was merely sent the SDK way).
+func TestGeminiRouteUnknownActionWithGoogAPIKeyReturnsRouteNotFound(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedAPIKey(t, db, "sk-yr-gemini-goog")
+	r, err := New(testDeps(t, db))
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.0-flash:streamGenerateReply", bytes.NewReader([]byte(`{"contents":[{"parts":[{"text":"hi"}]}]}`)))
+	req.Header.Set("x-goog-api-key", "sk-yr-gemini-goog")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unknown gemini action with x-goog-api-key, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal error body: %v, body: %s", err, w.Body.String())
+	}
+	if body.Error.Code != "route_not_found" || body.Error.Type != "invalid_request_error" {
+		t.Fatalf("expected the NoRoute envelope (route_not_found/invalid_request_error), got code=%q type=%q body=%s",
+			body.Error.Code, body.Error.Type, w.Body.String())
+	}
+}
+
+// TestGeminiRouteUnknownActionWithQueryKeyReturnsRouteNotFound is the same
+// guarantee for the SDK's other credential channel: ?key= on the query
+// string.
+func TestGeminiRouteUnknownActionWithQueryKeyReturnsRouteNotFound(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	seedAPIKey(t, db, "sk-yr-gemini-query")
+	r, err := New(testDeps(t, db))
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.0-flash:streamGenerateReply?key=sk-yr-gemini-query", bytes.NewReader([]byte(`{"contents":[{"parts":[{"text":"hi"}]}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unknown gemini action with ?key=, got %d, body: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestGeminiRouteUnknownActionWithoutAPIKeyStillUnauthorized pins the order:
 // authentication runs before the unknown-action 404, so an unauthenticated
 // probe of a typo'd method name still answers 401 — the security property

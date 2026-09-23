@@ -353,6 +353,67 @@ func TestCallbackURLPrefersConfiguredExternalURL(t *testing.T) {
 	}
 }
 
+// TestAdminProviderValidationErrorCopies pins the validation-error copies a
+// script caller tripped over in live testing: a oneof rejection must spell
+// out the legal values (not just the tag name), must name the field by its
+// JSON key (token_field_style, not TokenFieldStyle), and a rejected
+// extra_authorize_params must say what shape was expected instead of only
+// mentioning blank fields and endpoint URLs.
+func TestAdminProviderValidationErrorCopies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := RegisterValidators(); err != nil {
+		t.Fatalf("RegisterValidators: %v", err)
+	}
+	db := testutil.NewSQLiteDB(t)
+	svc := oauth.NewOAuthProviderService(db, crypto.NewSecretBox(oauthTestMasterKey()))
+	r := gin.New()
+	r.POST("/api/admin/oauth-providers", PostOAuthProvider(svc))
+
+	const base = `{"slug":"feishu","name":"Feishu","client_id":"cid","client_secret":"shh",` +
+		`"authorization_endpoint":"https://open.feishu.cn/a","token_endpoint":"https://open.feishu.cn/t",` +
+		`"userinfo_endpoint":"https://open.feishu.cn/u",`
+	post := func(payload string) envelope {
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/oauth-providers", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		var env envelope
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal envelope: %v (body=%s)", err, w.Body.String())
+		}
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+		}
+		return env
+	}
+
+	// oneof rejections name the JSON field and enumerate the allowed values.
+	env := post(base + `"token_field_style":"kebab"}`)
+	if env.Message != "token_field_style: must be one of snake, camel" {
+		t.Fatalf("enum rejection should name the field and its legal values, got %q", env.Message)
+	}
+	env = post(base + `"token_request_style":"xml"}`)
+	if env.Message != "token_request_style: must be one of form, json" {
+		t.Fatalf("request-style rejection should enumerate, got %q", env.Message)
+	}
+
+	// A reserved-key extra_authorize_params and a non-query-shaped one both
+	// land on code 10015, whose message must state the expected
+	// "k=v&k2=v2" string form and the reserved keys.
+	for _, params := range []string{`state=abc`, `langu%age=de`} {
+		env := post(base + `"extra_authorize_params":"` + params + `"}`)
+		if env.Code != errcode.OAuthProviderConfigInvalid {
+			t.Fatalf("params %q: expected code 10015, got %d (body message=%q)", params, env.Code, env.Message)
+		}
+		if !strings.Contains(env.Message, `"k=v&k2=v2"`) {
+			t.Fatalf("params %q: message must state the expected query-string form, got %q", params, env.Message)
+		}
+		if !strings.Contains(env.Message, "state") {
+			t.Fatalf("params %q: message must list the reserved keys, got %q", params, env.Message)
+		}
+	}
+}
+
 // TestAdminProviderListCarriesCallbackBase: the admin list response must
 // carry callback_base so the form shows the redirect_uri this deployment
 // actually uses — the configured external_url verbatim when set, else the

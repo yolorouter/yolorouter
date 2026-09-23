@@ -59,6 +59,19 @@ func isModelsDiscoveryPath(path string) bool {
 	return path == "/v1/models" || strings.HasPrefix(path, "/v1/models/")
 }
 
+// IsGeminiIngressPath reports whether requestPath lies on the native Gemini
+// ingress surface — it carries the /v1beta/models/ prefix — regardless of
+// whether the {model}:{action} segment names a recognized action. This is a
+// different question than IngressProtocol: protocol classification falls back
+// to OpenAI for an unrecognized action (so the handler can 404 it as an
+// unknown route), while surface membership must still hold — the Google
+// GenAI SDK sends its key as x-goog-api-key or ?key= on every request to
+// that surface, typo'd action names included, and the auth middleware must
+// not strand those callers on a misleading 401 before routing ever answers.
+func IsGeminiIngressPath(requestPath string) bool {
+	return strings.HasPrefix(requestPath, geminiIngressPathPrefix)
+}
+
 // IngressProtocolForRequest is IngressProtocol with header awareness for the
 // model-discovery routes. IngressProtocol sees only the path and maps every
 // /v1/models request to ProtocolOpenAI, but the Anthropic SDK calls the same

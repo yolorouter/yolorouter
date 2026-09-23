@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
@@ -96,6 +97,15 @@ func bindJSON(c *gin.Context, req interface{}) bool {
 		isNetTimeout := errors.As(err, &netErr) && netErr.Timeout()
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &syntaxErr) || isNetTimeout {
 			response.ErrorStatus(c, http.StatusBadRequest, errcode.InvalidParam, "invalid request body")
+			return false
+		}
+		// The typed validator error carries what the string form throws
+		// away: the oneof tag's allowed values. Every real validator-v10
+		// failure lands here; the string-parsing fallback below stays for
+		// shapes that only synthetic inputs can produce (see its test).
+		var valErrs validator.ValidationErrors
+		if errors.As(err, &valErrs) {
+			response.ErrorStatus(c, http.StatusBadRequest, errcode.InvalidParam, cleanValidationErrors(valErrs))
 			return false
 		}
 		response.ErrorStatus(c, http.StatusBadRequest, errcode.InvalidParam, cleanBindValidationError(err.Error()))
