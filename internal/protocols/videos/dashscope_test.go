@@ -35,6 +35,35 @@ func TestDashScopeModelFamily(t *testing.T) {
 	}
 }
 
+// The wan2.2 family stopped accepting the duration parameter: a submit
+// carrying it is refused only after the task id came back, so the
+// encoder must leave it off there — and only there, the other families
+// keep the knob.
+func TestEncodeDashScopeSubmitWan22DropsDuration(t *testing.T) {
+	for _, model := range []string{"wan2.2-t2v-plus", "wan2.2-t2v-flash", "wan2.2-i2v-flash", "WAN2.2-T2V-PLUS"} {
+		body, err := EncodeDashScopeSubmit(DashScopeSubmitRequest{
+			Model: model, Prompt: "p", Resolution: "720P", Duration: 4,
+		})
+		if err != nil {
+			t.Fatalf("encode %s: %v", model, err)
+		}
+		if strings.Contains(string(body), `"duration"`) {
+			t.Fatalf("wan2.2 submit must not carry duration: %s", body)
+		}
+	}
+	for _, model := range []string{"wan2.1-t2v", "wan2.5-t2v-preview", "wan2.6-i2v", "wan2.7-t2v", "wan3.0-video", "wanx2.1-i2v-turbo"} {
+		body, err := EncodeDashScopeSubmit(DashScopeSubmitRequest{
+			Model: model, Prompt: "p", Resolution: "720P", Duration: 4,
+		})
+		if err != nil {
+			t.Fatalf("encode %s: %v", model, err)
+		}
+		if !strings.Contains(string(body), `"duration":4`) {
+			t.Fatalf("%s submit keeps the duration knob: %s", model, body)
+		}
+	}
+}
+
 func TestMapDashScopeSize(t *testing.T) {
 	cases := map[string]struct{ res, ratio string }{
 		"720x1280":  {"720P", "9:16"},

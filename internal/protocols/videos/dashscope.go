@@ -66,6 +66,18 @@ func DashScopeModelFamily(providerModel string) DashScopeFamily {
 	return DashScopeFamilyNone
 }
 
+// dashScopeTakesDuration answers whether a model still accepts the
+// duration parameter. The wan2.2 family does not: DashScope rejects any
+// submit carrying the knob — "duration customization is not supported"
+// — and the refusal surfaces only after the task id came back, so the
+// submit looks successful and generation fails. For that family the
+// dialect leaves the parameter off and the model runs at its fixed
+// length; the gateway's seconds field keeps driving pricing and the
+// task snapshot, only the wire parameter is dropped.
+func dashScopeTakesDuration(providerModel string) bool {
+	return !strings.HasPrefix(strings.ToLower(providerModel), "wan2.2")
+}
+
 // MapDashScopeSize maps a dialect size (WIDTHxHEIGHT) onto the two axes
 // DashScope wants — resolution tier and aspect ratio — from the shared
 // nearest-neighbor table both vendor maps answer from, so a size cannot
@@ -120,9 +132,11 @@ func EncodeDashScopeSubmit(req DashScopeSubmitRequest) ([]byte, error) {
 	// caller's: the dialect exposes no field for them.
 	params := map[string]any{
 		"resolution":    req.Resolution,
-		"duration":      req.Duration,
 		"prompt_extend": true,
 		"watermark":     false,
+	}
+	if dashScopeTakesDuration(req.Model) {
+		params["duration"] = req.Duration
 	}
 	if ref == "" && req.Ratio != "" {
 		params["ratio"] = req.Ratio
