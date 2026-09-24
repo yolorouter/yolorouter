@@ -65,7 +65,7 @@ func TestSystemdUnitTemplatesCarryRestartRateLimit(t *testing.T) {
 			t.Errorf("%s: unit template is missing a [Unit]/[Service]/StartLimit line the section check needs (got [Unit]@%d [Service]@%d StartLimit@%d); refusing to pass by inspecting nothing", fn, unitIdx, serviceIdx, limitIdx)
 			continue
 		}
-		if !(unitIdx < limitIdx && limitIdx < serviceIdx) {
+		if unitIdx >= limitIdx || limitIdx >= serviceIdx {
 			t.Errorf("%s: StartLimitIntervalSec must sit in the [Unit] section (before [Service]); systemd ignores it inside [Service]", fn)
 		}
 	}
