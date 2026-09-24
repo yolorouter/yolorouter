@@ -48,7 +48,7 @@
               v-if="updateStore.updateMode === 'in_place'"
               type="primary"
               :loading="phase !== 'idle'"
-              @click="showConfirm = true"
+              @click="openConfirm"
             >
               {{ t('system.updateNow') }}
             </n-button>
@@ -111,7 +111,22 @@
       <p v-if="updateStore.dbDriver === 'postgres'" class="update-warn">{{ t('system.updateWarnBackupPostgres') }}</p>
       <p class="update-warn">{{ t('system.updateWarnForeground') }}</p>
       <p v-if="phase === 'updating'" class="update-status">{{ t('system.updating') }}</p>
-      <p v-else-if="phase === 'restarting'" class="update-status">{{ t('system.restarting') }}</p>
+      <template v-else-if="phase === 'restarting'">
+        <p class="update-status">{{ t('system.restarting') }}</p>
+        <!-- The ~60s "still normal" line: a large database's restart-time
+             migration takes minutes, and a wordless spinner reads as a
+             hang. The machine flips waitState at RESTART_REASSURANCE_AFTER_MS. -->
+        <p v-if="reassuring" class="update-reassure">{{ t('system.restartReassurance') }}</p>
+      </template>
+      <!-- After the 5-minute timeout the modal stays open on a diagnostic
+           guide instead of a vague one-liner: the two causes a stuck
+           restart traces back to, and the command that names them. -->
+      <div v-if="timedOut && phase === 'idle'" class="update-timeout">
+        <p class="update-timeout__title">{{ t('system.updateTimeoutTitle') }}</p>
+        <p class="update-timeout__cause">{{ t('system.updateTimeoutCauseDisk') }}</p>
+        <p class="update-timeout__cause">{{ t('system.updateTimeoutCauseMigration') }}</p>
+        <p class="update-timeout__log">{{ t('system.updateTimeoutLogHint') }}</p>
+      </div>
     </ModalDrawer>
   </div>
 </template>
@@ -125,6 +140,7 @@ import { useUpdateStore } from '../../store/update'
 import { getSystemVersion, postSystemUpdate } from '../../api/system'
 import { APIError, displayMessage } from '../../api/client'
 import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
+import { createRestartWait, type RestartWaitHandle } from '../../utils/restartWait'
 import PageHeader from '../../components/PageHeader.vue'
 import ModalDrawer from '../../components/common/ModalDrawer.vue'
 import logo from '../../assets/logo.svg'
@@ -173,21 +189,43 @@ async function checkNow(force: boolean) {
 //
 // idle -> updating (POST in flight; the server downloads, verifies, and
 // swaps the binary before replying) -> restarting (server replied "updated"
-// and is now draining + restarting; poll the version endpoint until a
-// different version answers) -> idle again with a success toast.
+// and is now draining + restarting; the restartWait machine polls the
+// version endpoint until a different version answers, adds a ~60s
+// reassurance line for slow migrations, and gives up after 5 minutes)
+// -> idle again with a success toast, or with the diagnostic guide below.
 
 type UpdatePhase = 'idle' | 'updating' | 'restarting'
 const phase = ref<UpdatePhase>('idle')
 const showConfirm = ref(false)
 
+// Wait-state surfaced by the restartWait machine: `reassuring` shows the
+// "large migrations take minutes, this is normal" line; `timedOut` swaps the
+// modal body to the diagnostic guide.
+const reassuring = ref(false)
+const timedOut = ref(false)
+let waitHandle: RestartWaitHandle | null = null
+
 // Polling must stop when the user navigates away — `disposed` is checked
-// after every await so an unmounted page never toasts or writes state.
+// after every await so an unmounted page never toasts or writes state, and
+// the machine's generation guard stops its in-flight poll the same way.
 let disposed = false
 onBeforeUnmount(() => {
   disposed = true
+  waitHandle?.stop()
 })
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+// "Update now" opens the confirm view of a FRESH attempt, so the last
+// attempt's wait-state must be cleared first. After a timeout the modal is
+// dismissable again (phase is idle), and a user who cancelled out of the
+// diagnostic guide and came back must not see it pasted under the new
+// attempt's restart warnings — startUpdate clears the same flags, but it
+// only runs after a confirm, which is one click too late for the confirm
+// view itself.
+function openConfirm() {
+  reassuring.value = false
+  timedOut.value = false
+  showConfirm.value = true
+}
 
 async function startUpdate() {
   // Defensive double-submit guard: naive-ui's button already ignores clicks
@@ -195,6 +233,8 @@ async function startUpdate() {
   // wires it to a control without that behavior.
   if (phase.value !== 'idle') return
   const before = updateStore.version
+  reassuring.value = false
+  timedOut.value = false
   phase.value = 'updating'
   try {
     const res = await postSystemUpdate()
@@ -211,7 +251,7 @@ async function startUpdate() {
       return
     }
     phase.value = 'restarting'
-    await waitForRestart(before)
+    waitForRestart(before)
   } catch (err) {
     if (disposed) return
     // A lapsed session must reauth, not read as "update failed" — and it
@@ -228,39 +268,44 @@ async function startUpdate() {
     // itself (or a proxy timed the long request out after the swap). Fall
     // through to polling and let the reported version tell the truth.
     phase.value = 'restarting'
-    await waitForRestart(before)
+    waitForRestart(before)
   }
 }
 
-async function waitForRestart(before: string) {
-  const deadline = Date.now() + 5 * 60_000
-  while (!disposed && Date.now() < deadline) {
-    await sleep(2000)
-    if (disposed) return
-    try {
-      // Bypass the store here: its fetch-token guard is for shared state,
-      // while this poll only needs a raw "who answers now" probe.
-      const info = await getSystemVersion()
-      if (info.version && info.version !== before) {
-        phase.value = 'idle'
-        showConfirm.value = false
-        message.success(t('system.updateDone', { version: info.version }))
-        // Refresh the shared state so the sidebar badge and the card above
-        // flip to the new version without a manual reload.
-        void updateStore.checkForUpdates()
-        return
-      }
-    } catch (err) {
-      // A lapsed session would otherwise be swallowed here for the full
-      // five minutes and misreported as a restart timeout.
-      if (sessionExpired(err)) return
-      // Connection refused / timeout while the server restarts — keep
-      // polling until the deadline.
-    }
-  }
-  if (disposed) return
-  phase.value = 'idle'
-  message.error(t('system.updateTimeout'))
+// waitForRestart hands the wait to the extracted machine (utils/restartWait):
+// pacing, the 60s reassurance deadline, and the unchanged 5-minute give-up
+// budget live there; this page only supplies the probe (bypassing the store —
+// its fetch-token guard is for shared state, while this poll only needs a
+// raw "who answers now" answer) and reacts to the outcomes.
+function waitForRestart(before: string) {
+  waitHandle = createRestartWait({
+    before,
+    probe: getSystemVersion,
+    onStateChange: (state) => {
+      if (disposed) return
+      if (state === 'reassuring') reassuring.value = true
+    },
+    onDone: (version) => {
+      if (disposed) return
+      phase.value = 'idle'
+      showConfirm.value = false
+      message.success(t('system.updateDone', { version }))
+      // Refresh the shared state so the sidebar badge and the card above
+      // flip to the new version without a manual reload.
+      void updateStore.checkForUpdates()
+    },
+    onTimeout: () => {
+      if (disposed) return
+      // Leave the wait with the modal open on the diagnostic guide — the
+      // two causes a stuck restart traces back to plus the log command.
+      phase.value = 'idle'
+      timedOut.value = true
+    },
+    // A lapsed session would otherwise be swallowed here for the full five
+    // minutes and misreported as a restart timeout.
+    onProbeError: (err) => (sessionExpired(err) ? 'stop' : 'continue'),
+  })
+  waitHandle.start()
 }
 </script>
 
@@ -438,5 +483,46 @@ async function waitForRestart(before: string) {
 .update-status {
   margin: var(--space-2) 0 0;
   font-weight: 600;
+}
+
+/* The ~60s "still normal" line reads as a quiet footnote under the bold
+   status, not a second headline. */
+.update-reassure {
+  margin: var(--space-2) 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+/* The post-timeout diagnostic guide: a boxed block so it visibly replaces
+   the wait instead of vanishing with a toast. */
+.update-timeout {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-soft);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.update-timeout p {
+  margin: 0 0 var(--space-1);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.update-timeout p:last-child {
+  margin-bottom: 0;
+}
+
+.update-timeout__title {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+/* The log-hint line carries the journalctl command inside its locale string,
+   so it inherits the block's prose styling; the class is a test/UI hook. */
+.update-timeout__log {
+  color: var(--color-text);
 }
 </style>
