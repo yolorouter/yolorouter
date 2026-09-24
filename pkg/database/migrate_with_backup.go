@@ -15,11 +15,15 @@ import (
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
 
-// preMigrationBackupKeep is how many pre-migration snapshots survive the
-// post-success cleanup. Snapshots are small (gzipped VACUUM output) and only
-// one is produced per schema upgrade, so five covers several releases of
-// rollback history without unbounded growth.
-const preMigrationBackupKeep = 5
+// preMigrationBackupKeep is how many pre-migration snapshots survive
+// rotation. Rotation runs before every backup (and again after a fully
+// successful migration), so the backup directory's disk usage is bounded by
+// construction: at most the newest three source versions plus the pinned
+// snapshot of the upgrade in flight. Three still covers rolling back across
+// a couple of releases while keeping the footprint predictable on small
+// system disks, where an upgrade must not compete with years of accumulated
+// history for the space it needs.
+const preMigrationBackupKeep = 3
 
 // preMigrationBackupDir is a dedicated subdirectory so cleanup can never
 // touch anything else — in particular the operator's own db:backup output,
@@ -85,6 +89,32 @@ func maxMigrationVersion(migrationsFS fs.FS, dir string) (int64, error) {
 	return maxVersion, nil
 }
 
+// MigrationFailedError marks a startup upgrade-chain failure that needs an
+// operator: either the pre-migration backup could not be written (nothing
+// was migrated — fail-closed) or the migrations themselves failed after a
+// snapshot was preserved (the snapshot is named in the message). Dispatch
+// layers can detect this class with errors.As and map it to a dedicated
+// exit code, distinct from generic failures, so service managers and
+// operators can tell "the upgrade chain is stuck, intervene" from any other
+// startup error. A disk-space precheck rejection is reported as
+// *PrecheckRejectedError (its own type, same "needs an operator" class) and
+// is deliberately NOT wrapped in this one.
+type MigrationFailedError struct {
+	// SnapshotPath is the preserved rollback point, empty when the failure
+	// happened before any snapshot was taken (backup-stage failures).
+	SnapshotPath string
+	Err          error
+}
+
+func (e *MigrationFailedError) Error() string {
+	if e.SnapshotPath == "" {
+		return fmt.Sprintf("pre-migration backup failed, refusing to migrate: %s", e.Err)
+	}
+	return fmt.Sprintf("migration failed, pre-migration snapshot preserved at %s: %s", e.SnapshotPath, e.Err)
+}
+
+func (e *MigrationFailedError) Unwrap() error { return e.Err }
+
 // MigrateWithBackup runs pending migrations, snapshotting the SQLite
 // database first so a schema upgrade always leaves a rollback point behind
 // — the in-app updater and Docker image pulls swap the binary without any
@@ -92,17 +122,35 @@ func maxMigrationVersion(migrationsFS fs.FS, dir string) (int64, error) {
 // can happen. The caller must already hold the instance lock, which makes
 // version check, backup, and migration a single critical section.
 //
+// freeSpace is the disk-space probe used by the pre-migration precheck;
+// nil selects the OS probe. It is a parameter so tests can drive the
+// boundary ("just enough", "one byte short", "probe unavailable") with
+// fake values instead of a manufactured full disk.
+//
 // The returned path is the snapshot protecting this upgrade ("" when no
 // backup was needed). Behavior by situation:
 //
 //   - driver != sqlite: warn (only when an upgrade is actually pending —
 //     otherwise there is nothing a backup would have protected) and migrate
 //     directly; the official container image has no backup tooling for
-//     postgres, so operators are pointed at db:backup instead.
+//     postgres, so operators are pointed at db:backup instead. No rotation,
+//     no precheck, no backup — postgres deployments are exempt from all of
+//     it.
 //   - fresh database (version 0) or nothing pending: migrate directly,
-//     there is no pre-upgrade state worth snapshotting.
-//   - backup fails: return the error WITHOUT migrating (fail-closed); the
-//     database is untouched and the process should refuse to start.
+//     there is no pre-upgrade state worth snapshotting or space to check.
+//   - an upgrade is pending on an existing sqlite database: old snapshots
+//     are rotated down to the newest preMigrationBackupKeep BEFORE anything
+//     is written, pinning the file this attempt is about to produce — the
+//     directory's usage stays capped and the space the rotation frees is
+//     space the backup can use.
+//   - disk space precheck rejects: return the *PrecheckRejectedError
+//     WITHOUT writing anything; the database is untouched and the error
+//     names the required and available sizes.
+//   - backup fails: return a *MigrationFailedError WITHOUT migrating
+//     (fail-closed); the database is untouched and the process should
+//     refuse to start. The rotation has already happened at this point —
+//     its deletions stand (only snapshots beyond the keep cap went, and
+//     those were doomed at the next successful migration anyway).
 //
 // Snapshots are named after the source schema version, deterministically,
 // so a crash-restart loop overwrites one file instead of accumulating
@@ -111,9 +159,10 @@ func maxMigrationVersion(migrationsFS fs.FS, dir string) (int64, error) {
 // An existing file at the path is never trusted — it may be stale (the
 // database can have been restored from it and written to since) — so every
 // attempt snapshots the CURRENT database and atomically replaces the file.
-// Old snapshots are pruned only after a fully successful migration, never
-// including the one just taken.
-func MigrateWithBackup(db *sql.DB, driver, sqlitePath string, migrationsFS fs.FS, dir string) (string, error) {
+// Old snapshots are pruned by the pre-backup rotation and again after a
+// fully successful migration, and the snapshot of the upgrade in flight is
+// pinned through both.
+func MigrateWithBackup(db *sql.DB, driver, sqlitePath string, migrationsFS fs.FS, dir string, freeSpace FreeSpaceProbe) (string, error) {
 	target, err := maxMigrationVersion(migrationsFS, dir)
 	if err != nil {
 		return "", fmt.Errorf("determine target migration version: %w", err)
@@ -144,19 +193,49 @@ func MigrateWithBackup(db *sql.DB, driver, sqlitePath string, migrationsFS fs.FS
 		return "", RunMigrations(db, driver, migrationsFS, dir)
 	}
 
-	backupPath := filepath.Join(preMigrationBackupDir(sqlitePath), preMigrationBackupFilename(current))
+	backupDir := preMigrationBackupDir(sqlitePath)
+	backupName := preMigrationBackupFilename(current)
+
+	// Rotate BEFORE sizing the filesystem and writing the snapshot. This is
+	// what gives the backup directory its deterministic usage cap, and the
+	// space the rotation frees is space the precheck below may then count
+	// on: an upgrade that fits after rotation is a real fit, not a refusal
+	// the program could have solved by tidying up after itself. The pin
+	// spares the file this attempt is about to (over)write — see
+	// cleanupPreMigrationBackups for why ranking by version alone would
+	// drop exactly that file on a database restored to an older schema.
+	cleanupPreMigrationBackups(backupDir, backupName)
+
+	// Last gate before writing anything: a filesystem that cannot fit one
+	// more backup would fail halfway through writing it — a slow, noisy way
+	// to learn the same thing, and on an auto-restarting service a way to
+	// loop on it. Refused here, nothing has been written yet, and the error
+	// carries exact numbers plus what to do about it. Unavailable probes
+	// pass through (PrecheckMigrationDiskSpace never fails on its own).
+	if err := PrecheckMigrationDiskSpace(sqlitePath, freeSpace); err != nil {
+		return "", err
+	}
+
+	backupPath := filepath.Join(backupDir, backupName)
 	if err := snapshotCurrentDatabase(sqlitePath, backupPath); err != nil {
-		return "", fmt.Errorf("pre-migration backup failed, refusing to migrate: %w", err)
+		return "", &MigrationFailedError{Err: err}
 	}
 
 	if err := RunMigrations(db, driver, migrationsFS, dir); err != nil {
-		// Every snapshot is kept, and the one for THIS attempt is named in
-		// the error: a failed startup migration is exactly the moment the
-		// operator needs the recovery point, and the fatal log line built
-		// from this error is the only place they will see it.
-		return "", fmt.Errorf("migration failed, pre-migration snapshot preserved at %s: %w", backupPath, err)
+		// The one for THIS attempt survived the rotation (it was the pin)
+		// and is named in the error: a failed startup migration is exactly
+		// the moment the operator needs the recovery point, and the fatal
+		// log line built from this error is the only place they will see it.
+		return "", &MigrationFailedError{SnapshotPath: backupPath, Err: err}
 	}
-	cleanupPreMigrationBackups(preMigrationBackupDir(sqlitePath), filepath.Base(backupPath))
+	// The same rotation that ran before the backup, once more after success:
+	// by now the just-taken snapshot is the pin (the one the migration ran
+	// against), and anything that escaped the pre-backup pass (say, files
+	// created meanwhile) gets the same cap applied. Structurally it usually
+	// finds nothing left to do — the pre-backup pass already trimmed to the
+	// cap — but keeping it makes the cap a property of the cleanup itself
+	// rather than of where it was last invoked.
+	cleanupPreMigrationBackups(backupDir, backupName)
 	return backupPath, nil
 }
 
@@ -212,15 +291,34 @@ func snapshotCurrentDatabase(sqlitePath, backupPath string) error {
 
 // cleanupPreMigrationBackups deletes all but the newest (by source version)
 // preMigrationBackupKeep snapshots, always sparing keepName — the snapshot
-// the just-finished migration ran against. Ranking by version alone would
-// delete exactly that file whenever the database had been restored to an
-// older schema while enough higher-version snapshots remained. Best-effort:
-// a failure here must never take down a service that just migrated
-// successfully, so problems are only logged. Files not matching the
-// snapshot naming scheme are left alone.
-func cleanupPreMigrationBackups(dirPath, keepName string) {
+// of the upgrade in flight: before the backup it is the file this attempt is
+// about to (over)write, after success the one the migration just ran
+// against. Ranking by version alone would delete exactly that file whenever
+// the database had been restored to an older schema while enough
+// higher-version snapshots remained. Best-effort: a failure here must never
+// take down a service — the rotation runs before backups on the startup path
+// and the cleanup after a migration that just succeeded — so problems are
+// only logged. Files not matching the snapshot naming scheme are left
+// alone, and a missing directory (the first upgrade of a deployment, before
+// any backup exists) is silence, not a warning.
+//
+// It is a package-level variable rather than a plain function so tests can
+// substitute a call-recording fake: the real cleanup only reads and deletes,
+// so against an empty or missing directory it is a silent no-op, and no
+// filesystem-shape assertion can detect a call that must not happen. The
+// postgres exemption guard observes the call itself through this seam, and
+// every cleanup call site (pre-backup rotation, post-success cleanup, and
+// the update-button wiring to come) must call through it too rather than
+// growing a private side path around it.
+var cleanupPreMigrationBackups = func(dirPath, keepName string) {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// The pre-backup rotation reaches a not-yet-created directory
+			// exactly once per deployment, on its first upgrade — there is
+			// nothing to rotate and nothing wrong.
+			return
+		}
 		logger.Warn("failed to list pre-migration backups for cleanup", zap.String("dir", dirPath), zap.Error(err))
 		return
 	}

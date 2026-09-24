@@ -47,5 +47,8 @@ gui-test-screenshots/
 # Local scratch directory — never part of the source tree.
 .scratch/
 
+# Test-gate evidence stamp (.flow/gate-ok) — checkout-local state, never committed.
+.flow/
+
 # ZCode per-machine tooling state (auto-synced from .gitignore by the platform).
 .zcodeignore

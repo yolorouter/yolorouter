@@ -196,11 +196,12 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	// Schema upgrades reach this point unattended (in-app update restart,
 	// Docker image pull), so migrating goes through MigrateWithBackup: on
-	// SQLite it snapshots the database before applying anything, and refuses
-	// to migrate if that snapshot cannot be written. The instance lock held
-	// above makes version check, backup, and migration one critical section.
+	// SQLite it checks disk space for the backup, snapshots the database
+	// before applying anything, and refuses to migrate if that snapshot
+	// cannot be written. The instance lock held above makes version check,
+	// precheck, backup, and migration one critical section.
 	migrationsFS, dir := migrationsFor(app.Config.Database.Driver)
-	backupPath, err := database.MigrateWithBackup(sqlDB, app.Config.Database.Driver, app.Config.Database.SQLitePath, migrationsFS, dir)
+	backupPath, err := database.MigrateWithBackup(sqlDB, app.Config.Database.Driver, app.Config.Database.SQLitePath, migrationsFS, dir, database.OSFreeSpaceProbe)
 	if err != nil {
 		return fmt.Errorf("startup migration failed: %w", err)
 	}
