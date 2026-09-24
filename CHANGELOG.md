@@ -7,7 +7,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.5] - 2026-09-24
 
 ### Added
 
@@ -216,8 +216,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deepseek's pricing page had leaked a footnote suffix into a model id
   ("deepseek-v4-pro(2)"), which the data pipeline now strips before it
   reaches the catalog.
-
-## [Unreleased]
 
 ## [0.2.3] - 2026-09-05
 

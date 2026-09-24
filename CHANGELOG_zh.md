@@ -7,7 +7,7 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，版本号遵循
 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
-## [Unreleased]
+## [0.2.5] - 2026-09-24
 
 ### 新增
 
@@ -142,8 +142,6 @@
 
 - 嵌入价格目录种子从清理后的线上目录重新同步：deepseek 定价页的脚注后缀曾泄漏进模型
   名（"deepseek-v4-pro(2)"），数据管线现在在入目之前剥掉它。
-
-## [Unreleased]
 
 ## [0.2.3] - 2026-09-05
 
