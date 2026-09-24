@@ -72,6 +72,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the settings family's optimistic-lock conflict on concurrent
   saves).
 
+- The legacy completions endpoint accepts a bare `prompt`. A non-empty
+  top-level `prompt` now stands in for `messages` at ingress, and such
+  a body is routed verbatim by path — its structural validity is the
+  upstream's judgement, not the chat decoder's. On an openai-family
+  passthrough the caller's own request path (trailing slash trimmed,
+  empty falling back to the canonical one) becomes the egress path, so
+  a legacy `/v1/completions` caller reaches the upstream's own
+  completions endpoint instead of being retitled into the chat one;
+  Gemini and cross-protocol egress keep the encoder's canonical path.
+
 ### Fixed
 
 - Partial candidate edits no longer wipe the fields they omit. A
@@ -95,9 +105,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   probe got "missing API key" (indistinguishable from a real auth problem)
   and a valid key got a chat-shaped reply from a gemini URL. Unknown
   actions now receive the same `route_not_found` 404 envelope the gateway
-  gives unrouted paths; the two known actions (`:generateContent`,
-  `:streamGenerateContent`) and the auth-before-routing order are
-  unchanged.
+  gives unrouted paths — and the /v1beta surface admits `x-goog-api-key`
+  / `?key=` credentials even when the action segment is unrecognized,
+  so a typo'd action under a valid key gets that 404 instead of a
+  misleading 401 (Bearer / X-Api-Key semantics unchanged). The two
+  known actions (`:generateContent`, `:streamGenerateContent`) and the
+  auth-before-routing order are unchanged.
+
+- wan2.2 video submits no longer send a duration. DashScope rejects the
+  parameter on the wan2.2 family ("duration customization is not
+  supported") and only after the task id came back, so a submit looked
+  successful while generation silently failed. The encoder now leaves
+  the parameter off for wan2.2 models (case-insensitive prefix match);
+  every other family keeps the knob. The gateway's seconds field still
+  drives budget precheck and task snapshots — only the wire parameter
+  is dropped.
+
+- Test-and-create candidates keep the billing the admin picked. The
+  test-and-create path used to drop the billing declaration on the
+  floor: BillingMode, the image/video pricing tiers, and the audio unit
+  price never reached the insert, so the mapping silently landed on
+  per-token defaults. The declaration now forwards into creation and
+  resolves through the same validation the plain create path uses — an
+  invalid declaration is rejected with 400 before any row lands, and a
+  valid one lands exactly as configured.
+
+- Validation failures explain themselves. Binding errors now name the
+  field by its JSON wire name instead of the Go identifier — a caller
+  that misnames a field sees the exact spelling the API expects — a
+  `oneof` failure spells out the allowed values instead of the bare
+  tag, and multiple failures are all reported where only the first used
+  to surface. The oauth-provider configuration rejection (10015)
+  likewise enumerates which checks failed — required-field blanks,
+  non-absolute endpoints, malformed `extra_authorize_params` (or a
+  reserved key), an invalid `userinfo_token_header` — instead of a
+  bare verdict.
+
+- The compress detector recognizes indented go sub-test results. One of
+  the anchors voting "this is build output" matched `---
+  PASS/FAIL/SKIP:` lines at column zero only, so a go test log whose
+  sub-test result lines carry their indentation no longer counted and
+  the document could be compressed as prose. The anchor now tolerates
+  leading whitespace, like the anchors around it.
+
+- The mobile hamburger names itself, and breakpoint flips no longer
+  strand modal masks. The hamburger's aria-label read the first nav
+  item's label ("Overview") instead of naming the button; it now reads
+  "Menu" in both locales. And the layout's language picker — the only
+  layer that swaps implementation between breakpoints (a modal on
+  desktop, a bottom sheet on mobile) — closed itself only when leaving
+  the mobile branch, so resizing mobile → desktop left an orphan modal
+  mask intercepting every click; both directions of the flip now close
+  the open layers.
 
 ## [0.2.4] - 2026-09-11
 
