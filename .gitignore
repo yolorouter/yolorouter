@@ -46,3 +46,6 @@ gui-test-screenshots/
 
 # Local scratch directory — never part of the source tree.
 .scratch/
+
+# ZCode per-machine tooling state (auto-synced from .gitignore by the platform).
+.zcodeignore
