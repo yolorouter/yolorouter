@@ -47,6 +47,7 @@ export const errcodes: Record<number, string> = {
   15001: 'In-place update is not available in this runtime',
   15002: 'Update failed; see the server log for details',
   15003: 'An update is already in progress or applied; the service is about to restart',
+  15004: 'Not enough disk space for the database backup the upgrade takes; free up disk space and retry',
   11010: 'Custom system prompt is too long',
   11011: 'Custom system prompt must not be empty when enabled',
   11012: 'Custom system prompt was modified concurrently, please refresh and retry',

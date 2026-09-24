@@ -306,9 +306,9 @@ func snapshotCurrentDatabase(sqlitePath, backupPath string) error {
 // substitute a call-recording fake: the real cleanup only reads and deletes,
 // so against an empty or missing directory it is a silent no-op, and no
 // filesystem-shape assertion can detect a call that must not happen. The
-// postgres exemption guard observes the call itself through this seam, and
+// postgres exemption guards observe the call itself through this seam, and
 // every cleanup call site (pre-backup rotation, post-success cleanup, and
-// the update-button wiring to come) must call through it too rather than
+// the update-button preflight) must call through it too rather than
 // growing a private side path around it.
 var cleanupPreMigrationBackups = func(dirPath, keepName string) {
 	entries, err := os.ReadDir(dirPath)

@@ -164,6 +164,20 @@ func runServe(ctx context.Context, args []string) error {
 	// hoisted here only so both consumers hold the same instance.
 	providerSvc := provider.NewProviderService(app.DB, crypto.NewSecretBox(masterKey),
 		providerclient.NewHTTPProviderClient(app.Config.Security.AllowPrivateUpstreams))
+	// The button-layer preflight for the in-app update entry: on sqlite it
+	// rotates old pre-migration backups and refuses an update whose backup
+	// filesystem is too full — BEFORE any download starts, while the
+	// process is still up, instead of after the restart when the startup
+	// migration path below hits the same wall. Other drivers get a
+	// pass-through preflight (postgres is exempt from the button-layer
+	// rotation and precheck, the same exemption the startup path grants).
+	// Built from the sql pool handle because the pin needs the schema
+	// version; the closure re-reads it per run (see NewUpdatePreflight).
+	sqlDB, err := app.DB.DB()
+	if err != nil {
+		return err
+	}
+	updatePreflight := database.NewUpdatePreflight(app.Config.Database.Driver, sqlDB, app.Config.Database.SQLitePath, database.OSFreeSpaceProbe)
 	r, err := router.New(router.Deps{
 		DB:                    app.DB,
 		ProviderMasterKey:     masterKey,
@@ -175,6 +189,7 @@ func runServe(ctx context.Context, args []string) error {
 		ExternalURL:           app.Config.Server.ExternalURL,
 		ProbeQueue:            probeQueue,
 		ProviderSvc:           providerSvc,
+		UpdatePreflight:       updatePreflight,
 	})
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
@@ -190,10 +205,6 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("release build has no embedded frontend: build with `make build-release` (always pairs -tags release with -tags embed), not -tags release alone")
 	}
 
-	sqlDB, err := app.DB.DB()
-	if err != nil {
-		return err
-	}
 	// Schema upgrades reach this point unattended (in-app update restart,
 	// Docker image pull), so migrating goes through MigrateWithBackup: on
 	// SQLite it checks disk space for the backup, snapshots the database

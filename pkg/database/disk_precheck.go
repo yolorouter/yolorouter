@@ -39,9 +39,8 @@ func estimatePeakBackupNeed(dbSize int64) int64 {
 // PrecheckRejectedError is returned by PrecheckMigrationDiskSpace when the
 // filesystem that would hold the pre-migration backup cannot fit one more
 // backup. It carries the exact numbers so callers can show "need about X,
-// only Y free" instead of a generic failure — today the startup failure
-// output, and the update API response once the update entry point is
-// wired to the precheck.
+// only Y free" instead of a generic failure — the startup failure output
+// and the update API response (via NewUpdatePreflight) both render them.
 type PrecheckRejectedError struct {
 	RequiredBytes int64
 	FreeBytes     int64
@@ -56,10 +55,10 @@ func (e *PrecheckRejectedError) Error() string {
 
 // PrecheckMigrationDiskSpace verifies that the filesystem holding the
 // pre-migration backups has room for one more backup, estimated from the
-// SQLite database file size. The startup migration path calls it today,
-// through MigrateWithBackup; the in-app update entry point will call this
-// same function too once its precheck wiring lands, so the estimate and
-// the comparison against free space exist exactly once.
+// SQLite database file size. Both layers call this same function — the
+// startup migration path through MigrateWithBackup, the in-app update
+// entry through NewUpdatePreflight — so the estimate and the comparison
+// against free space exist exactly once.
 //
 // The result is either nil or a *PrecheckRejectedError — never any other
 // error. A probe that cannot answer (unsupported platform, unreadable

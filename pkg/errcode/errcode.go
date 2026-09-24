@@ -115,6 +115,12 @@ const (
 	SystemUpdateUnsupported = 15001 // in-place update is not available in this runtime (container / windows / disabled / non-release build / capability-bearing binary); the version endpoint's update_mode says which
 	SystemUpdateFailed      = 15002 // the update run itself failed (download, checksum, or binary replacement); the server log carries the specific cause
 	SystemUpdateInProgress  = 15003 // an update is already running, or one was applied and the process is restarting; a second run before the restart would overwrite the rollback backup with the new binary
+	// SystemUpdateInsufficientDisk is a refusal BEFORE anything ran, so the
+	// operator can free space and retry with the process still up — distinct
+	// from SystemUpdateFailed, where an update attempt actually failed. The
+	// envelope's data carries the exact numbers (required_bytes, free_bytes,
+	// backup_dir) so the refusal can show them instead of a generic text.
+	SystemUpdateInsufficientDisk = 15004
 
 	// === System internal errors (50001-50099) ===
 	InternalError      = 50001
@@ -215,9 +221,10 @@ var ErrorMessages = map[int]string{
 
 	RequestLogNotFound: "request log not found",
 
-	SystemUpdateUnsupported: "in-place update is not available in this runtime",
-	SystemUpdateFailed:      "update failed; check the server log for details",
-	SystemUpdateInProgress:  "an update is already in progress or applied; the service is about to restart",
+	SystemUpdateUnsupported:      "in-place update is not available in this runtime",
+	SystemUpdateFailed:           "update failed; check the server log for details",
+	SystemUpdateInProgress:       "an update is already in progress or applied; the service is about to restart",
+	SystemUpdateInsufficientDisk: "update refused: not enough disk space for the database backup the upgrade takes; free up disk space and retry",
 
 	InternalError:      "internal error",
 	DatabaseError:      "database error",

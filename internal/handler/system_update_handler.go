@@ -6,13 +6,16 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/selfupdate"
+	"github.com/yolorouter/yolorouter/pkg/database"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 	"github.com/yolorouter/yolorouter/pkg/response"
@@ -22,6 +25,16 @@ import (
 // selfupdate.Apply with the resolved repo/proxy/current version; tests
 // substitute a fake so no network or filesystem is touched.
 type UpdateApplier func(ctx context.Context) (selfupdate.Result, error)
+
+// UpdatePrecheck gates one update attempt before any download starts.
+// Production wires database.NewUpdatePreflight: on sqlite it rotates old
+// pre-migration backups down to the keep cap and then refuses with exact
+// numbers (*database.PrecheckRejectedError) when the backup filesystem
+// cannot fit one more backup — telling the operator BEFORE the upgrade
+// begins, while the process is still up, instead of after the restart
+// when the startup migration path hits the same wall. nil skips the gate
+// entirely (assembly variants without a preflight).
+type UpdatePrecheck func() error
 
 // PostSystemUpdate handles POST /api/admin/system/update.
 //
@@ -35,7 +48,11 @@ type UpdateApplier func(ctx context.Context) (selfupdate.Result, error)
 // success response has been written. In production it is
 // selfupdate.ScheduleRestart (deferred SIGTERM to self → graceful drain →
 // the service manager restarts onto the new binary).
-func PostSystemUpdate(updateMode string, apply UpdateApplier, restart func()) gin.HandlerFunc {
+//
+// precheck (see UpdatePrecheck) runs after the process-wide gate is taken
+// and before apply, so the rotation and the disk probe it performs are
+// serialized against any in-flight update instead of racing one.
+func PostSystemUpdate(updateMode string, precheck UpdatePrecheck, apply UpdateApplier, restart func()) gin.HandlerFunc {
 	// Process-wide update gate. The selfupdate package's file lock only
 	// covers one Apply run: after a successful apply it is released, while
 	// this process keeps reporting the OLD version until the delayed
@@ -59,6 +76,40 @@ func PostSystemUpdate(updateMode string, apply UpdateApplier, restart func()) gi
 		if !gate.CompareAndSwap(updateIdle, updateRunning) {
 			response.ErrorStatus(c, http.StatusConflict, errcode.SystemUpdateInProgress, errcode.GetMessage(errcode.SystemUpdateInProgress))
 			return
+		}
+
+		// The pre-upgrade refusal, before anything is downloaded or
+		// replaced. It carries its own error code (not SystemUpdateFailed:
+		// nothing was attempted) and its own data payload — the exact
+		// required/free numbers, following WriteAdminErrorWithData's
+		// precedent (AccountLoginLocked's locked_until) for the one error
+		// family whose structured details a client must be able to show.
+		// The full text with the human-readable numbers goes to the server
+		// log; the envelope's message is the registry text, which the
+		// console replaces with its localized version.
+		if precheck != nil {
+			if err := precheck(); err != nil {
+				var rejected *database.PrecheckRejectedError
+				if errors.As(err, &rejected) {
+					// Nothing ran, so the gate reopens: the operator frees
+					// space and clicks again against the same process.
+					gate.Store(updateIdle)
+					logger.Warn("system update refused by disk-space precheck", zap.Error(err))
+					middleware.WriteAdminErrorWithData(c, http.StatusBadRequest, errcode.SystemUpdateInsufficientDisk, gin.H{
+						"required_bytes": rejected.RequiredBytes,
+						"free_bytes":     rejected.FreeBytes,
+						"backup_dir":     rejected.BackupDir,
+					})
+					return
+				}
+				// The preflight's only refusal is the rejection above;
+				// anything else is a malfunction of the check itself, and
+				// an informative precheck must not become a new failure
+				// source — the same call the startup path makes for a probe
+				// that cannot answer. Log and proceed; the startup
+				// precheck still guards the backup itself.
+				logger.Warn("disk-space precheck before update failed, continuing", zap.Error(err))
+			}
 		}
 
 		// The confirmed click is the commitment point: once the update is

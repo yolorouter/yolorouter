@@ -155,6 +155,15 @@ type Deps struct {
 	LoopbackBase string
 	// ExternalURL is the public base URL OAuth providers redirect back to.
 	ExternalURL string
+	// UpdatePreflight is the gate POST /api/admin/system/update runs
+	// before any download starts (database.NewUpdatePreflight): on sqlite
+	// it rotates old pre-migration backups and refuses — with exact
+	// numbers — an update whose backup filesystem cannot fit one more
+	// backup; other drivers get a pass-through. Assembled by the caller
+	// (serve) because it needs the config's driver and sqlite path plus
+	// the sql pool handle for the rotation pin, none of which the router
+	// owns. A nil preflight (router tests) simply skips the gate.
+	UpdatePreflight func() error
 }
 
 // New builds the router against the real embedded frontend (web.DistFS,
@@ -473,8 +482,10 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// binary up. Session-protected like every other admin endpoint; the
 	// updateMode gate inside the handler refuses every runtime where an
 	// in-place replacement would be wrong (container, windows, dev build,
-	// updates disabled).
-	protected.POST("/system/update", handler.PostSystemUpdate(updateMode, func(ctx context.Context) (selfupdate.Result, error) {
+	// updates disabled), and the preflight gate refuses — before anything
+	// is downloaded — a sqlite deployment whose backup filesystem cannot
+	// fit the pre-migration backup the post-update restart will take.
+	protected.POST("/system/update", handler.PostSystemUpdate(updateMode, deps.UpdatePreflight, func(ctx context.Context) (selfupdate.Result, error) {
 		return selfupdate.Apply(ctx, selfupdate.Options{
 			Repo:    resolvedRepo,
 			Proxy:   updateCfg.GitHubProxy,
