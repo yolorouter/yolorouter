@@ -544,6 +544,14 @@ write_systemd_system() {
 Description=Yolorouter Service
 After=network-online.target
 Wants=network-online.target
+# Restart rate limiting: without an explicit window, RestartSec=3 keeps the
+# default limit (5 starts per 10s) mathematically unreachable, so a startup
+# loop (e.g. a failed upgrade) restarts forever, rewriting the multi-GB
+# migration backup each round. 5 starts per 300s trips the limit and leaves
+# the unit in failed state for an operator to fix (recover with
+# `systemctl reset-failed && systemctl restart`).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -580,6 +588,12 @@ write_systemd_user() {
 [Unit]
 Description=Yolorouter Service
 After=network-online.target
+# Same rate limiting as the system unit: RestartSec=3 alone makes the default
+# limit unreachable, so a startup loop restarts forever. 5 starts per 300s
+# stops the loop (recover with `systemctl --user reset-failed && systemctl
+# --user restart`).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

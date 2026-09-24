@@ -150,6 +150,31 @@ Windows 上，用管理员身份运行 PowerShell 会装成开机自启的系统
 从[发布页](https://github.com/yolorouter/yolorouter/releases)下载后执行 `./yolorouter serve`
 （Windows 上是 `.\yolorouter.exe serve`）。
 
+#### 给存量安装补上重启限流
+
+新装的系统服务自带一道刹车：如果二进制在启动阶段反复退出——比如磁盘空间不够写
+升级前备份——systemd 会在 5 分钟内最多重启 5 次后停止自动重启，而不是无限循环下去。
+安装器加上这两行之前装好的机器，可以手动补一份同样的保护。先检查有没有：
+
+```bash
+grep StartLimit /etc/systemd/system/yolorouter.service
+```
+
+若没有任何输出，打开 unit 文件——系统级装在
+`/etc/systemd/system/yolorouter.service`，用户级装在
+`~/.config/systemd/user/yolorouter.service`——在 `[Unit]` 段里加两行：
+
+```ini
+StartLimitIntervalSec=300
+StartLimitBurst=5
+```
+
+然后重载配置（`sudo systemctl daemon-reload`；用户级是
+`systemctl --user daemon-reload`）。限流触发后，服务会停在 failed 状态等你处理：
+先解决根因——`journalctl -u yolorouter -e` 能看到它为什么反复退出——再用
+`sudo systemctl reset-failed yolorouter && sudo systemctl restart yolorouter`
+恢复服务（用户级是 `systemctl --user reset-failed yolorouter && systemctl --user restart yolorouter`）。
+
 ### 首次运行
 
 无论用哪种方式启动，首次运行都会生成 `configs/config.yaml`、执行数据库迁移，并在 8080

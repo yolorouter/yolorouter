@@ -151,6 +151,35 @@ Windows では、昇格した PowerShell がブート時に起動するシステ
 先にバックアップされます。素のバイナリがよければ [リリース](https://github.com/yolorouter/yolorouter/releases)
 から取得して `./yolorouter serve` を実行してください（Windows では `.\yolorouter.exe serve`）。
 
+#### 以前のインストールに再起動レート制限を追加
+
+新規インストールのサービスユニットにはブレーキが効いています: バイナリが起動中に
+繰り返し終了する——たとえばアップグレード前バックアップを書くディスク容量が
+足りない——場合、systemd は永久にループする代わりに、5 分以内に 5 回で自動再起動を
+停止します。インストーラがこの行を足す前にインストールした環境でも、同じ保護を
+手動で追加できます。まずあるか確認:
+
+```bash
+grep StartLimit /etc/systemd/system/yolorouter.service
+```
+
+何も表示されなければ、ユニットファイルを開いて——システム全体インストールは
+`/etc/systemd/system/yolorouter.service`、ユーザーインストールは
+`~/.config/systemd/user/yolorouter.service`——`[Unit]` セクションに 2 行を追加:
+
+```ini
+StartLimitIntervalSec=300
+StartLimitBurst=5
+```
+
+設定の再読み込みは `sudo systemctl daemon-reload`（ユーザーインストールは
+`systemctl --user daemon-reload`）。制限が発動すると、ユニットは failed 状態で
+停止したままになります: まず原因を解決してください——
+`journalctl -u yolorouter -e` でループの理由がわかります——その後
+`sudo systemctl reset-failed yolorouter && sudo systemctl restart yolorouter`
+で復旧します（ユーザーインストールは
+`systemctl --user reset-failed yolorouter && systemctl --user restart yolorouter`）。
+
 ### 初回起動
 
 起動方法を問わず、初回実行で `configs/config.yaml` が生成され、マイグレーションが適用され、

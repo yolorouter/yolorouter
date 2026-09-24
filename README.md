@@ -154,6 +154,34 @@ the database is backed up first. Prefer a plain binary? Grab a
 [release](https://github.com/yolorouter/yolorouter/releases) and run
 `./yolorouter serve` (`.\yolorouter.exe serve` on Windows).
 
+#### Restart rate limiting for installs made earlier
+
+New installs get a brake in the service unit: if the binary keeps exiting
+during startup — for example when the disk is too full for the pre-upgrade
+backup — systemd stops restarting it after 5 attempts within 5 minutes instead
+of looping forever. An install made before the installer added those lines can
+get the same protection by hand. Check whether yours has it:
+
+```bash
+grep StartLimit /etc/systemd/system/yolorouter.service
+```
+
+If that prints nothing, open the unit file — `/etc/systemd/system/yolorouter.service`
+for system installs, `~/.config/systemd/user/yolorouter.service` for user
+installs — and add two lines to its `[Unit]` section:
+
+```ini
+StartLimitIntervalSec=300
+StartLimitBurst=5
+```
+
+Then reload (`sudo systemctl daemon-reload`; user installs:
+`systemctl --user daemon-reload`). When the limit trips, the unit stays in
+failed state until you clear it: fix the cause first —
+`journalctl -u yolorouter -e` shows why it was looping — then recover with
+`sudo systemctl reset-failed yolorouter && sudo systemctl restart yolorouter`
+(user installs: `systemctl --user reset-failed yolorouter && systemctl --user restart yolorouter`).
+
 ### First run
 
 Whichever way you start it, the first run generates `configs/config.yaml`,
