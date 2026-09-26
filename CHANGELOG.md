@@ -7,6 +7,62 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Migrations refuse to run without the disk space they need, and
+  pre-migration backups stop piling up. Before taking a snapshot the
+  migrator rotates prior pre-migration backups down to the newest three
+  (pinning the name the new snapshot is about to use), then checks that
+  the backup directory's filesystem holds at least 2.5× the database
+  file, rounded up — probe failures fail open, an exact fit is allowed,
+  a hair under is rejected, and both sizes are spelled out in
+  human-readable form. The refusal lands before any snapshot is taken,
+  and backup/migration failures are wrapped in a sentinel of their own
+  so the exit path can tell a precheck refusal from a broken migration:
+  both now exit with a dedicated code (EX_CONFIG, 78) carrying
+  per-form operator guidance — the cause line first, recovery steps
+  under it — while every other failure keeps exit code 1 and its
+  message untouched. A missing backup directory is a silent no-op now,
+  since first-time upgrades hit the rotation call. PostgreSQL
+  deployments are not subject to the sqlite snapshot math and skip the
+  gate.
+
+- The admin "update now" entry refuses early when the upgrade backup
+  cannot fit. The same disk precheck guards the handler: sqlite
+  deployments first rotate pre-migration backups down to the keep cap,
+  then size the upgrade backup against free space and refuse with a
+  dedicated error code whose response data carries the required and
+  free numbers plus the backup directory; postgres deployments skip
+  rotation and precheck entirely, and the download/replace machinery
+  stays free of database dependencies.
+
+- The post-update restart wait explains itself. The console's inline
+  wait loop is now a state machine: after roughly a minute of silence
+  it shows a slow-migration reassurance line instead of counting
+  quietly, and at the unchanged five-minute budget it keeps the modal
+  open and swaps its body to a diagnostic guide — disk-full and
+  failed-migration causes with a journalctl hint — replacing the old
+  one-line timeout toast. Reopening the update dialog resets any stale
+  timeout state. The 2-second poll pacing and both budgets are
+  unchanged; the new strings landed in both English and Chinese.
+
+- The systemd unit templates rate-limit restarts. Both templates
+  (system and user scope) gain `StartLimitIntervalSec=300` /
+  `StartLimitBurst=5` in the [Unit] section: with `RestartSec=3` the
+  default five-in-ten-seconds window can never accumulate, so a
+  startup loop — an upgrade whose migration aborts on every boot,
+  rewriting the multi-gigabyte backup each round — restarted forever.
+  Five starts within five minutes now trip the limit and leave the
+  unit in failed state for an operator to clear. `Restart=always` and
+  `RestartSec=3` are untouched — the limit bounds a looping unit, not
+  a healthy one — and Windows and launchd installs keep their existing
+  bounded behavior. All three READMEs document how to retrofit the two
+  lines onto installs made before the limit existed (the detection
+  grep, the exact edit, and the daemon-reload + reset-failed
+  recovery).
+
 ## [0.2.5] - 2026-09-24
 
 ### Added
