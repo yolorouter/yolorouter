@@ -36,7 +36,11 @@ func TestSystemdUnitTemplatesCarryRestartRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading scripts/install.sh: %v", err)
 	}
-	src := string(b)
+	// A Windows checkout gets this file with CRLF endings (Git for Windows
+	// defaults to core.autocrlf=true and the repo ships no .gitattributes
+	// pinning it to LF). The extractor below matches `}` exactly, so feed
+	// it LF-only text regardless of the platform that ran the checkout.
+	src := strings.ReplaceAll(string(b), "\r\n", "\n")
 
 	for _, fn := range []string{"write_systemd_system", "write_systemd_user"} {
 		body := shellFunctionBody(t, src, fn)
