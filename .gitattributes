@@ -1,0 +1,11 @@
+# Pin line endings so every platform checks out identical bytes.
+#
+# Git for Windows defaults to core.autocrlf=true, which rewrites LF to CRLF
+# on checkout; the repo previously had nothing overriding that, so Windows CI
+# saw different file bytes than Linux/macOS and a test parsing install.sh
+# line-by-line failed there only (run 36212990558). eol=lf below outranks
+# autocrlf on every platform and kills that whole failure class.
+* text=auto eol=lf
+
+# Windows-native scripts keep their native ending.
+*.ps1 text eol=crlf
