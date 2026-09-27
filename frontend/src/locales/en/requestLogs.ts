@@ -18,6 +18,7 @@ export default {
 
   // Filters
   filterRequestId: 'Find by request ID',
+  filterTraceId: 'Find by trace ID',
   filterModel: 'External model name',
   filterUser: 'Account',
   filterCaller: 'API Key',
@@ -102,6 +103,7 @@ export default {
   sourceBadge: 'Vision fallback',
   fieldSource: 'Request source',
   fieldParentRequest: 'Parent request',
+  fieldTraceId: 'Trace ID',
   allFilterEndpoint: 'All Endpoints',
   filterEndpointGemini: 'Gemini (/v1beta/…)',
   col_cost: 'Cost',

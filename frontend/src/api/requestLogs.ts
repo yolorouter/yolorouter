@@ -6,7 +6,8 @@
 // RequestLogDetail) and the AttemptRecord shape in
 // internal/gateway/types.go. Filter params match the query keys parsed by
 // internal/handler/request_log_handler.go (request_id / api_key_id /
-// model_name / provider_id / status / is_stream / start / end).
+// model_name / provider_id / status / is_stream / w3c_trace_id / start /
+// end). w3c_trace_id is matched exactly (no fuzzy semantics on the wire).
 //
 // CSV export bypasses apiFetch: the response is a UTF-8-BOM text/csv stream,
 // not the JSON envelope, so the regular envelope parser would reject it.
@@ -113,6 +114,9 @@ export interface ImagePricingSnapshot {
 }
 
 export interface RequestLogDetail extends RequestLogRow {
+  /** W3C trace-id from the caller's traceparent header, flattened to "" when
+   *  the request carried no tracing context (or predates the column). */
+  w3c_trace_id: string
   /** The counting rule the characters were metered under ("" when the row carries no audio snapshot). */
   usage_meter: string
   attempts_detail: AttemptRecord[]
@@ -160,6 +164,11 @@ export interface RequestLogListParams {
   provider_id?: number
   status?: StatusClass
   key_prefix?: string
+  /** W3C trace-id exact-match filter; absent = filter off (the backend
+   *  distinguishes "param absent" from "param empty" — an empty value is a
+   *  real constraint matching zero rows — but buildQuery strips empty
+   *  strings, so this page only ever sends non-empty values). */
+  w3c_trace_id?: string
   /** Caller-side request path, matched exactly; a trailing "/" selects the whole subtree. */
   request_path?: string
   /** "" = all rows, "vision_fallback" = describe sub-calls, "caller" = normal requests. */
@@ -202,6 +211,7 @@ export function listRequestLogs(filter: RequestLogListParams): Promise<RequestLo
     source: filter.source,
     is_stream: filter.is_stream,
     cost_known: filter.cost_known,
+    w3c_trace_id: filter.w3c_trace_id,
     start: filter.start,
     end: filter.end,
   })
@@ -301,6 +311,7 @@ export async function exportRequestLogsCSV(filter: Omit<RequestLogListParams, 'p
     source: filter.source,
     is_stream: filter.is_stream,
     cost_known: filter.cost_known,
+    w3c_trace_id: filter.w3c_trace_id,
     start: filter.start,
     end: filter.end,
   })

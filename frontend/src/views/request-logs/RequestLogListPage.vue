@@ -1,8 +1,8 @@
 <!-- frontend/src/views/request-logs/RequestLogListPage.vue
      Request-log list. Server-side paged with a filter set matching what the
      backend handler accepts (request_log_handler.go): request_id /
-     model_name / key_prefix / request_path / api_key_id / provider_id /
-     status_class / is_stream / cost_known / start / end.
+     model_name / key_prefix / w3c_trace_id / request_path / api_key_id /
+     provider_id / status_class / is_stream / cost_known / start / end.
 
      Rows expand for identity/routing detail (full request id, retry
      breakdown, cache tokens); the View button opens the
@@ -35,6 +35,23 @@
             size="small"
             @keyup.enter="onSearch"
             @update:value="onRequestIdInput"
+          >
+            <template #prefix><Search :size="14" /></template>
+          </NInput>
+        </div>
+        <!-- Trace ID lookup: paste a trace-id copied from a tracing system
+             (Langfuse / OTel) and find the matching gateway row. Mirrors the
+             request_id box's style and interaction (grow, clearable,
+             enter-to-search, debounced typing); the backend matches the value
+             exactly, so no wildcard characters are added or needed. -->
+        <div class="filter-item filter-item--grow">
+          <NInput
+            v-model:value="filter.w3c_trace_id"
+            :placeholder="t('requestLogs.filterTraceId')"
+            clearable
+            size="small"
+            @keyup.enter="onSearch"
+            @update:value="onFilterChange"
           >
             <template #prefix><Search :size="14" /></template>
           </NInput>
@@ -234,6 +251,10 @@ const message = useMessage()
 // tuple into RFC3339 strings in buildListParams before sending.
 interface ListFilter {
   request_id: string
+  // W3C trace-id from the caller's traceparent header — an exact-match
+  // lookup, typed/pasted by hand (no URL deep-link ingestion, unlike
+  // request_id / model_name).
+  w3c_trace_id: string
   model_name: string
   key_prefix: string
   api_key_id: number | null
@@ -251,6 +272,7 @@ interface ListFilter {
 }
 const filter = reactive<ListFilter>({
   request_id: '',
+  w3c_trace_id: '',
   model_name: '',
   key_prefix: '',
   api_key_id: null,
@@ -540,6 +562,10 @@ function buildListParams(): RequestLogListParams {
   if (filter.user_id != null) params.user_id = filter.user_id
   if (filter.provider_id != null) params.provider_id = filter.provider_id
   if (filter.status) params.status = filter.status
+  // Exact-match trace-id lookup: the trimmed value goes on the wire verbatim
+  // (no fuzzy wildcard decoration) — the backend applies `=` and treats an
+  // absent param as filter-off.
+  if (filter.w3c_trace_id.trim()) params.w3c_trace_id = filter.w3c_trace_id.trim()
   if (filter.key_prefix.trim()) params.key_prefix = filter.key_prefix.trim()
   if (filter.request_path) params.request_path = filter.request_path
   if (filter.source) params.source = filter.source
@@ -609,6 +635,7 @@ async function onSearch() {
 
 function onReset() {
   filter.request_id = ''
+  filter.w3c_trace_id = ''
   filter.model_name = ''
   filter.key_prefix = ''
   filter.api_key_id = null

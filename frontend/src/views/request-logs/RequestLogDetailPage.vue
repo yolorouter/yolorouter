@@ -69,6 +69,13 @@
               {{ detail.parent_request_id }}
             </RouterLink>
           </NDescriptionsItem>
+          <!-- W3C trace-id the caller's traceparent header carried, rendered
+               only when present (same conditional shape as parent_request_id):
+               requests without tracing context must not grow an empty field,
+               and untraced rows (or pre-column rows) serialize as "". -->
+          <NDescriptionsItem v-if="detail.w3c_trace_id" :label="t('requestLogs.fieldTraceId')">
+            <div class="mono-cell">{{ detail.w3c_trace_id }}</div>
+          </NDescriptionsItem>
            <NDescriptionsItem :label="t('requestLogs.fieldUpstreamEndpoint')" :span="2">
             <div class="mono-cell">{{ detail.upstream_url || '—' }}</div>
           </NDescriptionsItem>

@@ -18,6 +18,7 @@ export default {
 
   // Filters
   filterRequestId: '请求标识精确查找',
+  filterTraceId: 'Trace ID 精确查找',
   filterModel: '对外模型名称',
   filterUser: '归属账号',
   filterCaller: '令牌',
@@ -102,6 +103,7 @@ export default {
   sourceBadge: '视觉回退',
   fieldSource: '请求来源',
   fieldParentRequest: '父请求',
+  fieldTraceId: 'Trace ID',
   allFilterEndpoint: '全部 Endpoint',
   filterEndpointGemini: 'Gemini（/v1beta/…）',
   col_cost: '成本',
