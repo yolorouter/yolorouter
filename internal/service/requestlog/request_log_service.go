@@ -115,7 +115,14 @@ type RequestLogListItem struct {
 // the detail page shows "not recorded" rather than erroring.
 type RequestLogDetail struct {
 	RequestID string `json:"request_id"`
-	APIKeyID  *uint  `json:"api_key_id"`
+	// W3CTraceID is the trace-id half of the caller's W3C traceparent
+	// header, flattened from the nullable column to "" when the caller was
+	// not tracing — the same flattening ParentRequestID uses, so the detail
+	// page can hide the row with a simple v-if. Detail-only on purpose: the
+	// list rows have no trace column to render, so they stay without the
+	// field.
+	W3CTraceID string `json:"w3c_trace_id"`
+	APIKeyID   *uint  `json:"api_key_id"`
 	// Username of the owning account — same resolution as the list rows.
 	Username         string `json:"username"`
 	ModelName        string `json:"model_name"`
@@ -382,6 +389,7 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 	keySwitches, failovers, finalModel := breakdownFromAttempts(attempts, row.ProviderID)
 	detail := &RequestLogDetail{
 		RequestID:              row.RequestID,
+		W3CTraceID:             derefString(row.W3CTraceID),
 		APIKeyID:               row.APIKeyID,
 		Username:               ownerUsernameFor(row.APIKeyID, row.UserID, userNames),
 		ModelName:              row.ModelName,
@@ -456,23 +464,18 @@ func (s *RequestLogService) GetStreamBodyPath(requestID string) (string, error) 
 	return repository.GetStreamBodyPathByRequestID(s.db, requestID)
 }
 
-// ExportRequestLogsCSV walks every page of the filter (PageSize=200, the
-// repository's clamp ceiling) and streams each row as CSV. The UTF-8 BOM is
-// written first so Excel/Sheets auto-detect the encoding and render CJK
-// columns correctly (username / provider_name / model_name may all carry
-// CJK). The csv.Writer is flushed after every page so the HTTP response
-// streams incrementally rather than buffering the whole export in memory.
-//
-// Page-walking — instead of a single un-paginated SELECT — keeps the
-// service's read path on the shared repository.ListRequestLogs, the same
-// code the list endpoint uses. v0.1 admin exports are time-windowed and
-// small enough that the COUNT + N-page overhead is negligible; a streaming
-// cursor can replace this later if export volumes ever justify it.
 // BuildExportRows pulls every row matching filter (keyset pagination so
 // concurrent inserts can't drift the result set) and converts it to the wire
 // DTO. Split from WriteCSVRows so the handler can fail BEFORE committing the
 // HTTP 200 / CSV headers — a mid-pull DB error returns a JSON envelope, not a
-// truncated CSV reported as success.
+// truncated CSV reported as success. (The UTF-8 BOM and the CJK rationale
+// for it are WriteCSVRows's concern and documented there.)
+//
+// Page-walking — instead of a single un-paginated SELECT — keeps the
+// service's read path on the shared repository helpers, the same code the
+// list endpoint uses. v0.1 admin exports are time-windowed and small enough
+// that the per-page overhead is negligible; a streaming cursor can replace
+// this later if export volumes ever justify it.
 func (s *RequestLogService) BuildExportRows(filter *repository.RequestLogFilter) ([]RequestLogListItem, error) {
 	const pageSize = 200
 	var cursor *repository.RequestLogCursor
@@ -587,6 +590,16 @@ func lookupName(id *uint, names map[uint]string) string {
 		return ""
 	}
 	return names[*id]
+}
+
+// derefString flattens a nullable column to "", the convention the wire DTOs
+// use for "absent" so the frontend can branch on the empty string instead of
+// distinguishing null from missing.
+func derefString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 // csvUsageCells renders the usage columns of the CSV as one billing unit per

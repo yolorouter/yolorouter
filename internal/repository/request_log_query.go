@@ -53,7 +53,17 @@ var ValidStatusClasses = map[string]struct{}{
 // dashboard/analytics endpoints simply don't expose those filters yet.
 type RequestLogFilter struct {
 	RequestID string
-	APIKeyID  *uint
+	// W3CTraceID narrows to rows carrying one exact W3C trace-id (the
+	// trace-id half of the caller's traceparent header), so a trace pasted
+	// from any W3C Trace Context compatible system locates its gateway row.
+	// Matched with plain equality: NULL rows (caller sent no usable
+	// traceparent) never match, and no row ever stores an empty id, so an
+	// explicitly-empty filter value matches nothing. That is why the field
+	// is a pointer — nil means "no constraint on this dimension" (param
+	// absent), while a pointer to "" is a real constraint that yields zero
+	// rows, keeping "filter off" distinguishable from "filter by empty".
+	W3CTraceID *string
+	APIKeyID   *uint
 	// UserID narrows to rows owned by one account (the key owner,
 	// denormalized onto request_logs at write time). Unauthenticated audit
 	// rows carry NULL and therefore never match a user filter.
@@ -95,6 +105,9 @@ func (f *RequestLogFilter) applyFilter(db *gorm.DB) *gorm.DB {
 	q := db.Model(&model.RequestLog{})
 	if f.RequestID != "" {
 		q = q.Where("request_id = ?", f.RequestID)
+	}
+	if f.W3CTraceID != nil {
+		q = q.Where("w3c_trace_id = ?", *f.W3CTraceID)
 	}
 	if f.APIKeyID != nil {
 		q = q.Where("api_key_id = ?", *f.APIKeyID)

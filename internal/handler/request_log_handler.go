@@ -187,6 +187,13 @@ func parseRequestLogFilter(c *gin.Context) (repository.RequestLogFilter, bool) {
 		RequestPath: c.Query("request_path"),
 		StatusClass: statusClass,
 	}
+	// GetQuery (not Query) so an absent w3c_trace_id stays "filter off"
+	// (nil) while a present-but-empty value is a real constraint that
+	// matches no row — the repository field's pointer shape exists exactly
+	// to keep those two apart.
+	if v, ok := c.GetQuery("w3c_trace_id"); ok {
+		filter.W3CTraceID = &v
+	}
 	if !applyRequestLogFilterParams(c, &filter) {
 		return repository.RequestLogFilter{}, false
 	}

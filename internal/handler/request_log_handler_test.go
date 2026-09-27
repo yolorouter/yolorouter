@@ -1047,3 +1047,105 @@ func TestListRequestLogsFiltersBySource(t *testing.T) {
 		t.Fatalf("source=garbage status = %d, want 400", w.Code)
 	}
 }
+
+// TestListRequestLogsFiltersByW3CTraceID pins the wire shape of the
+// trace-id filter: the w3c_trace_id query param narrows the list by exact
+// match, a present-but-empty param is a real constraint matching nothing
+// (not "ignore the filter" like an absent param), and the list-row JSON
+// never carries a w3c_trace_id key — the field is detail-only.
+func TestListRequestLogsFiltersByW3CTraceID(t *testing.T) {
+	r, db, _ := newRequestLogTestRouter(t)
+	now := time.Now().UTC()
+	const traceA = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const traceB = "00f067aa0ba902b712d0fbe0f6a5c1b4"
+	seedTraced := func(requestID, traceID string) {
+		t.Helper()
+		id := traceID
+		seedRequestLog(t, db, requestID, now, func(rl *model.RequestLog) { rl.W3CTraceID = &id })
+	}
+	seedTraced("req-traced-a", traceA)
+	seedTraced("req-traced-b", traceB)
+	seedRequestLog(t, db, "req-untraced-1", now, nil)
+	seedRequestLog(t, db, "req-untraced-2", now, nil)
+
+	listByTrace := func(query string) (ids []string, total int64, raw string) {
+		t.Helper()
+		w, env := doJSON(t, r, http.MethodGet, "/api/admin/request-logs"+query, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+		}
+		var page struct {
+			Total int64      `json:"total"`
+			List  []listItem `json:"list"`
+		}
+		if err := json.Unmarshal(env.Data, &page); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for _, it := range page.List {
+			ids = append(ids, it.RequestID)
+		}
+		return ids, page.Total, string(env.Data)
+	}
+
+	// Each known trace-id returns exactly its own row.
+	if ids, total, _ := listByTrace("?w3c_trace_id=" + traceA); total != 1 || len(ids) != 1 || ids[0] != "req-traced-a" {
+		t.Fatalf("w3c_trace_id=%s = (%v, total=%d), want exactly [req-traced-a]", traceA, ids, total)
+	}
+	if ids, total, _ := listByTrace("?w3c_trace_id=" + traceB); total != 1 || len(ids) != 1 || ids[0] != "req-traced-b" {
+		t.Fatalf("w3c_trace_id=%s = (%v, total=%d), want exactly [req-traced-b]", traceB, ids, total)
+	}
+
+	// Unknown trace-id and a present-but-empty param both match nothing —
+	// the empty param is NOT treated as "filter off".
+	if ids, total, _ := listByTrace("?w3c_trace_id=ffffffffffffffffffffffffffffffff"); total != 0 || len(ids) != 0 {
+		t.Fatalf("unknown trace-id = (%v, total=%d), want no rows", ids, total)
+	}
+	if ids, total, _ := listByTrace("?w3c_trace_id="); total != 0 || len(ids) != 0 {
+		t.Fatalf("empty trace-id = (%v, total=%d), want no rows", ids, total)
+	}
+
+	// Absent param = filter off: all 4 seeded rows. Also pin that the
+	// list-row JSON carries no w3c_trace_id key at all (detail-only field).
+	ids, total, raw := listByTrace("")
+	if total != 4 || len(ids) != 4 {
+		t.Fatalf("no trace-id filter = (%v, total=%d), want all 4 seeded rows", ids, total)
+	}
+	if strings.Contains(raw, "w3c_trace_id") {
+		t.Fatalf("list-row JSON must not carry w3c_trace_id, got: %s", raw)
+	}
+}
+
+// TestGetRequestLogDetailReturnsW3CTraceID pins the detail-only trace-id
+// serialization: a traced row surfaces its exact trace-id, an untraced row
+// flattens NULL to "" so the detail page can hide the field with a v-if —
+// the same flattening parent_request_id uses.
+func TestGetRequestLogDetailReturnsW3CTraceID(t *testing.T) {
+	r, db, _ := newRequestLogTestRouter(t)
+	now := time.Now().UTC()
+	const traceA = "4bf92f3577b34da6a3ce929d0e0e4736"
+	id := traceA
+	seedRequestLog(t, db, "req-traced-a", now, func(rl *model.RequestLog) { rl.W3CTraceID = &id })
+	seedRequestLog(t, db, "req-untraced", now, nil)
+
+	fetch := func(requestID string) string {
+		t.Helper()
+		w, env := doJSON(t, r, http.MethodGet, "/api/admin/request-logs/"+requestID, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("detail %s: expected 200, got %d, body: %s", requestID, w.Code, w.Body.String())
+		}
+		var d struct {
+			W3CTraceID string `json:"w3c_trace_id"`
+		}
+		if err := json.Unmarshal(env.Data, &d); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return d.W3CTraceID
+	}
+
+	if got := fetch("req-traced-a"); got != traceA {
+		t.Fatalf("traced row w3c_trace_id = %q, want %q", got, traceA)
+	}
+	if got := fetch("req-untraced"); got != "" {
+		t.Fatalf("untraced row w3c_trace_id = %q, want empty", got)
+	}
+}
