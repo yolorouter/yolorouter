@@ -14,6 +14,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/yolorouter/yolorouter/internal/agentbackfill"
 	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
 	"github.com/yolorouter/yolorouter/internal/keyrecovery"
 	"github.com/yolorouter/yolorouter/internal/pricecatalog"
@@ -403,6 +404,34 @@ func runServe(ctx context.Context, args []string) error {
 	defer func() {
 		retentionCancel()
 		stopRetention()
+	}()
+
+	// The agent-attribution backfill: one idempotent background pass over
+	// the request_logs history, started at boot and self-exiting when done.
+	// Rows written before the agent_client column existed still carry the
+	// caller's masked header snapshot in request_log_bodies, and the pass
+	// re-derives the calling tool's name from that stored capture with the
+	// same pure recognizer the live write path uses — so a backfilled
+	// column can never disagree with the JSON beside it. Only rows whose
+	// agent_client is still NULL and whose snapshot exists are touched,
+	// every update re-checks the NULL guard, and the tool session id is
+	// never backfilled: pre-allowlist snapshots hold the sanitizer's
+	// redaction sentinel in the session headers, which is not an id and
+	// must not be persisted as one. Rounds are small with a pause between
+	// them so a large history drains without competing with the live write
+	// path; whatever the pass cannot attribute (or a failed round leaves
+	// behind) stays NULL, and the next startup's pass rescans exactly that
+	// residue. Started here, after the migration added the column, for the
+	// same reason the loops above wait: a pass against an unmigrated
+	// schema would only fail its first query. Runs on a context derived
+	// from serve's own ctx and is awaited by a deferred cancel + stop so
+	// the goroutine exits before the process does.
+	agentBackfill := agentbackfill.NewTask(agentbackfill.Config{DB: app.DB})
+	backfillCtx, backfillCancel := context.WithCancel(ctx)
+	stopBackfill := agentBackfill.Start(backfillCtx)
+	defer func() {
+		backfillCancel()
+		stopBackfill()
 	}()
 
 	serveErrCh := make(chan error, 1)
