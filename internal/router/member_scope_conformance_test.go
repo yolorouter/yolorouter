@@ -37,6 +37,11 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 
 	// Routes a member must be turned away from entirely.
 	adminOnly := []string{
+		// Tool-session aggregate view over request_logs: cross-account
+		// callers' traffic by construction, same classification as the
+		// request-log audit it derives from.
+		"/api/admin/agent-sessions",
+		"/api/admin/agent-sessions/:sessionId",
 		"/api/admin/models",
 		"/api/admin/models/:id",
 		"/api/admin/models/:id/impact",
@@ -127,7 +132,7 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 	sentinel := regexp.MustCompile(`\bbob\b`)
 
 	for _, path := range adminOnly {
-		concrete := strings.NewReplacer(":id", "1", ":requestId", "req-bob").Replace(path)
+		concrete := strings.NewReplacer(":id", "1", ":requestId", "req-bob", ":sessionId", "sess-bob").Replace(path)
 		w := f.do(t, http.MethodGet, concrete, "", f.aliceCk)
 		if w.Code != http.StatusForbidden {
 			t.Errorf("admin-only %s: member session must get 403, got %d", concrete, w.Code)

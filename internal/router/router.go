@@ -453,6 +453,15 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.GET("/request-logs/:requestId", handler.GetRequestLogDetail(requestLogSvc))
 	protected.GET("/request-logs/:requestId/body/stream", handler.GetRequestLogBodyStream(requestLogSvc, bodiesDir))
 
+	// Tool sessions: the agent_session_id aggregate view over the same
+	// request_logs rows (one group per calling tool's own session marker).
+	// Pure queries — no write path touches them. Admin-only with the same
+	// classification as the request-log audit they derive from (the
+	// member-scope conformance test pins it); a member has no
+	// session-level reading of other callers' traffic.
+	protected.GET("/agent-sessions", handler.GetAgentSessions(requestLogSvc))
+	protected.GET("/agent-sessions/:sessionId", handler.GetAgentSessionDetail(requestLogSvc))
+
 	// Video tasks: read-only admin window over the task domain. The task
 	// row is its own lifecycle record and billing evidence; refreshes
 	// happen on the caller-facing poll path, never as a side effect of an

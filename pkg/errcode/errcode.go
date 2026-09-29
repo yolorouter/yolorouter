@@ -106,12 +106,16 @@ const (
 	// === Relay/gateway errors (14xxx) ===
 	// Gateway responses use the upstream's native wire format and do not go
 	// through the pkg/response / pkg/errcode envelope, so this segment
-	// currently has only one code that is actually used: RequestLogNotFound.
-	// The earlier placeholders RelayModelNotAllowed/RelayUnsupportedField/
-	// RelayUpstreamError/RelayNoAvailableProvider were never referenced by
+	// currently has only two codes that are actually used:
+	// RequestLogNotFound and AgentSessionNotFound. The earlier placeholders
+	// RelayModelNotAllowed/RelayUnsupportedField/RelayUpstreamError/
+	// RelayNoAvailableProvider were never referenced by
 	// internal/relay (the relay package hardcodes OpenAI error strings
 	// directly), were dead code, and have been removed.
 	RequestLogNotFound = 14005 // request log detail query, id does not exist
+	// Tool-session detail query (the agent_session_id aggregate view over
+	// request_logs), session id matched no rows.
+	AgentSessionNotFound = 14006
 
 	// === Self-update errors (15xxx) ===
 	SystemUpdateUnsupported = 15001 // in-place update is not available in this runtime (container / windows / disabled / non-release build / capability-bearing binary); the version endpoint's update_mode says which
@@ -223,7 +227,8 @@ var ErrorMessages = map[int]string{
 	UserUsernameTaken:       "username already taken",
 	UserDisabled:            "target user is disabled",
 
-	RequestLogNotFound: "request log not found",
+	RequestLogNotFound:   "request log not found",
+	AgentSessionNotFound: "agent session not found",
 
 	SystemUpdateUnsupported:      "in-place update is not available in this runtime",
 	SystemUpdateFailed:           "update failed; check the server log for details",
@@ -319,7 +324,8 @@ var (
 	ErrUserUsernameTaken       = errors.New(ErrorMessages[UserUsernameTaken])
 	ErrUserDisabled            = errors.New(ErrorMessages[UserDisabled])
 
-	ErrRequestLogNotFound = errors.New(ErrorMessages[RequestLogNotFound])
+	ErrRequestLogNotFound   = errors.New(ErrorMessages[RequestLogNotFound])
+	ErrAgentSessionNotFound = errors.New(ErrorMessages[AgentSessionNotFound])
 )
 
 // GetMessage returns the message for the given error code.
