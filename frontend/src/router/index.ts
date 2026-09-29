@@ -11,6 +11,8 @@ import ModelCostDetailPage from '../views/costs/ModelCostDetailPage.vue'
 import ProviderCostDetailPage from '../views/costs/ProviderCostDetailPage.vue'
 import RequestLogListPage from '../views/request-logs/RequestLogListPage.vue'
 import RequestLogDetailPage from '../views/request-logs/RequestLogDetailPage.vue'
+import AgentSessionListPage from '../views/agent-sessions/AgentSessionListPage.vue'
+import AgentSessionDetailPage from '../views/agent-sessions/AgentSessionDetailPage.vue'
 import ProviderListPage from '../views/providers/ProviderListPage.vue'
 import ProviderDetailPage from '../views/providers/ProviderDetailPage.vue'
 import ModelListPage from '../views/models/ModelListPage.vue'
@@ -49,6 +51,11 @@ export const router = createRouter({
         { path: 'costs/providers/:id(\\d+)', component: ProviderCostDetailPage },
         { path: 'request-logs', component: RequestLogListPage },
         { path: 'request-logs/:requestId', component: RequestLogDetailPage },
+        // Tool-session aggregate views — admin-only like the request-log
+        // routes above them (no meta.memberAllowed), matching the backend's
+        // protected-group registration for /api/admin/agent-sessions.
+        { path: 'agent-sessions', component: AgentSessionListPage },
+        { path: 'agent-sessions/:sessionId', component: AgentSessionDetailPage },
         { path: 'providers', component: ProviderListPage },
         { path: 'providers/:id', component: ProviderDetailPage },
         { path: 'models', component: ModelListPage },

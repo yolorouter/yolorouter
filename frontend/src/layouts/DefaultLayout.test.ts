@@ -103,6 +103,7 @@ async function mountLayout(locale: 'en' | 'zh-CN', role: 'admin' | 'member' = 'm
       '/',
       '/analytics',
       '/request-logs',
+      '/agent-sessions',
       '/costs',
       '/providers',
       '/models',

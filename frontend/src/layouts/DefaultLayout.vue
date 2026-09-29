@@ -180,6 +180,7 @@ import {
   LayoutGrid,
   Gauge,
   Menu,
+  MessagesSquare,
   Receipt,
   ScrollText,
   Settings,
@@ -283,6 +284,11 @@ const navItems = computed<NavItem[]>(() => {
     { key: 'group-analytics', label: t('nav.groupAnalytics'), group: true },
     { key: 'usage', label: t('nav.usage'), icon: BarChart3, to: '/analytics' },
     { key: 'log-audit', label: t('nav.logAudit'), icon: ScrollText, to: '/request-logs' },
+    // Tool-session aggregate view — sits next to Log Audit in the analytics
+    // group because it answers the same audit questions one level up (per
+    // calling-tool session instead of per request). Admin-only branch only:
+    // the member surface above is untouched, matching the route guard.
+    { key: 'agent-sessions', label: t('nav.agentSessions'), icon: MessagesSquare, to: '/agent-sessions' },
     { key: 'cost-stats', label: t('nav.costStats'), icon: Receipt, to: '/costs' },
 
     { key: 'group-models', label: t('nav.groupModels'), group: true },

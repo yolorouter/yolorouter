@@ -6,6 +6,7 @@ export default {
   groupAnalytics: 'Analytics',
   usage: 'Usage',
   logAudit: 'Log Audit',
+  agentSessions: 'Tool Sessions',
   costStats: 'Cost Statistics',
   groupModels: 'Model Management',
   providers: 'Providers',
