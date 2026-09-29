@@ -117,6 +117,14 @@ export interface RequestLogDetail extends RequestLogRow {
   /** W3C trace-id from the caller's traceparent header, flattened to "" when
    *  the request carried no tracing context (or predates the column). */
   w3c_trace_id: string
+  /** Normalized calling-tool name (claude-code / codex / …), flattened to ""
+   *  when the recognizer found no agent signature (or the row predates the
+   *  column). See utils/agentClient.ts for the enum mirror. */
+  agent_client: string
+  /** The calling tool's own session identifier (NOT the admin login
+   *  session), flattened the same way. "" whenever agent_client is "" —
+   *  the recognizer never yields a session without a client. */
+  agent_session_id: string
   /** The counting rule the characters were metered under ("" when the row carries no audio snapshot). */
   usage_meter: string
   attempts_detail: AttemptRecord[]
@@ -173,6 +181,10 @@ export interface RequestLogListParams {
   request_path?: string
   /** "" = all rows, "vision_fallback" = describe sub-calls, "caller" = normal requests. */
   source?: string
+  /** Normalized calling-tool name (claude-code / codex / …), matched exactly.
+   *  The value set is the gateway recognizer's client enum — see
+   *  utils/agentClient.ts, the frontend mirror of that enum. */
+  agent_client?: string
   is_stream?: boolean
   cost_known?: boolean
   start?: string
@@ -209,6 +221,7 @@ export function listRequestLogs(filter: RequestLogListParams): Promise<RequestLo
     key_prefix: filter.key_prefix,
     request_path: filter.request_path,
     source: filter.source,
+    agent_client: filter.agent_client,
     is_stream: filter.is_stream,
     cost_known: filter.cost_known,
     w3c_trace_id: filter.w3c_trace_id,
@@ -309,6 +322,7 @@ export async function exportRequestLogsCSV(filter: Omit<RequestLogListParams, 'p
     key_prefix: filter.key_prefix,
     request_path: filter.request_path,
     source: filter.source,
+    agent_client: filter.agent_client,
     is_stream: filter.is_stream,
     cost_known: filter.cost_known,
     w3c_trace_id: filter.w3c_trace_id,

@@ -1,8 +1,9 @@
 <!-- frontend/src/views/request-logs/RequestLogListPage.vue
      Request-log list. Server-side paged with a filter set matching what the
      backend handler accepts (request_log_handler.go): request_id /
-     model_name / key_prefix / w3c_trace_id / request_path / api_key_id /
-     provider_id / status_class / is_stream / cost_known / start / end.
+     model_name / key_prefix / w3c_trace_id / agent_client / request_path /
+     api_key_id / provider_id / status_class / is_stream / cost_known /
+     start / end.
 
      Rows expand for identity/routing detail (full request id, retry
      breakdown, cache tokens); the View button opens the
@@ -142,6 +143,20 @@
           width="100%"
           @update:value="onSourceChange"
         />
+        <!-- Agent-client filter: which calling tool sent the request
+             (claude-code / codex / …), recognized from the request's
+             User-Agent / dedicated headers server-side. Distinct from the
+             Source filter above (caller vs vision-fallback sub-call) —
+             different question, different param (agent_client). Options are
+             the recognizer's closed client enum. -->
+        <FilterSelectField
+          :label="t('requestLogs.filterAgentClient')"
+          :value="filter.agent_client"
+          :options="agentClientOptions"
+          :placeholder="t('requestLogs.allFilterAgentClient')"
+          width="100%"
+          @update:value="onAgentClientChange"
+        />
         <div class="filter-item filter-item--range">
           <!-- Desktop: a single datetimerange picker. On mobile the range
                variant is too wide to fit, so it's split into two standalone
@@ -233,6 +248,7 @@ import { formatMicros, fromMicros } from '../../utils/money'
 import { formatImagePrice } from '../../utils/imagePriceSummary'
 import { formatYuan } from '../../utils/format'
 import { columnTitle } from '../../utils/columnTitle'
+import { AGENT_CLIENTS, agentClientLabelKey } from '../../utils/agentClient'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
@@ -269,6 +285,10 @@ interface ListFilter {
   // "" would double as "all" and "normal", so the wire values are explicit:
   // null = all, 'caller' = normal requests, 'vision_fallback' = sub-calls.
   source: 'caller' | 'vision_fallback' | null
+  // Calling tool recognized from the request's agent signature
+  // (User-Agent prefix / dedicated headers); null = all tools. Values are
+  // the recognizer's closed enum — see utils/agentClient.ts.
+  agent_client: string | null
 }
 const filter = reactive<ListFilter>({
   request_id: '',
@@ -283,6 +303,7 @@ const filter = reactive<ListFilter>({
   cost_known: null,
   request_path: null,
   source: null,
+  agent_client: null,
 })
 // Stream filter UI value. null means "no filter" (cleared select, matches
 // the placeholder's "all streams" wording); 'stream' / 'non-stream' map to
@@ -393,6 +414,18 @@ const sourceOptions = computed<SelectOption[]>(() => ([
   { label: t('requestLogs.sourceCaller'), value: 'caller' },
   { label: t('requestLogs.sourceVisionFallback'), value: 'vision_fallback' },
 ]))
+
+// Agent-client options mirror the gateway recognizer's client enum
+// (utils/agentClient.ts) — the exact set of tool names the backend can
+// write into request_logs.agent_client. Values are the enum strings
+// themselves (exact match on the wire); labels are localized product
+// names, identical across locales but still routed through t().
+const agentClientOptions = computed<SelectOption[]>(() =>
+  AGENT_CLIENTS.map((client) => ({
+    label: t(agentClientLabelKey(client)),
+    value: client,
+  })),
+)
 
 const endpointOptions = computed<SelectOption[]>(() => ([
   { label: '/v1/chat/completions', value: '/v1/chat/completions' },
@@ -569,6 +602,9 @@ function buildListParams(): RequestLogListParams {
   if (filter.key_prefix.trim()) params.key_prefix = filter.key_prefix.trim()
   if (filter.request_path) params.request_path = filter.request_path
   if (filter.source) params.source = filter.source
+  // Agent-client filter is exact-match too: the value is one of the
+  // recognizer's enum strings (no decoration), absent = filter off.
+  if (filter.agent_client) params.agent_client = filter.agent_client
   if (filter.is_stream != null) params.is_stream = filter.is_stream
   if (filter.cost_known != null) params.cost_known = filter.cost_known
   // start / end are independent bounds — on mobile the user may set only one.
@@ -647,6 +683,7 @@ function onReset() {
   costSelect.value = null
   filter.request_path = null
   filter.source = null
+  filter.agent_client = null
   startTime.value = null
   endTime.value = null
   // Drop the verbatim-no-trim override too, so post-reset typed searches
@@ -692,6 +729,13 @@ function onEndpointChange(v: string | null) {
 
 function onSourceChange(v: 'caller' | 'vision_fallback' | null) {
   filter.source = v
+  void onSearch()
+}
+
+// Same controlled-select shape as onSourceChange: the value is already the
+// enum string the backend matches (or null = cleared = filter off).
+function onAgentClientChange(v: string | null) {
+  filter.agent_client = v
   void onSearch()
 }
 

@@ -156,6 +156,10 @@ function detailFixture(w3cTraceId: string): RequestLogDetail {
     duration_ms: 123,
     created_at: '2026-09-27T00:00:00Z',
     w3c_trace_id: w3cTraceId,
+    // Agent attribution flattened the same way NULL is for trace-ids: ""
+    // means the recognizer found no agent signature (or a pre-column row).
+    agent_client: '',
+    agent_session_id: '',
     usage_meter: '',
     attempts_detail: [],
     settled_input_price: null,

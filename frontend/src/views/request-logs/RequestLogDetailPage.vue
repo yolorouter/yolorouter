@@ -76,6 +76,17 @@
           <NDescriptionsItem v-if="detail.w3c_trace_id" :label="t('requestLogs.fieldTraceId')">
             <div class="mono-cell">{{ detail.w3c_trace_id }}</div>
           </NDescriptionsItem>
+          <!-- Agent attribution: which calling tool sent the request and its
+               own session id (the tool's, not the admin login session).
+               Same conditional shape as the trace-id field above — a request
+               from a non-agent caller (or a pre-column row) serializes both
+               as "" and must not grow empty fields. -->
+          <NDescriptionsItem v-if="detail.agent_client" :label="t('requestLogs.fieldAgentClient')">
+            {{ formatAgentClient(detail.agent_client) }}
+          </NDescriptionsItem>
+          <NDescriptionsItem v-if="detail.agent_session_id" :label="t('requestLogs.fieldAgentSessionId')">
+            <div class="mono-cell">{{ detail.agent_session_id }}</div>
+          </NDescriptionsItem>
            <NDescriptionsItem :label="t('requestLogs.fieldUpstreamEndpoint')" :span="2">
             <div class="mono-cell">{{ detail.upstream_url || '—' }}</div>
           </NDescriptionsItem>
@@ -352,6 +363,7 @@ import { formatMicros } from '../../utils/money'
 import { columnTitle } from '../../utils/columnTitle'
 import { copyToClipboard } from '../../utils/clipboard'
 import { SKIP_REASON_KEYS } from '../../utils/compressSkipReason'
+import { agentClientLabelKey } from '../../utils/agentClient'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
@@ -514,6 +526,15 @@ function formatSkipReason(code: string): string {
 }
 
 // ---------- Render helpers ----------
+
+// The agent-client field shows the tool's display name (same labels as the
+// list page's filter dropdown). A value outside the enum — a newer
+// gateway's client, or a hand-edited row — has no label and falls back to
+// the raw value: an unknown tool name is still the truth about the row.
+function formatAgentClient(client: string): string {
+  const key = agentClientLabelKey(client)
+  return key ? t(key) : client
+}
 
 function formatTimeFull(iso: string): string {
   // Long locale-aware format for the detail page; the list page uses the

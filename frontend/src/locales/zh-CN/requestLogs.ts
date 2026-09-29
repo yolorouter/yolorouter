@@ -104,6 +104,24 @@ export default {
   fieldSource: '请求来源',
   fieldParentRequest: '父请求',
   fieldTraceId: 'Trace ID',
+  // Agent attribution: which calling tool sent the request (recognized
+  // server-side from User-Agent / dedicated headers). Distinct from the
+  // Source filter (caller vs vision-fallback sub-call).
+  filterAgentClient: '客户端工具',
+  allFilterAgentClient: '全部客户端工具',
+  fieldAgentClient: '客户端工具',
+  fieldAgentSessionId: '工具会话 ID',
+  // Labels for the recognizer's client enum. Proper nouns, identical in
+  // every locale, routed through t() anyway per the i18n rule.
+  agentClientClaudeCode: 'Claude Code',
+  agentClientCodex: 'Codex',
+  agentClientOpencode: 'OpenCode',
+  agentClientGeminiCli: 'Gemini CLI',
+  agentClientQwenCode: 'Qwen Code',
+  agentClientCrush: 'Crush',
+  agentClientCodewhale: 'CodeWhale',
+  agentClientCherryStudio: 'Cherry Studio',
+  agentClientPi: 'pi',
   allFilterEndpoint: '全部 Endpoint',
   filterEndpointGemini: 'Gemini（/v1beta/…）',
   col_cost: '成本',

@@ -104,6 +104,24 @@ export default {
   fieldSource: 'Request source',
   fieldParentRequest: 'Parent request',
   fieldTraceId: 'Trace ID',
+  // Agent attribution: which calling tool sent the request (recognized
+  // server-side from User-Agent / dedicated headers). Distinct from the
+  // Source filter (caller vs vision-fallback sub-call).
+  filterAgentClient: 'Client Tool',
+  allFilterAgentClient: 'All Client Tools',
+  fieldAgentClient: 'Client Tool',
+  fieldAgentSessionId: 'Tool Session ID',
+  // Filter/dropdown labels for the recognizer's client enum. Proper nouns,
+  // identical in every locale, routed through t() anyway per the i18n rule.
+  agentClientClaudeCode: 'Claude Code',
+  agentClientCodex: 'Codex',
+  agentClientOpencode: 'OpenCode',
+  agentClientGeminiCli: 'Gemini CLI',
+  agentClientQwenCode: 'Qwen Code',
+  agentClientCrush: 'Crush',
+  agentClientCodewhale: 'CodeWhale',
+  agentClientCherryStudio: 'Cherry Studio',
+  agentClientPi: 'pi',
   allFilterEndpoint: 'All Endpoints',
   filterEndpointGemini: 'Gemini (/v1beta/…)',
   col_cost: 'Cost',
