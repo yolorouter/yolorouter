@@ -122,7 +122,17 @@ type RequestLogDetail struct {
 	// list rows have no trace column to render, so they stay without the
 	// field.
 	W3CTraceID string `json:"w3c_trace_id"`
-	APIKeyID   *uint  `json:"api_key_id"`
+	// AgentClient is the normalized name of the coding-agent tool that made
+	// the request, flattened from the nullable column to "" when no tool
+	// identified itself — the same flattening W3CTraceID uses, so the
+	// detail page hides the rows with a simple v-if. Detail-only on
+	// purpose: the list rows have no agent columns to render.
+	AgentClient string `json:"agent_client"`
+	// AgentSessionID is the calling tool's own session identifier, flattened
+	// the same way. "" whenever AgentClient is "" — the recognizer never
+	// yields a session without a client.
+	AgentSessionID string `json:"agent_session_id"`
+	APIKeyID       *uint  `json:"api_key_id"`
 	// Username of the owning account — same resolution as the list rows.
 	Username         string `json:"username"`
 	ModelName        string `json:"model_name"`
@@ -390,6 +400,8 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 	detail := &RequestLogDetail{
 		RequestID:              row.RequestID,
 		W3CTraceID:             derefString(row.W3CTraceID),
+		AgentClient:            derefString(row.AgentClient),
+		AgentSessionID:         derefString(row.AgentSessionID),
 		APIKeyID:               row.APIKeyID,
 		Username:               ownerUsernameFor(row.APIKeyID, row.UserID, userNames),
 		ModelName:              row.ModelName,

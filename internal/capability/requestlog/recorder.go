@@ -46,6 +46,8 @@ type View interface {
 	ParentRequestID() string
 	UpstreamURL() string
 	W3CTraceID() string
+	AgentClient() string
+	AgentSessionID() string
 
 	RequestHeaders() []byte
 	RequestBody() []byte
@@ -99,6 +101,18 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 	if id := view.W3CTraceID(); id != "" {
 		traceIDPtr = &id
 	}
+	// The agent columns are attribution, not observation either: each empty
+	// stays SQL NULL (same pointer treatment as the trace-id), because a
+	// stored empty string would read as a value the agent filters would
+	// match on. The session id is written only alongside a recognized
+	// client — the recognizer never yields one without the other.
+	var agentClientPtr, agentSessionIDPtr *string
+	if client := view.AgentClient(); client != "" {
+		agentClientPtr = &client
+	}
+	if session := view.AgentSessionID(); session != "" {
+		agentSessionIDPtr = &session
+	}
 
 	// Compression savings only mean something if the request actually reached an
 	// upstream. One that compressed a body and was then rejected before any
@@ -113,6 +127,8 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 	row := &model.RequestLog{
 		RequestID:                        view.RequestID(),
 		W3CTraceID:                       traceIDPtr,
+		AgentClient:                      agentClientPtr,
+		AgentSessionID:                   agentSessionIDPtr,
 		APIKeyID:                         &apiKeyID,
 		UserID:                           userIDPtr,
 		ModelName:                        view.OriginalModel(),

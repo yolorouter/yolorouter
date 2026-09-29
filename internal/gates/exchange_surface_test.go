@@ -54,6 +54,8 @@ func TestExchangeExportsReadersOnly(t *testing.T) {
 	// names where to think, not just what broke.
 	want := map[string]bool{
 		"APIKeyID":                   true,
+		"AgentClient":                true,
+		"AgentSessionID":             true,
 		"AuthCredential":             true,
 		"CallSource":                 true,
 		"CandidateMaxOutput":         true,

@@ -26,7 +26,25 @@ type RequestLog struct {
 	// authentication before the kernel, and rows that predate the column
 	// all read NULL.
 	W3CTraceID *string `gorm:"column:w3c_trace_id" json:"w3c_trace_id"`
-	APIKeyID   *uint   `gorm:"column:api_key_id" json:"api_key_id"`
+	// AgentClient is the normalized name of the coding-agent tool that made
+	// the request (claude-code, codex, opencode, ...), promoted from the
+	// captured header snapshot to its own queryable column so logs can be
+	// filtered and grouped by calling tool. It is written only when the
+	// tool's own signature identified it — dedicated x- headers first, a
+	// User-Agent prefix from the known table as the fallback — and the
+	// gateway never guesses, so a non-NULL value always means "this
+	// caller's tool said who it is"; generic SDK and plain HTTP callers
+	// read NULL.
+	AgentClient *string `gorm:"column:agent_client" json:"agent_client"`
+	// AgentSessionID is the calling tool's own session identifier, taken
+	// from the session-header chain whenever a tool was recognized. It is
+	// the tool's task marker, not a gateway login session. NULL whenever
+	// AgentClient is NULL, and on rows whose snapshot predates the
+	// sanitizer's tool-session allowlist: those header values were masked
+	// before capture and cannot be recovered, so history keeps NULL rather
+	// than a redaction sentinel.
+	AgentSessionID *string `gorm:"column:agent_session_id" json:"agent_session_id"`
+	APIKeyID       *uint   `gorm:"column:api_key_id" json:"api_key_id"`
 	// UserID is the owner of the API key that made the request, denormalized
 	// at write time so per-user statistics never need a JOIN through
 	// api_keys. New unauthenticated audit rows (APIKeyID NULL) carry NULL —

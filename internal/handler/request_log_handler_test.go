@@ -1149,3 +1149,111 @@ func TestGetRequestLogDetailReturnsW3CTraceID(t *testing.T) {
 		t.Fatalf("untraced row w3c_trace_id = %q, want empty", got)
 	}
 }
+
+// TestListRequestLogsFiltersByAgentClient pins the wire shape of the
+// client-tool filter: the agent_client query param narrows the list by exact
+// match, a present-but-empty param is a real constraint matching nothing
+// (not "ignore the filter" like an absent param), and the list-row JSON
+// never carries an agent_client or agent_session_id key — those fields are
+// detail-only, the list has no agent columns to render.
+func TestListRequestLogsFiltersByAgentClient(t *testing.T) {
+	r, db, _ := newRequestLogTestRouter(t)
+	now := time.Now().UTC()
+	seedAttributed := func(requestID, client string) {
+		t.Helper()
+		c := client
+		seedRequestLog(t, db, requestID, now, func(rl *model.RequestLog) { rl.AgentClient = &c })
+	}
+	seedAttributed("req-agent-claude", "claude-code")
+	seedAttributed("req-agent-opencode", "opencode")
+	seedRequestLog(t, db, "req-agent-unattributed-1", now, nil)
+	seedRequestLog(t, db, "req-agent-unattributed-2", now, nil)
+
+	listByClient := func(query string) (ids []string, total int64, raw string) {
+		t.Helper()
+		w, env := doJSON(t, r, http.MethodGet, "/api/admin/request-logs"+query, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+		}
+		var page struct {
+			Total int64      `json:"total"`
+			List  []listItem `json:"list"`
+		}
+		if err := json.Unmarshal(env.Data, &page); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for _, it := range page.List {
+			ids = append(ids, it.RequestID)
+		}
+		return ids, page.Total, string(env.Data)
+	}
+
+	// Each known tool name returns exactly its own rows.
+	if ids, total, _ := listByClient("?agent_client=claude-code"); total != 1 || len(ids) != 1 || ids[0] != "req-agent-claude" {
+		t.Fatalf("agent_client=claude-code = (%v, total=%d), want exactly [req-agent-claude]", ids, total)
+	}
+	if ids, total, _ := listByClient("?agent_client=opencode"); total != 1 || len(ids) != 1 || ids[0] != "req-agent-opencode" {
+		t.Fatalf("agent_client=opencode = (%v, total=%d), want exactly [req-agent-opencode]", ids, total)
+	}
+
+	// An unknown tool name and a present-but-empty param both match
+	// nothing — the empty param is NOT treated as "filter off".
+	if ids, total, _ := listByClient("?agent_client=codewhale"); total != 0 || len(ids) != 0 {
+		t.Fatalf("unknown agent_client = (%v, total=%d), want no rows", ids, total)
+	}
+	if ids, total, _ := listByClient("?agent_client="); total != 0 || len(ids) != 0 {
+		t.Fatalf("empty agent_client = (%v, total=%d), want no rows", ids, total)
+	}
+
+	// Absent param = filter off: all 4 seeded rows. Also pin that the
+	// list-row JSON carries no agent key at all (detail-only fields).
+	ids, total, raw := listByClient("")
+	if total != 4 || len(ids) != 4 {
+		t.Fatalf("no agent_client filter = (%v, total=%d), want all 4 seeded rows", ids, total)
+	}
+	if strings.Contains(raw, "agent_client") || strings.Contains(raw, "agent_session_id") {
+		t.Fatalf("list-row JSON must not carry agent fields, got: %s", raw)
+	}
+}
+
+// TestGetRequestLogDetailReturnsAgentAttribution pins the detail-only agent
+// serialization: an attributed row surfaces its exact tool name and session
+// id, an unattributed row flattens both NULLs to "" so the detail page can
+// hide the rows with a v-if — the same flattening w3c_trace_id uses.
+func TestGetRequestLogDetailReturnsAgentAttribution(t *testing.T) {
+	r, db, _ := newRequestLogTestRouter(t)
+	now := time.Now().UTC()
+	const (
+		client  = "claude-code"
+		session = "3f9d2c81-6a54-4d0f-9a3e-2b1c8d7e5a4f"
+	)
+	c, s := client, session
+	seedRequestLog(t, db, "req-agent-attributed", now, func(rl *model.RequestLog) {
+		rl.AgentClient = &c
+		rl.AgentSessionID = &s
+	})
+	seedRequestLog(t, db, "req-agent-unattributed", now, nil)
+
+	fetch := func(requestID string) (client, session string) {
+		t.Helper()
+		w, env := doJSON(t, r, http.MethodGet, "/api/admin/request-logs/"+requestID, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("detail %s: expected 200, got %d, body: %s", requestID, w.Code, w.Body.String())
+		}
+		var d struct {
+			AgentClient    string `json:"agent_client"`
+			AgentSessionID string `json:"agent_session_id"`
+		}
+		if err := json.Unmarshal(env.Data, &d); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return d.AgentClient, d.AgentSessionID
+	}
+
+	if gotClient, gotSession := fetch("req-agent-attributed"); gotClient != client || gotSession != session {
+		t.Fatalf("attributed row agent fields = (%q, %q), want (%q, %q)", gotClient, gotSession, client, session)
+	}
+	if gotClient, gotSession := fetch("req-agent-unattributed"); gotClient != "" || gotSession != "" {
+		t.Fatalf("unattributed row agent fields = (%q, %q), want empty", gotClient, gotSession)
+	}
+}

@@ -198,6 +198,14 @@ type Exchange struct {
 	// value the snapshot was captured with. "" when the caller sent no
 	// traceparent or sent one the strict parser refuses.
 	w3cTraceID string
+	// agentClient / agentSessionID are the calling coding-agent tool's
+	// normalized name and its own session id, recognized once from the same
+	// masked snapshot (AgentFromHeaderSnapshot) and held for the same
+	// reason as the trace-id: every read — the audit row included — sees
+	// the values the snapshot was captured with. Both "" when no known
+	// tool identified itself.
+	agentClient    string
+	agentSessionID string
 	// payloadLog is the admitted payload's policy for its own bodies — which
 	// may be persisted, how large each may be, and how to render them — read
 	// once at admission and enforced by the kernel before anything records
@@ -410,6 +418,17 @@ func (rc *Exchange) RequestHeaders() []byte { return rc.requestHeaders }
 // tracing (or sent an unusable traceparent); an id is never synthesized, so
 // the audit row's column reads as "the caller was tracing" and nothing else.
 func (rc *Exchange) W3CTraceID() string { return rc.w3cTraceID }
+
+// AgentClient is the normalized name of the calling coding-agent tool,
+// recognized once at Handle entry from the masked header snapshot. "" means
+// no known tool identified itself; a name is never guessed, so the audit
+// row's column reads as "the caller's tool said who it is" and nothing else.
+func (rc *Exchange) AgentClient() string { return rc.agentClient }
+
+// AgentSessionID is the calling tool's own session identifier, read from the
+// session-header chain of the same masked snapshot. "" whenever AgentClient
+// is "" — a session id without a recognized tool is not attributed.
+func (rc *Exchange) AgentSessionID() string { return rc.agentSessionID }
 
 // RequestBody is the caller's body, verbatim.
 func (rc *Exchange) RequestBody() []byte { return rc.bodies.Request() }

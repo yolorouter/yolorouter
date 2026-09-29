@@ -386,6 +386,11 @@ func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 		// header capture stored beside it. Absent or unparsable reads "",
 		// which the row stores as NULL — parsing never affects the request.
 		rc.w3cTraceID = traceIDFromHeaderSnapshot(rc.requestHeaders)
+		// The agent attribution is recognized from the same masked snapshot
+		// for the same reason: the audit row's columns and the stored header
+		// capture cannot disagree. No recognizable signature reads "", which
+		// the row stores as NULL — recognition never affects the request.
+		rc.agentClient, rc.agentSessionID = AgentFromHeaderSnapshot(rc.requestHeaders)
 	}
 	// Admissions gate the exchange before any work is done on its behalf.
 	// Whatever they take lands in held (declared with the conclude defer

@@ -63,7 +63,15 @@ type RequestLogFilter struct {
 	// absent), while a pointer to "" is a real constraint that yields zero
 	// rows, keeping "filter off" distinguishable from "filter by empty".
 	W3CTraceID *string
-	APIKeyID   *uint
+	// AgentClient narrows to rows attributed to one coding-agent tool name
+	// (claude-code, codex, opencode, ...). Matched with plain equality:
+	// NULL rows (no known tool identified itself) never match, and no row
+	// ever stores an empty name, so an explicitly-empty filter value
+	// matches nothing. Pointer-shaped for the same reason as W3CTraceID —
+	// nil is "filter off" while a pointer to "" is a real constraint that
+	// yields zero rows.
+	AgentClient *string
+	APIKeyID    *uint
 	// UserID narrows to rows owned by one account (the key owner,
 	// denormalized onto request_logs at write time). Unauthenticated audit
 	// rows carry NULL and therefore never match a user filter.
@@ -108,6 +116,9 @@ func (f *RequestLogFilter) applyFilter(db *gorm.DB) *gorm.DB {
 	}
 	if f.W3CTraceID != nil {
 		q = q.Where("w3c_trace_id = ?", *f.W3CTraceID)
+	}
+	if f.AgentClient != nil {
+		q = q.Where("agent_client = ?", *f.AgentClient)
 	}
 	if f.APIKeyID != nil {
 		q = q.Where("api_key_id = ?", *f.APIKeyID)
