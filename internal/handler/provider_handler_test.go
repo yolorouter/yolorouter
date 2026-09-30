@@ -1720,7 +1720,7 @@ func TestDeleteProviderCascadesConfigAndKeepsHistory(t *testing.T) {
 
 	// The request-log list view itself must keep the row: same id, empty
 	// provider name, no error — the surface an admin actually reads.
-	items, total, err := requestlog.NewRequestLogService(db).ListRequestLogs(&repository.RequestLogFilter{ProviderID: &providerID})
+	items, total, err := requestlog.NewRequestLogService(db, "").ListRequestLogs(&repository.RequestLogFilter{ProviderID: &providerID})
 	if err != nil {
 		t.Fatalf("request log list after delete: %v", err)
 	}

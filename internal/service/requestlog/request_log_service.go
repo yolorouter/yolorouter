@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -33,14 +35,20 @@ import (
 // (per-role masking is a likely add).
 type RequestLogService struct {
 	db *gorm.DB
+	// bodiesDir is the absolute data/bodies/ directory the gateway's stream
+	// capture writes sent-SSE files under; GetRequestLogDetail resolves a
+	// body row's stream_body_path against it to inline stream_body. An empty
+	// bodiesDir disables that inlining (stream_body always "") — the list /
+	// agent-session paths and any caller that never reads captures.
+	bodiesDir string
 }
 
-// NewRequestLogService returns a RequestLogService bound to db. db is
-// captured by reference; callers must not close it before this service
+// NewRequestLogService returns a RequestLogService bound to db and bodiesDir.
+// db is captured by reference; callers must not close it before this service
 // stops being used (same lifecycle convention as every other service in
 // internal/).
-func NewRequestLogService(db *gorm.DB) *RequestLogService {
-	return &RequestLogService{db: db}
+func NewRequestLogService(db *gorm.DB, bodiesDir string) *RequestLogService {
+	return &RequestLogService{db: db, bodiesDir: bodiesDir}
 }
 
 // RequestLogListItem is the list-row DTO. It carries no
@@ -108,11 +116,13 @@ type RequestLogListItem struct {
 
 // RequestLogDetail is the single-row detail DTO. AttemptsDetail is parsed
 // from the stored JSON string into []gateway.AttemptRecord so the frontend
-// can render failover order directly without re-parsing. The 7 body fields
-// are sourced from the 1:1 request_log_bodies row
-// via repository.GetRequestLogBodyByRequestID — when that row is absent
+// can render failover order directly without re-parsing. The body fields are
+// sourced from the 1:1 request_log_bodies row via
+// repository.GetRequestLogBodyByRequestID — when that row is absent
 // (pre-migration rows or capture failure) they degrade to zero values and
-// the detail page shows "not recorded" rather than erroring.
+// the detail page shows "not recorded" rather than erroring. stream_body is
+// the one body field sourced from disk instead: the capture file that row's
+// stream_body_path names, read under the bodies dir (readStreamBodyInline).
 type RequestLogDetail struct {
 	RequestID string `json:"request_id"`
 	// W3CTraceID is the trace-id half of the caller's W3C traceparent
@@ -187,6 +197,13 @@ type RequestLogDetail struct {
 	StreamBodyPath       string                  `json:"stream_body_path"`
 	StreamBodyTruncated  bool                    `json:"stream_body_truncated"`
 	HasStreamBody        bool                    `json:"has_stream_body"`
+	// StreamBody is the sent-SSE capture file's content, inlined so the
+	// detail view can render the streamed reply without a second request —
+	// under the same 1 MiB truncation guard as the other inline bodies.
+	// "" when no capture exists (non-streaming request, capture failure, or
+	// the file is gone from disk). The uncapped raw bytes stay on the
+	// dedicated /body/stream endpoint; this field is the capped inline copy.
+	StreamBody string `json:"stream_body"`
 	// Input-compression audit fields. TokensSaved/CostSavedMicros are the
 	// estimated reduction (zero when compression was off or the request was
 	// rejected pre-relay). SkipReason is '' when compression ran; otherwise a
@@ -202,10 +219,18 @@ type RequestLogDetail struct {
 // maxInlineBodyBytes caps each request/response body embedded inline in the
 // detail DTO. 1 MiB is far more than any real request/response needs to be
 // auditable, while keeping a pathological body from being shipped whole and
-// rendered into the admin's DOM (unlike the stream body, these have no ranged
-// preview endpoint). Larger bodies are truncated with a visible marker — never
-// silently, matching the stream body's truncation-flag convention.
+// rendered into the admin's DOM. Larger bodies are truncated with a visible
+// marker — never silently, matching the stream body's truncation-flag
+// convention. The stream capture file's inline copy (stream_body) runs under
+// the same cap; its raw uncapped bytes stay on the ranged /body/stream
+// endpoint, which the four DB-backed bodies do not have.
 const maxInlineBodyBytes = 1 << 20 // 1 MiB
+
+// inlineTruncationMarker is the human-readable suffix appended whenever an
+// inline body is cut, stating how much of the original is shown. Shared by
+// the DB-backed body columns and the on-disk stream body so both truncations
+// read identically.
+const inlineTruncationMarker = "\n\n… [truncated: showing first %d of %d bytes]"
 
 // truncateInlineBody returns s unchanged when it fits under maxInlineBodyBytes,
 // otherwise the first maxInlineBodyBytes (trimmed to a UTF-8 rune boundary)
@@ -214,8 +239,58 @@ func truncateInlineBody(s string) string {
 	if len(s) <= maxInlineBodyBytes {
 		return s
 	}
-	cut := truncateBodyRuneSafe(s, maxInlineBodyBytes)
-	return cut + fmt.Sprintf("\n\n… [truncated: showing first %d of %d bytes]", len(cut), len(s))
+	return truncateInlinePrefix(s, maxInlineBodyBytes, len(s))
+}
+
+// truncateInlinePrefix cuts s to at most maxBytes (backing off any partial
+// UTF-8 rune at the cut, via truncateBodyRuneSafe) and appends the shared
+// truncation marker, reporting totalSize as the original length. Split out of
+// truncateInlineBody so the stream reader — which only reads the file's first
+// maxInlineBodyBytes+1 bytes — can supply the on-disk size as totalSize
+// instead of the partial length it actually read.
+func truncateInlinePrefix(s string, maxBytes, totalSize int) string {
+	cut := truncateBodyRuneSafe(s, maxBytes)
+	return cut + fmt.Sprintf(inlineTruncationMarker, len(cut), totalSize)
+}
+
+// readStreamBodyInline reads the sent-SSE capture file a body row's
+// stream_body_path names (a bare filename resolved under bodiesDir) and
+// returns its content under the same inline truncation guard as the DB-backed
+// body columns. A capture can grow to the gateway's 1GiB disk backstop, so
+// the file is never loaded whole: at most maxInlineBodyBytes+1 bytes are read
+// — the extra byte only decides "over the cap" — and the truncation marker
+// reports the on-disk size from Stat. Any miss (no bodiesDir wired, no path
+// recorded, no such file under bodiesDir, unreadable bytes) returns "": the
+// detail then shows the stream as not captured, the same degradation a
+// missing body row gets, rather than failing the whole request.
+//
+// filepath.Base strips every directory component off the stored path before
+// joining it under bodiesDir — the column is meant to hold a bare filename
+// (e.g. "req_x.stream"), but treating it as untrusted input keeps a corrupted
+// or malicious row from escaping bodiesDir via "../" traversal or an absolute
+// path (the same convention GetRequestLogBodyStream applies when serving the
+// raw file).
+func readStreamBodyInline(bodiesDir, streamBodyPath string) string {
+	if bodiesDir == "" || streamBodyPath == "" {
+		return ""
+	}
+	f, err := os.Open(filepath.Join(bodiesDir, filepath.Base(streamBodyPath)))
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxInlineBodyBytes+1))
+	if err != nil {
+		return ""
+	}
+	if len(data) <= maxInlineBodyBytes {
+		return string(data)
+	}
+	total := len(data)
+	if info, statErr := f.Stat(); statErr == nil && info.Size() > int64(total) {
+		total = int(info.Size())
+	}
+	return truncateInlinePrefix(string(data), maxInlineBodyBytes, total)
 }
 
 // truncateBodyRuneSafe returns s truncated to at most maxBytes bytes, backing
@@ -457,6 +532,10 @@ func (s *RequestLogService) GetRequestLogDetail(requestID string) (*RequestLogDe
 		detail.StreamBodyPath = bodyRow.StreamBodyPath
 		detail.StreamBodyTruncated = bodyRow.StreamBodyTruncated
 		detail.HasStreamBody = bodyRow.StreamBodyPath != ""
+		// Inline the capture file's content under the same cap as the other
+		// bodies (see readStreamBodyInline for the containment and
+		// missing-file degradation).
+		detail.StreamBody = readStreamBodyInline(s.bodiesDir, bodyRow.StreamBodyPath)
 		// Compressed body uses the SAME truncation guard as request_body so a
 		// pathological compressed body can't freeze the admin's tab.
 		detail.CompressedRequestBody = truncateInlineBody(bodyRow.CompressedRequestBody)

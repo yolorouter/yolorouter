@@ -52,8 +52,10 @@ func GetRequestLogs(svc *requestlog.RequestLogService) gin.HandlerFunc {
 }
 
 // GetRequestLogDetail handles GET /api/admin/request-logs/:requestId — a
-// single row with attempts_detail parsed into []AttemptRecord. This
-// returns metadata only; request/response bodies are served separately.
+// single row with attempts_detail parsed into []AttemptRecord, the captured
+// request/response bodies inlined under the service's 1 MiB cap, and the
+// stream capture file inlined the same way (stream_body; the uncapped raw
+// stream stays on GetRequestLogBodyStream's dedicated endpoint).
 func GetRequestLogDetail(svc *requestlog.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := c.Param("requestId")

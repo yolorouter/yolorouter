@@ -22,7 +22,7 @@ import (
 func seedSessionA(t *testing.T) (*RequestLogService, time.Time) {
 	t.Helper()
 	db := testutil.NewSQLiteDB(t)
-	svc := NewRequestLogService(db)
+	svc := NewRequestLogService(db, "")
 	base := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 	claude := "claude-code"
 	codex := "codex"

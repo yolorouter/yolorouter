@@ -28,7 +28,7 @@ func newAgentSessionTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	db := testutil.NewSQLiteDB(t)
-	svc := requestlog.NewRequestLogService(db)
+	svc := requestlog.NewRequestLogService(db, "")
 	r := gin.New()
 	admin := r.Group("/api/admin")
 	admin.GET("/agent-sessions", GetAgentSessions(svc))

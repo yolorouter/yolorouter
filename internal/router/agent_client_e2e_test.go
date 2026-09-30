@@ -95,7 +95,7 @@ func listByAgentClient(t *testing.T, db *gorm.DB, client string) (ids []string, 
 // same service call the detail endpoint serves.
 func agentDetail(t *testing.T, db *gorm.DB, requestID string) *requestlog.RequestLogDetail {
 	t.Helper()
-	detail, err := requestlog.NewRequestLogService(db).GetRequestLogDetail(requestID)
+	detail, err := requestlog.NewRequestLogService(db, "").GetRequestLogDetail(requestID)
 	if err != nil {
 		t.Fatalf("GetRequestLogDetail(%q): %v", requestID, err)
 	}

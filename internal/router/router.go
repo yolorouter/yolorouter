@@ -447,7 +447,7 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// request-log history; admin-only like the models catalog they extend.
 	protected.GET("/analytics/history-model-names", handler.GetAnalyticsHistoryModelNames(analyticsSvc))
 
-	requestLogSvc := requestlog.NewRequestLogService(db)
+	requestLogSvc := requestlog.NewRequestLogService(db, bodiesDir)
 	protected.GET("/request-logs", handler.GetRequestLogs(requestLogSvc))
 	protected.GET("/request-logs/export", handler.ExportRequestLogsCSV(requestLogSvc))
 	protected.GET("/request-logs/:requestId", handler.GetRequestLogDetail(requestLogSvc))

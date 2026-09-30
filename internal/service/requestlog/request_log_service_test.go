@@ -1,21 +1,45 @@
 // Tests for GetRequestLogDetail's body-field
 // composition (RequestLogDetail's 7 body columns, sourced from
-// repository.GetRequestLogBodyByRequestID).
+// repository.GetRequestLogBodyByRequestID, plus the stream capture file the
+// body row's stream_body_path names — readStreamBodyInline).
 package requestlog
 
 import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"gorm.io/gorm"
 
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 )
 
+// seedDetailWithCapture plants a request_log row and a body row whose
+// stream_body_path is capturePath — the caller separately writes whatever
+// should (or should not) exist on disk under the service's bodies dir.
+func seedDetailWithCapture(t *testing.T, db *gorm.DB, requestID, capturePath string) {
+	t.Helper()
+	testutil.SeedRequestLog(t, db, requestID, time.Now().UTC(), func(r *model.RequestLog) {
+		r.IsStream = true
+	})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+		RequestID:      requestID,
+		StreamBodyPath: capturePath,
+	}); err != nil {
+		t.Fatalf("seed request_log_body for %s: %v", requestID, err)
+	}
+}
+
 func TestGetRequestLogDetailIncludesBodies(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewRequestLogService(db)
+	svc := NewRequestLogService(db, "")
 	now := time.Now().UTC()
 
 	log := model.RequestLog{
@@ -71,7 +95,7 @@ func TestGetRequestLogDetailIncludesBodies(t *testing.T) {
 
 func TestGetRequestLogDetailMissingBodyDegrades(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewRequestLogService(db)
+	svc := NewRequestLogService(db, "")
 	now := time.Now().UTC()
 
 	log := model.RequestLog{
@@ -110,7 +134,7 @@ func TestGetRequestLogDetailMissingBodyDegrades(t *testing.T) {
 // failing the lookup.
 func TestRequestLogRowsCarryOwnerUsername(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewRequestLogService(db)
+	svc := NewRequestLogService(db, "")
 	now := time.Now().UTC()
 
 	u := &model.User{Username: "carol", Role: model.RoleMember, Status: model.UserStatusEnabled,
@@ -225,7 +249,7 @@ func TestTruncateBodyRuneSafeBacksOffPartialRune(t *testing.T) {
 // (rendered as "no snapshot") on a row that predates the snapshot columns.
 func TestGetRequestLogDetailCarriesPriceSnapshot(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewRequestLogService(db)
+	svc := NewRequestLogService(db, "")
 	now := time.Now().UTC()
 
 	in, out, cw, cr := 3.0, 6.0, 3.75, 0.3
@@ -322,7 +346,7 @@ func ptrFloat(v float64) *float64 { return &v }
 // figures and reads billing_unit=token.
 func TestListRowsCarryUsageDigest(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
-	svc := NewRequestLogService(db)
+	svc := NewRequestLogService(db, "")
 	now := time.Now().UTC()
 
 	imageRow := model.RequestLog{RequestID: "req-image", ModelName: "wan2.2-image", StatusCode: 200,
@@ -400,6 +424,171 @@ func TestListRowsCarryUsageDigest(t *testing.T) {
 			if rec[unit] != "video" || rec[seconds] != "4" || rec[count] != "" || rec[price] != "" {
 				t.Fatalf("video csv cells: %q %q %q %q", rec[unit], rec[count], rec[price], rec[seconds])
 			}
+		}
+	}
+}
+
+// TestGetRequestLogDetailInlinesStreamBodyContent pins stream_body's two
+// content arms: a capture within the 1 MiB inline cap returns its exact
+// bytes; one past the cap is cut to the cap with the same human-readable
+// truncation marker the DB-backed body columns use, stating the on-disk
+// size — never the partially-read length.
+func TestGetRequestLogDetailInlinesStreamBodyContent(t *testing.T) {
+	cases := []struct {
+		name     string
+		fileSize int
+	}{
+		{"within cap returns exact bytes", 4096},
+		{"over cap truncates with marker", maxInlineBodyBytes + 8192},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testutil.NewSQLiteDB(t)
+			bodiesDir := t.TempDir()
+			svc := NewRequestLogService(db, bodiesDir)
+			content := bytes.Repeat([]byte("data: {\"delta\":\"chunk\"}\n\n"), tc.fileSize/24+1)
+			content = content[:tc.fileSize]
+			if err := os.WriteFile(filepath.Join(bodiesDir, "req-inline.stream"), content, 0o600); err != nil {
+				t.Fatalf("write capture file: %v", err)
+			}
+			seedDetailWithCapture(t, db, "req-inline", "req-inline.stream")
+
+			detail, err := svc.GetRequestLogDetail("req-inline")
+			if err != nil {
+				t.Fatalf("GetRequestLogDetail: %v", err)
+			}
+			if tc.fileSize <= maxInlineBodyBytes {
+				if detail.StreamBody != string(content) {
+					t.Fatalf("stream_body: want the file's exact %d bytes, got %d bytes", len(content), len(detail.StreamBody))
+				}
+				return
+			}
+			// ASCII content, so the rune-safe cut lands exactly on the cap.
+			if !strings.HasPrefix(detail.StreamBody, string(content[:maxInlineBodyBytes])) {
+				t.Fatalf("stream_body: want the file's first %d bytes as prefix", maxInlineBodyBytes)
+			}
+			wantMarker := fmt.Sprintf(inlineTruncationMarker, maxInlineBodyBytes, tc.fileSize)
+			if !strings.HasSuffix(detail.StreamBody, wantMarker) {
+				t.Fatalf("stream_body: want marker %q, got tail %q", wantMarker, detail.StreamBody[maxInlineBodyBytes:])
+			}
+			if got := len(detail.StreamBody); got != maxInlineBodyBytes+len(wantMarker) {
+				t.Fatalf("stream_body length: want %d, got %d", maxInlineBodyBytes+len(wantMarker), got)
+			}
+		})
+	}
+}
+
+// TestGetRequestLogDetailStreamBodyEmptyWhenNoCapture pins every "" arm: no
+// body row at all (a non-streaming request), a body row with no capture path,
+// a path whose file is gone from disk, a capture path occupied by a directory
+// (os.Open succeeds, the read itself fails — readStreamBodyInline's
+// io.ReadAll error arm), and a service with no bodies dir wired — each
+// serializes stream_body as "" instead of failing the detail.
+func TestGetRequestLogDetailStreamBodyEmptyWhenNoCapture(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	bodiesDir := t.TempDir()
+
+	testutil.SeedRequestLog(t, db, "req-nonstream", time.Now().UTC(), func(r *model.RequestLog) {
+		r.IsStream = false
+	})
+	testutil.SeedRequestLog(t, db, "req-empty-path", time.Now().UTC(), nil)
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "req-empty-path"}); err != nil {
+		t.Fatalf("seed empty-path body row: %v", err)
+	}
+	// Path names a file that was never written under bodiesDir (capture
+	// rotated away, or the DB outlived the data dir).
+	testutil.SeedRequestLog(t, db, "req-gone-file", time.Now().UTC(), nil)
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+		RequestID:      "req-gone-file",
+		StreamBodyPath: "req-gone-file.stream",
+	}); err != nil {
+		t.Fatalf("seed gone-file body row: %v", err)
+	}
+	// The capture path names a directory squatting under bodiesDir: os.Open
+	// succeeds on a directory but reading it fails (EISDIR on Linux), driving
+	// readStreamBodyInline's io.ReadAll error arm — the one miss whose file
+	// still opens — which must degrade to "" like every other miss.
+	if err := os.Mkdir(filepath.Join(bodiesDir, "req-dir-capture.stream"), 0o755); err != nil {
+		t.Fatalf("mkdir dir-at-capture-path: %v", err)
+	}
+	testutil.SeedRequestLog(t, db, "req-dir-capture", time.Now().UTC(), nil)
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+		RequestID:      "req-dir-capture",
+		StreamBodyPath: "req-dir-capture.stream",
+	}); err != nil {
+		t.Fatalf("seed dir-capture body row: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		svc       *RequestLogService
+		requestID string
+	}{
+		{"no body row", NewRequestLogService(db, bodiesDir), "req-nonstream"},
+		{"empty capture path", NewRequestLogService(db, bodiesDir), "req-empty-path"},
+		{"file gone from disk", NewRequestLogService(db, bodiesDir), "req-gone-file"},
+		{"capture path is a directory", NewRequestLogService(db, bodiesDir), "req-dir-capture"},
+		{"no bodies dir wired", NewRequestLogService(db, ""), "req-gone-file"},
+	} {
+		detail, err := tc.svc.GetRequestLogDetail(tc.requestID)
+		if err != nil {
+			t.Fatalf("%s: GetRequestLogDetail: %v", tc.name, err)
+		}
+		if detail.StreamBody != "" {
+			t.Errorf("%s: stream_body: want \"\", got %q", tc.name, detail.StreamBody)
+		}
+	}
+}
+
+// TestGetRequestLogDetailStreamBodyStaysInsideBodiesDir pins the safety
+// contract: the stored stream_body_path is untrusted. A traversal path
+// ("../elsewhere/x.stream") and an absolute path must both resolve to the
+// bare filename under bodiesDir — reading bodiesDir's own file of that name,
+// never the file the raw path points at outside it.
+func TestGetRequestLogDetailStreamBodyStaysInsideBodiesDir(t *testing.T) {
+	root := t.TempDir()
+	bodiesDir := filepath.Join(root, "bodies")
+	escapeDir := filepath.Join(root, "elsewhere")
+	for _, dir := range []string{bodiesDir, escapeDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	// Same basename on both sides of the boundary: whichever content comes
+	// back names which side the reader actually opened.
+	if err := os.WriteFile(filepath.Join(bodiesDir, "dup.stream"), []byte("INSIDE"), 0o600); err != nil {
+		t.Fatalf("write inside capture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(escapeDir, "dup.stream"), []byte("OUTSIDE"), 0o600); err != nil {
+		t.Fatalf("write outside decoy: %v", err)
+	}
+	// Outside-only basename: nothing of this name exists under bodiesDir.
+	if err := os.WriteFile(filepath.Join(escapeDir, "only-outside.stream"), []byte("OUTSIDE"), 0o600); err != nil {
+		t.Fatalf("write outside-only decoy: %v", err)
+	}
+
+	db := testutil.NewSQLiteDB(t)
+	svc := NewRequestLogService(db, bodiesDir)
+	seedDetailWithCapture(t, db, "req-traversal", "../elsewhere/dup.stream")
+	seedDetailWithCapture(t, db, "req-absolute", filepath.Join(escapeDir, "dup.stream"))
+	seedDetailWithCapture(t, db, "req-only-outside", "../elsewhere/only-outside.stream")
+
+	for _, tc := range []struct {
+		requestID string
+		want      string
+	}{
+		{"req-traversal", "INSIDE"},
+		{"req-absolute", "INSIDE"},
+		// The basename is absent under bodiesDir, so nothing is read — not
+		// even though a file exists exactly where the raw path points.
+		{"req-only-outside", ""},
+	} {
+		detail, err := svc.GetRequestLogDetail(tc.requestID)
+		if err != nil {
+			t.Fatalf("%s: GetRequestLogDetail: %v", tc.requestID, err)
+		}
+		if detail.StreamBody != tc.want {
+			t.Errorf("%s: stream_body: want %q, got %q", tc.requestID, tc.want, detail.StreamBody)
 		}
 	}
 }

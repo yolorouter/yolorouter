@@ -45,8 +45,8 @@ func newRequestLogTestRouterWithBodiesDir(t *testing.T) (*gin.Engine, *gorm.DB, 
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	db := testutil.NewSQLiteDB(t)
-	svc := requestlog.NewRequestLogService(db)
 	bodiesDir := t.TempDir()
+	svc := requestlog.NewRequestLogService(db, bodiesDir)
 	r := gin.New()
 	admin := r.Group("/api/admin")
 	// Export is registered BEFORE :requestId so the literal /export path
@@ -558,6 +558,55 @@ func TestGetRequestLogDetailReturns500WhenDBErrors(t *testing.T) {
 	}
 	if env.Code != errcode.InternalError {
 		t.Fatalf("expected code %d, got %d", errcode.InternalError, env.Code)
+	}
+}
+
+// TestGetRequestLogDetailSerializesStreamBody pins the wire contract for the
+// detail envelope's inline stream_body: a row whose capture file exists on
+// disk serializes the file's bytes, and a row without a capture serializes
+// "" — never null — so the client can branch on the empty string.
+func TestGetRequestLogDetailSerializesStreamBody(t *testing.T) {
+	r, db, _, bodiesDir := newRequestLogTestRouterWithBodiesDir(t)
+	const streamContent = "data: {\"delta\":\"h\"}\n\ndata: [DONE]\n\n"
+	seedRequestLog(t, db, "req-inline-stream", time.Now().UTC(), func(r *model.RequestLog) {
+		r.IsStream = true
+	})
+	if err := os.WriteFile(filepath.Join(bodiesDir, "req-inline-stream.stream"), []byte(streamContent), 0o600); err != nil {
+		t.Fatalf("write capture file: %v", err)
+	}
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+		RequestID:      "req-inline-stream",
+		StreamBodyPath: "req-inline-stream.stream",
+	}); err != nil {
+		t.Fatalf("upsert body row: %v", err)
+	}
+	seedRequestLog(t, db, "req-no-capture", time.Now().UTC(), func(r *model.RequestLog) {
+		r.IsStream = false
+	})
+
+	for _, tc := range []struct {
+		requestID string
+		want      string
+	}{
+		{"req-inline-stream", streamContent},
+		{"req-no-capture", ""},
+	} {
+		w, env := doJSON(t, r, http.MethodGet, "/api/admin/request-logs/"+tc.requestID, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d, body: %s", tc.requestID, w.Code, w.Body.String())
+		}
+		if !bytes.Contains(env.Data, []byte(`"stream_body":`)) {
+			t.Fatalf("%s: detail envelope lacks a stream_body key: %s", tc.requestID, env.Data)
+		}
+		var d struct {
+			StreamBody string `json:"stream_body"`
+		}
+		if err := json.Unmarshal(env.Data, &d); err != nil {
+			t.Fatalf("%s: unmarshal: %v", tc.requestID, err)
+		}
+		if d.StreamBody != tc.want {
+			t.Errorf("%s: stream_body: want %q, got %q", tc.requestID, tc.want, d.StreamBody)
+		}
 	}
 }
 
