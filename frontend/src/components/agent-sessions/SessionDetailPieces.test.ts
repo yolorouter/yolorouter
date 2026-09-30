@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
 //
-// Mounted-DOM coverage for the session-detail page's four pieces, one
-// describe per acceptance case of the session-detail UX batch (zh-CN
+// Mounted-DOM coverage for the session-detail page's three pieces (zh-CN
 // locale; both-locale parity of every key used here is exercised by the
 // detail-page test in AgentSessionPages.test.ts, which mounts the whole
-// page — summary card, waterfall column, drawer — in zh-CN and en):
+// page — summary card, waterfall column, row navigation — in zh-CN and en):
 //
 //   waterfall bar  bar left/width equal the LINEAR mapping of offset and
 //                  duration onto the shared session axis, hand-computed on
@@ -16,16 +15,19 @@
 //                  hand-computed figures with the list SQL's semantics
 //   message flow   the six bubble-rendering arms: role sides, image
 //                  placeholder, tool label, collapsible JSON fallback,
-//                  truncation hint, and the stream-merged reply bubble
+//                  truncation hint, and the stream-merged reply bubble.
+//                  (The former drawer pieces — fetch-error and response
+//                  three-branch coverage — moved to the request message
+//                  page's own test when the drawer was replaced by that
+//                  page; the markdown-in-bubble coverage lives there too,
+//                  under jsdom.)
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
-import { createMemoryHistory, createRouter } from 'vue-router'
 import { defineComponent, h, nextTick, type Component } from 'vue'
 import naive from 'naive-ui'
 
-import { getRequestLogDetail, type RequestLogDetail, type RequestLogRow, type StatusClass } from '../../api/requestLogs'
-import { NetworkError } from '../../api/client'
+import { type RequestLogRow, type StatusClass } from '../../api/requestLogs'
 import { translateStreamBody, type TranslatedBody } from '../../utils/messageTranslator'
 import en from '../../locales/en'
 import zhCN from '../../locales/zh-CN'
@@ -33,14 +35,6 @@ import zhCN from '../../locales/zh-CN'
 import SessionSummaryCard from './SessionSummaryCard.vue'
 import SessionWaterfallBar from './SessionWaterfallBar.vue'
 import ChatMessageFlow from './ChatMessageFlow.vue'
-import SessionRequestDrawer from './SessionRequestDrawer.vue'
-
-// Only the drawer fetches through the api module; the other pieces consume
-// rows as pure props. Mocking the module keeps the drawer's on-demand
-// detail fetch hermetic.
-vi.mock('../../api/requestLogs', () => ({
-  getRequestLogDetail: vi.fn(),
-}))
 
 let wrapper: VueWrapper | null = null
 
@@ -301,173 +295,5 @@ describe('ChatMessageFlow (session-detail UX TC-06)', () => {
     const body: TranslatedBody = { kind: 'placeholder', messages: [], truncated: false }
     await mountPiece(ChatMessageFlow, { body, raw: '' })
     expect(document.body.querySelector('.msg-flow__note')?.textContent, 'placeholder note').toContain(zhCN.requestLogs.bodyNotRecorded)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Request drawer — error path of the on-demand detail fetch (TC-03
-// companion): a transport-level failure must surface the repo-wide
-// displayMessage copy, never the raw error string.
-// ---------------------------------------------------------------------------
-
-// A host that owns the drawer's open state the way the detail page does
-// (v-model:show), so the test can flip it closed→open after mount and
-// exercise the on-open fetch (setProps only works on the mounted root).
-const DrawerHost = defineComponent({
-  components: { SessionRequestDrawer },
-  props: { request: { type: Object as () => RequestLogRow, required: true } },
-  data() {
-    return { show: false }
-  },
-  template: '<SessionRequestDrawer v-model:show="show" :request="request" />',
-})
-
-// Same provider ancestry as mountPiece plus a memory router: the drawer's
-// "view full details" hop calls useRouter() at setup, which warns without
-// an injection even though this test never triggers the hop itself.
-async function mountDrawerHost(request: RequestLogRow) {
-  const i18n = createI18n({ legacy: false, locale: 'zh-CN', fallbackLocale: 'zh-CN', messages: { en, 'zh-CN': zhCN } })
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] })
-  wrapper = mount(Host, {
-    attachTo: document.body,
-    global: { plugins: [i18n, naive, router] },
-    slots: { default: () => h(DrawerHost, { request }) },
-  })
-  await nextTick()
-  await nextTick()
-}
-
-describe('SessionRequestDrawer load-error path (session-detail UX TC-03 companion)', () => {
-  it('renders the localized network fallback for a failed detail fetch, never the raw error message', async () => {
-    // A NetworkError carries no business code and its message is technical
-    // transport detail, not user copy — displayMessage (api/client.ts) is
-    // the repo-wide convention for rendering it. Regression-locks the
-    // drawer's catch against falling back to err.message.
-    vi.mocked(getRequestLogDetail).mockRejectedValueOnce(new NetworkError('ECONNREFUSED raw-transport-detail'))
-
-    await mountDrawerHost(row({ request_id: 'req-drawer-err' }))
-    const host = wrapper!.findComponent(DrawerHost)
-    ;(host.vm as unknown as { show: boolean }).show = true
-    await nextTick()
-
-    await vi.waitFor(() =>
-      expect(document.body.textContent ?? '', 'inline error block shows the localized networkError copy').toContain(zhCN.common.networkError),
-    )
-    const text = document.body.textContent ?? ''
-    expect(text, 'error block title').toContain(zhCN.agentSessions.drawerLoadFailed)
-    expect(text, 'row facts stay rendered alongside the error').toContain('req-drawer-err')
-    expect(text, 'the raw transport error string must not leak into the UI').not.toContain('ECONNREFUSED raw-transport-detail')
-    expect(getRequestLogDetail, 'the on-demand fetch targeted the clicked row').toHaveBeenCalledWith('req-drawer-err')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Request drawer — the response side's three-way branch (TC-03 companion):
-// inline body / SSE capture / neither recorded, plus which raw text the
-// fallback view receives when the capture is unmergeable.
-// ---------------------------------------------------------------------------
-
-// A request-log detail around the shared row helper: body-related fields
-// default to "nothing recorded", each case overrides what it needs.
-function detailFixture(over: Partial<RequestLogDetail>): RequestLogDetail {
-  return {
-    ...row({}),
-    w3c_trace_id: '',
-    agent_client: 'claude-code',
-    agent_session_id: 'sess-x',
-    usage_meter: '',
-    attempts_detail: [],
-    settled_input_price: null,
-    settled_output_price: null,
-    settled_cache_write_price: null,
-    settled_cache_read_price: null,
-    image_pricing_snapshot: '',
-    upstream_url: '',
-    request_headers: '',
-    request_body: '',
-    upstream_request_body: '',
-    response_body: '',
-    upstream_response_body: '',
-    stream_body_path: '',
-    stream_body_truncated: false,
-    has_stream_body: false,
-    stream_body: '',
-    compress_estimated_tokens_saved: 0,
-    compress_estimated_cost_saved_micros: 0,
-    compress_skip_reason: '',
-    compressors_applied: '',
-    compressed_request_body: '',
-    ...over,
-  }
-}
-
-// A user-only request body: it renders one left-side bubble, so ANY
-// right-side (assistant) row in the drawer can only be the response side's.
-const USER_ONLY_REQUEST_BODY = JSON.stringify({ messages: [{ role: 'user', content: '一条没有留下响应记录的提问' }] })
-
-// Flip the mounted host's v-model open and let the on-open fetch land.
-async function openDrawer() {
-  const host = wrapper!.findComponent(DrawerHost)
-  ;(host.vm as unknown as { show: boolean }).show = true
-  await nextTick()
-}
-
-describe('SessionRequestDrawer response side (session-detail UX TC-03 companion)', () => {
-  // Both "nothing was ever recorded" states land on the placeholder note:
-  // has_stream_body only separates "no capture" from "capture file
-  // unreadable", and the request-log detail page renders both of those as
-  // the same "not recorded" note — the drawer matches that convention.
-  it.each([
-    { name: 'non-stream request failed before any body capture (has_stream_body=false)', hasStreamBody: false },
-    { name: 'stream request whose capture file is unreadable (has_stream_body=true)', hasStreamBody: true },
-  ])('renders the not-recorded placeholder when both bodies are empty, never an empty assistant bubble: $name', async (c) => {
-    vi.mocked(getRequestLogDetail).mockResolvedValueOnce(
-      detailFixture({ request_body: USER_ONLY_REQUEST_BODY, has_stream_body: c.hasStreamBody }),
-    )
-
-    await mountDrawerHost(row({ request_id: 'req-both-empty' }))
-    await openDrawer()
-
-    // The response section is the "not recorded" note…
-    await vi.waitFor(() =>
-      expect(document.body.querySelector('.msg-flow__note')?.textContent, 'placeholder note on the response side').toContain(
-        zhCN.requestLogs.bodyNotRecorded,
-      ),
-    )
-    // …and NOT an empty assistant bubble ("the model said nothing on
-    // purpose"): the request side's only message is the user prompt, so
-    // any right-side row here would be exactly that empty bubble.
-    expect(document.body.querySelector('.msg-flow__row--right'), 'no assistant bubble for an uncaptured response').toBeNull()
-  })
-
-  it('feeds the SSE capture (not the empty response_body) to the fallback view for an unmergeable stream', async () => {
-    // A capture with no SSE frame at all — a plain-text upstream error.
-    // The translator reports it unmergeable (fallback), and the
-    // collapsible view must show THE CAPTURE: a stream request's
-    // response_body is '' by definition, and feeding it would leave the
-    // expanded view as a bare hint over an empty <pre>.
-    const capture = 'upstream reset mid-stream: no SSE frame was ever sent'
-    vi.mocked(getRequestLogDetail).mockResolvedValueOnce(
-      detailFixture({ request_body: USER_ONLY_REQUEST_BODY, stream_body: capture, has_stream_body: true }),
-    )
-
-    await mountDrawerHost(row({ request_id: 'req-stream-fallback', is_stream: true }))
-    await openDrawer()
-
-    // The fallback collapse rendered and starts collapsed — the capture
-    // text is not in the DOM yet (naive-ui only mounts expanded content).
-    const header = await vi.waitFor(() => {
-      const el = document.body.querySelector('.n-collapse-item__header')
-      expect(el, 'the fallback collapse rendered for the unmergeable capture').toBeTruthy()
-      return el!
-    })
-    expect(header.textContent, 'fallback collapse titled "raw body"').toContain(zhCN.agentSessions.flowFallbackTitle)
-    expect(document.body.textContent ?? '', 'raw capture hidden while collapsed').not.toContain(capture)
-    // Expand via the collapse's main trigger area (naive-ui binds the
-    // toggle there, not on the outer header wrapper — see PITFALLS.md).
-    header.querySelector('.n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() =>
-      expect(document.body.textContent ?? '', 'expanded fallback shows the raw capture text').toContain(capture),
-    )
   })
 })

@@ -13,6 +13,7 @@ import RequestLogListPage from '../views/request-logs/RequestLogListPage.vue'
 import RequestLogDetailPage from '../views/request-logs/RequestLogDetailPage.vue'
 import AgentSessionListPage from '../views/agent-sessions/AgentSessionListPage.vue'
 import AgentSessionDetailPage from '../views/agent-sessions/AgentSessionDetailPage.vue'
+import RequestMessagePage from '../views/request-messages/RequestMessagePage.vue'
 import ProviderListPage from '../views/providers/ProviderListPage.vue'
 import ProviderDetailPage from '../views/providers/ProviderDetailPage.vue'
 import ModelListPage from '../views/models/ModelListPage.vue'
@@ -56,6 +57,11 @@ export const router = createRouter({
         // protected-group registration for /api/admin/agent-sessions.
         { path: 'agent-sessions', component: AgentSessionListPage },
         { path: 'agent-sessions/:sessionId', component: AgentSessionDetailPage },
+        // The conversation view of one captured request. Session-independent
+        // by design (session rows deep-link in with a bare request id), and
+        // admin-only like the request-log routes — the detail endpoint it
+        // reads is the same /api/admin/request-logs surface.
+        { path: 'request-messages/:requestId', component: RequestMessagePage },
         { path: 'providers', component: ProviderListPage },
         { path: 'providers/:id', component: ProviderDetailPage },
         { path: 'models', component: ModelListPage },

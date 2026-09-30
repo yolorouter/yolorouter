@@ -3,17 +3,16 @@
      attribution plus EVERY request it contains, already chronological from
      the backend (repository orders by created_at, id ASC).
 
-     The page reads as one stay-in-place inspection surface:
+     The page reads as the session's map:
        - a top summary card recomputed from the requests array itself (same
          semantics as the list SQL), so deep links and refreshes land on a
          full summary without the list endpoint;
        - a timeline table whose every row carries a waterfall bar aligned on
          the session's real time axis (gaps = think time, bar length =
          duration), hovering for the precise start and duration;
-       - clicking a row opens the in-place request drawer (key facts, the
-         translated conversation bubbles, and a "view full details" hop to
-         the existing /request-logs/:requestId detail page) instead of
-         navigating away. -->
+       - clicking a row navigates to that request's message page
+         (/request-messages/:requestId — key facts and the translated
+         conversation bubbles as a full page with its own URL). -->
 <template>
   <div class="common-page">
     <PageHeader :eyebrow="t('agentSessions.detailEyebrow')" :title="t('agentSessions.detailTitle')" :description="t('agentSessions.detailDescription')">
@@ -54,10 +53,6 @@
           :pagination="false"
         />
       </div>
-
-      <!-- The in-place inspector: opened by a row click, closed by mask/Esc/
-           its own close button. -->
-      <SessionRequestDrawer v-model:show="drawerOpen" :request="drawerRequest" />
     </template>
   </div>
 </template>
@@ -79,7 +74,6 @@ import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue
 import StatusClassTag from '../../components/request-logs/StatusClassTag.vue'
 import SessionSummaryCard from '../../components/agent-sessions/SessionSummaryCard.vue'
 import SessionWaterfallBar from '../../components/agent-sessions/SessionWaterfallBar.vue'
-import SessionRequestDrawer from '../../components/agent-sessions/SessionRequestDrawer.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -89,11 +83,6 @@ const message = useMessage()
 const detail = ref<AgentSessionDetail | null>(null)
 const loading = ref(false)
 const notFound = ref(false)
-
-// Drawer state: the clicked row plus the open flag. The drawer fetches the
-// row's full detail (bodies) itself, on demand.
-const drawerOpen = ref(false)
-const drawerRequest = ref<RequestLogRow | null>(null)
 
 // sessionId comes from the URL, decoded once here. Session ids are opaque
 // tool-side identifiers (uuids for Claude Code, arbitrary strings for
@@ -134,21 +123,16 @@ function onBack() {
   router.push('/agent-sessions')
 }
 
-// Clicking a row opens the in-place drawer — the page itself never
-// navigates away; the drawer owns the hop to the request-detail page via
-// its "view full details" button. Modifier clicks keep their browser
-// default (the row text stays selectable, cmd-click etc. untouched).
-function openDrawer(row: RequestLogRow) {
-  drawerRequest.value = row
-  drawerOpen.value = true
-}
-
+// Clicking a row navigates to that request's message page — a full page
+// with its own URL (shareable, refreshable), not an overlay. Modifier
+// clicks keep their browser default (the row text stays selectable,
+// cmd-click etc. untouched).
 function rowProps(row: RequestLogRow): Record<string, unknown> {
   return {
     style: 'cursor: pointer;',
     onClick: (e: MouseEvent) => {
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-      openDrawer(row)
+      void router.push(`/request-messages/${encodeURIComponent(row.request_id)}`)
     },
   }
 }

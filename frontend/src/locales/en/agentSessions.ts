@@ -37,7 +37,7 @@ export default {
   // Detail page
   detailEyebrow: 'Analytics',
   detailTitle: 'Session Detail',
-  detailDescription: 'Every request of this session in chronological order; click any row to expand it in place without leaving the session.',
+  detailDescription: 'Every request of this session in chronological order; click any row to open that request\'s message page with the captured conversation.',
   backToList: 'Back to List',
   notFound: 'Session not found or its request logs have been cleaned up',
   detailRequestsUnit: 'requests',
@@ -66,10 +66,8 @@ export default {
   summaryDuration: 'Session Duration',
   summaryDuration_tip: 'Time between the session\'s earliest and latest requests',
 
-  // Request drawer (the in-place inspector opened by a row click)
-  drawerViewFull: 'View full details',
-  drawerLoadFailed: 'Failed to load the request detail',
-  drawerStreamMergedNote: 'streamed reply, merged from the sent chunks',
+  // (The request drawer's copy moved to the requestMessages namespace when
+  // the drawer was replaced by the full-page request message view.)
 
   // Message flow (bubble view of the captured bodies)
   flowTruncated: 'Content too long, truncated',

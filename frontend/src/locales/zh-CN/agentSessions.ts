@@ -37,7 +37,7 @@ export default {
   // Detail page
   detailEyebrow: '统计分析',
   detailTitle: '会话详情',
-  detailDescription: '该会话的全部请求按时间先后排列；点击任一行原地展开该请求，视线不离开会话。',
+  detailDescription: '该会话的全部请求按时间先后排列；点击任一行整页打开该请求的消息页，查看捕获的完整对话。',
   backToList: '返回列表',
   notFound: '会话不存在或请求日志已被清理',
   detailRequestsUnit: '条请求',
@@ -66,10 +66,8 @@ export default {
   summaryDuration: '会话时长',
   summaryDuration_tip: '会话内最晚一次请求与最早一次请求的时间差',
 
-  // Request drawer (the in-place inspector opened by a row click)
-  drawerViewFull: '查看完整详情',
-  drawerLoadFailed: '请求详情加载失败',
-  drawerStreamMergedNote: '流式响应，已按发送片段合并',
+  // (The request drawer's copy moved to the requestMessages namespace when
+  // the drawer was replaced by the full-page request message view.)
 
   // Message flow (bubble view of the captured bodies)
   flowTruncated: '内容过长已截断',

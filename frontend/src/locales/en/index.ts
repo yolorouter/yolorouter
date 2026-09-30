@@ -14,6 +14,7 @@ import costOptimization from './costOptimization'
 import keyAutoRecovery from './keyAutoRecovery'
 import requestLogs from './requestLogs'
 import agentSessions from './agentSessions'
+import requestMessages from './requestMessages'
 import system from './system'
 import generalSettings from './generalSettings'
 import users from './users'
@@ -36,6 +37,7 @@ export default {
   keyAutoRecovery,
   requestLogs,
   agentSessions,
+  requestMessages,
   system,
   generalSettings,
   users,
