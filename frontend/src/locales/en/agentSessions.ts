@@ -37,7 +37,7 @@ export default {
   // Detail page
   detailEyebrow: 'Analytics',
   detailTitle: 'Session Detail',
-  detailDescription: 'Every request of this session in chronological order; click any row to open the request detail.',
+  detailDescription: 'Every request of this session in chronological order; click any row to expand it in place without leaving the session.',
   backToList: 'Back to List',
   notFound: 'Session not found or its request logs have been cleaned up',
   detailRequestsUnit: 'requests',
@@ -51,4 +51,28 @@ export default {
   detail_col_tokens_tip: 'The request\'s input and output token counts',
   col_duration: 'Duration',
   col_duration_tip: 'End-to-end duration from request received to response completed',
+  col_waterfall: 'Timeline',
+  col_waterfall_tip: 'Each request\'s duration bar on the session\'s real time axis: position aligns with the start time, length with the duration, colour follows the status bucket; hover for the precise start time and duration',
+  waterfallTip: 'started {time} · took {duration}',
+
+  // Summary card (figures recomputed from the detail's own requests array,
+  // same semantics as the list aggregate)
+  summaryRequests: 'Requests',
+  summaryRequests_tip: 'Total requests in this session and how many of them were successes (the success bucket of the five-class status taxonomy), same semantics as the list page',
+  summaryTokens: 'Total Tokens',
+  summaryTokens_tip: 'Sum of input and output tokens across the session\'s requests',
+  summaryCost: 'Cost',
+  summaryCost_tip: 'Sum of the session\'s known costs (CNY); requests that could not be priced are disclosed separately, never folded into the total',
+  summaryDuration: 'Session Duration',
+  summaryDuration_tip: 'Time between the session\'s earliest and latest requests',
+
+  // Request drawer (the in-place inspector opened by a row click)
+  drawerViewFull: 'View full details',
+  drawerLoadFailed: 'Failed to load the request detail',
+  drawerStreamMergedNote: 'streamed reply, merged from the sent chunks',
+
+  // Message flow (bubble view of the captured bodies)
+  flowTruncated: 'Content too long, truncated',
+  flowFallbackTitle: 'Raw body',
+  partImage: 'Image',
 }

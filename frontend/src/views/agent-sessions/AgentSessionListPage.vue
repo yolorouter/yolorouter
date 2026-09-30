@@ -69,6 +69,7 @@ import { useRouter } from 'vue-router'
 import { NTag, useMessage, type DataTableColumns, type PaginationProps, type SelectOption } from 'naive-ui'
 import { listAgentSessions, type AgentSessionListParams, type AgentSessionRow } from '../../api/agentSessions'
 import { displayMessage } from '../../api/client'
+import { formatShortClock } from '../../utils/format'
 import { formatMicros } from '../../utils/money'
 import { columnTitle } from '../../utils/columnTitle'
 import { AGENT_CLIENTS, agentClientLabelKey } from '../../utils/agentClient'
@@ -182,25 +183,13 @@ function rowProps(row: AgentSessionRow): Record<string, unknown> {
 
 // ---------- Render helpers ----------
 
-// Locale-aware short timestamp, same granularity the request-log table uses.
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    year: '2-digit',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
-}
-
 // Two stacked lines (from / to) — a range reads better vertically than the
 // "A → B" form when the two timestamps wrap.
 function timeRangeCell(row: AgentSessionRow) {
   const line = (label: string, iso: string) =>
     h('div', { style: 'display:flex; gap:5px; align-items:baseline;' }, [
       h('span', { style: 'color:var(--color-text-muted, #909399); font-size:11px; flex-shrink:0;' }, label),
-      h('span', { style: 'font-variant-numeric: tabular-nums; font-size:12px; white-space:nowrap;' }, formatTime(iso)),
+      h('span', { style: 'font-variant-numeric: tabular-nums; font-size:12px; white-space:nowrap;' }, formatShortClock(iso)),
     ])
   return h('div', { style: 'display:flex; flex-direction:column; gap:1px;' }, [
     line(t('agentSessions.firstSeenLabel'), row.first_seen_at),

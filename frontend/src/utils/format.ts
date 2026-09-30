@@ -41,3 +41,49 @@ export function ccsProfileName(identity?: string): string {
 export function formatYuan(value: number): string {
   return String(Math.round(value * 10000) / 10000)
 }
+
+// formatSpan renders a duration that can range from a single fast call to a
+// whole working session: sub-second in ms, sub-minute in seconds with two
+// decimals, longer as h/m/s with higher zero units dropped ("5m 0s" keeps
+// the seconds so a whole-minute span does not read as "5m" of unknown
+// precision). Used by the tool-session summary card (session length =
+// last minus first request).
+export function formatSpan(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const totalSeconds = ms / 1000
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(2)}s`
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  const s = Math.floor(totalSeconds % 60)
+  if (h > 0) return `${h}h ${m}m ${s}s`
+  return `${m}m ${s}s`
+}
+
+// formatDuration renders a single request's duration: sub-second in ms,
+// anything longer as flat seconds with two decimals ("2730.00s"). It is
+// deliberately NOT formatSpan — duration sits in dense table cells, the
+// waterfall tooltip, and the request drawer, where a fixed "NN.NNs" shape
+// keeps columns aligned instead of switching to h/m/s mid-table. Shared by
+// the request-log table cells, the agent-session timeline, and the drawer.
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(2)}s`
+}
+
+// formatShortClock renders a locale-aware timestamp at the table-cell
+// granularity — every unit 2-digit ("26/09/28, 08:00:00"-style; the exact
+// shape follows the runtime locale). The long variant with a 4-digit year
+// stays on the request-log detail page, which is the only consumer of that
+// granularity. Accepts anything the Date constructor understands so iso
+// strings, epoch milliseconds, and Date objects all share one entry point.
+export function formatShortClock(value: string | number | Date): string {
+  return new Date(value).toLocaleString(undefined, {
+    year: '2-digit',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+

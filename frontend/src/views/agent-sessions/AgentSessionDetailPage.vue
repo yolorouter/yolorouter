@@ -1,11 +1,19 @@
 <!-- frontend/src/views/agent-sessions/AgentSessionDetailPage.vue
      Tool-session detail (handler.GetAgentSessionDetail): the session's
      attribution plus EVERY request it contains, already chronological from
-     the backend (repository orders by created_at, id ASC). A deliberately
-     slim table — time / model / five-class status / tokens / duration —
-     because the per-request depth lives one click away: any row navigates
-     to the existing /request-logs/:requestId detail page, reusing its
-     full field set (Trace ID, attempts, bodies, ...). -->
+     the backend (repository orders by created_at, id ASC).
+
+     The page reads as one stay-in-place inspection surface:
+       - a top summary card recomputed from the requests array itself (same
+         semantics as the list SQL), so deep links and refreshes land on a
+         full summary without the list endpoint;
+       - a timeline table whose every row carries a waterfall bar aligned on
+         the session's real time axis (gaps = think time, bar length =
+         duration), hovering for the precise start and duration;
+       - clicking a row opens the in-place request drawer (key facts, the
+         translated conversation bubbles, and a "view full details" hop to
+         the existing /request-logs/:requestId detail page) instead of
+         navigating away. -->
 <template>
   <div class="common-page">
     <PageHeader :eyebrow="t('agentSessions.detailEyebrow')" :title="t('agentSessions.detailTitle')" :description="t('agentSessions.detailDescription')">
@@ -32,6 +40,10 @@
         <span class="session-meta__count">{{ detail.requests.length }} {{ t('agentSessions.detailRequestsUnit') }}</span>
       </div>
 
+      <!-- Aggregate figures recomputed from the same requests the timeline
+           renders (deep-link safe — no dependency on the list endpoint). -->
+      <SessionSummaryCard :requests="detail.requests" />
+
       <div class="data-table-wrapper">
         <ResponsiveDataTable
           :columns="columns"
@@ -42,6 +54,10 @@
           :pagination="false"
         />
       </div>
+
+      <!-- The in-place inspector: opened by a row click, closed by mask/Esc/
+           its own close button. -->
+      <SessionRequestDrawer v-model:show="drawerOpen" :request="drawerRequest" />
     </template>
   </div>
 </template>
@@ -54,12 +70,16 @@ import { NTag, useMessage, type DataTableColumns } from 'naive-ui'
 import { getAgentSessionDetail, type AgentSessionDetail } from '../../api/agentSessions'
 import type { RequestLogRow } from '../../api/requestLogs'
 import { APIError, displayMessage } from '../../api/client'
+import { formatDuration, formatShortClock } from '../../utils/format'
 import { agentClientLabelKey } from '../../utils/agentClient'
 import { columnTitle } from '../../utils/columnTitle'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import StatusClassTag from '../../components/request-logs/StatusClassTag.vue'
+import SessionSummaryCard from '../../components/agent-sessions/SessionSummaryCard.vue'
+import SessionWaterfallBar from '../../components/agent-sessions/SessionWaterfallBar.vue'
+import SessionRequestDrawer from '../../components/agent-sessions/SessionRequestDrawer.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -69,6 +89,11 @@ const message = useMessage()
 const detail = ref<AgentSessionDetail | null>(null)
 const loading = ref(false)
 const notFound = ref(false)
+
+// Drawer state: the clicked row plus the open flag. The drawer fetches the
+// row's full detail (bodies) itself, on demand.
+const drawerOpen = ref(false)
+const drawerRequest = ref<RequestLogRow | null>(null)
 
 // sessionId comes from the URL, decoded once here. Session ids are opaque
 // tool-side identifiers (uuids for Claude Code, arbitrary strings for
@@ -109,19 +134,21 @@ function onBack() {
   router.push('/agent-sessions')
 }
 
-// The timeline's whole point is the hop into the existing request detail:
-// every row navigates (the backend's ordering is the timeline's ordering).
-// Modifier clicks keep their browser default, same as the list page's rows.
-function goRequestDetail(requestId: string) {
-  router.push(`/request-logs/${encodeURIComponent(requestId)}`)
+// Clicking a row opens the in-place drawer — the page itself never
+// navigates away; the drawer owns the hop to the request-detail page via
+// its "view full details" button. Modifier clicks keep their browser
+// default (the row text stays selectable, cmd-click etc. untouched).
+function openDrawer(row: RequestLogRow) {
+  drawerRequest.value = row
+  drawerOpen.value = true
 }
 
 function rowProps(row: RequestLogRow): Record<string, unknown> {
   return {
     style: 'cursor: pointer;',
     onClick: (e: MouseEvent) => {
-if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-      goRequestDetail(row.request_id)
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      openDrawer(row)
     },
   }
 }
@@ -134,24 +161,31 @@ const toolName = computed(() => {
   return key ? t(key) : client || '-'
 })
 
-// ---------- Render helpers ----------
+// ---------- Waterfall axis (shared by every row's bar) ----------
 
-// Same short-locale timestamp granularity the request-log table uses.
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    year: '2-digit',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+// The session's time axis: from the earliest created_at to the latest
+// (created_at + duration). Every bar maps onto THIS span, so relative
+// positions are real time. Malformed timestamps parse to NaN and are
+// treated as 0 — one bad row must not blank the whole column; span<=0
+// (single instant request) collapses to a full-width bar at the left edge
+// inside the bar component.
+const timeline = computed(() => {
+  const rows = detail.value?.requests ?? []
+  const starts = rows.map((r) => {
+    const ms = Date.parse(r.created_at)
+    return Number.isNaN(ms) ? 0 : ms
   })
-}
+  const ends = rows.map((r, i) => {
+    const dur = Number.isFinite(r.duration_ms) && r.duration_ms > 0 ? r.duration_ms : 0
+    return starts[i] + dur
+  })
+  if (starts.length === 0) return { startMs: 0, spanMs: 0 }
+  const startMs = Math.min(...starts)
+  const spanMs = Math.max(...ends) - startMs
+  return { startMs, spanMs }
+})
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(2)}s`
-}
+// ---------- Render helpers ----------
 
 // In / out stacked, the same shape the request-log usage cell uses — the
 // per-request rows here are deliberately a subset of that table.
@@ -176,7 +210,7 @@ const columns = computed<DataTableColumns<RequestLogRow>>(() => [
     title: columnTitle(t('agentSessions.col_created'), t('agentSessions.col_created_tip')),
     key: 'created_at',
     width: 150,
-    render: (row) => h('span', { style: 'font-variant-numeric: tabular-nums; font-size:12px;' }, formatTime(row.created_at)),
+    render: (row) => h('span', { style: 'font-variant-numeric: tabular-nums; font-size:12px;' }, formatShortClock(row.created_at)),
   },
   {
     title: columnTitle(t('agentSessions.col_model'), t('agentSessions.col_model_tip')),
@@ -205,6 +239,17 @@ const columns = computed<DataTableColumns<RequestLogRow>>(() => [
     width: 90,
     align: 'right',
     render: (row) => h('span', { style: 'font-variant-numeric: tabular-nums;' }, formatDuration(row.duration_ms)),
+  },
+  {
+    title: columnTitle(t('agentSessions.col_waterfall'), t('agentSessions.col_waterfall_tip')),
+    key: 'waterfall',
+    minWidth: 200,
+    render: (row) =>
+      h(SessionWaterfallBar, {
+        row,
+        startMs: timeline.value.startMs,
+        spanMs: timeline.value.spanMs,
+      }),
   },
 ])
 </script>

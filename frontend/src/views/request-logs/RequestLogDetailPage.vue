@@ -359,6 +359,7 @@ import {
   type RequestLogDetail,
 } from '../../api/requestLogs'
 import { APIError, displayMessage } from '../../api/client'
+import { formatDuration } from '../../utils/format'
 import { formatMicros } from '../../utils/money'
 import { columnTitle } from '../../utils/columnTitle'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -547,11 +548,6 @@ function formatTimeFull(iso: string): string {
     minute: '2-digit',
     second: '2-digit',
   })
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(2)}s`
 }
 
 const attemptColumns = computed<DataTableColumns<AttemptRecord>>(() => [

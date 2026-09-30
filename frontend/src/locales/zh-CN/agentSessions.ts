@@ -37,7 +37,7 @@ export default {
   // Detail page
   detailEyebrow: '统计分析',
   detailTitle: '会话详情',
-  detailDescription: '该会话的全部请求按时间先后排列，点击任一行进入请求详情。',
+  detailDescription: '该会话的全部请求按时间先后排列；点击任一行原地展开该请求，视线不离开会话。',
   backToList: '返回列表',
   notFound: '会话不存在或请求日志已被清理',
   detailRequestsUnit: '条请求',
@@ -51,4 +51,28 @@ export default {
   detail_col_tokens_tip: '该请求的输入与输出 token 数',
   col_duration: '耗时',
   col_duration_tip: '该请求从接收到响应完成的端到端耗时',
+  col_waterfall: '时间线',
+  col_waterfall_tip: '每条请求在会话真实时间轴上的耗时条：位置对齐开始时间，长度对应耗时，颜色同状态分类；悬停查看精确开始时间与耗时',
+  waterfallTip: '{time} 开始 · 耗时 {duration}',
+
+  // Summary card (figures recomputed from the detail's own requests array,
+  // same semantics as the list aggregate)
+  summaryRequests: '请求数',
+  summaryRequests_tip: '该会话的请求总数及其中成功（五分类中的 success）的数量，口径与列表页一致',
+  summaryTokens: '总 Token',
+  summaryTokens_tip: '会话内全部请求的输入与输出 token 之和',
+  summaryCost: '成本',
+  summaryCost_tip: '会话内已知成本之和（人民币元）；无法定价的请求单列披露，不计入合计',
+  summaryDuration: '会话时长',
+  summaryDuration_tip: '会话内最晚一次请求与最早一次请求的时间差',
+
+  // Request drawer (the in-place inspector opened by a row click)
+  drawerViewFull: '查看完整详情',
+  drawerLoadFailed: '请求详情加载失败',
+  drawerStreamMergedNote: '流式响应，已按发送片段合并',
+
+  // Message flow (bubble view of the captured bodies)
+  flowTruncated: '内容过长已截断',
+  flowFallbackTitle: '原始正文',
+  partImage: '图片',
 }

@@ -246,7 +246,7 @@ import { useUserOptions } from '../../composables/useUserOptions'
 import { displayMessage } from '../../api/client'
 import { formatMicros, fromMicros } from '../../utils/money'
 import { formatImagePrice } from '../../utils/imagePriceSummary'
-import { formatYuan } from '../../utils/format'
+import { formatDuration, formatYuan } from '../../utils/format'
 import { columnTitle } from '../../utils/columnTitle'
 import { AGENT_CLIENTS, agentClientLabelKey } from '../../utils/agentClient'
 import PageHeader from '../../components/PageHeader.vue'
@@ -798,11 +798,6 @@ function formatTime(iso: string): string {
     minute: '2-digit',
     second: '2-digit',
   })
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(2)}s`
 }
 
 // expandField renders one label/value pair inside the expanded row. Inline

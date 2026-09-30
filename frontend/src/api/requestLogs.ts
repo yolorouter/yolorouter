@@ -154,6 +154,13 @@ export interface RequestLogDetail extends RequestLogRow {
   stream_body_path: string
   stream_body_truncated: boolean
   has_stream_body: boolean
+  /** The sent-SSE capture file's content, inlined by the backend under the
+   *  same 1 MiB truncation guard as the other inline bodies (with the same
+   *  readable truncation marker appended when cut). "" when no capture
+   *  exists — non-streaming requests, capture failure, or the file being
+   *  gone from disk. The uncapped raw bytes stay on the dedicated
+   *  /body/stream endpoint; this field is the capped inline copy. */
+  stream_body: string
   // Input-compression audit fields. compressors_applied != '' OR
   // compress_skip_reason != '' means compression was relevant for this request.
   compress_estimated_tokens_saved: number

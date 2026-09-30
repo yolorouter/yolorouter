@@ -180,6 +180,7 @@ function detailFixture(agentClient: string, agentSessionId: string): RequestLogD
     stream_body_path: '',
     stream_body_truncated: false,
     has_stream_body: false,
+    stream_body: '',
     compress_estimated_tokens_saved: 0,
     compress_estimated_cost_saved_micros: 0,
     compress_skip_reason: '',
