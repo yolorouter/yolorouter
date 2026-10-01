@@ -113,6 +113,10 @@ function isAssistant(message: { role: string }): boolean {
 
 .msg-flow__bubble {
   max-width: 85%;
+  /* Flex items default to min-width: auto, so an unbreakable child (a wide
+     table cell, a long token the inherited word-break cannot split) would
+     push the bubble past max-width and rip the row open — clamp it. */
+  min-width: 0;
   padding: var(--space-2, 8px) var(--space-3, 12px);
   border-radius: var(--radius-md, 6px);
   font-size: var(--text-sm, 13px);
