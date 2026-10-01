@@ -20,9 +20,10 @@
 //   - detail column headers: each of the six data columns carries its
 //     "?" help glyph (columnTitle/HelpLabel) with the column's own tip
 //     as the glyph's aria-label
-//   - page-top copy: the support-scope note names the three session-header
-//     tools and points tools without a session header at the Log Audit
-//     page (by its menu name)
+//   - page-top copy: the support-scope note names the three supported
+//     tools and states the two session-ID routes (live header capture
+//     plus the startup backfill), and points tools with no session
+//     identifier at the Log Audit page (by its menu name)
 //
 // Fixtures reuse the identifiers/aggregate values the backend feature
 // chain's own tests use (session A: 7 requests / 3 successes / 192+298
@@ -359,8 +360,19 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionListPage page-top copy (%s)'
     await nextTick()
 
     const text = document.body.textContent ?? ''
-    // Support scope: names the three session-header tools verbatim.
+    // Support scope: names the three supported tools verbatim.
     expect(text, 'scope note names the three tools').toContain('Claude Code / Codex / OpenCode')
+    // Two-route sourcing: the note must keep stating BOTH ways a session
+    // ID arrives — live header capture and the startup backfill (the
+    // Codex route; the pre-backfill copy claimed header-only collection,
+    // which the backfill pass made false).
+    const scopeFragments: Record<Locale, string[]> = {
+      'zh-CN': ['实时请求头', '启动回填'],
+      en: ['session header', 'backfill'],
+    }
+    for (const fragment of scopeFragments[locale]) {
+      expect(text, `scope note keeps the two-route sourcing (${fragment})`).toContain(fragment)
+    }
     // Pointer: the sentence around the link plus the menu-name link text.
     expect(text).toContain(copy[locale].pointerPre)
     expect(text, 'the link text is the nav menu name').toContain(navCopy[locale].logAudit)

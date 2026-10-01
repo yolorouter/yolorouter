@@ -2,13 +2,17 @@ export default {
   eyebrow: '统计分析',
   pageTitle: '工具会话',
   pageDescription: '按调用方工具的任务会话聚合浏览请求：一个会话一行，回答"这个会话干了多少活、花了多少钱"。',
-  // Page-top support-scope note: the session view only ever collects
-  // requests that carried a session header — three tools today.
-  scopeNote: '会话视图当前支持 Claude Code / Codex / OpenCode（携带会话头的请求才会进入会话）。',
+  // Page-top support-scope note: session IDs reach this view by two
+  // routes — captured live from the request's session header (Claude
+  // Code, OpenCode), or restored by the startup backfill that mines the
+  // stored request body and header snapshot (Codex today; its live chain
+  // carries no session header, so those rows join after the next
+  // restart).
+  scopeNote: '会话视图当前支持 Claude Code / Codex / OpenCode：会话标识经两条路径进入——实时请求头捕获（Claude Code、OpenCode），或启动回填从已存请求数据中补齐（Codex，重启后滞后收敛）。',
   // The pointer sentence is split around the linked menu name so the link
   // itself stays the localized nav.logAudit copy (the menu name) rather
   // than a duplicated string.
-  pointerPre: '不带会话头的工具不会在这里出现，请到「',
+  pointerPre: '没有会话标识的工具不会在这里出现，请到「',
   pointerPost: '」页用"客户端工具"过滤查看。',
   listEmpty: '没有工具会话',
 

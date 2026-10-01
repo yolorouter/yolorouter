@@ -5,10 +5,13 @@
      first/last seen, request + success counts, total tokens, and the
      known/unknown cost doublet rendered as "sum + 'incl. N of unknown cost'".
 
-     The page-top note states the support scope — only requests that
-     carried a session header ever land here (Claude Code / Codex / OpenCode
-     today) — and points tools without a session header at the log-audit
-     page's Client Tool filter, using the menu name "Log Audit" as the link.
+     The page-top note states the support scope — Claude Code / Codex /
+     OpenCode today, with session IDs arriving by two routes: captured
+     live from the request's session header (Claude Code, OpenCode), or
+     restored by the startup backfill from stored request data (Codex,
+     which carries no session header on the live chain) — and points
+     tools with no session identifier at the log-audit page's Client
+     Tool filter, using the menu name "Log Audit" as the link.
 
      Server-side paginated (page / page_size, most recent activity first —
      the backend owns the ordering); the single filter is the shared

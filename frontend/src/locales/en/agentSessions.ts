@@ -2,13 +2,17 @@ export default {
   eyebrow: 'Analytics',
   pageTitle: 'Tool Sessions',
   pageDescription: 'Browse requests aggregated by the calling tool\'s task session: one row per session — how much work it did and what it cost.',
-  // Page-top support-scope note: the session view only ever collects
-  // requests that carried a session header — three tools today.
-  scopeNote: 'The session view currently supports Claude Code / Codex / OpenCode (only requests carrying a session header appear here).',
+  // Page-top support-scope note: session IDs reach this view by two
+  // routes — captured live from the request's session header (Claude
+  // Code, OpenCode), or restored by the startup backfill that mines the
+  // stored request body and header snapshot (Codex today; its live chain
+  // carries no session header, so those rows join after the next
+  // restart).
+  scopeNote: 'The session view currently supports Claude Code / Codex / OpenCode: session IDs arrive by two routes — captured live from the request\'s session header (Claude Code, OpenCode), or restored by the startup backfill from stored request data (Codex, converging after the next restart).',
   // The pointer sentence is split around the linked menu name so the link
   // itself stays the localized nav.logAudit copy (the menu name) rather
   // than a duplicated string.
-  pointerPre: 'Tools that send no session header never show up here — open the "',
+  pointerPre: 'Tools with no session identifier never show up here — open the "',
   pointerPost: '" page and filter by Client Tool instead.',
   listEmpty: 'No tool sessions',
 
