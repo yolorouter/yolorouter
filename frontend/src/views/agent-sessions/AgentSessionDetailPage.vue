@@ -1,7 +1,11 @@
 <!-- frontend/src/views/agent-sessions/AgentSessionDetailPage.vue
      Tool-session detail (handler.GetAgentSessionDetail): the session's
      attribution plus EVERY request it contains, already chronological from
-     the backend (repository orders by created_at, id ASC).
+     the backend (repository orders by created_at, id ASC). The table shows
+     newest first by default (the log-list convention); the time column is
+     sortable back to chronological for reading the conversation flow. The
+     waterfall axis is order-agnostic (absolute timestamps), so sorting only
+     changes row order.
 
      The page reads as the session's map:
        - a top summary card recomputed from the requests array itself (same
@@ -194,6 +198,15 @@ const columns = computed<DataTableColumns<RequestLogRow>>(() => [
     title: columnTitle(t('agentSessions.col_created'), t('agentSessions.col_created_tip')),
     key: 'created_at',
     width: 150,
+    // Newest first by default (the log tables' convention); clicking flips
+    // to chronological for reading the conversation top-down. Malformed
+    // timestamps parse to NaN and count as 0 — the timeline's convention.
+    sorter: (a, b) => {
+      const ta = Date.parse(a.created_at)
+      const tb = Date.parse(b.created_at)
+      return (Number.isNaN(ta) ? 0 : ta) - (Number.isNaN(tb) ? 0 : tb)
+    },
+    defaultSortOrder: 'descend',
     render: (row) => h('span', { style: 'font-variant-numeric: tabular-nums; font-size:12px;' }, formatShortClock(row.created_at)),
   },
   {

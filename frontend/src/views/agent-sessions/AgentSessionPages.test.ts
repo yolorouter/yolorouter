@@ -372,6 +372,22 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionListPage page-top copy (%s)'
 })
 
 describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage timeline and row navigation (%s)', (locale) => {
+  it('renders the timeline newest-first by default (time column sorts descending)', async () => {
+    await mountHost(DetailHost, locale, `/agent-sessions/${SESSION_A}`)
+    await vi.waitFor(() => expect(detailMock).toHaveBeenCalledTimes(1))
+    await nextTick()
+
+    // The fixture arrives chronological (model-one 08:00, model-two 08:30);
+    // the table must present the NEWEST row first — the log tables'
+    // default-order convention, not the wire order.
+    const rows = [...document.body.querySelectorAll('tbody tr')].map((tr) => tr.textContent ?? '')
+    const idxOne = rows.findIndex((r) => r.includes('model-one'))
+    const idxTwo = rows.findIndex((r) => r.includes('model-two'))
+    expect(idxOne, 'the older row rendered').toBeGreaterThanOrEqual(0)
+    expect(idxTwo, 'the newer row rendered').toBeGreaterThanOrEqual(0)
+    expect(idxTwo, 'newest request (model-two, 08:30) renders above the older one').toBeLessThan(idxOne)
+  })
+
   it('message-page TC-05: row click navigates the whole page to /request-messages/:requestId and no drawer remains', async () => {
     await mountHost(DetailHost, locale, `/agent-sessions/${SESSION_A}`)
     await vi.waitFor(() => expect(detailMock).toHaveBeenCalledTimes(1))
