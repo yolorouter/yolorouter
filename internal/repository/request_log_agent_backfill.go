@@ -54,10 +54,13 @@ type backfillCandidate struct {
 // must keep reading as unknown rather than be guessed.
 //
 // Only agent_client is ever written. The tool's session id is deliberately
-// out of the engine's reach — the recognizer type returns no session to
+// out of this engine's reach — the recognizer type returns no session to
 // store — because every pre-allowlist snapshot holds the sanitizer's
 // redaction sentinel in the session headers, and persisting that literal
-// would poison the column with a value that was never an id.
+// would poison the column with a value that was never an id. (The snapshot's
+// headers are not the only carrier, though: the session pass in
+// request_log_agent_session_backfill.go runs after this one and recovers
+// ids the stored BODY and the unmasked turn-metadata header still carry.)
 func BackfillAgentClientRound(db *gorm.DB, afterID uint, limit int, recognize AgentClientRecognizer) (lastID uint, scanned, updated int, err error) {
 	if limit <= 0 {
 		limit = DefaultAgentBackfillBatchSize

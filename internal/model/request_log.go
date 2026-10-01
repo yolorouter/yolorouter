@@ -39,10 +39,14 @@ type RequestLog struct {
 	// AgentSessionID is the calling tool's own session identifier, taken
 	// from the session-header chain whenever a tool was recognized. It is
 	// the tool's task marker, not a gateway login session. NULL whenever
-	// AgentClient is NULL, and on rows whose snapshot predates the
-	// sanitizer's tool-session allowlist: those header values were masked
-	// before capture and cannot be recovered, so history keeps NULL rather
-	// than a redaction sentinel.
+	// AgentClient is NULL. On rows whose snapshot predates the sanitizer's
+	// tool-session allowlist the chain's header values were masked before
+	// capture, so the live write cannot fill the column — the startup
+	// backfill's second pass (repository.BackfillAgentSessionRound) later
+	// recovers what the row's own raw data still carries (claude-code's
+	// body metadata, codex's unmasked turn-metadata header), and history
+	// with no recoverable carrier keeps NULL rather than a redaction
+	// sentinel.
 	AgentSessionID *string `gorm:"column:agent_session_id" json:"agent_session_id"`
 	APIKeyID       *uint   `gorm:"column:api_key_id" json:"api_key_id"`
 	// UserID is the owner of the API key that made the request, denormalized
