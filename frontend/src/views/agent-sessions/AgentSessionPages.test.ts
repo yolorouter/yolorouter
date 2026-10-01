@@ -388,6 +388,35 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage timeline and row 
     expect(idxTwo, 'newest request (model-two, 08:30) renders above the older one').toBeLessThan(idxOne)
   })
 
+  it('renders newest-first on the mobile card layout too (default order lives in the data)', async () => {
+    // The card path (viewport < 768px) renders the passed array as-is — no
+    // NDataTable sorter applies there — so the newest-first default must
+    // come from the page's own row ordering, which is what this pins. Same
+    // stub shape as stubDesktopMatchMedia with matches: true.
+    const mql = {
+      matches: true,
+      media: '(max-width: 768px)',
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => true,
+    }
+    vi.stubGlobal('matchMedia', vi.fn(() => mql))
+
+    await mountHost(DetailHost, locale, `/agent-sessions/${SESSION_A}`)
+    await vi.waitFor(() => expect(detailMock).toHaveBeenCalledTimes(1))
+    await nextTick()
+
+    // The card list renders one .rdt-card per request in data order; the
+    // newest (model-two) must be the FIRST card.
+    const cards = [...document.body.querySelectorAll('.rdt-card')].map((c) => c.textContent ?? '')
+    expect(cards.length, 'one card per request rendered').toBe(2)
+    expect(cards[0], 'newest request is the first card on the mobile layout').toContain('model-two')
+    expect(cards[1]).toContain('model-one')
+  })
+
   it('message-page TC-05: row click navigates the whole page to /request-messages/:requestId and no drawer remains', async () => {
     await mountHost(DetailHost, locale, `/agent-sessions/${SESSION_A}`)
     await vi.waitFor(() => expect(detailMock).toHaveBeenCalledTimes(1))

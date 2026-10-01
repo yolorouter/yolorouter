@@ -2,7 +2,9 @@
      Tool-session detail (handler.GetAgentSessionDetail): the session's
      attribution plus EVERY request it contains, already chronological from
      the backend (repository orders by created_at, id ASC). The table shows
-     newest first by default (the log-list convention); the time column is
+     newest first by default in BOTH layouts (the mobile card path renders
+     the passed array as-is — no table sorter there — so the default order
+     lives in the data, not the desktop sort state); the time column is
      sortable back to chronological for reading the conversation flow. The
      waterfall axis is order-agnostic (absolute timestamps), so sorting only
      changes row order.
@@ -50,7 +52,7 @@
       <div class="data-table-wrapper">
         <ResponsiveDataTable
           :columns="columns"
-          :data="detail.requests"
+          :data="tableRows"
           :loading="loading"
           :row-key="(row: RequestLogRow) => row.request_id"
           :row-props="rowProps"
@@ -174,6 +176,22 @@ const timeline = computed(() => {
 })
 
 // ---------- Render helpers ----------
+
+// The rows the table renders: newest first BY THE DATA ITSELF, not by the
+// desktop table's sort state — the mobile card layout renders the passed
+// array as-is (no NDataTable sorter on that path), so the default order
+// must live here to hold in BOTH layouts. The wire order stays
+// chronological (the backend contract), so a local sort by parsed time
+// desc; malformed timestamps parse to NaN and count as 0 (the timeline's
+// convention). The desktop time column keeps its sorter for flipping back
+// to chronological interactively.
+const tableRows = computed<RequestLogRow[]>(() =>
+  [...(detail.value?.requests ?? [])].sort((a, b) => {
+    const ta = Date.parse(a.created_at)
+    const tb = Date.parse(b.created_at)
+    return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta)
+  }),
+)
 
 // In / out stacked, the same shape the request-log usage cell uses — the
 // per-request rows here are deliberately a subset of that table.
