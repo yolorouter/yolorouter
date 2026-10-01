@@ -291,6 +291,33 @@ describe('ChatMessageFlow (session-detail UX TC-06)', () => {
     expect(bubble?.textContent, 'merged full reply text in one assistant bubble').toContain('Hello streamed reply')
   })
 
+  it('collapses long text parts behind a disclosure row and expands on click', async () => {
+    // Agent-tool payloads routinely carry whole system contexts as ONE text
+    // part; past the collapse threshold the part renders clamped (fade
+    // preview) with a quiet toggle, and clicking swaps clamp for the full
+    // text. Short parts never clamp — the first test's texts cover that.
+    const long = Array.from({ length: 500 }, (_, k) => `第 ${k} 段：这是一段用于超过折叠阈值的长文本。`).join('\n\n')
+    expect(long.length, 'fixture actually crosses the threshold').toBeGreaterThan(3500)
+    const body: TranslatedBody = {
+      kind: 'messages',
+      truncated: false,
+      messages: [{ role: 'user', text: long, parts: [{ type: 'text', text: long }] }],
+    }
+    await mountPiece(ChatMessageFlow, { body, raw: '' })
+    const textEl = document.body.querySelector('.msg-flow__text')
+    expect(textEl?.classList.contains('msg-flow__text--clamped'), 'long part starts clamped').toBe(true)
+    const btn = document.body.querySelector('.msg-flow__disclose-btn') as HTMLButtonElement | null
+    expect(btn?.textContent, 'disclose row offers expand in the zh locale').toContain(zhCN.requestMessages.expandFull)
+    expect(document.body.querySelector('.msg-flow__disclose-meta')?.textContent, 'size note carries the character count').toContain(
+      long.length.toLocaleString(),
+    )
+    btn?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() =>
+      expect(document.body.querySelector('.msg-flow__text')?.classList.contains('msg-flow__text--clamped'), 'expanded clears the clamp').toBe(false),
+    )
+    expect(document.body.querySelector('.msg-flow__disclose-btn')?.textContent, 'toggle flips to collapse').toContain(zhCN.requestMessages.collapse)
+  })
+
   it('renders the placeholder note for a body that was never recorded inline', async () => {
     const body: TranslatedBody = { kind: 'placeholder', messages: [], truncated: false }
     await mountPiece(ChatMessageFlow, { body, raw: '' })

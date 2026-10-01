@@ -497,13 +497,17 @@ describe('RequestMessagePage response side (TC-04 lock 2)', () => {
       )
       await mountPage(locale, [`/request-messages/${REQ_ID}`])
 
-      // The section-title note renders only when the reply was rebuilt
-      // from the capture — the page's own merge signal, per locale.
-      await vi.waitFor(() =>
-        expect(document.body.querySelector('.msg-section__note')?.textContent, 'stream-merge note on the response section title').toContain(
-          pageCopy[locale].streamMergedNote,
-        ),
-      )
+      // The section-title notes include the merge signal when the reply was
+      // rebuilt from the capture — the page's own merge signal, per locale.
+      // (The title now also carries a message-count note, so this reads all
+      // notes and matches by content rather than position.)
+      await vi.waitFor(() => {
+        const notes = [...document.body.querySelectorAll('.msg-section__note')].map((n) => n.textContent ?? '')
+        expect(
+          notes.some((n) => n.includes(pageCopy[locale].streamMergedNote)),
+          'stream-merge note on the response section title',
+        ).toBe(true)
+      })
 
       // The deltas concatenated into ONE readable assistant bubble — the
       // request side is user-only, so every right-side row is the reply.

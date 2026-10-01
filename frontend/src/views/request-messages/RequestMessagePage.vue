@@ -45,9 +45,13 @@
 
     <template v-else-if="detail">
       <!-- Key facts: the eight fields the drawer's header + facts grid
-           carried, one glance before the conversation. -->
+           carried, now one bordered panel — request id (monospace, one-click
+           copy) over a compact paired grid. -->
       <div class="msg-facts">
-        <div class="msg-facts__id" :title="detail.request_id">{{ detail.request_id }}</div>
+        <div class="msg-facts__id-row">
+          <span class="msg-facts__id" :title="detail.request_id">{{ detail.request_id }}</span>
+          <NButton size="tiny" quaternary @click="copyId">{{ copiedId ? t('common.copied') : t('common.copy') }}</NButton>
+        </div>
         <dl class="msg-facts__grid">
           <dt>{{ t('agentSessions.col_model') }}</dt>
           <dd>{{ detail.model_name || '—' }}</dd>
@@ -71,13 +75,17 @@
       </div>
 
       <section class="msg-section">
-        <h2 class="msg-section__title">{{ t('requestLogs.requestBody') }}</h2>
+        <h2 class="msg-section__title">
+          {{ t('requestLogs.requestBody') }}
+          <span v-if="flowCount(requestFlow) > 0" class="msg-section__note">{{ t('requestMessages.sectionCount', { n: flowCount(requestFlow) }) }}</span>
+        </h2>
         <ChatMessageFlow :body="requestFlow" :raw="detail.request_body" />
       </section>
 
       <section class="msg-section">
         <h2 class="msg-section__title">
           {{ t('requestLogs.responseBody') }}
+          <span v-if="flowCount(responseFlow) > 0" class="msg-section__note">{{ t('requestMessages.sectionCount', { n: flowCount(responseFlow) }) }}</span>
           <span v-if="mergedFromStream" class="msg-section__note">{{ t('requestMessages.streamMergedNote') }}</span>
         </h2>
         <ChatMessageFlow :body="responseFlow" :raw="responseRaw" />
@@ -200,6 +208,32 @@ const responseFlow = computed<TranslatedBody>(() => {
   return translateStreamBody(d.stream_body)
 })
 
+// ---------- Helpers ----------
+
+// Message count for a section title. Only the 'messages' kind has any;
+// placeholder and fallback sections show no count.
+function flowCount(body: TranslatedBody): number {
+  return body.kind === 'messages' ? body.messages.length : 0
+}
+
+// One-click copy of the request id — the field an operator most often
+// carries elsewhere (searches, bug reports). The shared common.copy /
+// common.copied keys keep the wording consistent with the rest of the app.
+const copiedId = ref(false)
+async function copyId() {
+  if (!detail.value) return
+  try {
+    await navigator.clipboard.writeText(detail.value.request_id)
+    copiedId.value = true
+    message.success(t('common.copied'))
+    setTimeout(() => {
+      copiedId.value = false
+    }, 2000)
+  } catch {
+    message.error(t('common.copyFailed'))
+  }
+}
+
 // ---------- Navigation ----------
 
 function onBack() {
@@ -233,46 +267,68 @@ function goFullDetail() {
   text-align: center;
 }
 
-/* Key-facts strip: the request id (monospace, wraps rather than clipping —
-   it is the page's subject) over a compact two-column definition grid. */
+/* Key facts: one bordered panel — the request id row (monospace, wraps
+   rather than clipping — it is the page's subject — plus a tiny copy
+   button) over paired label/value cells; two pairs per row on desktop,
+   one on narrow viewports. */
 .msg-facts {
-  margin-bottom: var(--space-4, 16px);
+  margin-bottom: var(--space-5, 20px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border: 1px solid var(--color-border-subtle, #eee);
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-surface, #fff);
+}
+
+.msg-facts__id-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin-bottom: var(--space-2, 8px);
 }
 
 .msg-facts__id {
-  margin-bottom: var(--space-2, 8px);
   font-family: var(--font-mono, monospace);
-  font-size: var(--text-xs, 12px);
+  font-size: 12px;
   color: var(--color-text-secondary);
   word-break: break-all;
 }
 
 .msg-facts__grid {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: var(--space-1, 4px) var(--space-3, 12px);
+  grid-template-columns: repeat(2, max-content 1fr);
+  gap: 6px var(--space-5, 20px);
   margin: 0;
   font-size: var(--text-sm, 13px);
 }
 
 .msg-facts__grid dt {
   color: var(--color-text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  align-self: baseline;
 }
 
 .msg-facts__grid dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+@media (max-width: 768px) {
+  .msg-facts__grid {
+    grid-template-columns: max-content 1fr;
+  }
 }
 
 .msg-section {
-  margin-bottom: var(--space-4, 16px);
+  margin-bottom: var(--space-5, 20px);
 }
 
 .msg-section__title {
   display: flex;
   align-items: baseline;
   gap: var(--space-2, 8px);
-  margin: 0 0 var(--space-2, 8px);
+  margin: 0 0 var(--space-3, 12px);
   font-size: var(--text-sm, 13px);
   font-weight: 600;
 }
