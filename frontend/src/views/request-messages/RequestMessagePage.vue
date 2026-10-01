@@ -91,7 +91,8 @@
         <ChatMessageFlow :body="responseFlow" :raw="responseRaw" />
       </section>
 
-      <!-- The escape hatch to the full request-detail page. -->
+      <!-- The escape hatch to the full request-detail page; also the page's
+           landing anchor — opening the conversation scrolls here. -->
       <div class="msg-actions">
         <NButton size="small" @click="goFullDetail">
           <template #icon><ExternalLink :size="14" /></template>
@@ -103,7 +104,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NTag, useMessage } from 'naive-ui'
@@ -135,6 +136,26 @@ const requestId = computed(() => decodeURIComponent(String(route.params.requestI
 onMounted(() => {
   void reload().catch((err) => message.error(displayMessage(err, t)))
 })
+
+// A conversation page opens where conversations open: at the latest turn.
+// The reply (and the full-details escape hatch) sit at the bottom; landing
+// the viewport there saves the operator the scroll on every visit. This
+// rides a post-flush watch on the detail rather than a nextTick inside
+// reload: the post flush runs after the branch's DOM is committed, and
+// scrollIntoView (not window.scrollTo — the app shell scrolls inside
+// naive-ui layout containers, the document itself never overflows) walks
+// the real scrollable ancestors. The anchor is located by class at call
+// time; deep links and manual reloads both land here.
+watch(
+  detail,
+  (d) => {
+    if (!d) return
+    // The optional call guards test DOMs that define no scrollIntoView
+    // (happy-dom builds vary); real browsers always have it.
+    document.querySelector('.msg-actions')?.scrollIntoView?.({ block: 'end', inline: 'nearest' })
+  },
+  { flush: 'post' },
+)
 
 // 14005 = errcode.RequestLogNotFound (pkg/errcode/errcode.go). Detected by
 // code, not message text, so the not-found rendering is locale-independent —

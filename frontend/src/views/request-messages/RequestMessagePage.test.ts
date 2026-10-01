@@ -267,11 +267,28 @@ describe.each<Locale>(['zh-CN', 'en'])('RequestMessagePage rendering (%s)', (loc
     logDetailMock.mockResolvedValueOnce(
       detailFixture({ request_body: ANTHROPIC_REQUEST_BODY, response_body: OPENAI_RESPONSE_BODY }),
     )
-    await mountPage(locale, [`/request-messages/${REQ_ID}`])
+    // The page lands at the conversation's end: a successful load scrolls
+    // the bottom actions row into view (the reply + the full-details hop
+    // live there). happy-dom here defines no scrollIntoView to spy on, so
+    // the test installs a recording stub on the prototype and takes it
+    // back afterwards — restore must delete rather than assign, or it
+    // would shadow the chain with undefined and poison later tests.
+    const proto = HTMLElement.prototype as { scrollIntoView?: unknown }
+    const hadOwn = Object.prototype.hasOwnProperty.call(proto, 'scrollIntoView')
+    const original = proto.scrollIntoView
+    const scrollIntoView = vi.fn()
+    proto.scrollIntoView = scrollIntoView
+    try {
+      await mountPage(locale, [`/request-messages/${REQ_ID}`])
 
-    // The fetch targeted the URL's request id, and the page body rendered.
-    await vi.waitFor(() => expect(logDetailMock).toHaveBeenCalledWith(REQ_ID))
-    await vi.waitFor(() => expect(document.body.textContent ?? '', 'facts strip shows the request id').toContain(REQ_ID))
+      // The fetch targeted the URL's request id, and the page body rendered.
+      await vi.waitFor(() => expect(logDetailMock).toHaveBeenCalledWith(REQ_ID))
+      await vi.waitFor(() => expect(document.body.textContent ?? '', 'facts strip shows the request id').toContain(REQ_ID))
+      await vi.waitFor(() =>
+        expect(scrollIntoView, 'a successful load scrolls the actions row into view').toHaveBeenCalledWith(
+          expect.objectContaining({ block: 'end' }),
+        ),
+      )
 
     // ---- Eight key facts ----
     const text = document.body.textContent ?? ''
@@ -340,6 +357,10 @@ describe.each<Locale>(['zh-CN', 'en'])('RequestMessagePage rendering (%s)', (loc
       sessionsCopy[locale].partImage,
     )
     expect(document.body.querySelector('.msg-flow__tool')?.textContent, 'tool_use part label').toContain('tool_use: Bash')
+    } finally {
+      if (hadOwn) proto.scrollIntoView = original
+      else delete proto.scrollIntoView
+    }
   })
 })
 
