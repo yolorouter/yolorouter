@@ -211,6 +211,66 @@ function contentToParts(content: unknown, blocksStyle: boolean): ChatPart[] {
 }
 
 // ---------------------------------------------------------------------------
+// OpenAI Responses dialect (/v1/responses — codex's main wire format)
+// ---------------------------------------------------------------------------
+
+// A Responses-API request body: no chat `messages`, an `input` list of
+// typed items, and typically `instructions` carrying the system prompt.
+// Embeddings-shaped bodies (`input` of plain strings/numbers, never typed
+// records, no instructions) must NOT match — they stay fallback.
+function looksLikeResponsesRequest(body: Record<string, unknown>): boolean {
+  if (Array.isArray(body.messages)) return false
+  if (!Array.isArray(body.input)) return false
+  if (typeof body.instructions === 'string' && body.input.length === 0) return true
+  return body.input.some((el) => isRecord(el) && typeof el.type === 'string')
+}
+
+// Responses content parts: the *_text carriers hold the text, image parts
+// become placeholders, anything else shows its type label.
+function responsesContentToParts(content: unknown): ChatPart[] {
+  if (typeof content === 'string') {
+    return content === '' ? [] : [{ type: 'text', text: content }]
+  }
+  if (!Array.isArray(content)) return []
+  const parts: ChatPart[] = []
+  for (const el of content) {
+    if (!isRecord(el)) continue
+    const type = typeof el.type === 'string' ? el.type : ''
+    if ((type === 'input_text' || type === 'output_text' || type === 'text' || type === 'summary_text') && typeof el.text === 'string') {
+      if (el.text !== '') parts.push({ type: 'text', text: el.text })
+    } else if (type === 'input_image') {
+      parts.push({ type: 'image' })
+    } else {
+      parts.push({ type: 'tool', label: toolLabel(type, el.name) })
+    }
+  }
+  return parts
+}
+
+// One Responses input/output item → message. Reasoning items are the
+// model's thinking and render nothing; message items carry role + content;
+// *_call items are the assistant invoking a tool (type + name label);
+// *_call_output items are the tool's result as a tool-role text message.
+// Unknown item types stay visible as their type label.
+function responsesItemToMessage(item: Record<string, unknown>): ChatMessage | null {
+  const type = typeof item.type === 'string' ? item.type : ''
+  if (type === 'reasoning' || type === 'item_reference') return null
+  if (type === 'message' || (type === '' && (item.content !== undefined || item.role !== undefined))) {
+    const role = typeof item.role === 'string' && item.role ? item.role : 'assistant'
+    return makeMessage(role, responsesContentToParts(item.content))
+  }
+  if (type.endsWith('_call_output') || type.endsWith('_output')) {
+    const out = item.output
+    const parts = typeof out === 'string' ? (out === '' ? [] : [{ type: 'text' as const, text: out }]) : isRecord(out) ? responsesContentToParts(out.content) : []
+    return makeMessage('tool', parts)
+  }
+  if (type !== '') {
+    return makeMessage('assistant', [{ type: 'tool', label: toolLabel(type, item.name) }])
+  }
+  return makeMessage('tool', [{ type: 'tool', label: 'item' }])
+}
+
+// ---------------------------------------------------------------------------
 // Request side
 // ---------------------------------------------------------------------------
 
@@ -281,6 +341,18 @@ export function translateRequestBody(raw: string): TranslatedBody {
       }
       messages.push(makeMessage(role, parts))
     }
+  } else if (looksLikeResponsesRequest(parsed)) {
+    // OpenAI Responses (/v1/responses — codex's wire format): top-level
+    // `instructions` is the system prompt, `input` is the conversation as
+    // typed items.
+    if (typeof parsed.instructions === 'string' && parsed.instructions !== '') {
+      messages.push(makeMessage('system', [{ type: 'text', text: parsed.instructions }]))
+    }
+    for (const item of parsed.input as unknown[]) {
+      if (!isRecord(item)) continue
+      const m = responsesItemToMessage(item)
+      if (m) messages.push(m)
+    }
   } else {
     // Valid JSON but no chat shape (embeddings input, a bare object, an
     // empty messages list, ...) — nothing to render as conversation.
@@ -335,6 +407,13 @@ export function translateResponseBody(raw: string): TranslatedBody {
       }
       messages.push(makeMessage(role, parts))
     }
+  } else if (Array.isArray(parsed.output) && parsed.output.length > 0) {
+    // OpenAI Responses non-stream response: `output` is the item list.
+    for (const item of parsed.output) {
+      if (!isRecord(item)) continue
+      const m = responsesItemToMessage(item)
+      if (m) messages.push(m)
+    }
   } else {
     return FALLBACK
   }
@@ -371,6 +450,10 @@ export function translateStreamBody(raw: string): TranslatedBody {
   let role = 'assistant'
   let text = ''
   let sawFrame = false
+  // Responses dialect: the done-frame items are the primary merge source
+  // (each carries the complete message); text deltas only cover captures
+  // truncated before any item completed.
+  const doneItems: Array<Record<string, unknown>> = []
 
   for (const line of cleaned.split('\n')) {
     const trimmed = line.trim()
@@ -400,6 +483,21 @@ export function translateStreamBody(raw: string): TranslatedBody {
       continue
     }
     if (!isRecord(chunk)) continue
+
+    // OpenAI Responses event: every frame's `type` is response.*. The done
+    // frames carry whole items (message with full content, function calls);
+    // output_text deltas are the truncated-capture fallback. Reasoning
+    // summary deltas are the model's thinking, not the reply — skipped.
+    const rtype = typeof chunk.type === 'string' ? chunk.type : ''
+    if (rtype.startsWith('response.')) {
+      sawFrame = true
+      if (rtype === 'response.output_item.done' && isRecord(chunk.item)) {
+        doneItems.push(chunk.item)
+      } else if (rtype === 'response.output_text.delta' && typeof chunk.delta === 'string') {
+        text += chunk.delta
+      }
+      continue
+    }
 
     // OpenAI-shaped chunk: choices[0].delta. The first chunk carries
     // delta.role; text arrives as delta.content pieces.
@@ -435,6 +533,17 @@ export function translateStreamBody(raw: string): TranslatedBody {
   // Nothing SSE-shaped parsed (a plain-JSON or text capture, or only
   // garbage data lines) — the fallback JSON view is the honest rendering.
   if (!sawFrame) return { kind: 'fallback', messages: [], truncated }
+
+  // Responses dialect with completed items: the item list IS the reply
+  // (assistant messages, function calls, tool outputs in wire order).
+  if (doneItems.length > 0) {
+    const itemMessages = doneItems
+      .map(responsesItemToMessage)
+      .filter((m): m is ChatMessage => m !== null)
+    if (itemMessages.length > 0) {
+      return { kind: 'messages', messages: itemMessages, truncated }
+    }
+  }
 
   return {
     kind: 'messages',

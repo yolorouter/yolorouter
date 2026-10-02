@@ -485,3 +485,98 @@ describe('translateStreamBody (SSE merge matrix)', () => {
     expect(out.messages[0]?.text).toBe('visible prefix ')
   })
 })
+
+// ---------------------------------------------------------------------------
+// OpenAI Responses dialect (/v1/responses — codex's wire format)
+// ---------------------------------------------------------------------------
+
+describe('translateRequestBody (responses dialect)', () => {
+  it('renders instructions + input items as the same conversation bubbles (real codex shape)', () => {
+    const raw = JSON.stringify({
+      model: 'deepseek-ai/DeepSeek-R1',
+      instructions: 'You are a coding agent running in the Codex CLI.',
+      input: [
+        { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '配置说明' }] },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: '看看这个仓库' }] },
+        { type: 'function_call', name: 'shell', arguments: '{}', call_id: 'call_1' },
+        { type: 'function_call_output', call_id: 'call_1', output: 'exit 0' },
+        { type: 'reasoning', summary: [] },
+      ],
+      stream: true,
+    })
+    const out = translateRequestBody(raw)
+    expect(out.kind).toBe('messages')
+    expect(out.truncated).toBe(false)
+    expect(out.messages.map((m) => m.role)).toEqual(['system', 'developer', 'user', 'assistant', 'tool'])
+    expect(out.messages[0]?.text).toBe('You are a coding agent running in the Codex CLI.')
+    expect(out.messages[1]?.text).toBe('配置说明')
+    expect(out.messages[3]?.parts).toEqual([{ type: 'tool', label: 'function_call: shell' }])
+    expect(out.messages[4]?.text).toBe('exit 0')
+  })
+
+  it('keeps embeddings-shaped bodies on the fallback path (string input, no instructions)', () => {
+    const raw = JSON.stringify({ model: 'text-embedding-3-small', input: ['hello', 'world'] })
+    const out = translateRequestBody(raw)
+    expect(out.kind).toBe('fallback')
+  })
+})
+
+describe('translateResponseBody (responses dialect)', () => {
+  it('renders the output item list as messages', () => {
+    const raw = JSON.stringify({
+      object: 'response',
+      status: 'completed',
+      output: [
+        { type: 'reasoning' },
+        { type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '答案在这里', annotations: [] }] },
+        { type: 'function_call', name: 'shell', arguments: '{}', call_id: 'c1' },
+      ],
+    })
+    const out = translateResponseBody(raw)
+    expect(out.kind).toBe('messages')
+    expect(out.messages.map((m) => m.role)).toEqual(['assistant', 'assistant'])
+    expect(out.messages[0]?.text).toBe('答案在这里')
+    expect(out.messages[1]?.parts).toEqual([{ type: 'tool', label: 'function_call: shell' }])
+  })
+})
+
+describe('translateStreamBody (responses dialect)', () => {
+  it('merges done-frame items as the reply and skips reasoning summaries (real upstream shape)', () => {
+    const frames = [
+      'data: {"response":{"id":"r1","output":[],"status":"in_progress"},"type":"response.created"}',
+      'data: {"item":{"id":"rs_1","type":"reasoning"},"output_index":0,"type":"response.output_item.added"}',
+      'data: {"delta":"We are given","item_id":"rs_1","type":"response.reasoning_summary_text.delta"}',
+      'data: {"item":{"id":"rs_1","type":"reasoning"},"output_index":0,"type":"response.output_item.done"}',
+      'data: {"item":{"content":[{"annotations":[],"text":"\\n我是基于 OpenAI 的先进语言模型","type":"output_text"}],"id":"msg_1","role":"assistant","status":"completed","type":"message"},"output_index":1,"type":"response.output_item.done"}',
+      'data: {"response":{"id":"r1","output":[],"status":"completed","usage":{}},"type":"response.completed"}',
+    ].join('\n')
+    const out = translateStreamBody(frames)
+    expect(out.kind).toBe('messages')
+    expect(out.messages).toHaveLength(1)
+    expect(out.messages[0]?.role).toBe('assistant')
+    expect(out.messages[0]?.text).toContain('先进语言模型')
+    expect(out.messages[0]?.text).not.toContain('We are given')
+  })
+
+  it('falls back to concatenated output_text deltas for a capture truncated before any item done', () => {
+    const frames = [
+      'data: {"response":{"id":"r1","output":[],"status":"in_progress"},"type":"response.created"}',
+      'data: {"delta":"部分可见","item_id":"msg_1","type":"response.output_text.delta"}',
+      'data: {"delta":" 的前缀","item_id":"msg_1","type":"response.output_text.delta"}',
+    ].join('\n')
+    const out = translateStreamBody(frames)
+    expect(out.kind).toBe('messages')
+    expect(out.messages[0]?.text).toBe('部分可见 的前缀')
+  })
+
+  it('renders an all-reasoning stream as an empty assistant bubble, not fallback', () => {
+    const frames = [
+      'data: {"item":{"id":"rs_1","type":"reasoning"},"output_index":0,"type":"response.output_item.added"}',
+      'data: {"item":{"id":"rs_1","type":"reasoning"},"output_index":0,"type":"response.output_item.done"}',
+    ].join('\n')
+    const out = translateStreamBody(frames)
+    expect(out.kind).toBe('messages')
+    expect(out.messages).toHaveLength(1)
+    expect(out.messages[0]?.text).toBe('')
+  })
+})
