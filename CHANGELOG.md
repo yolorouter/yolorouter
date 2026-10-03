@@ -7,6 +7,78 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Requests are traceable end to end. The gateway now parses the W3C
+  traceparent header — strictly: version 00, a 32-digit trace-id, a
+  16-digit parent-id, 2-digit flags, and any violation yields no
+  trace-id at all rather than a partial one — and records it on the
+  request log row, reading the same sanitized header snapshot the
+  audit view stores so the column and the logged headers can never
+  disagree. The logs page gains a Trace ID detail row and an
+  exact-match filter (paste a trace-id, get that trace's requests);
+  requests without a traceparent stay untracked, and auth-rejected
+  audit rows never carry one.
+
+- Request logs can expire on a schedule. A new system setting —
+  request-log retention days, 0–3650 with 0 meaning keep forever
+  (GET/PUT `/api/admin/system-settings/request-log-retention`) —
+  drives a background sweep that deletes expired audit triples (log
+  row, stored bodies row, stream file) in bounded batches inside
+  transactions, repeating until a round deletes nothing. Keeping N
+  days includes day N; shrinking the window drains the backlog over
+  successive capped rounds instead of one unbounded purge; the loop
+  re-reads the setting every round so a change applies without a
+  restart. The shipped default keeps everything.
+
+- Request logs know which agent tool sent them. The gateway
+  recognizes the calling client — Claude Code, Codex, and OpenCode
+  via their dedicated header families, with a user-agent fallback —
+  and persists the tool name and, where a session header carried it,
+  the tool's session id onto the row; the three session headers are
+  exempt from header redaction so their values stay readable, and
+  everything else redacts exactly as before. The logs page gains a
+  Client Tool filter threading through the list query and the CSV
+  export, and the detail page shows Client Tool and Tool Session ID
+  rows when valued — tools outside the known set surface verbatim.
+  History converges too: an idempotent startup backfill re-derives
+  the tool — and, for Claude Code and Codex rows, the session id
+  from the stored request body — onto rows written before the
+  columns existed, only ever filling NULLs and leaving
+  unattributable rows NULL on purpose.
+
+- A new admin surface groups requests by tool session. The Tool
+  Sessions pages (Analytics group) aggregate every recognized
+  session: tool, session id, first/last seen, request and success
+  counts, token sums, and the known-cost total — flagged when rows
+  of unknown cost are folded in — with a client filter and
+  server-side pagination. The detail view is a chronological
+  timeline (time, model, five-class status, tokens, duration) on a
+  waterfall bar whose rows open the conversation transcript;
+  newest-first by default on desktop and mobile, one click back to
+  chronological for reading top-down.
+
+- Every logged request now has a readable transcript. A standalone
+  admin page renders the stored request and response bodies — and,
+  when only the stream was captured, the SSE stream merged back into
+  messages — as a chat conversation: OpenAI- and Anthropic-shaped
+  bodies, mixed content parts, image placeholders, and tool part
+  tags. Text flows through a sanitized markdown pipeline (fenced
+  code highlighted; script elements, event handlers, `javascript:`
+  links, and style tags dropped), giant system-context walls clamp
+  into a fading preview with a disclosure row, key facts sit in a
+  bordered panel with a one-click copy on the request id, and the
+  page lands at the conversation's end — where conversations open.
+
+- System settings move behind one General page. The new admin
+  General Settings page hosts the request-log retention form and the
+  key auto-recovery form — moved from its sidebar modal, which is
+  gone — with the same load-and-save lifecycle, plus a per-browser
+  Language card that applies immediately and stays in sync with the
+  sidebar language entry.
+
 ## [0.2.6] - 2026-09-26
 
 ### Added
