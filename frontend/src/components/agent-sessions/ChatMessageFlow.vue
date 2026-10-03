@@ -71,7 +71,16 @@
               <ImageIcon :size="14" />
               <span>{{ t('agentSessions.partImage') }}</span>
             </div>
-            <span v-else class="msg-flow__tool">{{ part.label }}</span>
+            <template v-else>
+              <span class="msg-flow__tool">{{ part.label }}</span>
+              <!-- The translator lifts readable payloads here — a tool
+                   call's arguments, a tool result's output text — shown as
+                   a scrollable mono block under the pill. JSON arguments
+                   render through highlight.js (the app's shared core
+                   instance, same token palette as fenced code blocks);
+                   arbitrary output text stays plain. -->
+              <pre v-if="part.detail" class="msg-flow__tooldetail"><code v-if="part.detailLang" class="msg-flow__tooldetail-code" v-html="highlightDetail(part)"></code><template v-else>{{ part.detail }}</template></pre>
+            </template>
           </template>
         </div>
       </div>
@@ -96,6 +105,7 @@ import { NCollapse, NCollapseItem } from 'naive-ui'
 import { Image as ImageIcon } from '@lucide/vue'
 import type { TranslatedBody } from '../../utils/messageTranslator'
 import { renderMarkdown } from '../../utils/markdown'
+import hljs from '../../utils/hljs'
 import BodyViewer from '../request-logs/BodyViewer.vue'
 
 defineProps<{
@@ -136,6 +146,24 @@ function togglePart(i: number, j: number) {
   if (next.has(key)) next.delete(key)
   else next.add(key)
   expandedParts.value = next
+}
+
+// ---------- Tool payload highlighting ----------
+// JSON arguments (detailLang === 'json') go through the app's shared hljs
+// core — the same instance NCode and the fenced-code path use. Every
+// fall-off (unknown language, highlighter hiccup) degrades to the same
+// block with the text HTML-escaped: never a crash, never raw markup.
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+function highlightDetail(part: { detail?: string; detailLang?: 'json' }): string {
+  const text = part.detail ?? ''
+  if (!part.detailLang || !hljs.getLanguage(part.detailLang)) return escapeHtml(text)
+  try {
+    return hljs.highlight(text, { language: part.detailLang }).value
+  } catch {
+    return escapeHtml(text)
+  }
 }
 </script>
 
@@ -391,35 +419,49 @@ function togglePart(i: number, j: number) {
   font-weight: 600;
 }
 
-/* Minimal highlight.js token palette for the bubbles. Scoped to the bubble
-   text on purpose: importing a full hljs theme would also restyle NCode's
-   code blocks elsewhere in the app. */
+/* Minimal highlight.js token palette for the bubbles — applied to rendered
+   markdown AND to the tool payload blocks, so every highlighted surface in
+   the flow reads the same. Scoped on purpose: importing a full hljs theme
+   would also restyle NCode's code blocks elsewhere in the app. */
 .msg-flow__text :deep(.hljs-keyword),
 .msg-flow__text :deep(.hljs-selector-tag),
 .msg-flow__text :deep(.hljs-built_in),
-.msg-flow__text :deep(.hljs-type) {
+.msg-flow__text :deep(.hljs-type),
+.msg-flow__tooldetail :deep(.hljs-keyword),
+.msg-flow__tooldetail :deep(.hljs-selector-tag),
+.msg-flow__tooldetail :deep(.hljs-built_in),
+.msg-flow__tooldetail :deep(.hljs-type) {
   color: var(--color-purple, #7c3aed);
 }
 
 .msg-flow__text :deep(.hljs-string),
 .msg-flow__text :deep(.hljs-attr),
-.msg-flow__text :deep(.hljs-template-variable) {
+.msg-flow__text :deep(.hljs-template-variable),
+.msg-flow__tooldetail :deep(.hljs-string),
+.msg-flow__tooldetail :deep(.hljs-attr),
+.msg-flow__tooldetail :deep(.hljs-template-variable) {
   color: var(--color-green, #18a058);
 }
 
 .msg-flow__text :deep(.hljs-comment),
-.msg-flow__text :deep(.hljs-quote) {
+.msg-flow__text :deep(.hljs-quote),
+.msg-flow__tooldetail :deep(.hljs-comment),
+.msg-flow__tooldetail :deep(.hljs-quote) {
   color: var(--color-text-muted);
   font-style: italic;
 }
 
 .msg-flow__text :deep(.hljs-number),
-.msg-flow__text :deep(.hljs-literal) {
+.msg-flow__text :deep(.hljs-literal),
+.msg-flow__tooldetail :deep(.hljs-number),
+.msg-flow__tooldetail :deep(.hljs-literal) {
   color: var(--color-warning-text, #d48806);
 }
 
 .msg-flow__text :deep(.hljs-title),
-.msg-flow__text :deep(.hljs-title.function_) {
+.msg-flow__text :deep(.hljs-title.function_),
+.msg-flow__tooldetail :deep(.hljs-title),
+.msg-flow__tooldetail :deep(.hljs-title.function_) {
   color: var(--color-info-text, #2080f0);
 }
 
@@ -442,6 +484,33 @@ function togglePart(i: number, j: number) {
   color: var(--color-purple, #7c3aed);
   font-family: var(--font-mono, monospace);
   font-size: var(--text-xs, 12px);
+}
+
+/* A tool part's payload: mono, capped — the translator already truncates
+   oversized payloads, the cap here keeps page scroll sane. Whitespace is
+   preserved and wide lines scroll sideways (the fenced-code treatment in
+   .msg-flow__text): terminal output is column-aligned, and wrapping it
+   shreds the very table the user opened the block to read. The inner code
+   element (v-html'd hljs output) inherits the panel treatment entirely. */
+.msg-flow__tooldetail {
+  margin: var(--space-1, 4px) 0 0;
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border: 1px solid var(--color-border-subtle, #eee);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-bg-soft, #f2f3f5);
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs, 12px);
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.msg-flow__tooldetail code {
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0;
 }
 
 .msg-flow__note {

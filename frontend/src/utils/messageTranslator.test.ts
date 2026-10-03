@@ -144,7 +144,7 @@ describe('translateRequestBody (request-side matrix)', () => {
         msg('user', 'Read this chart', [{ type: 'text', text: 'Read this chart' }, { type: 'image' }]),
         msg('assistant', 'I will run the analysis.', [
           { type: 'text', text: 'I will run the analysis.' },
-          { type: 'tool', label: 'tool_use: Bash' },
+          { type: 'tool', label: 'tool_use: Bash', detail: '{\n  "command": "ls"\n}', detailLang: 'json' },
         ]),
       ],
     ],
@@ -164,7 +164,7 @@ describe('translateRequestBody (request-side matrix)', () => {
       JSON.stringify({
         messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '22C sunny' }] }],
       }),
-      [msg('user', '', [{ type: 'tool', label: 'tool_result' }])],
+      [msg('user', '', [{ type: 'tool', label: 'tool_result', detail: '22C sunny' }])],
     ],
   ])('translates %s', (_name, raw, expected) => {
     expect(reqMessages(raw)).toEqual(expected)
@@ -316,7 +316,7 @@ describe('translateResponseBody (response-side matrix)', () => {
       [
         msg('assistant', 'Running it.', [
           { type: 'text', text: 'Running it.' },
-          { type: 'tool', label: 'tool_use: Read' },
+          { type: 'tool', label: 'tool_use: Read', detail: '{\n  "path": "/tmp"\n}', detailLang: 'json' },
         ]),
       ],
     ],
@@ -578,5 +578,58 @@ describe('translateStreamBody (responses dialect)', () => {
     expect(out.kind).toBe('messages')
     expect(out.messages).toHaveLength(1)
     expect(out.messages[0]?.text).toBe('')
+  })
+})
+
+describe('tool part payloads (detail lifting)', () => {
+  it('lifts tool_use input and correlates the tool_result name + output text (Anthropic shape)', () => {
+    const raw = JSON.stringify({
+      model: 'claude-x',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'ls -la' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: [{ type: 'text', text: 'total 0\nexit 0' }] }] },
+      ],
+    })
+    const out = translateRequestBody(raw)
+    expect(out.kind).toBe('messages')
+    expect(out.messages[0]?.parts[0]).toMatchObject({ type: 'tool', label: 'tool_use: Bash', detail: expect.stringContaining('"command": "ls -la"'), detailLang: 'json' })
+    expect(out.messages[1]?.parts[0]).toMatchObject({ type: 'tool', label: 'tool_result: Bash', detail: expect.stringContaining('total 0') })
+    // Arbitrary tool output is NOT marked as JSON — the bubble keeps it
+    // plain mono instead of highlighting terminal text.
+    expect(out.messages[1]?.parts[0]).not.toHaveProperty('detailLang')
+  })
+
+  it('lifts OpenAI tool_calls arguments as pretty JSON', () => {
+    const raw = JSON.stringify({
+      model: 'gpt-4o',
+      messages: [
+        { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"北京"}' } }] },
+        { role: 'tool', tool_call_id: 'c1', content: '晴 26 度' },
+      ],
+    })
+    const out = translateRequestBody(raw)
+    expect(out.messages[0]?.parts[0]).toMatchObject({ type: 'tool', label: 'tool_calls: get_weather', detail: expect.stringContaining('"city": "北京"'), detailLang: 'json' })
+    // The tool role's plain-string content stays a normal text part.
+    expect(out.messages[1]?.text).toBe('晴 26 度')
+  })
+
+  it('marks a tool_result whose output itself parses as JSON for highlighting', () => {
+    const raw = JSON.stringify({
+      model: 'claude-x',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_1', name: 'Read', input: { path: '/tmp/x.json' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: [{ type: 'text', text: '{"status":"ok","rows":3}' }] }] },
+      ],
+    })
+    const out = translateRequestBody(raw)
+    // The string payload reparses and pretty-prints as JSON, so it gets the
+    // same highlighting as call arguments.
+    expect(out.messages[1]?.parts[0]).toMatchObject({ detail: expect.stringContaining('"status": "ok"'), detailLang: 'json' })
+  })
+
+  it('keeps a bare tool part pill when the block carries no payload', () => {
+    const raw = JSON.stringify({ model: 'claude-x', messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'nope', content: '' }] }] })
+    const out = translateRequestBody(raw)
+    expect(out.messages[0]?.parts[0]).toEqual({ type: 'tool', label: 'tool_result' })
   })
 })

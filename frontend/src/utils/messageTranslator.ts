@@ -45,10 +45,19 @@ export interface ChatImagePart {
 }
 
 /** Any other non-text part (tool_use / tool_calls / tool_result / ...),
- *  shown as a type label only. */
+ *  shown as a type label pill. When the block carries a payload worth
+ *  reading — a tool call's arguments, a tool result's output text — the
+ *  translator lifts it into `detail` and the bubble renders it as a
+ *  scrollable block under the pill; without a payload it stays a pill. */
 export interface ChatToolPart {
   type: 'tool'
   label: string
+  detail?: string
+  /** Highlight language for `detail` — set only when the payload is known
+   *  to be pretty-printed JSON (a tool call's arguments), so the bubble
+   *  renders it through highlight.js. Arbitrary tool output carries no
+   *  lang and stays plain mono text. */
+  detailLang?: 'json'
 }
 
 export type ChatPart = ChatTextPart | ChatImagePart | ChatToolPart
@@ -127,6 +136,63 @@ function toolLabel(type: string, name: unknown): string {
   return typeof name === 'string' && name ? `${type}: ${name}` : type
 }
 
+// A tool payload worth showing: JSON (object or JSON-string) pretty-printed,
+// anything else as-is; empty payload → '' (no detail block). The lang marks
+// output that is known to be JSON, so the bubble highlights it.
+const TOOL_DETAIL_CAP = 4000
+interface ToolPayload {
+  text: string
+  lang?: 'json'
+}
+function toolDetail(v: unknown): ToolPayload {
+  let out = ''
+  let json = false
+  if (typeof v === 'string') out = v.trim()
+  else {
+    try {
+      out = JSON.stringify(v, null, 2) ?? ''
+      json = true
+    } catch {
+      out = ''
+    }
+  }
+  // A trivially empty payload ("{}" / "null") has nothing to read.
+  if (out === '' || out === '{}' || out === 'null') return { text: '' }
+  // A JSON-string payload (OpenAI tool_calls arguments arrive as a string)
+  // reads better pretty-printed; unparseable strings stay verbatim.
+  if (typeof v === 'string') {
+    try {
+      out = JSON.stringify(JSON.parse(v), null, 2)
+      json = true
+    } catch {
+      /* keep verbatim */
+    }
+  }
+  if (out.length > TOOL_DETAIL_CAP) out = out.slice(0, TOOL_DETAIL_CAP) + '\n… [truncated]'
+  return json ? { text: out, lang: 'json' } : { text: out }
+}
+
+// The one constructor for tool parts: a payload worth reading becomes a
+// pill with a detail block (highlighted when it is JSON), anything else
+// stays a bare pill.
+function toolPart(label: string, payload: ToolPayload): ChatToolPart {
+  if (!payload.text) return { type: 'tool', label }
+  if (payload.lang) return { type: 'tool', label, detail: payload.text, detailLang: payload.lang }
+  return { type: 'tool', label, detail: payload.text }
+}
+
+// A tool_result's readable output: string content verbatim, a blocks array
+// reduced to its text blocks' texts, anything else no detail.
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  const texts: string[] = []
+  for (const el of content) {
+    if (isRecord(el) && el.type === 'text' && typeof el.text === 'string') texts.push(el.text)
+  }
+  return texts.join('\n')
+}
+
 function makeMessage(role: string, parts: ChatPart[]): ChatMessage {
   return {
     role,
@@ -174,13 +240,27 @@ function isBlocksArray(content: unknown): boolean {
 // text (verbatim), image (placeholder). Everything else — tool_use,
 // tool_result, thinking, document, ... — is a non-text part and shows its
 // type (plus the tool name for tool_use).
-function blockToPart(block: Record<string, unknown>): ChatPart {
+function blockToPart(block: Record<string, unknown>, toolNames?: Map<string, string>): ChatPart {
   const type = typeof block.type === 'string' ? block.type : ''
   if (type === 'text') {
     return { type: 'text', text: typeof block.text === 'string' ? block.text : '' }
   }
   if (type === 'image') {
     return { type: 'image' }
+  }
+  if (type === 'tool_use') {
+    if (toolNames && typeof block.id === 'string') {
+      const name = typeof block.name === 'string' ? block.name : ''
+      if (name) toolNames.set(block.id, name)
+    }
+    return toolPart(toolLabel(type, block.name), toolDetail(block.input))
+  }
+  if (type === 'tool_result') {
+    // Correlate with the earlier tool_use by id, so the pill reads
+    // "tool_result: Bash" instead of a bare type name.
+    const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : ''
+    const name = (id && toolNames?.get(id)) || ''
+    return toolPart(toolLabel(type, name), toolDetail(toolResultText(block.content)))
   }
   return { type: 'tool', label: toolLabel(type || 'unknown', block.name) }
 }
@@ -202,12 +282,12 @@ function openAIPartToPart(part: Record<string, unknown>): ChatPart {
 // directly; blocks/parts arrays map element-wise; any other content shape
 // (null, numbers, ...) contributes no parts — the message still renders as
 // an empty bubble instead of failing the whole body.
-function contentToParts(content: unknown, blocksStyle: boolean): ChatPart[] {
+function contentToParts(content: unknown, blocksStyle: boolean, toolNames?: Map<string, string>): ChatPart[] {
   if (typeof content === 'string') {
     return content === '' ? [] : [{ type: 'text', text: content }]
   }
   if (!Array.isArray(content)) return []
-  return content.filter(isRecord).map((el) => (blocksStyle ? blockToPart(el) : openAIPartToPart(el)))
+  return content.filter(isRecord).map((el) => (blocksStyle ? blockToPart(el, toolNames) : openAIPartToPart(el)))
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +345,7 @@ function responsesItemToMessage(item: Record<string, unknown>): ChatMessage | nu
     return makeMessage('tool', parts)
   }
   if (type !== '') {
-    return makeMessage('assistant', [{ type: 'tool', label: toolLabel(type, item.name) }])
+    return makeMessage('assistant', [toolPart(toolLabel(type, item.name), toolDetail(item.arguments))])
   }
   return makeMessage('tool', [{ type: 'tool', label: 'item' }])
 }
@@ -309,12 +389,15 @@ export function translateRequestBody(raw: string): TranslatedBody {
 
   // Fixed order: Anthropic features first.
   if (looksLikeAnthropicRequest(parsed)) {
+    // tool_use id → tool name, walked in order so a later tool_result
+    // block can name the tool it answers.
+    const toolNames = new Map<string, string>()
     // Top-level system prompt, when it carries anything, becomes the
     // leading system message (string or blocks — both accepted by the
     // wire format; an empty one is skipped rather than rendering a bare
     // empty bubble).
     if (parsed.system !== undefined && parsed.system !== '') {
-      const systemParts = contentToParts(parsed.system, true)
+      const systemParts = contentToParts(parsed.system, true, toolNames)
       if (systemParts.length > 0) messages.push(makeMessage('system', systemParts))
     }
     // messages may be absent altogether when only system matched — the
@@ -322,7 +405,7 @@ export function translateRequestBody(raw: string): TranslatedBody {
     if (Array.isArray(parsed.messages)) {
       for (const m of parsed.messages) {
         if (!isRecord(m)) continue
-        messages.push(makeMessage(typeof m.role === 'string' ? m.role : '', contentToParts(m.content, true)))
+        messages.push(makeMessage(typeof m.role === 'string' ? m.role : '', contentToParts(m.content, true, toolNames)))
       }
     }
   } else if (looksLikeOpenAIRequest(parsed)) {
@@ -336,7 +419,7 @@ export function translateRequestBody(raw: string): TranslatedBody {
         for (const call of m.tool_calls) {
           if (!isRecord(call)) continue
           const fn = isRecord(call.function) ? call.function : {}
-          parts.push({ type: 'tool', label: toolLabel('tool_calls', fn.name) })
+          parts.push(toolPart(toolLabel('tool_calls', fn.name), toolDetail(fn.arguments)))
         }
       }
       messages.push(makeMessage(role, parts))
@@ -388,7 +471,7 @@ export function translateResponseBody(raw: string): TranslatedBody {
   // top-level content array (OpenAI responses never have one — their
   // content lives under choices[].message).
   if (isBlocksArray(parsed.content)) {
-    messages.push(makeMessage(typeof parsed.role === 'string' && parsed.role ? parsed.role : 'assistant', contentToParts(parsed.content, true)))
+    messages.push(makeMessage(typeof parsed.role === 'string' && parsed.role ? parsed.role : 'assistant', contentToParts(parsed.content, true, new Map<string, string>())))
   } else if (Array.isArray(parsed.choices) && parsed.choices.length > 0) {
     // One assistant message per choice (n>1 requests stream several; the
     // common n=1 case yields one). Choices without a message object are
@@ -402,7 +485,7 @@ export function translateResponseBody(raw: string): TranslatedBody {
         for (const call of msg.tool_calls) {
           if (!isRecord(call)) continue
           const fn = isRecord(call.function) ? call.function : {}
-          parts.push({ type: 'tool', label: toolLabel('tool_calls', fn.name) })
+          parts.push(toolPart(toolLabel('tool_calls', fn.name), toolDetail(fn.arguments)))
         }
       }
       messages.push(makeMessage(role, parts))
