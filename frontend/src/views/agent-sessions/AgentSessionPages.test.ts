@@ -67,7 +67,6 @@ const REQUEST_2 = 'req-sess-2'
 
 type Locale = 'en' | 'zh-CN'
 const copy = { en: en.agentSessions, 'zh-CN': zhCN.agentSessions } as const
-const navCopy = { en: en.nav, 'zh-CN': zhCN.nav } as const
 
 let wrapper: VueWrapper | null = null
 
@@ -354,32 +353,31 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionListPage aggregates and filt
 })
 
 describe.each<Locale>(['zh-CN', 'en'])('AgentSessionListPage page-top copy (%s)', (locale) => {
-  it('TC-04: states the three-tool support scope and points at Log Audit by its menu name', async () => {
+  it('TC-04: states the three-tool support scope and the two routes in the description, with no banner above the filters', async () => {
     await mountHost(ListHost, locale, '/agent-sessions')
     await vi.waitFor(() => expect(listMock).toHaveBeenCalledTimes(1))
     await nextTick()
 
     const text = document.body.textContent ?? ''
-    // Support scope: names the three supported tools verbatim.
-    expect(text, 'scope note names the three tools').toContain('Claude Code / Codex / OpenCode')
-    // Two-route sourcing: the note must keep stating BOTH ways a session
+    // Support scope: names the three supported tools verbatim — folded
+    // into the one-sentence page description (the page-top shape every
+    // other list page uses).
+    expect(text, 'description names the three tools').toContain('Claude Code / Codex / OpenCode')
+    // Two-route sourcing: the copy must keep stating BOTH ways a session
     // ID arrives — live header capture and the startup backfill (the
     // Codex route; the pre-backfill copy claimed header-only collection,
     // which the backfill pass made false).
     const scopeFragments: Record<Locale, string[]> = {
       'zh-CN': ['实时请求头', '启动回填'],
-      en: ['session header', 'backfill'],
+      en: ['session-header', 'backfill'],
     }
     for (const fragment of scopeFragments[locale]) {
-      expect(text, `scope note keeps the two-route sourcing (${fragment})`).toContain(fragment)
+      expect(text, `description keeps the two-route sourcing (${fragment})`).toContain(fragment)
     }
-    // Pointer: the sentence around the link plus the menu-name link text.
-    expect(text).toContain(copy[locale].pointerPre)
-    expect(text, 'the link text is the nav menu name').toContain(navCopy[locale].logAudit)
-    expect(text).toContain(copy[locale].pointerPost)
-    // The link really points at the log-audit page.
-    const link = document.body.querySelector('a[href="/request-logs"]')
-    expect(link, 'pointer link navigates to /request-logs').toBeTruthy()
+    // The old support-scope banner is gone for good — the page top must
+    // read like every other list page: header, then filter panel, no
+    // alert strip in between.
+    expect(document.body.querySelector('.n-alert, .scope-note'), 'no alert banner above the filters').toBeNull()
   })
 })
 

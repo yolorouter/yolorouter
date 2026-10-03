@@ -5,13 +5,13 @@
      first/last seen, request + success counts, total tokens, and the
      known/unknown cost doublet rendered as "sum + 'incl. N of unknown cost'".
 
-     The page-top note states the support scope — Claude Code / Codex /
-     OpenCode today, with session IDs arriving by two routes: captured
-     live from the request's session header (Claude Code, OpenCode), or
-     restored by the startup backfill from stored request data (Codex,
-     which carries no session header on the live chain) — and points
-     tools with no session identifier at the log-audit page's Client
-     Tool filter, using the menu name "Log Audit" as the link.
+     Page-top shape matches every other list page: PageHeader with a
+     one-sentence description and nothing else above the filter panel.
+     The description carries the support scope (Claude Code / Codex /
+     OpenCode; session IDs arrive by live header capture or the startup
+     backfill; other traffic belongs to Log Audit's client-tool filter)
+     — the old banner is gone, per-column calibre lives in the column
+     help tooltips.
 
      Server-side paginated (page / page_size, most recent activity first —
      the backend owns the ordering); the single filter is the shared
@@ -20,14 +20,6 @@
 <template>
   <div class="common-page">
     <PageHeader :eyebrow="t('agentSessions.eyebrow')" :title="t('agentSessions.pageTitle')" :description="t('agentSessions.pageDescription')" />
-
-    <!-- Support-scope note. The pointer's linked text is the nav menu name
-         (nav.logAudit) so the copy and the sidebar stay in sync; the
-         sentence around it lives in this page's namespace. -->
-    <NAlert type="info" :bordered="false" class="scope-note">
-      {{ t('agentSessions.scopeNote') }}
-      {{ t('agentSessions.pointerPre') }}<RouterLink to="/request-logs" class="scope-note__link">{{ t('nav.logAudit') }}</RouterLink>{{ t('agentSessions.pointerPost') }}
-    </NAlert>
 
     <div class="filter-panel">
       <div class="filter-grid">
@@ -304,22 +296,4 @@ const columns = computed<DataTableColumns<AgentSessionRow>>(() => [
 /* Filter-bar classes (.filter-panel / .filter-grid) are the canonical
    shared classes in styles/global.less — see RequestLogListPage. */
 
-.scope-note {
-  margin-bottom: var(--space-4, 16px);
-}
-
-/* The pointer's inline link: quiet, matching NAlert's info text, with the
-   accent surfacing only on hover/focus so it reads as copy first. */
-.scope-note__link {
-  color: inherit;
-  text-decoration: underline;
-  text-decoration-color: var(--color-text-muted, #909399);
-  text-underline-offset: 2px;
-}
-
-.scope-note__link:hover,
-.scope-note__link:focus {
-  color: var(--color-accent, #4f6ef7);
-  text-decoration-color: currentColor;
-}
 </style>
