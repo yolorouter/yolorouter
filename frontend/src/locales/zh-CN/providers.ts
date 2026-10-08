@@ -98,6 +98,11 @@ export default {
   verificationUntested: '未测试',
   verificationPassed: '通过',
   verificationFailed: '失败',
+  // The mapping-table result filter's unverified bucket. Deliberately NOT
+  // verificationUntested: the bucket also holds probed-but-inconclusive
+  // rows, and "untested" would deny they were ever probed.
+  verificationUnverified: '未验证',
+  verificationFilterAll: '全部验证结果',
   retestSuperseded: '重测结果已被并发探测取代，以列表当前状态为准',
   // The 8 outcome-category labels for TestOutcome (service.TestOutcome),
   // shown per key in batch testing results.

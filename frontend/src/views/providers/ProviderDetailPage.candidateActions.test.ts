@@ -32,7 +32,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { createI18n } from 'vue-i18n'
 import naive from 'naive-ui'
-import { defineComponent, nextTick } from 'vue'
+import { defineComponent, nextTick, type ComponentPublicInstance } from 'vue'
 
 import { getProvider, listModelsForProvider, type Provider, type ProviderKey } from '../../api/providers'
 import {
@@ -469,10 +469,16 @@ describe('ProviderDetailPage candidate actions (TC-01..04, TC-10, TC-18)', () =>
     // Generic components (FilterSelectField) and naive-ui's exported
     // component types do not register as component selectors for
     // findAllComponents' typing, so the wrappers are cast before their vm
-    // seams are driven.
-    const nameField = wrapper!.findAllComponents(FilterSelectField)[0] as unknown as VueWrapper
+    // seams are driven. The modal's field is located by its label — the page
+    // itself renders a FilterSelectField too (the mapping filter bar), so
+    // positional lookup no longer identifies the modal's.
+    const fields = wrapper!.findAllComponents(FilterSelectField) as unknown as VueWrapper<
+      unknown,
+      ComponentPublicInstance<{ label?: string }>
+    >[]
+    const nameField = fields.find((c) => c.props('label') === zhCN.models.providerModelName)
     expect(nameField, 'the provider-model-name select rendered').toBeTruthy()
-    nameField.vm.$emit('update:value', 'renamed-upstream')
+    ;(nameField as unknown as VueWrapper).vm.$emit('update:value', 'renamed-upstream')
     await nextTick()
     const numbers = wrapper!.findAllComponents(NInputNumber)
     expect(numbers.length, 'the token price grid rendered its number fields').toBeGreaterThanOrEqual(1)

@@ -79,17 +79,50 @@
         </div>
         <EmptyState v-if="candidatesError" :title="t('common.networkError')" />
         <EmptyState v-else-if="!candidatesLoading && candidateRows.length === 0" :title="t('providers.modelsEmpty')" />
-        <div v-else class="data-table-wrapper">
-          <ResponsiveDataTable
-            v-model:checked-row-keys="checkedCandidateIds"
-            :columns="modelColumns"
-            :data="candidateRows"
-            :loading="candidatesLoading"
-            :scroll-x="972"
-            :row-key="(row: ProviderCandidate) => row.candidate_id"
-            :pagination="modelsPagination"
-          />
-        </div>
+        <template v-else>
+          <!-- Search + verification-result filter over the fully-fetched
+               mapping list (shared shape and composable with the model detail
+               page's route table): an in-memory computed, so it always sees
+               every row, not just the current page's slice. -->
+          <div class="filter-panel candidate-filter">
+            <div class="filter-grid">
+              <div class="filter-item filter-item--search">
+                <n-input
+                  v-model:value="candidateKeyword"
+                  :placeholder="`${t('models.name')} / ${t('models.providerModelName')}`"
+                  clearable
+                  size="small"
+                >
+                  <template #prefix><Search :size="14" /></template>
+                </n-input>
+              </div>
+              <FilterSelectField
+                v-model:value="candidateBucket"
+                :label="t('models.probeResultTitle')"
+                :options="verificationFilterOptions"
+                :placeholder="t('providers.verificationFilterAll')"
+                size="small"
+              />
+            </div>
+          </div>
+          <div class="data-table-wrapper">
+            <ResponsiveDataTable
+              v-model:checked-row-keys="checkedCandidateIds"
+              :columns="modelColumns"
+              :data="filteredCandidates"
+              :loading="candidatesLoading"
+              :scroll-x="972"
+              :row-key="(row: ProviderCandidate) => row.candidate_id"
+              :pagination="modelsPagination"
+            >
+              <!-- A filter the whole list fails to match renders the tab's own
+                   empty state rather than a blank table body. -->
+              <template #empty>
+                <EmptyState :title="t('providers.modelsEmpty')" />
+              </template>
+            </ResponsiveDataTable>
+          </div>
+        </template>
         <n-alert v-if="batchDeleteFailedSummary" type="warning" class="summary">{{ batchDeleteFailedSummary }}</n-alert>
       </n-tab-pane>
     </n-tabs>
@@ -135,7 +168,7 @@ import { computed, h, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpace, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle, Trash2 } from '@lucide/vue'
+import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle, Search, Trash2 } from '@lucide/vue'
 import { useProvidersStore } from '../../store/providers'
 import { listProviderCandidates, retestCandidate, deleteCandidate, getModel, type ImportProviderModelsResult, type ModelCandidate, type ProviderCandidate } from '../../api/models'
 import { candidateIsOwedWork, candidateProgressState, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress } from '../../utils/importProgress'
@@ -157,6 +190,7 @@ import DeleteProviderModal from '../../components/providers/DeleteProviderModal.
 import KeyTestTargetsTag from '../../components/providers/KeyTestTargetsTag.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
+import FilterSelectField from '../../components/common/FilterSelectField.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { candidateTestResultText } from '../../utils/modelStatusDisplay'
 import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
@@ -167,6 +201,7 @@ import { verificationDestinationCount } from '../../utils/providerProtocol'
 import { deleteLeavesProviderUnusable, isLastUsableKey } from '../../utils/providerStatusDisplay'
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
 import { useClientPagination } from '../../composables/useClientPagination'
+import { candidateVerificationFilterOptions, useCandidateTableFilter } from '../../composables/useCandidateTableFilter'
 import { useIsMobile } from '../../composables/useIsMobile'
 import { useBackoffPoll } from '../../composables/useBackoffPoll'
 
@@ -371,6 +406,19 @@ const candidatesError = ref(false)
 // several triggers (mount, import finished, dialog closed, retest) that can
 // overlap, and a slow stale response must not overwrite a newer one.
 let candidatesFetchId = 0
+
+// Search + verification-result filter for the mapping table — the same
+// composable the model detail page's route table uses, so the two tables'
+// filtering behaves identically by construction. The keyword matches the two
+// name columns this table shows; the verification bucket maps straight onto
+// the stored three-value verification_status. Any change restarts the pager
+// at page 1 (a narrowed list can strand the current page past the end).
+const verificationFilterOptions = computed(() => candidateVerificationFilterOptions(t))
+const {
+  keyword: candidateKeyword,
+  bucket: candidateBucket,
+  filteredRows: filteredCandidates,
+} = useCandidateTableFilter(candidateRows, (row) => [row.model_name, row.provider_model_name], modelsPagination)
 
 // silent skips the table's loading spinner and keeps failures quiet —
 // background polls fire every couple of seconds and must neither blink the
@@ -1202,6 +1250,10 @@ async function onTestAll() {
 .models-toolbar {
   display: flex;
   justify-content: flex-end;
+  margin-bottom: var(--space-4);
+}
+
+.candidate-filter {
   margin-bottom: var(--space-4);
 }
 

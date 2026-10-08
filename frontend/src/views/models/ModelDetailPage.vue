@@ -49,15 +49,48 @@
           </template>
         </EmptyState>
 
-        <div v-else class="data-table-wrapper">
-          <ResponsiveDataTable
-            :columns="candidateColumns"
-            :data="modelData.candidates"
-            :scroll-x="920"
-            :row-key="(row: ModelCandidate) => row.id"
-            :pagination="candidatePagination"
-          />
-        </div>
+        <template v-else>
+          <!-- Search + verification-result filter over the model's whole
+               candidate chain (shared shape and composable with the provider
+               detail page's mapping table): an in-memory computed, so it
+               always sees every row, not just the current page's slice. -->
+          <div class="filter-panel candidate-filter">
+            <div class="filter-grid">
+              <div class="filter-item filter-item--search">
+                <n-input
+                  v-model:value="candidateKeyword"
+                  :placeholder="`${t('models.provider')} / ${t('models.providerModelName')}`"
+                  clearable
+                  size="small"
+                >
+                  <template #prefix><Search :size="14" /></template>
+                </n-input>
+              </div>
+              <FilterSelectField
+                v-model:value="candidateBucket"
+                :label="t('models.probeResultTitle')"
+                :options="verificationFilterOptions"
+                :placeholder="t('providers.verificationFilterAll')"
+                size="small"
+              />
+            </div>
+          </div>
+          <div class="data-table-wrapper">
+            <ResponsiveDataTable
+              :columns="candidateColumns"
+              :data="filteredCandidates"
+              :scroll-x="920"
+              :row-key="(row: ModelCandidate) => row.id"
+              :pagination="candidatePagination"
+            >
+              <!-- A filter the whole chain fails to match renders the tab's
+                   own empty state rather than a blank table body. -->
+              <template #empty>
+                <EmptyState :title="t('models.routeChainEmpty')" />
+              </template>
+            </ResponsiveDataTable>
+          </div>
+        </template>
       </n-tab-pane>
 
       <n-tab-pane name="impact" :tab="t('models.tabImpact')">
@@ -86,7 +119,7 @@ import { useRoute, useRouter } from 'vue-router'
 // NTooltip is not in main.ts's create() registry, so it must be imported
 // explicitly or Vue renders it as an inert unknown element.
 import { NButton, NSwitch, NTag, NTooltip, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { ChevronDown, ChevronUp, MoreHorizontal, Plus } from '@lucide/vue'
+import { ChevronDown, ChevronUp, MoreHorizontal, Plus, Search } from '@lucide/vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
@@ -106,8 +139,10 @@ import ModelEditModal from '../../components/models/ModelEditModal.vue'
 import DeleteModelModal from '../../components/models/DeleteModelModal.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
+import FilterSelectField from '../../components/common/FilterSelectField.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { useClientPagination } from '../../composables/useClientPagination'
+import { candidateVerificationFilterOptions, useCandidateTableFilter } from '../../composables/useCandidateTableFilter'
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
 import { useIsMobile } from '../../composables/useIsMobile.ts'
 
@@ -153,6 +188,21 @@ const {
   pagination: candidatePagination,
 } = useClientPagination()
 const editingCandidate = ref<ModelCandidate | null>(null)
+
+// Search + verification-result filter for the route-chain table — the same
+// composable the provider detail page's mapping table uses, so the two
+// tables' filtering behaves identically by construction. The keyword matches
+// the two name columns this table shows; the verification bucket maps
+// straight onto the stored three-value verification_status. Any change
+// restarts the pager at page 1 (a narrowed list can strand the current page
+// past the end).
+const candidateRows = computed(() => modelData.value?.candidates ?? [])
+const verificationFilterOptions = computed(() => candidateVerificationFilterOptions(t))
+const {
+  keyword: candidateKeyword,
+  bucket: candidateBucket,
+  filteredRows: filteredCandidates,
+} = useCandidateTableFilter(candidateRows, (row) => [row.provider_name, row.provider_model_name], candidatePagination)
 // Tracks the single candidate currently running its own capability test so
 // the actions button can show a spinner instead of silently doing nothing
 // until the request resolves (mirrors ProviderDetailPage.vue's testingKeyId).
@@ -513,6 +563,10 @@ const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => {
 .route-toolbar {
   display: flex;
   justify-content: flex-end;
+  margin-bottom: var(--space-4);
+}
+
+.candidate-filter {
   margin-bottom: var(--space-4);
 }
 </style>

@@ -98,6 +98,11 @@ export default {
   verificationUntested: 'Untested',
   verificationPassed: 'Passed',
   verificationFailed: 'Failed',
+  // The mapping-table result filter's unverified bucket. Deliberately NOT
+  // verificationUntested: the bucket also holds probed-but-inconclusive
+  // rows, and "untested" would deny they were ever probed.
+  verificationUnverified: 'Unverified',
+  verificationFilterAll: 'All verification results',
   retestSuperseded: 'This retest was superseded by a concurrent probe; the list shows the current state',
   outcomeSuccess: 'Passed',
   outcomeAuthFailed: 'Auth failed',
