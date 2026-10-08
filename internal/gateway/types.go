@@ -60,6 +60,17 @@ type Exchange struct {
 	// guard.
 	authCredential        string
 	visionFallbackSubCall bool
+	// playgroundCall marks a relay exchange the console's Playground run
+	// invoked in process (SetPlaygroundCall). It is deliberately a separate
+	// flag from visionFallbackSubCall: a Playground call runs the SAME
+	// admission chain as an outside caller's request (concurrency/RPM/TPM/
+	// budget all apply — no loopback privilege) and only changes how the
+	// exchange's request_logs rows are attributed. The two flags cannot be
+	// set on one exchange: a vision-fallback sub-call arrives over the
+	// loopback HTTP surface, where no gin context key survives, and a
+	// Playground call sets its marker on a context the loopback surface
+	// never sees.
+	playgroundCall bool
 	// parentRequestID names the caller request a loopback sub-call works
 	// for; empty on normal requests. Captured from the loopback parent
 	// header only when the internal token matched.
@@ -394,9 +405,15 @@ func (rc *Exchange) AuthCredential() string { return rc.authCredential }
 func (rc *Exchange) IsVisionFallbackSubCall() bool { return rc.visionFallbackSubCall }
 
 // CallSource is what the audit row's source column records: who initiated
-// this request ("" = the caller, or the vision-fallback marker for a
-// loopback sub-call).
+// this request ("" = the caller, the vision-fallback marker for a loopback
+// sub-call, or the Playground marker for a console Playground run). Because
+// this is what the recorder reads on EVERY exit path, a Playground run's
+// rejections (budget/rate-limit admission, key state, upstream failures)
+// carry the Playground source exactly like its successes.
 func (rc *Exchange) CallSource() string {
+	if rc.playgroundCall {
+		return RequestLogSourcePlayground
+	}
 	if rc.visionFallbackSubCall {
 		return RequestLogSourceVisionFallback
 	}

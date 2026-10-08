@@ -42,6 +42,34 @@ func GatewayCredential(c *gin.Context) string {
 	return ""
 }
 
+// gatewayPlaygroundKey is the gin.Context key that marks a request as a
+// console Playground run. The console's in-process relay invocation sets it
+// on the gin context it built itself — an outside HTTP caller cannot set a
+// gin context key, so the marker is unforgeable on the wire (unlike a
+// header, which any client could send). Handle reads it once at entry and
+// stamps the exchange, whose CallSource then attributes every request_logs
+// row the exchange writes — success and rejection alike — to the Playground
+// source instead of the plain caller source.
+const gatewayPlaygroundKey = "gateway_playground_call"
+
+// SetPlaygroundCall marks this context's relay exchange as originating from
+// the console Playground. Callers that did not set it get the ordinary
+// caller attribution.
+func SetPlaygroundCall(c *gin.Context) {
+	c.Set(gatewayPlaygroundKey, true)
+}
+
+// IsPlaygroundCall reports whether this context carries the Playground
+// marker set by SetPlaygroundCall.
+func IsPlaygroundCall(c *gin.Context) bool {
+	v, ok := c.Get(gatewayPlaygroundKey)
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
+}
+
 // PostChatCompletions is the gin handler for both POST /v1/chat/completions
 // and POST /v1/messages (see router.go — both routes are bound to this same
 // handler). It pulls the APIKey the middleware already resolved and hands

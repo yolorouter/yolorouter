@@ -26,6 +26,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/service/dashboard"
 	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/internal/service/oauth"
+	"github.com/yolorouter/yolorouter/internal/service/playground"
 	"github.com/yolorouter/yolorouter/internal/service/provider"
 	"github.com/yolorouter/yolorouter/internal/service/providerclient"
 	"github.com/yolorouter/yolorouter/internal/service/requestlog"
@@ -539,6 +540,15 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	providerSvc.SetKeyRetestPassedListener(relaySvc.NoteKeyRetestPassed)
 
 	registerCapabilities(relaySvc, db, loopbackBase)
+
+	// The console Playground runs through the SAME relay instance the
+	// caller-facing routes above use — its runs must share the admission
+	// state (rate windows, circuit, key pool) of real traffic, so a second
+	// relay service here would defeat the real-chain contract the endpoint
+	// exists to serve. Member-reachable on the scoped group: a member runs
+	// on their own key, and the handler owner-checks it.
+	playgroundSvc := playground.New(db, secrets, relaySvc, bodiesDir)
+	scoped.POST("/playground/run", handler.PostPlaygroundRun(playgroundSvc))
 
 	v1 := gatewayGroup(r, "/v1", bodiesDir, db)
 	v1.POST("/chat/completions", gateway.PostChatCompletions(relaySvc))

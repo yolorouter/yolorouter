@@ -1098,10 +1098,10 @@ func TestListRequestLogsFiltersBySource(t *testing.T) {
 }
 
 // TestListRequestLogsFiltersBySourcePlayground pins the playground marker's
-// filter behaviour (acceptance case TC-08, backend half): a row stored with
-// source=playground comes back under the playground filter with its marker
-// intact, stays out of the caller and vision_fallback filters, and lists
-// alongside normal rows when unfiltered.
+// filter behaviour: a row stored with source=playground comes back under
+// the playground filter with its marker intact, stays out of the caller
+// and vision_fallback filters, and lists alongside normal rows when
+// unfiltered.
 func TestListRequestLogsFiltersBySourcePlayground(t *testing.T) {
 	r, db, _ := newRequestLogTestRouter(t)
 	now := time.Now().UTC()
