@@ -31,9 +31,11 @@ import (
 
 // newCapturingUpstream stands in for the upstream model provider: it
 // records every request body it receives (so pass-through can be asserted
-// against what the upstream actually saw) and answers a fixed OpenAI-shaped
-// completion whose usage prices to 11 micros at the seeded 1.0/2.0
-// per-million token rates (5 input + 3 output tokens).
+// against what the upstream actually saw) and answers a fixed
+// OpenAI-shaped STREAM whose single content chunk carries "pong" and whose
+// trailing usage frame reports 5 input + 3 output tokens — pricing to 11
+// micros at the seeded 1.0/2.0 per-million rates. The aggregate channel
+// always asks for a stream, so the fake upstream answers one.
 func newCapturingUpstream(t *testing.T) (*httptest.Server, *[]string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -43,8 +45,10 @@ func newCapturingUpstream(t *testing.T) (*httptest.Server, *[]string) {
 		mu.Lock()
 		*bodies = append(*bodies, string(body))
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"gpt-4o-real","choices":[{"message":{"role":"assistant","content":"pong"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"c1","model":"gpt-4o-real","choices":[{"index":0,"delta":{"content":"pong"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"c1","model":"gpt-4o-real","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	t.Cleanup(upstream.Close)
 	return upstream, bodies
@@ -435,9 +439,13 @@ func TestPlaygroundTextRunRealChain(t *testing.T) {
 
 // TestPlaygroundTwoColumnsSlotRouting: the models list runs one column per
 // entry, each on its own slot, and a failing column does not take the
-// others with it — the skeleton's sequential form of the slot contract.
-// (Concurrent no-drag behaviour is the streaming channel's test; what this
-// pins is the event family: slot 0 done, slot 1 error, in order.)
+// others with it. Columns run concurrently, so events from different slots
+// interleave arbitrarily (the 404 for an unknown model answers before the
+// healthy column's upstream does); what the channel promises — and what
+// this pins — is the per-slot contract: every event names its slot, a
+// slot's chunks precede its terminal event, and the failing column's own
+// slot carries its native terminal status while the healthy column still
+// completes.
 func TestPlaygroundTwoColumnsSlotRouting(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	upstream, _ := newCapturingUpstream(t)
@@ -453,9 +461,10 @@ func TestPlaygroundTwoColumnsSlotRouting(t *testing.T) {
 	}
 	events := sseEvents(t, w.Body.String())
 	if len(events) != 3 {
-		t.Fatalf("expected chunk+done then error, got %d events: %s", len(events), w.Body.String())
+		t.Fatalf("expected chunk+done for slot 0 and error for slot 1, got %d events: %s", len(events), w.Body.String())
 	}
-	var kinds [3]string
+	// Group by slot, preserving order within each slot.
+	bySlot := map[int][]string{}
 	for i, ev := range events {
 		var payload struct {
 			Slot int `json:"slot"`
@@ -463,31 +472,32 @@ func TestPlaygroundTwoColumnsSlotRouting(t *testing.T) {
 		if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
 			t.Fatalf("event %d not JSON: %v", i, err)
 		}
-		// The first two events belong to the healthy column (slot 0);
-		// the terminal error belongs to the failing column (slot 1,
-		// asserted again below with its status).
-		wantSlot := 0
-		if i == 2 {
-			wantSlot = 1
+		if payload.Slot != 0 && payload.Slot != 1 {
+			t.Fatalf("event %d (%s) names slot %d, want 0 or 1", i, ev.Event, payload.Slot)
 		}
-		if payload.Slot != wantSlot {
-			t.Errorf("event %d (%s) routed to slot %d, want %d", i, ev.Event, payload.Slot, wantSlot)
-		}
-		kinds[i] = ev.Event
+		bySlot[payload.Slot] = append(bySlot[payload.Slot], ev.Event)
 	}
-	if kinds[0] != "chunk" || kinds[1] != "done" || kinds[2] != "error" {
-		t.Fatalf("expected chunk, done, error in order, got %v", kinds)
+	// Both columns spoke, each exactly its own event family.
+	if got := bySlot[0]; len(got) != 2 || got[0] != "chunk" || got[1] != "done" {
+		t.Fatalf("slot 0 must be chunk then done (in order), got %v", got)
 	}
-	// The failing column's own slot carries its terminal event.
-	var last struct {
+	if got := bySlot[1]; len(got) != 1 || got[0] != "error" {
+		t.Fatalf("slot 1 must be exactly one error, got %v", got)
+	}
+	// The failing column's terminal event carries its native 404.
+	var failed struct {
 		Slot   int `json:"slot"`
 		Status int `json:"status"`
 	}
-	if err := json.Unmarshal([]byte(events[2].Data), &last); err != nil {
-		t.Fatalf("error event not JSON: %v", err)
+	for _, ev := range events {
+		if ev.Event == "error" {
+			if err := json.Unmarshal([]byte(ev.Data), &failed); err != nil {
+				t.Fatalf("error event not JSON: %v", err)
+			}
+		}
 	}
-	if last.Slot != 1 || last.Status != http.StatusNotFound {
-		t.Fatalf("second column must be slot 1 with the native 404, got slot %d status %d", last.Slot, last.Status)
+	if failed.Slot != 1 || failed.Status != http.StatusNotFound {
+		t.Fatalf("second column must be slot 1 with the native 404, got slot %d status %d", failed.Slot, failed.Status)
 	}
 }
 
@@ -586,10 +596,10 @@ func TestPlaygroundZeroPlaintextAllPaths(t *testing.T) {
 	// The disconnect really propagated through the chain: the aborted
 	// column's audit row records the caller going away (499,
 	// client_disconnected) and is still attributed to the playground
-	// source. What the handler writes onto the already-dead channel (a
-	// done whose status comes from the relay's unwritten response
-	// recorder) is the streaming ticket's cancel-event family to settle —
-	// here the durable evidence is the row.
+	// source. The channel's own acknowledgement for an aborted column
+	// (cancel_ack, decided by exactly this fail_reason) is pinned by the
+	// streaming test's disconnect arm; here the durable evidence is the
+	// row.
 	var aborted model.RequestLog
 	if err := db.Where("api_key_id = ? AND fail_reason = ?", goodKey.ID, "client_disconnected").
 		First(&aborted).Error; err != nil {

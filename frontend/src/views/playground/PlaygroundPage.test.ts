@@ -1,9 +1,14 @@
 // @vitest-environment happy-dom
 //
-// Mounted-DOM coverage for the Playground page shell (acceptance cases
-// TC-06/13/18/19/20/23, frontend arms), in BOTH locales where copy is the
-// thing under test:
+// Mounted-DOM coverage for the Playground page (acceptance cases
+// TC-04/05/06/12/13/15/18/19/20/23, frontend arms), in BOTH locales where
+// copy is the thing under test:
 //
+//   - TC-04: two columns typewriter their text as chunks arrive — the
+//     first column to answer shows text while the other still runs — and
+//     each finished column shows cost/latency/usage
+//   - TC-05: a failing column keeps its native error shape while its
+//     neighbours complete
 //   - TC-06: the key dropdown renders exactly the rows the pinned
 //     endpoint returned (own usable keys only — the pinning itself is the
 //     backend's test), and the model picker is fed by the picker endpoint
@@ -14,6 +19,10 @@
 //   - TC-19: one run request carries the shared parameter row and applies
 //     it to every selected column — the payload is the assertion surface
 //   - TC-18: a re-run replaces the old column group; old results vanish
+//   - TC-12: the vision attachment travels with the send in the dialect's
+//     data-URL encoding, and a re-run can swap it
+//   - TC-15: stopping mid-run disconnects the channel; unfinished columns
+//     settle as cancelled, finished ones keep their results
 //   - TC-20: labels are localized and follow a live locale switch
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
@@ -405,6 +414,308 @@ describe('PlaygroundPage run', () => {
       expect(document.querySelector('[data-testid="pg-columns"]')).toBeNull()
       expect(document.body.textContent ?? '').not.toContain(copy.en.columnStateRunning)
     })
+  })
+})
+
+// A controllable aggregate-channel response: frames are enqueued by the
+// test one at a time; the body stays open until the test closes it (or a
+// caller abort errors it, the way a real socket-backed stream would).
+function controlledEventStream(): { response: () => Response; emit: (frame: string) => void; close: () => void } {
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  const queue: string[] = []
+  let closed = false
+  const response = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c
+          for (const frame of queue.splice(0)) controller.enqueue(new TextEncoder().encode(frame))
+          if (closed) controller.close()
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } },
+    )
+  return {
+    response,
+    emit: (frame: string) => {
+      queue.push(frame)
+      if (controller) controller.enqueue(new TextEncoder().encode(frame))
+    },
+    close: () => {
+      closed = true
+      if (controller) controller.close()
+    },
+  }
+}
+
+function chunkFrame(slot: number, model: string, delta: string): string {
+  return `event: chunk\ndata: ${JSON.stringify({ slot, model, delta })}\n\n`
+}
+function doneFrame(slot: number, model: string, over: Record<string, unknown> = {}): string {
+  return `event: done\ndata: ${JSON.stringify({
+    slot,
+    model,
+    status: 200,
+    request_id: `req-${slot}`,
+    usage: { input_tokens: 5, output_tokens: 3 },
+    cost_micros: 11,
+    cost_known: true,
+    duration_ms: 1234,
+    ...over,
+  })}\n\n`
+}
+function errorFrame(slot: number, model: string, over: Record<string, unknown> = {}): string {
+  return `event: error\ndata: ${JSON.stringify({
+    slot,
+    model,
+    status: 429,
+    request_id: `req-err-${slot}`,
+    error: { message: 'You exceeded your current quota', type: 'insufficient_quota' },
+    ...over,
+  })}\n\n`
+}
+
+describe('PlaygroundPage streaming columns', () => {
+  it('TC-04: columns typewriter as chunks arrive and the metrics land per column', async () => {
+    const stream = controlledEventStream()
+    const fetchMock = vi.fn(() => Promise.resolve(stream.response()))
+    vi.stubGlobal('fetch', fetchMock)
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['text-only-model', 'text-and-image-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('race')
+    await sendButton('en').trigger('click')
+    await nextTick()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="pg-columns"]')).not.toBeNull())
+
+    // The first column to answer starts typing while the second still
+    // runs: two deltas land before any terminal event exists, and the
+    // column shows exactly what has arrived so far.
+    stream.emit(chunkFrame(0, 'text-only-model', 'Hel'))
+    stream.emit(chunkFrame(0, 'text-only-model', 'lo'))
+    await vi.waitFor(() => {
+      const outputs = document.querySelectorAll('[data-testid="pg-column-output"]')
+      expect(outputs).toHaveLength(1)
+      expect(outputs[0].textContent).toBe('Hello')
+    })
+    // The slower column is still in its running placeholder.
+    expect(document.body.textContent ?? '').toContain(copy.en.columnStateRunning)
+
+    // Its terminal event brings the settled figures onto that column.
+    stream.emit(doneFrame(0, 'text-only-model'))
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? ''
+      expect(text).toContain('0.000011')
+      expect(text).toContain('1.23s')
+      expect(text).toContain('req-0')
+    })
+
+    // Only now does the second column answer, and it types too.
+    stream.emit(chunkFrame(1, 'text-and-image-model', 'world'))
+    await vi.waitFor(() => {
+      const outputs = document.querySelectorAll('[data-testid="pg-column-output"]')
+      expect(outputs[1].textContent).toBe('world')
+    })
+    stream.emit(doneFrame(1, 'text-and-image-model'))
+    stream.close()
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain(copy.en.columnStateDone))
+
+    // And the run request carried the whole comparison in one channel.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('TC-05: a failing column keeps its native error shape while the others complete', async () => {
+    const stream = controlledEventStream()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(stream.response())),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['text-only-model', 'text-and-image-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('three way')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    // The middle leg: this run only has two pickable text models in the
+    // fixture, so slot 1 plays the failing column.
+    stream.emit(chunkFrame(0, 'text-only-model', 'fine'))
+    stream.emit(doneFrame(0, 'text-only-model'))
+    stream.emit(errorFrame(1, 'text-and-image-model', { status: 429 }))
+    stream.close()
+
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? ''
+      // The failed column's native shape: status, message, code — the
+      // dialect's own error object, verbatim.
+      expect(text).toContain('HTTP 429')
+      expect(text).toContain('You exceeded your current quota')
+      expect(text).toContain('insufficient_quota')
+      expect(text).toContain(copy.en.columnStateFailed)
+      // Its neighbours were not taken down with it.
+      expect(text).toContain('fine')
+      expect(text).toContain(copy.en.columnStateDone)
+    })
+  })
+
+  it('TC-12: the vision attachment travels with the send and a re-run can swap it', async () => {
+    const stream = controlledEventStream()
+    const fetchMock = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(stream.response()))
+    vi.stubGlobal('fetch', fetchMock)
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    // Pick an image through the attach control — the real path: a file
+    // into the hidden input, change event, FileReader to a data URL.
+    async function pickImage(bytes: number[], name: string) {
+      const input = document.querySelector('[data-testid="pg-attach-input"]') as HTMLInputElement
+      expect(input, 'attach input rendered').toBeTruthy()
+      const file = new File([new Uint8Array(bytes)], name, { type: 'image/png' })
+      Object.defineProperty(input, 'files', { value: [file], configurable: true })
+      input.dispatchEvent(new Event('change'))
+      // Wait on the NAME, not the thumbnail: a previous pick's thumbnail
+      // is still on the page, so only the name proves this pick's
+      // FileReader has landed.
+      await vi.waitFor(() => {
+        expect(document.querySelector('.pg-attach-name')?.textContent).toBe(name)
+      })
+    }
+
+    await pickImage([1, 2, 3], 'shot.png')
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['text-only-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('what is this')
+    await sendButton('en').trigger('click')
+    await nextTick()
+    stream.emit(doneFrame(0, 'text-only-model'))
+    stream.close()
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain(copy.en.columnStateDone))
+
+    const payload = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
+    expect(payload.messages).toHaveLength(1)
+    const parts = payload.messages[0].content as Array<{ type: string; text?: string; image_url?: { url: string } }>
+    expect(parts).toEqual([
+      { type: 'text', text: 'what is this' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
+    ])
+
+    // A re-run with a DIFFERENT image carries the new attachment — the
+    // control is re-read per send, not snapshotted with the first run.
+    const secondStream = controlledEventStream()
+    fetchMock.mockImplementation(() => Promise.resolve(secondStream.response()))
+    await pickImage([9, 9], 'swapped.png')
+    const rerunButtons = wrapper!.findAll('button').filter((b) => b.text() === copy.en.resend)
+    expect(rerunButtons).toHaveLength(1)
+    await rerunButtons[0].trigger('click')
+    await nextTick()
+    secondStream.emit(doneFrame(0, 'text-only-model'))
+    secondStream.close()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const payload2 = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string) as {
+      messages: Array<{ role: string; content: Array<{ type: string; image_url?: { url: string } }> }>
+    }
+    const parts2 = payload2.messages[0].content
+    expect(parts2[1].image_url?.url).toBe('data:image/png;base64,CQk=')
+  })
+
+  it('TC-15: stopping mid-run disconnects the channel and settles unfinished columns as cancelled', async () => {
+    // A stream that stays open and errors when the fetch signal aborts —
+    // the honest shape of a channel the page disconnects.
+    let streamAbort: (() => void) | null = null
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_path: string, init?: RequestInit) => {
+        const signal = init?.signal
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                streamAbort = () => controller.error(new DOMException('aborted', 'AbortError'))
+                signal?.addEventListener('abort', () => streamAbort?.(), { once: true })
+                controller.enqueue(new TextEncoder().encode(chunkFrame(0, 'text-only-model', 'done already')))
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    doneFrame(0, 'text-only-model', { duration_ms: 42 }),
+                  ),
+                )
+                // Slot 1 never answers: it is the column still in flight
+                // when the operator stops the run.
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } },
+          ),
+        )
+      }),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['text-only-model', 'text-and-image-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('stop me')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    // While the run is in flight, the stop control is on the page; the
+    // fast column has already finished.
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="pg-stop"]')).not.toBeNull()
+      expect(document.body.textContent ?? '').toContain('done already')
+    })
+
+    document.querySelector('[data-testid="pg-stop"]')!.dispatchEvent(new Event('click'))
+    await vi.waitFor(() => {
+      // The abort reached the fetch's signal and errored the channel.
+      expect(streamAbort).not.toBeNull()
+      // The finished column keeps its result; the in-flight column
+      // settles as cancelled, with its note.
+      const text = document.body.textContent ?? ''
+      expect(text).toContain('done already')
+      expect(text).toContain(copy.en.columnStateCancelled)
+      expect(text).toContain(copy.en.columnCancelledNote)
+      expect(document.querySelector('[data-testid="pg-stop"]')).toBeNull()
+    })
+  })
+})
+
+describe('PlaygroundPage attach guard', () => {
+  it.each<Locale>(['zh-CN', 'en'])('TC-12: an over-cap image is refused locally with the size-cap copy (%s)', async (locale) => {
+    await mountPage(locale)
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    const input = document.querySelector('[data-testid="pg-attach-input"]') as HTMLInputElement
+    expect(input, 'attach input rendered').toBeTruthy()
+    // 6 MiB exactly: within the old "> 6 MiB" guard's acceptance window
+    // while its data URL (22 + 4*ceil(N/3) = 8'388'630 chars) already
+    // exceeds the backend's 8 MiB cap — the size the exact mirror in
+    // attachLimit.ts exists to refuse before the run ever starts.
+    const file = new File([new Uint8Array(6 * 1024 * 1024)], 'huge.png', { type: 'image/png' })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    input.dispatchEvent(new Event('change'))
+
+    // The refusal is explained in the active locale, not silent.
+    await vi.waitFor(() => {
+      expect(document.body.textContent ?? '').toContain(copy[locale].imageTooLarge)
+    })
+    // And it took: no thumbnail, no name, and the input is reset so
+    // picking the same file again still fires a change event.
+    expect(document.querySelector('[data-testid="pg-attach-thumb"]')).toBeNull()
+    expect(document.querySelector('.pg-attach-name')).toBeNull()
+    expect(input.value).toBe('')
   })
 })
 

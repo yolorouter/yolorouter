@@ -6,7 +6,7 @@
 // than the shared apiFetch client, because the two clients disagree on
 // what a response IS: apiFetch answers one JSON envelope under a 30s
 // timeout, while a run answers a long-lived multi-column event stream.
-import { apiFetch, APIError, NetworkError } from './client'
+import { apiFetch, APIError, NetworkError, RequestAbortedError } from './client'
 import { t } from '../i18n'
 
 /** One row of the key picker: an API key of the signed-in account that a run may still spend under. */
@@ -43,12 +43,20 @@ export interface PlaygroundTextParams {
   max_tokens?: number
 }
 
+/** One member of a vision content array: text, or an attached image as a base64 data URL. */
+export type PlaygroundContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
+/** A run's user turn: plain text, or a vision turn carrying the prompt plus attached images. */
+export type PlaygroundUserContent = string | PlaygroundContentPart[]
+
 /** The run request: whose key to spend, which models to compare, the prompt itself. */
 export interface PlaygroundRunInput {
   key_id: number
   modality: 'text'
   models: string[]
-  messages: Array<{ role: 'user'; content: string }>
+  messages: Array<{ role: 'user'; content: PlaygroundUserContent }>
   params: PlaygroundTextParams
 }
 
@@ -61,7 +69,7 @@ export interface PlaygroundUsage {
 // The aggregate channel's event family. slot is the column's position in
 // the submitted models list; every event names its slot, and this module
 // does nothing with that knowledge except hand the event to the caller —
-// routing by slot is the page's job.
+// routing by slot is the demux pure function's job.
 export type PlaygroundStreamEvent =
   | { type: 'chunk'; slot: number; model: string; delta: string }
   | {
@@ -83,6 +91,31 @@ export type PlaygroundStreamEvent =
       request_id: string
       error: unknown
     }
+  | { type: 'cancel_ack'; slot: number; model: string; request_id: string }
+
+// The modality-aware channel timeouts. This client deliberately does NOT
+// reuse the shared apiFetch client's 30s default: a comparison run holds
+// its columns open for as long as the slowest model generates, and cutting
+// the channel at 30s would cut columns the gateway is still legitimately
+// serving. Text gets a generous whole-run budget; video reserves a
+// minutes-level budget ahead of its modality landing (its jobs run for
+// minutes, not seconds). Injectable per call via PlaygroundRunOptions.
+export const playgroundChannelTimeoutMs: Record<'text' | 'video', number> = {
+  text: 10 * 60_000,
+  video: 30 * 60_000,
+}
+
+/** Options for one aggregate-channel run. */
+export interface PlaygroundRunOptions {
+  /**
+   * The caller's own cancellation. Aborting it disconnects the channel —
+   * the backend propagates the disconnect into the in-flight columns — and
+   * the returned promise rejects with RequestAbortedError.
+   */
+  signal?: AbortSignal
+  /** Overrides the modality's default channel timeout. */
+  timeoutMs?: number
+}
 
 interface EnvelopeShape {
   code: number
@@ -91,23 +124,46 @@ interface EnvelopeShape {
   timestamp: number
 }
 
+// A unique abort reason for this client's own timeout, so the catch below
+// can tell "the channel timed out" apart from "the caller disconnected" —
+// the same distinction the shared JSON client makes for its requests.
+const CHANNEL_TIMEOUT_REASON = Symbol('playground channel timeout')
+
 /**
  * Runs one comparison and streams its events to onEvent as they arrive.
  * Resolves when the channel closes; rejects with an APIError when the
  * endpoint answered a console JSON envelope instead of opening the stream
  * (key ownership/state gates, bind errors) — those carry a real business
- * code the page displays like any other request failure.
+ * code the page displays like any other request failure. Rejects with
+ * RequestAbortedError when the caller's signal fired, and NetworkError for
+ * a timeout or transport failure.
  */
 export async function runPlayground(
   input: PlaygroundRunInput,
   onEvent: (ev: PlaygroundStreamEvent) => void,
+  options: PlaygroundRunOptions = {},
 ): Promise<void> {
-  const res = await fetch('/api/admin/playground/run', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  })
+  // The channel is bounded by the modality-aware timeout, combined with
+  // the caller's signal — either one aborts the fetch and with it the
+  // body read, which is what actually stops a hung stream.
+  const timeoutController = new AbortController()
+  const timeoutMs = options.timeoutMs ?? playgroundChannelTimeoutMs[input.modality] ?? playgroundChannelTimeoutMs.text
+  const timer = setTimeout(() => timeoutController.abort(CHANNEL_TIMEOUT_REASON), timeoutMs)
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeoutController.signal])
+    : timeoutController.signal
+  let res: Response
+  try {
+    res = await fetch('/api/admin/playground/run', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+      signal,
+    })
+  } catch (err) {
+    throw classifyChannelAbort(signal, err)
+  }
 
   const contentType = res.headers.get('content-type') ?? ''
   if (!contentType.toLowerCase().includes('text/event-stream')) {
@@ -127,33 +183,55 @@ export async function runPlayground(
     throw new NetworkError(t('unexpectedResponse'))
   }
   if (!res.ok || !res.body) {
-    throw new NetworkError(t('networkError'))
+    throw classifyChannelAbort(signal, new NetworkError(t('networkError')))
   }
 
-  // Incremental read: each column's terminal event is dispatched as it
-  // arrives, so the page can render finished columns while later ones are
-  // still running. Buffering the whole body first would serialize the
-  // display to the slowest model for no benefit.
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (value) buffer += decoder.decode(value, { stream: true })
-    let sep: number
-    // SSE frames are separated by a blank line; a trailing partial frame
-    // stays buffered until its terminator arrives.
-    while ((sep = buffer.indexOf('\n\n')) >= 0) {
-      const frame = buffer.slice(0, sep)
-      buffer = buffer.slice(sep + 2)
-      const ev = parseFrame(frame)
-      if (ev) onEvent(ev)
+  try {
+    // Incremental read: each column's events are dispatched as they
+    // arrive, so the page can render finished columns while later ones are
+    // still running. Buffering the whole body first would serialize the
+    // display to the slowest model for no benefit.
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (value) buffer += decoder.decode(value, { stream: true })
+      let sep: number
+      // SSE frames are separated by a blank line; a trailing partial frame
+      // stays buffered until its terminator arrives.
+      while ((sep = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, sep)
+        buffer = buffer.slice(sep + 2)
+        const ev = parseFrame(frame)
+        if (ev) onEvent(ev)
+      }
+      if (done) break
     }
-    if (done) break
+    // Flush a trailing frame the stream ended without a blank line after.
+    const tail = parseFrame(buffer)
+    if (tail) onEvent(tail)
+  } catch (err) {
+    throw classifyChannelAbort(signal, err)
+  } finally {
+    clearTimeout(timer)
   }
-  // Flush a trailing frame the stream ended without a blank line after.
-  const tail = parseFrame(buffer)
-  if (tail) onEvent(tail)
+}
+
+// classifyChannelAbort turns a caught channel failure into the right
+// exception type: the caller's own abort is control flow (the page stops
+// its columns, it does not toast an error), this client's timeout is a
+// network failure, and anything else passes through when the signal was
+// never involved.
+function classifyChannelAbort(signal: AbortSignal, err: unknown): Error {
+  if (!signal.aborted) {
+    if (err instanceof Error) return err
+    return new NetworkError(t('networkError'))
+  }
+  if (signal.reason === CHANNEL_TIMEOUT_REASON) {
+    return new NetworkError(t('requestTimedOut'))
+  }
+  return new RequestAbortedError('playground channel aborted by caller')
 }
 
 // parseFrame turns one SSE frame into a typed event, or null when the
@@ -176,6 +254,6 @@ function parseFrame(frame: string): PlaygroundStreamEvent | null {
     return null
   }
   const type = eventName as PlaygroundStreamEvent['type']
-  if (type !== 'chunk' && type !== 'done' && type !== 'error') return null
+  if (type !== 'chunk' && type !== 'done' && type !== 'error' && type !== 'cancel_ack') return null
   return { type, ...payload } as PlaygroundStreamEvent
 }

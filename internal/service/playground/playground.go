@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +26,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 )
@@ -132,10 +132,31 @@ func (s *Service) ListOwnKeys(viewerID uint) ([]OwnKey, error) {
 	return out, nil
 }
 
-// Message is one chat turn of the Playground request body.
+// Message is one chat turn of the Playground request body. Content is
+// either plain text or OpenAI vision content parts — the exact wire shapes
+// the chat ingress decodes, so an attached image travels in its real
+// encoding (a base64 data URL inside an image_url part) rather than a
+// console-invented form.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string
+	Content any // string | []ContentPart
+}
+
+// ContentPart is one member of a vision content array. Type selects the
+// shape; each shape carries its own field and nothing else, which is what
+// keeps the console's whitelist airtight even for image turns — an unknown
+// member of a caller's part cannot survive into the upstream body because
+// there is nowhere in this struct to put it.
+type ContentPart struct {
+	Type     string    `json:"type"` // "text" | "image_url"
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+// ImageURL carries a vision attachment in the dialect's own encoding: a
+// data URL whose bytes the provider decodes itself.
+type ImageURL struct {
+	URL string `json:"url"`
 }
 
 // TextRun is one text-modality column: the model to call, the conversation
@@ -154,11 +175,143 @@ type TextRun struct {
 // request id (the audit row's key), the HTTP status it produced, and the
 // response bytes in the ingress dialect's native shape — errors included,
 // verbatim, so the column can render the same error a real caller would
-// see.
+// see. For a streaming exchange the bytes are the SSE frames the relay
+// wrote to the column's caller side (bounded by columnBodyCap); the text
+// itself already reached the tap's sink as it was written.
 type ColumnResult struct {
 	RequestID string
 	Status    int
 	Body      []byte
+}
+
+// FailReasonClientDisconnected is the audit row's fail_reason for an
+// exchange the caller aborted by leaving. The console channel maps it to
+// its cancel acknowledgement rather than a done or error event: the row,
+// not the unwritten response, is the truth about an aborted column.
+const FailReasonClientDisconnected = "client_disconnected"
+
+// columnBodyCap bounds the response bytes a tap retains for the terminal
+// read. Error bodies are small, and a stream's text has already flowed to
+// the sink live, so this is a guard against an exchange whose bytes grow
+// without bound, not a limit any honest answer hits.
+const columnBodyCap = 1 << 20
+
+// columnTap is the caller side of one Playground column's relay exchange.
+// The relay writes the exact bytes a real caller of the same ingress would
+// receive — SSE frames for a streaming exchange, a JSON error body for a
+// refused one — and the tap does two things with them: keeps a bounded
+// copy for the terminal read, and hands each complete SSE data payload to
+// the column's sink as it arrives. The sink firing per frame is the whole
+// point of the aggregate channel: a column's text reaches the console
+// while the exchange is still running, not after it retires.
+//
+// The tap is deliberately NOT an httptest.ResponseRecorder: a recorder
+// only reveals its bytes once the handler returns, which would serialize
+// every column's display to the end of its own exchange. It implements
+// just enough of http.ResponseWriter (plus the flush and write-deadline
+// hooks net/http's ResponseController asks for) for the relay's writes to
+// land on it synchronously.
+type columnTap struct {
+	sink func(payload string)
+	// frame holds the bytes of the SSE frame currently being written; a
+	// frame is only complete once its blank-line terminator arrives, so a
+	// write that ends mid-frame waits here for the rest.
+	frame []byte
+	body  []byte
+	// status is what the exchange committed; 0 until something did.
+	status int
+	header http.Header
+}
+
+func newColumnTap(sink func(payload string)) *columnTap {
+	return &columnTap{sink: sink, header: http.Header{}}
+}
+
+func (t *columnTap) Header() http.Header { return t.header }
+
+func (t *columnTap) WriteHeader(status int) { t.status = status }
+
+// Write records the bytes and drains whatever complete SSE frames they
+// completed. It always reports full success: there is no socket whose
+// backpressure to honor, and a refusal here would be read by the relay as
+// a caller who left.
+func (t *columnTap) Write(p []byte) (int, error) {
+	if t.status == 0 {
+		// net/http semantics: a body write commits 200 when no explicit
+		// status was written first.
+		t.status = http.StatusOK
+	}
+	if room := columnBodyCap - len(t.body); room > 0 {
+		if len(p) <= room {
+			t.body = append(t.body, p...)
+		} else {
+			t.body = append(t.body, p[:room]...)
+		}
+	}
+	t.frame = append(t.frame, p...)
+	t.drainFrames(false)
+	return len(p), nil
+}
+
+// Flush is a no-op with the same always-succeed contract as Write; the
+// frames were handed to the sink at write time.
+func (t *columnTap) Flush() {}
+
+// SetWriteDeadline satisfies http.NewResponseController's optional hook so
+// the relay's per-write deadline slides succeed silently instead of
+// warning once per request that this writer cannot take a deadline.
+func (t *columnTap) SetWriteDeadline(time.Time) error { return nil }
+
+// drainFrames hands complete SSE frames to the sink. trailing=false stops
+// at the first incomplete frame (the mid-stream mode); trailing=true also
+// emits a final unterminated frame, for the moment an exchange ends —
+// some encoders close the body right after the last data line without a
+// blank line, and the last payload must not be lost to that.
+func (t *columnTap) drainFrames(trailing bool) {
+	// Frame boundaries come from protocols.SSEFrameEnd — the codebase's
+	// one answer (sse.go: a framer scanning for "\n\n" alone never finds
+	// a frame in a CRLF-throughout stream and drops it whole). The tap
+	// already shares SSEDataPayloadStart for the data-line rule; sharing
+	// the frame rule too is what keeps this reader from drifting into a
+	// second, private definition of a frame.
+	buf := string(t.frame)
+	consumed := 0
+	for {
+		idx, sepLen := protocols.SSEFrameEnd(buf[consumed:])
+		if idx < 0 {
+			break
+		}
+		t.emitFrame(t.frame[consumed : consumed+idx])
+		consumed += idx + sepLen
+	}
+	if consumed > 0 {
+		t.frame = append(t.frame[:0], t.frame[consumed:]...)
+	}
+	if trailing && len(bytes.TrimSpace(t.frame)) > 0 {
+		t.emitFrame(t.frame)
+		t.frame = nil
+	}
+}
+
+// emitFrame hands one SSE frame's data payloads to the sink, using the
+// protocols package's own data-line prefix rule so what counts as a data
+// line cannot drift between the relay and this tap. Non-data lines
+// (comments, event:/id:/retry: directives, blank separators) carry no
+// text; the terminal figures come from the audit row, not the stream.
+func (t *columnTap) emitFrame(frame []byte) {
+	if t.sink == nil {
+		return
+	}
+	for _, line := range bytes.Split(frame, []byte("\n")) {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		start, ok := protocols.SSEDataPayloadStart(line)
+		if !ok {
+			continue
+		}
+		if payload := string(line[start:]); payload != "" {
+			t.sink(payload)
+		}
+	}
 }
 
 // chatCompletionsPath is the ingress the synthetic relay request presents.
@@ -174,9 +327,11 @@ func buildChatBody(run TextRun) ([]byte, error) {
 	// chatMessage mirrors the wire shape field for field; typed structs
 	// (rather than passing raw JSON through) are what makes the whitelist
 	// airtight — a caller cannot smuggle an extra member inside a message.
+	// Content is the Message's own string-or-parts value, re-marshaled by
+	// the same typed shapes above.
 	type chatMessage struct {
 		Role    string `json:"role"`
-		Content string `json:"content"`
+		Content any    `json:"content"`
 	}
 	msgs := make([]chatMessage, 0, len(run.Messages)+1)
 	if run.System != "" {
@@ -186,8 +341,12 @@ func buildChatBody(run TextRun) ([]byte, error) {
 		msgs = append(msgs, chatMessage(m))
 	}
 	// body is built by adding keys one by one so each optional parameter
-	// is present only when the operator set it.
-	body := map[string]any{"model": run.Model, "messages": msgs}
+	// is present only when the operator set it. stream is the channel's
+	// own property rather than an operator parameter: the aggregate
+	// console channel streams text columns, so every exchange asks its
+	// upstream for a stream. It is deliberately not a TextRun field —
+	// there is no buffered mode for the channel to choose between.
+	body := map[string]any{"model": run.Model, "messages": msgs, "stream": true}
 	if run.Temperature != nil {
 		body["temperature"] = *run.Temperature
 	}
@@ -206,13 +365,19 @@ func buildChatBody(run TextRun) ([]byte, error) {
 // request context, so a caller disconnect cancels the upstream attempt
 // the same way a gateway caller's disconnect does.
 //
+// onPayload receives each complete SSE data payload the relay writes to
+// the column's caller side, as it is written — the bytes a real streaming
+// caller of the same ingress would receive, in arrival order. It may be
+// nil. The callback runs on this call's goroutine, inside the relay's
+// delivery; whatever it does must not block on the exchange finishing.
+//
 // The key's plaintext is decrypted here solely to seed the relay's
 // credential slot — the vision-fallback capability re-presents it when the
 // gateway must call itself on this exchange's behalf. A key that predates
 // encrypted storage has no recoverable plaintext; the run proceeds with an
 // empty credential and such a sub-call would fail its auth, which is the
 // honest outcome for a key whose plaintext no longer exists anywhere.
-func (s *Service) RunText(ctx context.Context, key *model.APIKey, run TextRun) (*ColumnResult, error) {
+func (s *Service) RunText(ctx context.Context, key *model.APIKey, run TextRun, onPayload func(payload string)) (*ColumnResult, error) {
 	body, err := buildChatBody(run)
 	if err != nil {
 		return nil, err
@@ -235,8 +400,11 @@ func (s *Service) RunText(ctx context.Context, key *model.APIKey, run TextRun) (
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsPath, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	w := httptest.NewRecorder()
-	gc, _ := gin.CreateTestContext(w)
+	// The tap stands in for the caller's connection. Writes land on it
+	// synchronously as the relay delivers, which is what turns an
+	// in-process relay call into a streaming one for this column.
+	tap := newColumnTap(onPayload)
+	gc, _ := gin.CreateTestContext(tap)
 	gc.Request = req
 	requestID := uuid.NewString()
 	// The relay reads the id from the context slot the RequestID
@@ -250,7 +418,8 @@ func (s *Service) RunText(ctx context.Context, key *model.APIKey, run TextRun) (
 	gateway.SetPlaygroundCall(gc)
 
 	s.relay.Handle(gc, osswire.APIKey(key))
-	return &ColumnResult{RequestID: requestID, Status: w.Code, Body: w.Body.Bytes()}, nil
+	tap.drainFrames(true)
+	return &ColumnResult{RequestID: requestID, Status: tap.status, Body: tap.body}, nil
 }
 
 // ColumnAudit is the settled audit reading for one column: the numbers the

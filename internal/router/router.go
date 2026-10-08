@@ -69,6 +69,13 @@ func hasAnyFile(fsys fs.FS) bool {
 // left unmatched; there is nothing local to check it against.
 var localAssetRefPattern = regexp.MustCompile(`(?:src|href)="(/[^"]+)"`)
 
+// playgroundRunBodyLimit bounds the Playground run endpoint's request
+// body. The console-wide admin cap is 1 MiB, but a run may carry vision
+// attachments as inline base64 data URLs (megabytes each, capped per image
+// by the handler); 16 MiB holds a reasonable attachment set while staying
+// below the gateway's own 20 MiB request bound the relayed bytes inherit.
+const playgroundRunBodyLimit = 16 << 20
+
 // validateEmbeddedFrontend enforces the dist/index.html invariant at
 // startup rather than leaving it to be discovered per-request: a populated
 // distFS (any -tags embed/release,embed build that actually ran the
@@ -545,10 +552,20 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// caller-facing routes above use — its runs must share the admission
 	// state (rate windows, circuit, key pool) of real traffic, so a second
 	// relay service here would defeat the real-chain contract the endpoint
-	// exists to serve. Member-reachable on the scoped group: a member runs
-	// on their own key, and the handler owner-checks it.
+	// exists to serve. Member-reachable: a member runs on their own key,
+	// and the handler owner-checks it.
 	playgroundSvc := playground.New(db, secrets, relaySvc, bodiesDir)
-	scoped.POST("/playground/run", handler.PostPlaygroundRun(playgroundSvc))
+	// The run endpoint accepts vision attachments as inline base64 data
+	// URLs, which the console-wide 1 MiB body cap cannot hold, so it
+	// registers on its own group rather than the scoped one — with the
+	// SAME session + member-scope chain and a cap still below the
+	// gateway's own 20 MiB request bound (nesting inside the scoped group
+	// would stack a second MaxBytesReader under the 1 MiB one and keep the
+	// smaller limit). The picker reads have no such payload and stay on
+	// the scoped group.
+	playgroundRun := r.Group("/api/admin/playground", middleware.BodySizeLimit(playgroundRunBodyLimit))
+	playgroundRun.Use(middleware.RequireSession(db), middleware.MemberScope())
+	playgroundRun.POST("/run", handler.PostPlaygroundRun(playgroundSvc))
 	// The Playground pickers read here, member-reachable like the run: the
 	// key list is pinned to the session's own account inside the service
 	// (both roles), and the model list carries only routing names plus

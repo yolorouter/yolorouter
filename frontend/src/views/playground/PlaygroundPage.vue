@@ -70,7 +70,32 @@
           <template #label>
             <HelpLabel :tip="t('playground.prompt_tip')">{{ t('playground.prompt') }}</HelpLabel>
           </template>
-          <NInput v-model:value="prompt" class="pg-prompt" type="textarea" :rows="3" />
+          <div class="pg-prompt-block">
+            <NInput v-model:value="prompt" class="pg-prompt" type="textarea" :rows="3" />
+            <!-- The vision attachment travels with the user turn, in the
+                 dialect's own encoding (a base64 data URL); it is re-read
+                 per send, so a re-run can swap or drop it freely. -->
+            <div class="pg-attach">
+              <input
+                ref="imageInput"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                class="pg-attach-input"
+                data-testid="pg-attach-input"
+                @change="onImagePicked"
+              />
+              <NButton size="small" :disabled="running" data-testid="pg-attach-button" @click="pickImage">
+                {{ t('playground.attachImage') }}
+              </NButton>
+              <template v-if="attachedImage">
+                <img :src="attachedImage.dataUrl" class="pg-attach-thumb" alt="" data-testid="pg-attach-thumb" />
+                <span class="pg-attach-name">{{ attachedImage.name }}</span>
+                <NButton size="tiny" quaternary data-testid="pg-attach-remove" @click="clearImage">
+                  {{ t('playground.removeImage') }}
+                </NButton>
+              </template>
+            </div>
+          </div>
         </NFormItem>
 
         <!-- The shared parameter row: whatever is set here is applied to
@@ -100,6 +125,12 @@
 
         <div class="pg-actions">
           <NButton type="primary" :loading="running" @click="onSend">{{ sendLabel }}</NButton>
+          <!-- Stopping disconnects the aggregate channel: the backend
+               propagates the disconnect into the in-flight columns, whose
+               costs still settle into the request log. -->
+          <NButton v-if="running" class="pg-stop" data-testid="pg-stop" @click="onStop">
+            {{ t('playground.stop') }}
+          </NButton>
         </div>
       </NForm>
     </section>
@@ -111,16 +142,17 @@
       <article v-for="(col, i) in columns" :key="i" class="pg-column" :class="`pg-column--${col.state}`">
         <header class="pg-column__head">
           <span class="pg-column__model">{{ col.model }}</span>
-          <NTag size="small" :type="col.state === 'done' ? 'success' : col.state === 'error' ? 'error' : 'info'">
+          <NTag size="small" :type="col.state === 'done' ? 'success' : col.state === 'error' ? 'error' : col.state === 'cancelled' ? 'warning' : 'info'">
             {{ stateLabel(col.state) }}
           </NTag>
         </header>
 
-        <div v-if="col.state === 'running'" class="pg-column__state">{{ t('playground.columnStateRunning') }}</div>
-
-        <template v-else-if="col.state === 'done'">
-          <pre class="pg-column__output">{{ col.output }}</pre>
-          <dl class="pg-metrics">
+        <!-- Streaming and finished columns show the text as it grows —
+             chunk by chunk, the first column to answer is the first column
+             on screen, never held back by a slower neighbour. -->
+        <template v-if="col.state === 'streaming' || col.state === 'done'">
+          <pre class="pg-column__output" data-testid="pg-column-output">{{ col.output }}</pre>
+          <dl v-if="col.state === 'done'" class="pg-metrics">
             <div class="pg-metric">
               <dt>{{ t('playground.costLabel') }}</dt>
               <dd>
@@ -139,6 +171,14 @@
             </div>
           </dl>
         </template>
+
+        <div v-else-if="col.state === 'running'" class="pg-column__state">{{ t('playground.columnStateRunning') }}</div>
+
+        <!-- A cancelled column: the run was stopped from this page; what
+             it had already cost is in the request log under its id. -->
+        <div v-else-if="col.state === 'cancelled'" class="pg-column__state" data-testid="pg-column-cancelled">
+          {{ t('playground.columnCancelledNote') }}
+        </div>
 
         <!-- A failed column shows the failure in its native dialect shape:
              the status the relay produced and the error object the gateway
@@ -166,24 +206,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { FlaskConical } from '@lucide/vue'
 import PageHeader from '../../components/PageHeader.vue'
 import HelpLabel from '../../components/HelpLabel.vue'
 import EmptyState from '../../components/EmptyState.vue'
-import { displayMessage } from '../../api/client'
+import { displayMessage, RequestAbortedError } from '../../api/client'
 import {
   listPlaygroundKeys,
   listPlaygroundModels,
   runPlayground,
+  type PlaygroundContentPart,
   type PlaygroundKeyOption,
   type PlaygroundModelOption,
-  type PlaygroundStreamEvent,
 } from '../../api/playground'
+import { foldEvent, initialColumns, type DemuxColumn, type DemuxColumnState } from '../../api/playgroundDemux'
 import { formatMicros } from '../../utils/money'
 import { formatDuration } from '../../utils/format'
+import { maxAttachableImageBytes } from './attachLimit'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -204,26 +246,24 @@ const systemPrompt = ref('')
 const temperature = ref<number | null>(null)
 const maxTokens = ref<number | null>(null)
 
+// The vision attachment of the next run: name for display, data URL for
+// the wire. Re-read on every pick, so a re-run can swap or drop it.
+interface AttachedImage {
+  name: string
+  dataUrl: string
+}
+const attachedImage = ref<AttachedImage | null>(null)
+const imageInput = ref<HTMLInputElement | null>(null)
+
 const running = ref(false)
 const runId = ref(0)
+// The in-flight run's disconnect switch. Aborting it closes the aggregate
+// channel; the backend propagates the disconnect into the in-flight
+// columns.
+let runController: AbortController | null = null
+let sawStreamEvent = false
 
-type ColumnState = 'running' | 'done' | 'error'
-
-interface Column {
-  model: string
-  state: ColumnState
-  output: string
-  costMicros: number
-  costKnown: boolean
-  durationMs: number
-  usage: { input_tokens: number; output_tokens: number } | null
-  requestId: string
-  errorStatus: number
-  errorMessage: string
-  errorType: string
-}
-
-const columns = ref<Column[]>([])
+const columns = ref<DemuxColumn[]>([])
 
 // The key picker's rows. The list is the operator's own usable keys
 // server-side (pinned there for both roles — the run endpoint accepts a
@@ -263,14 +303,50 @@ const sendLabel = computed(() => {
   return columns.value.length > 0 ? t('playground.resend') : t('playground.send')
 })
 
-function stateLabel(state: ColumnState): string {
+function stateLabel(state: DemuxColumnState): string {
   if (state === 'done') return t('playground.columnStateDone')
   if (state === 'error') return t('playground.columnStateFailed')
+  if (state === 'streaming') return t('playground.columnStateStreaming')
+  if (state === 'cancelled') return t('playground.columnStateCancelled')
   return t('playground.columnStateRunning')
+}
+
+function pickImage() {
+  imageInput.value?.click()
+}
+
+function clearImage() {
+  attachedImage.value = null
+  if (imageInput.value) imageInput.value.value = ''
+}
+
+function onImagePicked(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  // The cap is the exact mirror of the backend's per-image data-URL limit
+  // (attachLimit.ts carries the computation): every file accepted here
+  // produces a data URL the run endpoint accepts, so the console never
+  // posts a run the endpoint would refuse after the click.
+  if (file.size > maxAttachableImageBytes) {
+    message.warning(t('playground.imageTooLarge'))
+    input.value = ''
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    attachedImage.value = { name: file.name, dataUrl: String(reader.result) }
+  }
+  reader.readAsDataURL(file)
 }
 
 onMounted(() => {
   void loadPickers()
+})
+
+// Leaving the page mid-run is a disconnect like any other.
+onBeforeUnmount(() => {
+  runController?.abort()
 })
 
 async function loadPickers() {
@@ -281,6 +357,16 @@ async function loadPickers() {
   } catch (err) {
     message.error(displayMessage(err, t))
   }
+}
+
+// The user turn in its wire shape: plain text, or a vision turn carrying
+// the prompt and the attachment in the dialect's own encoding.
+function userContent(): string | PlaygroundContentPart[] {
+  if (!attachedImage.value) return prompt.value
+  return [
+    { type: 'text', text: prompt.value },
+    { type: 'image_url', image_url: { url: attachedImage.value.dataUrl } },
+  ]
 }
 
 async function onSend() {
@@ -302,28 +388,18 @@ async function onSend() {
   // selection — the previous run's columns are replaced, never appended
   // to, so stale results cannot masquerade as part of the new comparison.
   const runModels = selectedModels.value.slice()
-  columns.value = runModels.map((model) => ({
-    model,
-    state: 'running' as ColumnState,
-    output: '',
-    costMicros: 0,
-    costKnown: false,
-    durationMs: 0,
-    usage: null,
-    requestId: '',
-    errorStatus: 0,
-    errorMessage: '',
-    errorType: '',
-  }))
+  columns.value = initialColumns(runModels)
   runId.value++
   running.value = true
+  sawStreamEvent = false
+  runController = new AbortController()
   try {
     await runPlayground(
       {
         key_id: keyId.value,
         modality: 'text',
         models: runModels,
-        messages: [{ role: 'user', content: prompt.value }],
+        messages: [{ role: 'user', content: userContent() }],
         params: {
           system: systemPrompt.value || undefined,
           temperature: temperature.value ?? undefined,
@@ -331,47 +407,54 @@ async function onSend() {
         },
       },
       applyEvent,
+      { signal: runController.signal },
     )
   } catch (err) {
-    // Pre-stream gate failures (key ownership/state, bind errors) answer
-    // with the console envelope: no column ever started, so the placeholder
-    // columns come back off and the message names the failure.
-    columns.value = []
-    message.error(displayMessage(err, t))
+    if (err instanceof RequestAbortedError) {
+      // The operator stopped the run (or left the page): the columns that
+      // never reached a terminal state are stopped, not failed — what
+      // they cost is in the request log under each column's id.
+      markUnfinished('cancelled')
+    } else if (!sawStreamEvent) {
+      // Pre-stream gate failures (key ownership/state, bind errors) answer
+      // with the console envelope: no column ever started, so the
+      // placeholder columns come back off and the message names the
+      // failure.
+      columns.value = []
+      message.error(displayMessage(err, t))
+    } else {
+      // The channel broke mid-run: finished columns keep their results;
+      // the ones still in flight are marked as errored on the spot.
+      message.error(displayMessage(err, t))
+      markUnfinished('error', displayMessage(err, t))
+    }
   } finally {
     running.value = false
+    runController = null
   }
 }
 
-// applyEvent folds one aggregate-channel event into its column. slot is
-// the column's position in the submitted models list; an event naming a
-// slot outside the run cannot happen from this page's own submissions and
-// is dropped rather than thrown.
-function applyEvent(ev: PlaygroundStreamEvent) {
-  const col = columns.value[ev.slot]
-  if (!col) return
-  if (ev.type === 'chunk') {
-    col.output += ev.delta
-    return
+function onStop() {
+  runController?.abort()
+}
+
+// markUnfinished settles columns that never received a terminal event —
+// the local half of a disconnect the backend acknowledges best-effort.
+function markUnfinished(state: 'cancelled' | 'error', errorMessage = '') {
+  for (const col of columns.value) {
+    if (col.state === 'running' || col.state === 'streaming') {
+      col.state = state
+      if (state === 'error') col.errorMessage = errorMessage
+    }
   }
-  if (ev.type === 'done') {
-    col.state = 'done'
-    col.costMicros = ev.cost_micros
-    col.costKnown = ev.cost_known
-    col.durationMs = ev.duration_ms
-    col.usage = ev.usage
-    col.requestId = ev.request_id
-    return
-  }
-  col.state = 'error'
-  col.errorStatus = ev.status
-  col.requestId = ev.request_id
-  // The error object is the relay dialect's native shape; read the two
-  // members every OpenAI-shaped dialect carries and leave the rest to the
-  // raw payload the run contract documents.
-  const err = (ev.error ?? null) as { message?: unknown; type?: unknown } | null
-  col.errorMessage = typeof err?.message === 'string' ? err.message : ''
-  col.errorType = typeof err?.type === 'string' ? err.type : ''
+}
+
+// applyEvent folds one aggregate-channel event into its column through
+// the demux pure function — slot routing, per-column terminal states,
+// stray-event tolerance all live there and are tested there.
+function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
+  sawStreamEvent = true
+  foldEvent(columns.value, ev)
 }
 </script>
 
@@ -410,8 +493,46 @@ function applyEvent(ev: PlaygroundStreamEvent) {
   font-variant-numeric: tabular-nums;
 }
 
-.pg-prompt {
+.pg-prompt-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
   max-width: 640px;
+}
+
+.pg-prompt {
+  width: 100%;
+}
+
+/* The vision attachment row under the prompt: a hidden native file input
+   driven by a button, plus the chosen image's thumbnail/name and a way to
+   drop it. */
+.pg-attach {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pg-attach-input {
+  display: none;
+}
+
+.pg-attach-thumb {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.pg-attach-name {
+  overflow: hidden;
+  max-width: 220px;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pg-params {
@@ -452,6 +573,14 @@ function applyEvent(ev: PlaygroundStreamEvent) {
 
 .pg-column--error {
   border-color: var(--color-error, #d03050);
+}
+
+.pg-column--cancelled {
+  border-color: var(--color-warning, #f0a020);
+}
+
+.pg-stop {
+  margin-left: var(--space-2);
 }
 
 .pg-column__head {
