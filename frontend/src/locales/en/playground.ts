@@ -31,6 +31,15 @@ export default {
   voice_tip:
     'Per column: voices are vendor-private ids, so each column picks from its own model’s vendors. Custom ids (e.g. cloned voices) can be typed in; a value the vendor does not know is refused by its upstream.',
   needVoice: 'Pick a voice for every selected model first',
+  videoSeconds: 'Seconds',
+  videoSeconds_tip: 'Clip duration, in the video dialect\'s own vocabulary (4/8/12 s), applied to every selected model; empty leaves the dialect default.',
+  videoSize: 'Size',
+  videoSize_tip: 'Resolution, in the video dialect\'s own vocabulary, applied to every selected model; empty leaves the dialect default.',
+  stopWaiting: 'Stop waiting',
+  columnStateStopped: 'Stopped waiting',
+  columnStoppedNote:
+    'Stopped waiting — the task keeps running at full cost; its cost settles into the request log once it completes. The request log is the source of truth (search this column\'s id).',
+  usageSeconds: '{count} s',
   stop: 'Stop',
   columnStateStreaming: 'Streaming',
   columnStateCancelled: 'Cancelled',

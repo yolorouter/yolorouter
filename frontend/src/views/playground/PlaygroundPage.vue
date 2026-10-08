@@ -19,8 +19,12 @@
      the audio modality runs text-to-speech columns whose voices are the
      run's one per-column parameter (each column's dropdown offers only
      its own model's vendors' voices) and whose answers render as audio
-     players fed by the console's owner-pinned playback route. The video
-     tab stays visible but disabled until its dialect arrives. -->
+     players fed by the console's owner-pinned playback route; the video
+     modality submits asynchronous tasks — a column shows its render
+     clock while the backend bridges the task polling, may stop WAITING
+     mid-render (the task keeps running at full cost, its bill lands in
+     the request log when completion is next observed), and renders the
+     finished clip through the console's owner-pinned proxy on done. -->
 <template>
   <div class="common-page">
     <PageHeader
@@ -33,15 +37,12 @@
     <section class="pg-card pg-control">
       <!-- The modality tab filters the model picker to the models that
            serve that modality and swaps the parameter row to the axes that
-           modality's dialect declares. Text, image and audio are
-           selectable; video stays a disabled placeholder rather than
-           omitted, so the page's shape is stable until its dialect
-           lands. -->
+           modality's dialect declares. -->
       <NTabs :value="modality" type="line" size="small" class="pg-modality-tabs" @update:value="onModalityUpdate">
         <NTabPane name="text" :tab="t('models.outputModalityText')" />
         <NTabPane name="image" :tab="t('models.outputModalityImage')" />
         <NTabPane name="audio" :tab="t('models.outputModalityAudio')" />
-        <NTabPane name="video" :tab="t('models.outputModalityVideo')" disabled />
+        <NTabPane name="video" :tab="t('models.outputModalityVideo')" />
       </NTabs>
 
       <NForm require-mark-placement="left">
@@ -164,6 +165,20 @@
             <NSelect v-model:value="audioFormat" class="pg-audio-format" clearable :options="audioFormatOptions" data-testid="pg-audio-format" />
           </NFormItem>
         </div>
+        <div v-else-if="modality === 'video'" class="pg-params" data-testid="pg-video-params">
+          <NFormItem>
+            <template #label>
+              <HelpLabel :tip="t('playground.videoSeconds_tip')">{{ t('playground.videoSeconds') }}</HelpLabel>
+            </template>
+            <NSelect v-model:value="videoSeconds" class="pg-video-seconds" clearable :options="videoSecondsOptions" data-testid="pg-video-seconds" />
+          </NFormItem>
+          <NFormItem>
+            <template #label>
+              <HelpLabel :tip="t('playground.videoSize_tip')">{{ t('playground.videoSize') }}</HelpLabel>
+            </template>
+            <NSelect v-model:value="videoSize" class="pg-video-size" clearable :options="videoSizeOptions" data-testid="pg-video-size" />
+          </NFormItem>
+        </div>
 
         <!-- The speech run's per-column voices — the ONE parameter that
              is not shared. A voice is a vendor-private id: sending one
@@ -208,7 +223,7 @@
       <article v-for="(col, i) in columns" :key="i" class="pg-column" :class="`pg-column--${col.state}`">
         <header class="pg-column__head">
           <span class="pg-column__model">{{ col.model }}</span>
-          <NTag size="small" :type="col.state === 'done' ? 'success' : col.state === 'error' ? 'error' : col.state === 'cancelled' ? 'warning' : 'info'">
+          <NTag size="small" :type="col.state === 'done' ? 'success' : col.state === 'error' ? 'error' : col.state === 'cancelled' || col.state === 'stopped' ? 'warning' : 'info'">
             {{ stateLabel(col.state) }}
           </NTag>
         </header>
@@ -238,6 +253,12 @@
           <div v-else-if="col.state === 'done' && col.audio" class="pg-audio" data-testid="pg-audio-player">
             <audio controls :src="col.audio.url" :type="col.audio.content_type" preload="none" />
           </div>
+          <!-- A finished video column plays its delivered clip the same
+               way: the reference points at the console's owner-pinned
+               proxy of the upstream's result URL. -->
+          <div v-else-if="col.state === 'done' && col.video" class="pg-video" data-testid="pg-video-card">
+            <video controls :src="col.video.url" :type="col.video.content_type" preload="metadata" />
+          </div>
           <div
             v-else-if="col.state === 'done' && col.responseTruncated"
             class="pg-column__truncated"
@@ -261,7 +282,10 @@
             <div class="pg-metric">
               <dt>{{ t('playground.usageLabel') }}</dt>
               <dd>
-                <template v-if="(col.usage?.characters ?? 0) > 0">
+                <template v-if="(col.usage?.seconds ?? 0) > 0">
+                  {{ t('playground.usageSeconds', { count: col.usage?.seconds ?? 0 }) }}
+                </template>
+                <template v-else-if="(col.usage?.characters ?? 0) > 0">
                   {{ t('playground.usageCharacters', { count: col.usage?.characters ?? 0 }) }}
                 </template>
                 <template v-else-if="(col.usage?.images ?? 0) > 0">
@@ -275,12 +299,37 @@
           </dl>
         </template>
 
+        <!-- A running VIDEO column shows the elapsed render clock (the
+             only thing the page can honestly promise about a task whose
+             cost is decided late) and, once its submit is acknowledged,
+             the stop-waiting escape hatch: stopping the wait stops THIS
+             PAGE's polling — the task itself keeps running at full cost. -->
+        <div v-else-if="col.state === 'running' && modality === 'video'" class="pg-column__state pg-video-running">
+          <span data-testid="pg-video-timer">{{ t('playground.columnStateRunning') }} · {{ elapsedText() }}</span>
+          <NButton
+            v-if="col.requestId"
+            size="tiny"
+            class="pg-stop-wait"
+            :data-testid="`pg-stop-wait-${slotOf(col)}`"
+            @click="onStopWait(col)"
+          >
+            {{ t('playground.stopWaiting') }}
+          </NButton>
+        </div>
         <div v-else-if="col.state === 'running'" class="pg-column__state">{{ t('playground.columnStateRunning') }}</div>
 
         <!-- A cancelled column: the run was stopped from this page; what
              it had already cost is in the request log under its id. -->
         <div v-else-if="col.state === 'cancelled'" class="pg-column__state" data-testid="pg-column-cancelled">
           {{ t('playground.columnCancelledNote') }}
+        </div>
+
+        <!-- A stopped-waiting VIDEO column: the honest reading. The task
+             was NOT cancelled — it keeps rendering at full cost, and the
+             bill lands in the request log when completion is next
+             observed. The page promises no live cost figure for it. -->
+        <div v-else-if="col.state === 'stopped'" class="pg-column__state" data-testid="pg-column-stopped">
+          {{ t('playground.columnStoppedNote') }}
         </div>
 
         <!-- A failed column shows the failure in its native dialect shape:
@@ -321,6 +370,7 @@ import {
   listPlaygroundKeys,
   listPlaygroundModels,
   runPlayground,
+  stopPlaygroundVideoWait,
   type PlaygroundContentPart,
   type PlaygroundKeyOption,
   type PlaygroundModelOption,
@@ -367,6 +417,64 @@ const imageSizeOptions = ['512x512', '768x768', '1024x1024', '1024x1536', '1536x
 // across a mixed selection (each vendor's default is one it serves).
 const audioFormat = ref<string | null>(null)
 const audioFormatOptions = ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'].map((f) => ({ label: f, value: f }))
+
+// The video modality's two shared axes, in the videos dialect's own
+// vocabulary. Unset (cleared) leaves the dialect's own defaults in force
+// upstream — the page refuses to invent values on the dialect's behalf.
+const videoSeconds = ref<number | null>(null)
+const videoSecondsOptions = [4, 8, 12].map((s) => ({ label: String(s), value: s }))
+const videoSize = ref<string | null>(null)
+const videoSizeOptions = ['720x1280', '1280x720', '1024x1792', '1792x1024'].map((s) => ({ label: s, value: s }))
+
+// The video run's elapsed-render clock. A video column's only honest
+// in-progress facts are "still rendering" and how long it has been — its
+// cost is decided when completion is observed, so the page counts seconds
+// instead of promising figures. One clock serves the whole run: every
+// column of a run submits at the same click.
+const runStartedAt = ref(0)
+const nowMs = ref(0)
+let elapsedTimer: ReturnType<typeof setInterval> | null = null
+function elapsedText(): string {
+  const elapsed = Math.max(0, Math.floor((nowMs.value - runStartedAt.value) / 1000))
+  const m = Math.floor(elapsed / 60)
+  const s = elapsed % 60
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+function startElapsedClock() {
+  runStartedAt.value = Date.now()
+  nowMs.value = runStartedAt.value
+  stopElapsedClock()
+  elapsedTimer = setInterval(() => {
+    nowMs.value = Date.now()
+  }, 1000)
+}
+function stopElapsedClock() {
+  if (elapsedTimer !== null) {
+    clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
+}
+
+// onStopWait is a running video column's escape hatch: stop THIS page's
+// bridged polling of that column. The task is not terminated — it keeps
+// rendering at full cost and settles into the request log later — which
+// is exactly what the column then renders. The wait_stopped event on the
+// run channel is the authoritative confirmation; a 404 means the wait
+// already ended (the terminal event is on the stream either way).
+async function onStopWait(col: DemuxColumn) {
+  if (!col.requestId || col.state !== 'running') return
+  try {
+    await stopPlaygroundVideoWait(col.requestId)
+  } catch (err) {
+    message.error(displayMessage(err, t))
+  }
+}
+
+// slotOf finds a column's slot index — the stop-waiting button's testid
+// anchor (per-column controls need per-column addresses).
+function slotOf(col: DemuxColumn): number {
+  return columns.value.indexOf(col)
+}
 
 // The speech run's per-column voices: model name → the voice picked for
 // that column. The picker row carries each model's vendors' preset
@@ -491,6 +599,7 @@ function stateLabel(state: DemuxColumnState): string {
   if (state === 'error') return t('playground.columnStateFailed')
   if (state === 'streaming') return t('playground.columnStateStreaming')
   if (state === 'cancelled') return t('playground.columnStateCancelled')
+  if (state === 'stopped') return t('playground.columnStateStopped')
   return t('playground.columnStateRunning')
 }
 
@@ -530,6 +639,7 @@ onMounted(() => {
 // Leaving the page mid-run is a disconnect like any other.
 onBeforeUnmount(() => {
   runController?.abort()
+  stopElapsedClock()
 })
 
 async function loadPickers() {
@@ -583,6 +693,9 @@ async function onSend() {
   running.value = true
   sawStreamEvent = false
   runController = new AbortController()
+  // A video run counts its render seconds from the send click — the one
+  // in-progress fact the page can honestly show for a late-billed task.
+  if (modality.value === 'video') startElapsedClock()
   // The run's body is the active modality's own shape: a text run sends
   // the user turn (with its optional vision attachment) and the sampling
   // family; an image run sends the prompt and the two image axes; an
@@ -590,13 +703,16 @@ async function onSend() {
   // COLUMN. The other families' controls are not merely ignored — they
   // are not on the wire at all, which is what the upstream whitelist
   // asserts.
+  // The modality's own body rides nested under `request` — the endpoint's
+  // contract (its pre-stream validation reads request.messages /
+  // request.prompt), not a flat top-level field.
   const input =
     modality.value === 'image'
       ? {
           key_id: keyId.value,
           modality: 'image' as const,
           models: runModels,
-          prompt: prompt.value,
+          request: { prompt: prompt.value },
           params: {
             size: imageSize.value || undefined,
             n: imageCount.value ?? undefined,
@@ -607,17 +723,28 @@ async function onSend() {
             key_id: keyId.value,
             modality: 'audio' as const,
             models: runModels,
-            prompt: prompt.value,
+            request: { prompt: prompt.value },
             voices: Object.fromEntries(runModels.map((name) => [name, voiceOf(name)])),
             params: {
               format: audioFormat.value || undefined,
             },
           }
-        : {
+        : modality.value === 'video'
+          ? {
+              key_id: keyId.value,
+              modality: 'video' as const,
+              models: runModels,
+              request: { prompt: prompt.value },
+              params: {
+                seconds: videoSeconds.value ?? undefined,
+                size: videoSize.value || undefined,
+              },
+            }
+          : {
             key_id: keyId.value,
             modality: 'text' as const,
             models: runModels,
-            messages: [{ role: 'user' as const, content: userContent() }],
+            request: { messages: [{ role: 'user' as const, content: userContent() }] },
             params: {
               system: systemPrompt.value || undefined,
               temperature: temperature.value ?? undefined,
@@ -630,8 +757,14 @@ async function onSend() {
     if (err instanceof RequestAbortedError) {
       // The operator stopped the run (or left the page): the columns that
       // never reached a terminal state are stopped, not failed — what
-      // they cost is in the request log under each column's id.
-      markUnfinished('cancelled')
+      // they cost is in the request log under each column's id. A video
+      // run's reading splits by how far each column got (see
+      // markUnfinished): past its submit acknowledgement, the
+      // stopped-WAITING note — the task was never cancellable and keeps
+      // running at full cost; still inside the submit exchange, the
+      // plain cancelled note — the exchange was cancelled with the run,
+      // no task exists to bill.
+      markUnfinished(modality.value === 'video' ? 'stopped' : 'cancelled')
     } else if (!sawStreamEvent) {
       // Pre-stream gate failures (key ownership/state, bind errors) answer
       // with the console envelope: no column ever started, so the
@@ -648,6 +781,7 @@ async function onSend() {
   } finally {
     running.value = false
     runController = null
+    stopElapsedClock()
   }
 }
 
@@ -657,10 +791,23 @@ function onStop() {
 
 // markUnfinished settles columns that never received a terminal event —
 // the local half of a disconnect the backend acknowledges best-effort.
-function markUnfinished(state: 'cancelled' | 'error', errorMessage = '') {
+// 'stopped' is the video run's reading of the same disconnect, and it
+// splits BY COLUMN: a requestId on the column means its submit was
+// acknowledged — a task nobody can terminate keeps running at full cost,
+// which is what the stopped-waiting note honestly says. No requestId
+// means the column was still inside its submit exchange when the run
+// stopped, and the shared cancel choreography cancelled the exchange
+// itself — no task exists, nothing will bill — so the honest reading is
+// the plain cancelled note, never a full-cost promise about a task that
+// never was.
+function markUnfinished(state: 'cancelled' | 'stopped' | 'error', errorMessage = '') {
   for (const col of columns.value) {
     if (col.state === 'running' || col.state === 'streaming') {
-      col.state = state
+      if (state === 'stopped' && !col.requestId) {
+        col.state = 'cancelled'
+      } else {
+        col.state = state
+      }
       if (state === 'error') col.errorMessage = errorMessage
     }
   }
@@ -870,6 +1017,26 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-subtle);
   background: var(--color-surface-hover);
+}
+
+/* A finished video column's player: the console proxy URL in a native
+   video element, full column width. */
+.pg-video {
+  width: 100%;
+}
+
+.pg-video video {
+  width: 100%;
+  border-radius: var(--radius-md);
+  background: #000;
+}
+
+/* The running video column's state row: the elapsed clock beside the
+   stop-waiting escape hatch. */
+.pg-video-running {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 /* A truncated media answer: the note explains the cut, the capped prefix

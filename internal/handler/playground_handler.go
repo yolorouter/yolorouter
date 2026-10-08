@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -160,7 +161,10 @@ type playgroundRunParams struct {
 	MaxTokens   *int     `json:"max_tokens" binding:"omitempty,gte=1,lte=100000"`
 	// Size and N are the image modality's axes — the two request fields
 	// the images dialect itself declares. Size is a short axis string
-	// ("1024x1024"); N is the image count.
+	// ("1024x1024"); N is the image count. The VIDEO modality reuses the
+	// same size KEY with its own four-value vocabulary, judged in the
+	// video case below rather than by a second binding tag (one field,
+	// one tag — the two modalities' vocabularies cannot both live here).
 	Size *string `json:"size" binding:"omitempty,max=32"`
 	N    *int    `json:"n" binding:"omitempty,gte=1,lte=10"`
 	// Format is the audio modality's shared axis — the speech dialect's
@@ -169,7 +173,19 @@ type playgroundRunParams struct {
 	// fails in its own native error shape, isolation intact). Empty
 	// leaves each column's dialect default in force.
 	Format *string `json:"format" binding:"omitempty,oneof=mp3 opus aac flac wav pcm"`
+	// Seconds is the video modality's other axis — the clip duration, in
+	// the videos dialect's own vocabulary (4, 8, or 12). Empty leaves the
+	// dialect's own default in force upstream, not here.
+	Seconds *int `json:"seconds" binding:"omitempty,oneof=4 8 12"`
 }
+
+// playgroundVideoSizes is the video modality's size vocabulary — the four
+// WIDTHxHEIGHT spellings the videos dialect itself defines. The shared
+// size field's binding stays lenient for the image modality's free-form
+// axis strings, so the video case enforces its own family before the
+// stream starts, exactly where the other modalities' pre-stream
+// validation lives.
+var playgroundVideoSizes = []string{"720x1280", "1280x720", "1024x1792", "1792x1024"}
 
 // playgroundRunRequest is the run contract: whose key to spend, which
 // modality's shape the request body has, which models to compare (1–4
@@ -183,7 +199,7 @@ type playgroundRunParams struct {
 // a non-empty voice is refused before the stream starts.
 type playgroundRunRequest struct {
 	KeyID    uint                  `json:"key_id" binding:"required"`
-	Modality string                `json:"modality" binding:"omitempty,oneof=text image audio"`
+	Modality string                `json:"modality" binding:"omitempty,oneof=text image audio video"`
 	Models   []string              `json:"models" binding:"required,min=1,max=4,dive,required"`
 	Request  playgroundRequestBody `json:"request"`
 	Params   playgroundRunParams   `json:"params"`
@@ -235,6 +251,7 @@ type sseDoneEvent struct {
 	Response   json.RawMessage        `json:"response,omitempty"`
 	Truncated  bool                   `json:"response_truncated,omitempty"`
 	Audio      *sseAudioRef           `json:"audio,omitempty"`
+	Video      *sseVideoRef           `json:"video,omitempty"`
 }
 
 // sseAudioRef is a speech column's playback reference: the console URL
@@ -245,6 +262,19 @@ type sseAudioRef struct {
 	URL         string `json:"url"`
 	ContentType string `json:"content_type"`
 	Bytes       int    `json:"bytes"`
+}
+
+// sseVideoRef is a finished video column's playback reference: the
+// console URL that proxies the clip from the upstream's own result URL
+// (owner-pinned, same origin), the content type the proxy announces, and
+// the delivered seconds the bill counted. Unlike audio the bytes are not
+// retained in this process — the task row outlives the page session and
+// the proxy resolves it durably, for as long as the upstream keeps the
+// result (its own documented window).
+type sseVideoRef struct {
+	URL         string `json:"url"`
+	ContentType string `json:"content_type"`
+	Seconds     int    `json:"seconds"`
 }
 
 // sseErrorEvent is a column's terminal failure. Error is the relay's
@@ -266,6 +296,30 @@ type sseErrorEvent struct {
 // already gone — the durable record of the abort is the audit row, and no
 // amount of writing after a disconnect reaches the caller that left.
 type sseCancelAckEvent struct {
+	Slot      int    `json:"slot"`
+	Model     string `json:"model"`
+	RequestID string `json:"request_id"`
+}
+
+// sseSubmittedEvent is a video column's submit acknowledgement: the
+// exchange the relay just finished accepted a task, and this is its audit
+// identity. It exists because a video column's meaningful lifetime starts
+// AFTER its relay exchange ends — the stop-waiting control and the
+// request-log cross-reference both need the column's request id while the
+// task is still rendering, long before any terminal event carries one.
+type sseSubmittedEvent struct {
+	Slot      int    `json:"slot"`
+	Model     string `json:"model"`
+	RequestID string `json:"request_id"`
+}
+
+// sseWaitStoppedEvent acknowledges the operator stopping the wait on one
+// video column: the bridge stops polling ON THE PAGE'S BEHALF, the task
+// itself keeps running (the video domain has no cancel; the bill was
+// committed at submit), and its cost settles into the request log when
+// completion is next observed — the column renders exactly that honest
+// reading, never "cancelled".
+type sseWaitStoppedEvent struct {
 	Slot      int    `json:"slot"`
 	Model     string `json:"model"`
 	RequestID string `json:"request_id"`
@@ -566,6 +620,54 @@ func PostPlaygroundRun(svc *playground.Service) gin.HandlerFunc {
 				result, err := svc.RunAudio(ctx, key, columnRun)
 				settlePlaygroundColumn(stream, slot, model, result, err, attachAudioRef(result))
 			}
+		case "video":
+			if strings.TrimSpace(req.Request.Prompt) == "" {
+				response.ParamError(c, "a video run requires a prompt")
+				return
+			}
+			if size := derefString(req.Params.Size); size != "" && !slices.Contains(playgroundVideoSizes, size) {
+				response.ParamError(c, "a video run's size must be one of 720x1280, 1280x720, 1024x1792, 1792x1024")
+				return
+			}
+			videoRun := playground.VideoRun{
+				Prompt:  req.Request.Prompt,
+				Seconds: derefInt(req.Params.Seconds),
+				Size:    derefString(req.Params.Size),
+			}
+			runColumn = func(ctx context.Context, stream *aggregateStream, slot int, model string) {
+				columnRun := videoRun
+				columnRun.Model = model
+				// Phase 1 — the submit exchange: a real relay call like
+				// every other modality's, whose failures keep their native
+				// error shape (and whose caller-abort answers cancel_ack:
+				// a submit is an ordinary exchange, unlike the task that
+				// follows it).
+				result, err := svc.RunVideo(ctx, key, columnRun)
+				if err != nil {
+					settlePlaygroundColumn(stream, slot, model, nil, err, nil)
+					return
+				}
+				if result.Status < 200 || result.Status >= 300 {
+					settlePlaygroundColumn(stream, slot, model, result, nil, nil)
+					return
+				}
+				// Phase 2 — the bridge: a 2xx submit means "task
+				// accepted", not "clip delivered", so the shared settle
+				// choreography does NOT apply here. The column's terminal
+				// event comes from the task domain, minutes later, with
+				// the figures the late settlement wrote onto this
+				// exchange's own audit row.
+				taskID := playground.VideoTaskID(result.Body)
+				if taskID == "" {
+					stream.write("error", sseErrorEvent{
+						Slot: slot, Model: model, Status: result.Status, RequestID: result.RequestID,
+						Error: json.RawMessage(`{"code":"video_submit_no_job","message":"the accepted submission carried no job id"}`),
+					})
+					return
+				}
+				stream.write("submitted", sseSubmittedEvent{Slot: slot, Model: model, RequestID: result.RequestID})
+				svc.BridgeVideoTask(ctx, key, result.RequestID, taskID, videoColumnSink{stream: stream, slot: slot, model: model, requestID: result.RequestID})
+			}
 		default: // text
 			if len(req.Request.Messages) == 0 {
 				response.ParamError(c, "a text run requires at least one message")
@@ -705,6 +807,100 @@ func attachAudioRef(result *playground.ColumnResult) func(*sseDoneEvent) {
 			URL:         playgroundAudioRoute + result.RequestID,
 			ContentType: result.ContentType,
 			Bytes:       len(result.Body),
+		}
+	}
+}
+
+// playgroundVideoRoute is the console's video playback route for a
+// finished column, prefixed the way the done event's reference spells it.
+const playgroundVideoRoute = "/api/admin/playground/video/"
+
+// videoColumnSink maps the video bridge's outcomes onto the aggregate
+// channel's event family: the terminal reading arrives as a done event
+// carrying the late-settled figures and the playback reference, a failed
+// task arrives as the dialect's own business-refusal shape (422 with the
+// task's code and message — the same rendering the videos dialect gives a
+// refusal inside a 200 upstream answer), and a stopped wait arrives as the
+// honest wait_stopped acknowledgement.
+type videoColumnSink struct {
+	stream    *aggregateStream
+	slot      int
+	model     string
+	requestID string
+}
+
+func (v videoColumnSink) VideoDone(audit *playground.ColumnAudit, seconds int) {
+	done := sseDoneEvent{
+		Slot: v.slot, Model: v.model, Status: http.StatusOK, RequestID: v.requestID,
+		Usage: audit.Usage, CostMicros: audit.CostMicros, CostKnown: audit.CostKnown,
+		DurationMs: audit.DurationMs,
+	}
+	done.Video = &sseVideoRef{URL: playgroundVideoRoute + v.requestID, ContentType: "video/mp4", Seconds: seconds}
+	v.stream.write("done", done)
+}
+
+func (v videoColumnSink) VideoTaskFailed(code, message string) {
+	payload := map[string]string{"code": code, "message": message}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		encoded = []byte(`{"code":"video_task_failed","message":"the task ended in a non-success state"}`)
+	}
+	v.stream.write("error", sseErrorEvent{
+		Slot: v.slot, Model: v.model, Status: http.StatusUnprocessableEntity,
+		RequestID: v.requestID, Error: encoded,
+	})
+}
+
+func (v videoColumnSink) VideoWaitStopped() {
+	v.stream.write("wait_stopped", sseWaitStoppedEvent{Slot: v.slot, Model: v.model, RequestID: v.requestID})
+}
+
+// PostPlaygroundVideoStopWait handles POST
+// /api/admin/playground/video/stop-wait — the video column's escape hatch.
+// Stopping the wait stops the PAGE's bridged polling only: the task keeps
+// rendering at full cost, and the settlement lands on the request log when
+// completion is next observed (the column says exactly that). Owner-pinned
+// inside the service; a miss answers 404 without confirming which waits
+// exist.
+func PostPlaygroundVideoStopWait(svc *playground.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		viewerID := c.MustGet(middleware.UserIDKey).(uint)
+		var req struct {
+			RequestID string `json:"request_id" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.ParamError(c, err.Error())
+			return
+		}
+		if !svc.StopVideoWait(req.RequestID, viewerID) {
+			response.NotFound(c, errcode.RequestLogNotFound, errcode.GetMessage(errcode.RequestLogNotFound))
+			return
+		}
+		response.Success(c, gin.H{"stopped": true})
+	}
+}
+
+// GetPlaygroundVideo handles GET /api/admin/playground/video/:request_id —
+// a finished video column's clip, proxied from the upstream's own result
+// URL for the page that ran it. The service resolves the task durably by
+// the column's audit id and pins it to the owning account; an absent,
+// foreign, unfinished, or dead result answers the same nothing.
+func GetPlaygroundVideo(svc *playground.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		viewerID := c.MustGet(middleware.UserIDKey).(uint)
+		body, contentType, ok := svc.VideoContent(c.Request.Context(), c.Param("request_id"), viewerID)
+		if !ok {
+			response.NotFound(c, errcode.RequestLogNotFound, errcode.GetMessage(errcode.RequestLogNotFound))
+			return
+		}
+		defer func() { _ = body.Close() }()
+		c.Header("Content-Type", contentType)
+		c.Header("Cache-Control", "private, no-store")
+		c.Status(http.StatusOK)
+		flusher, canFlush := c.Writer.(http.Flusher)
+		_, _ = io.Copy(c.Writer, body)
+		if canFlush {
+			flusher.Flush()
 		}
 	}
 }

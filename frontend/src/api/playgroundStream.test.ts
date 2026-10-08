@@ -32,7 +32,7 @@ const baseInput: PlaygroundRunInput = {
   key_id: 1,
   modality: 'text',
   models: ['m0'],
-  messages: [{ role: 'user', content: 'ping' }],
+  request: { messages: [{ role: 'user', content: 'ping' }] },
   params: {},
 }
 

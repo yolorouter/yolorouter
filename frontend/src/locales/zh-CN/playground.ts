@@ -31,6 +31,15 @@ export default {
   voice_tip:
     '按列独立：音色是厂商私有取值，每列只从本列模型所属厂商的音色中挑选。可输入自定义音色（如复刻音色 id）；厂商不认识的取值会被其上游拒绝。',
   needVoice: '请先为每个所选模型选择音色',
+  videoSeconds: '时长（秒）',
+  videoSeconds_tip: '视频时长，取视频方言自身的词表（4/8/12 秒），统一应用于全部所选模型；留空按方言默认。',
+  videoSize: '尺寸',
+  videoSize_tip: '视频分辨率，取视频方言自身的词表，统一应用于全部所选模型；留空按方言默认。',
+  stopWaiting: '停止等待',
+  columnStateStopped: '已停止等待',
+  columnStoppedNote:
+    '已停止等待——任务继续执行、全额计费；费用将在任务完成后入账，成本以请求日志为准（本列 ID 可在请求日志检索）。',
+  usageSeconds: '{count} 秒',
   stop: '停止',
   columnStateStreaming: '流式中',
   columnStateCancelled: '已取消',

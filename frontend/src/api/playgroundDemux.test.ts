@@ -298,4 +298,87 @@ describe('playgroundDemux', () => {
     expect(columns[0]).toMatchObject({ state: 'done' })
     expect(columns[0].audio).toBeNull()
   })
+
+  it('folds the video column lifecycle: submitted names the audit id while running, done carries seconds usage and the playback reference (TC-11 video arm)', () => {
+    const columns = run(['v0'], [
+      { type: 'submitted', slot: 0, model: 'v0', request_id: 'req-vid-0' },
+    ])
+    // The submit acknowledgement is not a terminal: the column keeps
+    // rendering as running, but its audit id is now addressable — the
+    // stop-waiting control's target.
+    expect(columns[0]).toMatchObject({ state: 'running', requestId: 'req-vid-0', video: null })
+
+    const settled = run(['v0'], [
+      { type: 'submitted', slot: 0, model: 'v0', request_id: 'req-vid-0' },
+      {
+        type: 'done',
+        slot: 0,
+        model: 'v0',
+        status: 200,
+        request_id: 'req-vid-0',
+        usage: { input_tokens: 0, output_tokens: 0, seconds: 4 },
+        cost_micros: 2_000_000,
+        cost_known: true,
+        duration_ms: 890,
+        video: { url: '/api/admin/playground/video/req-vid-0', content_type: 'video/mp4', seconds: 4 },
+      },
+    ])
+    expect(settled[0]).toMatchObject({
+      state: 'done',
+      requestId: 'req-vid-0',
+      costMicros: 2_000_000,
+      video: { url: '/api/admin/playground/video/req-vid-0', content_type: 'video/mp4', seconds: 4 },
+    })
+    expect(settled[0].usage?.seconds).toBe(4)
+  })
+
+  it('folds wait_stopped as the stopped-waiting state, never cancelled, and it is terminal (TC-11 stop-wait arm)', () => {
+    const columns = run(['v0'], [
+      { type: 'submitted', slot: 0, model: 'v0', request_id: 'req-vid-0' },
+      { type: 'wait_stopped', slot: 0, model: 'v0', request_id: 'req-vid-0' },
+    ])
+    expect(columns[0]).toMatchObject({ state: 'stopped', requestId: 'req-vid-0' })
+
+    // A late done for a column whose wait already stopped is stray by the
+    // channel's own rules — the stopped reading stands (the page never
+    // learned the terminal state; the request log is the source of truth).
+    const after = run(['v0'], [
+      { type: 'submitted', slot: 0, model: 'v0', request_id: 'req-vid-0' },
+      { type: 'wait_stopped', slot: 0, model: 'v0', request_id: 'req-vid-0' },
+      {
+        type: 'done',
+        slot: 0,
+        model: 'v0',
+        status: 200,
+        request_id: 'req-vid-0',
+        usage: { input_tokens: 0, output_tokens: 0, seconds: 4 },
+        cost_micros: 1,
+        cost_known: true,
+        duration_ms: 1,
+      },
+    ])
+    expect(after[0].state).toBe('stopped')
+    expect(after[0].video).toBeNull()
+  })
+
+  it('degrades a malformed video reference without throwing and without inventing a clip', () => {
+    const columns = run(['v0'], [
+      {
+        type: 'done',
+        slot: 0,
+        model: 'v0',
+        status: 200,
+        request_id: 'req-vid-x',
+        usage: { input_tokens: 0, output_tokens: 0, seconds: 8 },
+        cost_micros: 1,
+        cost_known: true,
+        duration_ms: 1,
+        video: { content_type: 'video/mp4' },
+      } as unknown as PlaygroundStreamEvent,
+    ])
+    expect(columns[0].state).toBe('done')
+    expect(columns[0].video).toBeNull()
+    // The usage half survives a broken reference.
+    expect(columns[0].usage?.seconds).toBe(8)
+  })
 })

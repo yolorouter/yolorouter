@@ -243,15 +243,11 @@ describe('PlaygroundPage pickers', () => {
     const options = modelsSelect().props('options')!
     expect(options.map((o) => o.value)).toEqual(['text-only-model', 'text-and-image-model'])
 
-    // The video modality tab is a disabled placeholder, so a cross-modality
-    // selection cannot even be attempted; text, image and audio are the
-    // selectable dialects. The nav tab carries the disabled state as a
-    // class (a disabled pane component is never mounted).
+    // All four modality tabs are selectable dialects now (video landed
+    // with its async-task column). The nav tab carries the disabled state
+    // as a class (a disabled pane component is never mounted).
     const tab = (name: string) => document.querySelector(`.n-tabs-tab[data-name="${name}"]`)
-    for (const name of ['video']) {
-      expect(tab(name)?.classList.contains('n-tabs-tab--disabled'), `tab ${name} is disabled`).toBe(true)
-    }
-    for (const name of ['text', 'image', 'audio']) {
+    for (const name of ['text', 'image', 'audio', 'video']) {
       expect(tab(name)?.classList.contains('n-tabs-tab--disabled'), `tab ${name} is selectable`).toBe(false)
     }
   })
@@ -352,13 +348,13 @@ describe('PlaygroundPage run', () => {
       key_id: number
       modality: string
       models: string[]
-      messages: Array<{ role: string; content: string }>
+      request: { messages: Array<{ role: string; content: string }> }
       params: { system?: string; temperature?: number; max_tokens?: number }
     }
     expect(payload.key_id).toBe(7)
     expect(payload.modality).toBe('text')
     expect(payload.models).toEqual(['text-only-model', 'text-and-image-model'])
-    expect(payload.messages).toEqual([{ role: 'user', content: 'compare this prompt' }])
+    expect(payload.request.messages).toEqual([{ role: 'user', content: 'compare this prompt' }])
     expect(payload.params).toEqual({ system: 'be terse', temperature: 0.7, max_tokens: 128 })
 
     // The done column: output, cost, latency, usage, and the audit row's
@@ -420,11 +416,11 @@ describe('PlaygroundPage run', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const payload2 = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string) as {
       models: string[]
-      messages: Array<{ role: string; content: string }>
+      request: { messages: Array<{ role: string; content: string }> }
       params: { system?: string; temperature?: number; max_tokens?: number }
     }
     expect(payload2.models).toEqual(['text-only-model'])
-    expect(payload2.messages).toEqual([{ role: 'user', content: 'revised prompt for the re-run' }])
+    expect(payload2.request.messages).toEqual([{ role: 'user', content: 'revised prompt for the re-run' }])
     expect(payload2.params).toEqual({ system: 'be verbose', temperature: 1.3, max_tokens: 256 })
 
     // And the column count follows the new run — one column, not two.
@@ -458,6 +454,341 @@ describe('PlaygroundPage run', () => {
       expect(document.querySelector('[data-testid="pg-columns"]')).toBeNull()
       expect(document.body.textContent ?? '').not.toContain(copy.en.columnStateRunning)
     })
+  })
+})
+
+describe('PlaygroundPage video modality', () => {
+  // A done frame for a finished video column: the LATE settlement's
+  // figures and the console playback reference (no chunks ever precede
+  // it; a video column is submit-then-wait, not streaming text).
+  function videoDoneFrame(slot: number, model: string, over: Record<string, unknown> = {}): string {
+    return `event: done\ndata: ${JSON.stringify({
+      slot,
+      model,
+      status: 200,
+      request_id: `req-vid-${slot}`,
+      usage: { input_tokens: 0, output_tokens: 0, seconds: 4 },
+      cost_micros: 2000000,
+      cost_known: true,
+      duration_ms: 890,
+      video: {
+        url: `/api/admin/playground/video/req-vid-${slot}`,
+        content_type: 'video/mp4',
+        seconds: 4,
+      },
+      ...over,
+    })}\n\n`
+  }
+
+  function submittedFrame(slot: number, model: string): string {
+    return `event: submitted\ndata: ${JSON.stringify({ slot, model, request_id: `req-vid-${slot}` })}\n\n`
+  }
+
+  function waitStoppedFrame(slot: number, model: string): string {
+    return `event: wait_stopped\ndata: ${JSON.stringify({ slot, model, request_id: `req-vid-${slot}` })}\n\n`
+  }
+
+  // Selects the key and the video model, sets the prompt and the two
+  // video axes, clicks run — the payload is the assertion surface. The
+  // fetch mock is returned so the arms can assert on its calls (the run
+  // POST first, the stop-wait POST second).
+  async function driveVideoRun(stream: { response: () => Response }) {
+    // The fetch mock routes by path: the run POST opens the controlled
+    // aggregate stream, while the stop-wait control answers a plain JSON
+    // envelope (routing both at one stream would let the second response
+    // steal the stream's controller — exactly the aliasing the real
+    // transports never share).
+    const fetchMock = vi.fn((path: string, _init?: RequestInit) =>
+      path === '/api/admin/playground/video/stop-wait'
+        ? Promise.resolve(
+            new Response(JSON.stringify({ code: 0, message: 'ok', data: { stopped: true }, timestamp: 1 }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          )
+        : Promise.resolve(stream.response()),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'video')
+    await nextTick()
+    // Under the video tab the picker offers only video models.
+    expect(modelsSelect().props('options')!.map((o) => o.value)).toEqual(['video-only-model'])
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['video-only-model'])
+    await nextTick()
+    // The shared parameter row is the video family: seconds and size.
+    expect(document.querySelector('[data-testid="pg-video-params"]')).not.toBeNull()
+    findSelect('pg-video-seconds').vm.$emit('update:value', 8)
+    findSelect('pg-video-size').vm.$emit('update:value', '1280x720')
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('a calico cat on stage')
+    await sendButton('en').trigger('click')
+    await nextTick()
+    return fetchMock
+  }
+
+  it('TC-11: the video run carries the prompt and both dialect axes; the column shows its render clock while running, then the finished clip with the settled seconds and cost', async () => {
+    const stream = controlledEventStream()
+    const fetchMock = await driveVideoRun(stream)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const payload = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string) as {
+      key_id: number
+      modality: string
+      models: string[]
+      request: { prompt: string; messages?: unknown }
+      voices?: unknown
+      params: { seconds?: number; size?: string }
+    }
+    expect(payload.modality).toBe('video')
+    expect(payload.models).toEqual(['video-only-model'])
+    expect(payload.request.prompt).toBe('a calico cat on stage')
+    expect(payload.request.messages).toBeUndefined()
+    expect(payload.voices).toBeUndefined()
+    expect(payload.params).toEqual({ seconds: 8, size: '1280x720' })
+
+    // Two-state in progress: the running column counts its render clock
+    // and shows no clip; before the submit acknowledgement there is no
+    // stop-waiting control either (nothing to address yet).
+    expect(document.querySelector('[data-testid="pg-video-timer"]')).not.toBeNull()
+    expect(document.querySelector('[data-testid="pg-video-card"]')).toBeNull()
+    expect(document.querySelector('[data-testid="pg-stop-wait-0"]')).toBeNull()
+
+    // The submit acknowledgement names the audit id — the stop-waiting
+    // control appears against it, while the column keeps running.
+    stream.emit(submittedFrame(0, 'video-only-model'))
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="pg-stop-wait-0"]')).not.toBeNull()
+    })
+    expect(document.body.textContent ?? '').toContain(copy.en.columnStateRunning)
+
+    // Terminal: the finished clip renders through the console proxy, with
+    // the delivered-seconds usage and the late-settled cost.
+    stream.emit(videoDoneFrame(0, 'video-only-model'))
+    stream.close()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="pg-video-card"]')).not.toBeNull())
+    const card = document.querySelector('[data-testid="pg-video-card"] video') as HTMLVideoElement
+    expect(card.getAttribute('src')).toBe('/api/admin/playground/video/req-vid-0')
+    expect(card.getAttribute('type')).toBe('video/mp4')
+    const text = document.body.textContent ?? ''
+    expect(text).toContain(copy.en.usageSeconds.replace('{count}', '4'))
+    expect(text).toContain('2.000000')
+  })
+
+  it('TC-11 stop-wait: clicking stop-wait addresses the column’s audit id; wait_stopped renders the honest stopped-waiting note, not a cancellation', async () => {
+    const stream = controlledEventStream()
+    const fetchMock = await driveVideoRun(stream)
+
+    stream.emit(submittedFrame(0, 'video-only-model'))
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="pg-stop-wait-0"]')).not.toBeNull())
+
+    // The control posts the stop-wait request with the column's audit id
+    // (the apiFetch path — same origin, JSON envelope, session cookie).
+    const stopButton = document.querySelector('[data-testid="pg-stop-wait-0"]') as HTMLElement
+    stopButton.click()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/admin/playground/video/stop-wait')
+    const stopBody = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string) as { request_id: string }
+    expect(stopBody).toEqual({ request_id: 'req-vid-0' })
+
+    // The channel's acknowledgement settles the column into the honest
+    // stopped-waiting reading — the task is NOT cancelled, the cost is
+    // the request log's to tell.
+    stream.emit(waitStoppedFrame(0, 'video-only-model'))
+    stream.close()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="pg-column-stopped"]')).not.toBeNull())
+    const text = document.body.textContent ?? ''
+    expect(text).toContain(copy.en.columnStateStopped)
+    expect(text).toContain(copy.en.columnStoppedNote)
+    // Never a cancelled reading, never an invented clip.
+    expect(document.querySelector('[data-testid="pg-column-cancelled"]')).toBeNull()
+    expect(document.querySelector('[data-testid="pg-video-card"]')).toBeNull()
+  })
+
+  it('TC-15 video arm: stopping mid-run disconnects the channel and settles the unfinished video column as stopped waiting, not cancelled', async () => {
+    // A stream that stays open and errors when the fetch signal aborts —
+    // the honest shape of a channel the page disconnects. The submit is
+    // acknowledged (the stop-wait control is on the column) but no
+    // terminal event ever arrives: the operator stops the WHOLE run, the
+    // video leg of the page-level disconnect.
+    let streamAbort: (() => void) | null = null
+    const fetchMock = vi.fn((_path: string, init?: RequestInit) => {
+      const signal = init?.signal
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamAbort = () => controller.error(new DOMException('aborted', 'AbortError'))
+              signal?.addEventListener('abort', () => streamAbort?.(), { once: true })
+              controller.enqueue(new TextEncoder().encode(submittedFrame(0, 'video-only-model')))
+              // No done, no wait_stopped: the column is still in flight
+              // when the operator stops the run.
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } },
+        ),
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'video')
+    await nextTick()
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['video-only-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('stop my wait')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    // The run is in flight: the submit acknowledgement landed (its audit
+    // id names the column) and both exits are on the page — the run-level
+    // stop and the column's stop-waiting control.
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="pg-stop-wait-0"]')).not.toBeNull()
+      expect(document.querySelector('[data-testid="pg-stop"]')).not.toBeNull()
+    })
+
+    // The run-level stop aborts the channel — it is NOT the stop-waiting
+    // control, so no stop-wait request may leave the page.
+    document.querySelector('[data-testid="pg-stop"]')!.dispatchEvent(new Event('click'))
+    await vi.waitFor(() => {
+      // The abort reached the fetch's signal and errored the channel.
+      expect(streamAbort).not.toBeNull()
+      // The unfinished video column settles as STOPPED WAITING — the
+      // honest reading of a disconnect for a task that was never
+      // cancellable — with its note, never the cancelled reading, and no
+      // clip invented for a task nobody watched finish.
+      expect(document.querySelector('[data-testid="pg-column-stopped"]')).not.toBeNull()
+      const text = document.body.textContent ?? ''
+      expect(text).toContain(copy.en.columnStateStopped)
+      expect(text).toContain(copy.en.columnStoppedNote)
+      expect(document.querySelector('[data-testid="pg-column-cancelled"]')).toBeNull()
+      expect(document.querySelector('[data-testid="pg-video-card"]')).toBeNull()
+      expect(document.querySelector('[data-testid="pg-stop"]')).toBeNull()
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls.some(([path]) => path === '/api/admin/playground/video/stop-wait')).toBe(false)
+  })
+
+  it('TC-15 video arm, pre-submit window: a column interrupted before its submit was acknowledged settles as cancelled, not a full-cost stopped wait', async () => {
+    // The submit round-trip is still on the wire when the operator stops
+    // the run: one column's submit acknowledgement landed, the other's
+    // never did. The acknowledged column holds a live task nobody can
+    // terminate — stopped-waiting is its honest reading. The other's
+    // exchange was cancelled by the shared cancel choreography — no
+    // task exists, nothing will bill — so a "task keeps running at full
+    // cost" note on it would be a money-side false promise.
+    let streamAbort: (() => void) | null = null
+    const fetchMock = vi.fn((_path: string, init?: RequestInit) => {
+      const signal = init?.signal
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamAbort = () => controller.error(new DOMException('aborted', 'AbortError'))
+              signal?.addEventListener('abort', () => streamAbort?.(), { once: true })
+              // Only slot 0's submit is acknowledged; slot 1's exchange
+              // never resolves — it is the pre-submit window.
+              controller.enqueue(new TextEncoder().encode(submittedFrame(0, 'video-only-model')))
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } },
+        ),
+      )
+    })
+    modelsMock.mockResolvedValueOnce({
+      list: [...modelFixture, { name: 'video-second-model', output_modalities: ['video'] }],
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'video')
+    await nextTick()
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['video-only-model', 'video-second-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('stop mid-submit')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    // The acknowledged column carries the stop-waiting control; the
+    // still-submitting one has nothing to address yet.
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="pg-stop-wait-0"]')).not.toBeNull()
+    })
+    expect(document.querySelector('[data-testid="pg-stop-wait-1"]')).toBeNull()
+
+    // The run-level stop aborts the channel mid-submit.
+    document.querySelector('[data-testid="pg-stop"]')!.dispatchEvent(new Event('click'))
+    await vi.waitFor(() => {
+      expect(streamAbort).not.toBeNull()
+      // Each column gets its own honest reading, in its own slot: the
+      // acknowledged one is stopped WAITING (its task keeps running at
+      // full cost), the never-submitted one is cancelled — its exchange
+      // died with the run, no task exists to bill.
+      const cols = document.querySelectorAll('.pg-column')
+      expect(cols[0].querySelector('[data-testid="pg-column-stopped"]')).not.toBeNull()
+      expect(cols[1].querySelector('[data-testid="pg-column-cancelled"]')).not.toBeNull()
+      expect(document.querySelectorAll('[data-testid="pg-column-stopped"]')).toHaveLength(1)
+      expect(document.querySelectorAll('[data-testid="pg-column-cancelled"]')).toHaveLength(1)
+      const text = document.body.textContent ?? ''
+      expect(text).toContain(copy.en.columnStateStopped)
+      expect(text).toContain(copy.en.columnStoppedNote)
+      expect(text).toContain(copy.en.columnStateCancelled)
+      expect(text).toContain(copy.en.columnCancelledNote)
+      // No clip is invented for either column.
+      expect(document.querySelector('[data-testid="pg-video-card"]')).toBeNull()
+      expect(document.querySelector('[data-testid="pg-stop"]')).toBeNull()
+    })
+    // And the run-level stop never fired a stop-wait request.
+    expect(fetchMock.mock.calls.some(([path]) => path === '/api/admin/playground/video/stop-wait')).toBe(false)
+  })
+
+  it('TC-22 video arm: a failed video column keeps its native error placeholder while the neighbour renders its clip', async () => {
+    const stream = controlledEventStream()
+    // Two video models, driven in one run from the start.
+    modelsMock.mockResolvedValueOnce({
+      list: [...modelFixture, { name: 'video-second-model', output_modalities: ['video'] }],
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(stream.response())),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'video')
+    await nextTick()
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['video-only-model', 'video-second-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('a calico cat on stage')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    stream.emit(submittedFrame(0, 'video-only-model'))
+    stream.emit(submittedFrame(1, 'video-second-model'))
+    stream.emit(videoDoneFrame(0, 'video-only-model'))
+    stream.emit(`event: error\ndata: ${JSON.stringify({
+      slot: 1,
+      model: 'video-second-model',
+      status: 422,
+      request_id: 'req-vid-1',
+      error: { code: 'InternalServiceError', message: 'the render was refused' },
+    })}\n\n`)
+    stream.close()
+    await vi.waitFor(() => expect(document.querySelectorAll('[data-testid="pg-video-card"]')).toHaveLength(1))
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('HTTP 422')
+    expect(text).toContain('the render was refused')
   })
 })
 
@@ -690,10 +1021,10 @@ describe('PlaygroundPage streaming columns', () => {
     await vi.waitFor(() => expect(document.body.textContent ?? '').toContain(copy.en.columnStateDone))
 
     const payload = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string) as {
-      messages: Array<{ role: string; content: unknown }>
+      request: { messages: Array<{ role: string; content: unknown }> }
     }
-    expect(payload.messages).toHaveLength(1)
-    const parts = payload.messages[0].content as Array<{ type: string; text?: string; image_url?: { url: string } }>
+    expect(payload.request.messages).toHaveLength(1)
+    const parts = payload.request.messages[0].content as Array<{ type: string; text?: string; image_url?: { url: string } }>
     expect(parts).toEqual([
       { type: 'text', text: 'what is this' },
       { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
@@ -712,9 +1043,9 @@ describe('PlaygroundPage streaming columns', () => {
     secondStream.close()
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     const payload2 = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string) as {
-      messages: Array<{ role: string; content: Array<{ type: string; image_url?: { url: string } }> }>
+      request: { messages: Array<{ role: string; content: Array<{ type: string; image_url?: { url: string } }> }> }
     }
-    const parts2 = payload2.messages[0].content
+    const parts2 = payload2.request.messages[0].content
     expect(parts2[1].image_url?.url).toBe('data:image/png;base64,CQk=')
   })
 
@@ -746,14 +1077,13 @@ describe('PlaygroundPage streaming columns', () => {
     const payload = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string) as {
       modality: string
       models: string[]
-      prompt: string
-      messages?: unknown
+      request: { prompt: string; messages?: unknown }
       params: { size?: string; n?: number; system?: string; temperature?: number; max_tokens?: number }
     }
     expect(payload.modality).toBe('image')
     expect(payload.models).toEqual(['image-only-model', 'text-and-image-model'])
-    expect(payload.prompt).toBe('a red cat')
-    expect(payload.messages).toBeUndefined()
+    expect(payload.request.prompt).toBe('a red cat')
+    expect(payload.request.messages).toBeUndefined()
     expect(payload.params).toEqual({ size: '1024x1536', n: 2 })
 
     // Two-state: before any terminal event, both image columns sit in the
@@ -979,15 +1309,14 @@ describe('PlaygroundPage audio modality', () => {
       key_id: number
       modality: string
       models: string[]
-      prompt: string
+      request: { prompt: string; messages?: unknown }
       voices: Record<string, string>
-      messages?: unknown
       params: { format?: string; size?: string; system?: string }
     }
     expect(payload.modality).toBe('audio')
     expect(payload.models).toEqual(['audio-vendor-a', 'audio-vendor-b'])
-    expect(payload.prompt).toBe('a red cat')
-    expect(payload.messages).toBeUndefined()
+    expect(payload.request.prompt).toBe('a red cat')
+    expect(payload.request.messages).toBeUndefined()
     expect(payload.voices).toEqual({ 'audio-vendor-a': 'echo', 'audio-vendor-b': 'tongtong' })
     expect(payload.params).toEqual({ format: 'mp3' })
 

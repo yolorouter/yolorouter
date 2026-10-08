@@ -11,10 +11,17 @@ import type {
   PlaygroundMediaResponse,
   PlaygroundStreamEvent,
   PlaygroundUsage,
+  PlaygroundVideoRef,
 } from './playground'
 
-/** The lifecycle of one comparison column as the demux tracks it. */
-export type DemuxColumnState = 'running' | 'streaming' | 'done' | 'error' | 'cancelled'
+/**
+ * The lifecycle of one comparison column as the demux tracks it. The one
+ * non-obvious member is 'stopped': a video column whose operator stopped
+ * WAITING — the task itself keeps running at full cost and settles into
+ * the request log later, which is exactly what the column must render
+ * instead of a cancelled reading.
+ */
+export type DemuxColumnState = 'running' | 'streaming' | 'done' | 'error' | 'cancelled' | 'stopped'
 
 /**
  * One column's current state. `running` is the pre-answer placeholder;
@@ -47,6 +54,12 @@ export interface DemuxColumn {
    * passes nothing off as whole audio.
    */
   audio: PlaygroundAudioRef | null
+  /**
+   * A finished video column's playback reference (the console URL proxying
+   * the clip from the upstream's result URL). Null on every other column
+   * and on a video column that never reached its terminal done.
+   */
+  video: PlaygroundVideoRef | null
   errorStatus: number
   errorMessage: string
   errorType: string
@@ -67,6 +80,7 @@ export function initialColumns(models: string[]): DemuxColumn[] {
     response: null,
     responseTruncated: false,
     audio: null,
+    video: null,
     errorStatus: 0,
     errorMessage: '',
     errorType: '',
@@ -74,7 +88,7 @@ export function initialColumns(models: string[]): DemuxColumn[] {
 }
 
 function isTerminal(state: DemuxColumnState): boolean {
-  return state === 'done' || state === 'error' || state === 'cancelled'
+  return state === 'done' || state === 'error' || state === 'cancelled' || state === 'stopped'
 }
 
 // Defensive field readers: the channel's payloads come from JSON.parse on
@@ -128,6 +142,7 @@ export function foldEvent(columns: DemuxColumn[], ev: PlaygroundStreamEvent): De
         response?: unknown
         response_truncated?: unknown
         audio?: unknown
+        video?: unknown
       }
       col.state = 'done'
       col.status = num(payload.status)
@@ -142,6 +157,7 @@ export function foldEvent(columns: DemuxColumn[], ev: PlaygroundStreamEvent): De
           output_tokens: num(usage.output_tokens),
           images: num(usage.images),
           characters: num(usage.characters),
+          seconds: num(usage.seconds),
         }
       }
       // A media answer rides the done event itself: the parsed answer JSON
@@ -170,6 +186,17 @@ export function foldEvent(columns: DemuxColumn[], ev: PlaygroundStreamEvent): De
           bytes: num(audio.bytes),
         }
       }
+      // A finished video column's playback reference — same defensive
+      // reading as the audio one: a malformed frame degrades to "no
+      // reference" (no player), never a throw.
+      const video = payload.video as Partial<PlaygroundVideoRef> | undefined
+      if (video && typeof video === 'object' && typeof video.url === 'string' && video.url !== '') {
+        col.video = {
+          url: video.url,
+          content_type: typeof video.content_type === 'string' ? video.content_type : '',
+          seconds: num(video.seconds),
+        }
+      }
       return columns
     }
     case 'error': {
@@ -187,6 +214,23 @@ export function foldEvent(columns: DemuxColumn[], ev: PlaygroundStreamEvent): De
     }
     case 'cancel_ack': {
       col.state = 'cancelled'
+      col.requestId = str((ev as { request_id?: unknown }).request_id)
+      return columns
+    }
+    case 'submitted': {
+      // A video column's submit acknowledgement: the audit id lands while
+      // the column keeps its running state — it is what the stop-waiting
+      // control addresses, and what the request-log cross-reference shows
+      // before any terminal event names it.
+      col.requestId = str((ev as { request_id?: unknown }).request_id)
+      return columns
+    }
+    case 'wait_stopped': {
+      // The operator stopped waiting on a video column: the column is NOT
+      // cancelled (the task keeps running at full cost), and the honest
+      // rendering is the stopped-waiting note, which is what the 'stopped'
+      // state exists to carry.
+      col.state = 'stopped'
       col.requestId = str((ev as { request_id?: unknown }).request_id)
       return columns
     }

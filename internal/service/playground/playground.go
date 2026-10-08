@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -55,6 +56,19 @@ type Service struct {
 	secrets   crypto.SecretBox
 	relay     *gateway.Service
 	bodiesDir string
+	// videoTasks is the video job domain the run endpoint bridges a video
+	// column's task polling through (the same port the caller-facing job
+	// resource routes read), and videoFetch is the upstream client the
+	// finished clip's console playback proxy reads the result URL through.
+	// Either may be nil in a bare assembly: a video run then answers with
+	// the task domain's own refusal rather than pretending to bridge.
+	videoTasks gateway.VideoTasks
+	videoFetch *gateway.UpstreamClient
+	// videoWaits is the in-flight video bridge registry, keyed by the
+	// column's exchange request id — the stop-waiting endpoint's target.
+	// See BridgeVideoTask for the lifecycle.
+	videoWaitMu sync.Mutex
+	videoWaits  map[string]*videoWait
 	// retained audio answers, keyed by the exchange's request id — see
 	// RetainAudio for what the store is and is not.
 	audioMu    sync.Mutex
@@ -66,8 +80,17 @@ type Service struct {
 // routes use — passing a second relay instance here would give Playground
 // runs a different admission state (rate windows, circuit, key pool) from
 // real traffic, which is exactly what the real-chain contract forbids.
-func New(db *gorm.DB, secrets crypto.SecretBox, relay *gateway.Service, bodiesDir string) *Service {
-	return &Service{db: db, secrets: secrets, relay: relay, bodiesDir: bodiesDir, audio: map[string]retainedAudio{}}
+// videoTasks/videoFetch pass the SAME video job domain and upstream client
+// the router assembled for the relay, so a Playground video column's bridge
+// polls through the state machine a real caller's GET polls through, and
+// its playback proxy fetches through the same transport rules.
+func New(db *gorm.DB, secrets crypto.SecretBox, relay *gateway.Service, videoTasks gateway.VideoTasks, videoFetch *gateway.UpstreamClient, bodiesDir string) *Service {
+	return &Service{
+		db: db, secrets: secrets, relay: relay, bodiesDir: bodiesDir,
+		videoTasks: videoTasks, videoFetch: videoFetch,
+		videoWaits: map[string]*videoWait{},
+		audio:      map[string]retainedAudio{},
+	}
 }
 
 // ResolveKey loads the caller's chosen key and applies the console-side
@@ -534,6 +557,255 @@ func (s *Service) RunAudio(ctx context.Context, key *model.APIKey, run AudioRun)
 	return result, nil
 }
 
+// videosCreatePath is the ingress the synthetic video relay request
+// presents: the OpenAI Videos API's create route (the videos package's
+// own CreatePath), which resolves to the video modality end to end — a
+// submit that answers the queued job resource the bridge then polls.
+const videosCreatePath = "/v1/videos"
+
+// VideoRun is one video-modality column: the model to generate through,
+// the prompt to render, and the two request axes the video dialect itself
+// declares — clip seconds and size. Those are the only parameters the
+// console exposes for the modality, and the only ones the body builder
+// can emit; the vocabulary (seconds 4/8/12, the four sizes) is the
+// dialect's own, enforced before the stream starts.
+type VideoRun struct {
+	Model  string
+	Prompt string
+	// Seconds is the requested clip duration; 0 leaves it unset and the
+	// dialect's own default applies. Size is the requested resolution; ""
+	// leaves it unset the same way.
+	Seconds int
+	Size    string
+}
+
+// buildVideoBody serializes a video run into an OpenAI videos create
+// request body. Same whitelist discipline as the other builders: only
+// model, prompt, and the two exposed axes are ever emitted.
+func buildVideoBody(run VideoRun) ([]byte, error) {
+	body := map[string]any{"model": run.Model, "prompt": run.Prompt}
+	if run.Seconds > 0 {
+		body["seconds"] = run.Seconds
+	}
+	if run.Size != "" {
+		body["size"] = run.Size
+	}
+	return json.Marshal(body)
+}
+
+// RunVideo executes one video column's SUBMIT through the real relay
+// pipeline — the same in-process exchange, admission chain, and audit row
+// the other modalities drive, on the videos create ingress. The answer is
+// the queued job resource (the task id the bridge polls); nothing about
+// the clip is billable yet, and the exchange's own duration is the submit
+// round-trip, not the render. The caller's context is the exchange's
+// context as for every other modality.
+func (s *Service) RunVideo(ctx context.Context, key *model.APIKey, run VideoRun) (*ColumnResult, error) {
+	body, err := buildVideoBody(run)
+	if err != nil {
+		return nil, err
+	}
+	return s.runExchange(ctx, key, videosCreatePath, body, nil, columnBodyCap)
+}
+
+// VideoTaskID reads the caller-facing job id out of a successful submit's
+// delivered body — the relay-rendered job resource whose id member the
+// bridge polls the task domain with. An answer without one (an empty or
+// malformed body on a 2xx) answers "", which the caller reports as the
+// column's failure rather than bridging a task it cannot name.
+func VideoTaskID(submitBody []byte) string {
+	var resource struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(submitBody, &resource); err != nil {
+		return ""
+	}
+	return resource.ID
+}
+
+// videoBridgeTick is how often the bridge asks the task domain about one
+// task. The domain itself paces upstream polls (one query per task per
+// DefaultPollInterval, younger answers served from the row), so this is
+// the latency of NOTICING a terminal state, not the upstream load: a tick
+// is a row read except once per domain interval.
+const videoBridgeTick = 500 * time.Millisecond
+
+// VideoBridgeSink receives the bridge's channel-worthy outcomes. The
+// service stays transport-free: the handler maps these onto the
+// aggregate channel's event family.
+type VideoBridgeSink interface {
+	// VideoDone is the terminal success: the audit row's settled figures
+	// (the late settlement the completed observation just projected onto
+	// the submit's row) and the delivered seconds the bill counted.
+	VideoDone(audit *ColumnAudit, seconds int)
+	// VideoTaskFailed is a terminal task state that is not success
+	// (failed/cancelled/expired): the task's own error vocabulary.
+	VideoTaskFailed(code, message string)
+	// VideoWaitStopped is the operator stopping the wait from the page:
+	// the bridge stops polling, the task itself keeps running, and its
+	// cost settles into the request log when completion is next observed.
+	VideoWaitStopped()
+}
+
+// videoWait is one in-flight video bridge's registry entry. stopped is set
+// by StopVideoWait BEFORE the cancel fires, so the bridge can tell "the
+// page stopped waiting" (an event is still deliverable — the channel is
+// open) from "the page left" (nothing to deliver; the audit row is the
+// durable record either way). stopped is only ever touched under
+// videoWaitMu: the registry's mutex is the one synchronization edge shared
+// by StopVideoWait's write and the bridge's exit read — the context's own
+// cancel path orders only a stop that fired its own cancel, never a
+// concurrent caller-left read.
+type videoWait struct {
+	cancel  context.CancelFunc
+	owner   uint
+	stopped bool
+}
+
+// BridgeVideoTask polls one submitted video task to terminal inside the
+// page session, on the operator's behalf: each round goes through the task
+// domain's own Get — the same lazy poll, single-flight and settlement
+// backstop a real caller's GET gets — so the terminal reading the column
+// reports is the state machine's, not a second one invented here.
+//
+// The wait's context is the run channel's context: a console caller who
+// leaves cancels it, the bridge stops polling, and the task is NOT
+// touched — the video domain has no cancel, the bill is decided when
+// completion is observed, and the reaper (or any later poll) settles a
+// task nobody watched. StopVideoWait cancels the same context through the
+// registry with stopped set, which is the difference between an honest
+// wait_stopped event and silence.
+func (s *Service) BridgeVideoTask(runCtx context.Context, key *model.APIKey, requestID, taskID string, sink VideoBridgeSink) {
+	if s.videoTasks == nil {
+		sink.VideoTaskFailed("video_tasks_unwired", "the video job domain is not wired in this deployment")
+		return
+	}
+	waitCtx, cancel := context.WithCancel(runCtx)
+	s.videoWaitMu.Lock()
+	wait := &videoWait{cancel: cancel, owner: key.UserID}
+	s.videoWaits[requestID] = wait
+	s.videoWaitMu.Unlock()
+	defer func() {
+		s.videoWaitMu.Lock()
+		if s.videoWaits[requestID] == wait {
+			delete(s.videoWaits, requestID)
+		}
+		s.videoWaitMu.Unlock()
+		cancel()
+	}()
+
+	ticker := time.NewTicker(videoBridgeTick)
+	defer ticker.Stop()
+	for {
+		task, err := s.videoTasks.Get(waitCtx, key.ID, taskID, time.Now())
+		switch {
+		case err == nil && task != nil:
+			switch task.Status {
+			case gateway.VideoTaskCompleted:
+				// The completing observation has already settled the task
+				// and projected the digest onto the submit's audit row; a
+				// fresh read of that row is the column's terminal figures.
+				audit, auditErr := s.Audit(requestID)
+				if auditErr != nil {
+					sink.VideoTaskFailed("video_settlement_unreadable", auditErr.Error())
+					return
+				}
+				sink.VideoDone(audit, task.UsageSeconds)
+				return
+			case gateway.VideoTaskFailed, gateway.VideoTaskCancelled, gateway.VideoTaskExpired:
+				code := task.ErrorCode
+				if code == "" {
+					code = "video_task_" + task.Status
+				}
+				sink.VideoTaskFailed(code, task.ErrorMessage)
+				return
+			}
+			// pending/processing: the wait continues.
+		case err != nil && waitCtx.Err() == nil:
+			// A poll failure is not a task failure — the domain's own
+			// stance. The next tick retries; the channel's lifetime (the
+			// console caller's own timeout or disconnect) bounds the wait.
+		}
+		select {
+		case <-waitCtx.Done():
+			// stopped is read under the registry mutex — the same lock
+			// StopVideoWait writes it under. The stop's own cancel closing
+			// this channel would order its write anyway, but the
+			// caller-left path here (runCtx cancelled by the console
+			// caller's disconnect) races an in-flight stop-wait POST with
+			// no such edge; the mutex is the one edge both sides share.
+			s.videoWaitMu.Lock()
+			stopped := wait.stopped
+			s.videoWaitMu.Unlock()
+			if stopped {
+				sink.VideoWaitStopped()
+			}
+			// Not stopped: the console caller left. Nothing is
+			// deliverable on a channel that is gone; the task keeps
+			// running and settles when completion is next observed.
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// StopVideoWait stops the page's bridged polling of one video column:
+// the task is NOT terminated (the video domain has no cancel and the bill
+// is already committed), only the waiting stops. Owner-pinned: another
+// account's id answers the same false as an absent one.
+func (s *Service) StopVideoWait(requestID string, viewerID uint) bool {
+	s.videoWaitMu.Lock()
+	defer s.videoWaitMu.Unlock()
+	wait, ok := s.videoWaits[requestID]
+	if !ok || wait.owner != viewerID {
+		return false
+	}
+	wait.stopped = true
+	wait.cancel()
+	return true
+}
+
+// VideoContent opens the finished clip's byte stream for the page that
+// ran the column: the task is resolved durably by the column's audit id
+// (the registry only covers in-flight waits), pinned to the account that
+// ran it, and the bytes come from the upstream's own result URL through
+// the same transport the relay uses — this service stores no media, the
+// same rehosting-ruled-out stance the gateway's own content route takes.
+// The caller must close the returned body. A miss (unknown or foreign id,
+// unfinished task, dead result URL, unwired client) answers ok=false.
+func (s *Service) VideoContent(ctx context.Context, requestID string, viewerID uint) (io.ReadCloser, string, bool) {
+	if s.videoFetch == nil {
+		return nil, "", false
+	}
+	task, err := repository.FindVideoTaskByRequestID(s.db, requestID)
+	if err != nil {
+		return nil, "", false
+	}
+	key, err := repository.FindAPIKeyByID(s.db, task.APIKeyID)
+	if err != nil || key.UserID != viewerID {
+		return nil, "", false
+	}
+	if task.Status != model.VideoTaskCompleted || task.ResultURL == "" {
+		return nil, "", false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, task.ResultURL, nil)
+	if err != nil {
+		return nil, "", false
+	}
+	resp, err := s.videoFetch.SendUpstreamRequest(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, "", false
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	return resp.Body, contentType, true
+}
+
 // runExchange drives one column's synthetic relay exchange: the request
 // carries no Authorization header at all (the relay receives the resolved
 // key row and the decrypted credential through gin context slots — the
@@ -681,16 +953,18 @@ type ColumnAudit struct {
 }
 
 // ColumnUsage is the volume half of the audit reading. Images carries the
-// per-image count an image exchange settled by (the row's image_count) and
+// per-image count an image exchange settled by (the row's image_count),
 // Characters the counted characters a speech exchange settled by (the
-// row's usage_characters, in the settling candidate's own billing meter);
-// both are absent on rows that did not bill by them, so one reading reads
-// in a single billing unit.
+// row's usage_characters, in the settling candidate's own billing meter),
+// and Seconds the delivered seconds a video task's late settlement
+// projected onto its submit's row (usage_seconds); each is absent on rows
+// that did not bill by it, so one reading reads in a single billing unit.
 type ColumnUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	Images       int `json:"images,omitempty"`
 	Characters   int `json:"characters,omitempty"`
+	Seconds      int `json:"seconds,omitempty"`
 }
 
 // Audit reads the request_logs row one column's exchange wrote. The row is
@@ -708,6 +982,7 @@ func (s *Service) Audit(requestID string) (*ColumnAudit, error) {
 			OutputTokens: row.OutputTokens,
 			Images:       row.ImageCount,
 			Characters:   row.UsageCharacters,
+			Seconds:      row.UsageSeconds,
 		},
 		CostMicros: row.CostMicros,
 		CostKnown:  row.CostKnown,

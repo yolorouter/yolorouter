@@ -119,6 +119,11 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		// account's retained clip answers the same nothing) is held by the
 		// dedicated audio tests in playground_audio_test.go.
 		"/api/admin/playground/audio/:request_id": {concrete: "/api/admin/playground/audio/req-alice-none", okStatuses: []int{http.StatusNotFound}},
+		// A finished video column's proxied clip — the same shape of
+		// member-reachable miss as the audio route above (the fixture runs
+		// no video comparison); the ownership pin is held by the dedicated
+		// video tests in playground_video_test.go.
+		"/api/admin/playground/video/:request_id": {concrete: "/api/admin/playground/video/req-alice-none", okStatuses: []int{http.StatusNotFound}},
 	}
 
 	// Session/bootstrap surface: reachable pre-role or member-facing by
@@ -216,6 +221,10 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 	//   channel. A member reaches their OWN column (their key, their
 	//   spend, the run's outcome on the stream); another account's key id
 	//   is refused without confirming anything about it.
+	//
+	//   /api/admin/playground/video/stop-wait — the video column's
+	//   stop-waiting switch. It touches no one else's resources: the
+	//   service pins the in-flight wait to the account that ran it.
 	memberScopedPOST := map[string]func(){
 		"/api/admin/playground/run": func() {
 			own := fmt.Sprintf(`{"key_id":%d,"modality":"text","models":["no-such-model"],"request":{"messages":[{"role":"user","content":"hi"}]}}`, f.aliceKeyID)
@@ -241,6 +250,16 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 			}
 			if m := sentinel.FindString(w.Body.String()); m != "" {
 				t.Errorf("member-scoped POST /api/admin/playground/run leaked another account's data (found %q):\n%s", m, w.Body.String())
+			}
+		},
+		"/api/admin/playground/video/stop-wait": func() {
+			// The fixture runs no video comparison, so no wait exists: the
+			// member's own honest answer is 404 — reachable and confirming
+			// nothing. The owner pin (another account's wait answers the
+			// same 404) is held by the dedicated video tests.
+			w := f.do(t, http.MethodPost, "/api/admin/playground/video/stop-wait", `{"request_id":"req-alice-none"}`, f.aliceCk)
+			if w.Code != http.StatusNotFound {
+				t.Errorf("member-scoped POST /api/admin/playground/video/stop-wait: expected 404 for an absent wait, got %d %s", w.Code, w.Body.String())
 			}
 		},
 	}
