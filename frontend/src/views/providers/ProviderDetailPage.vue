@@ -103,6 +103,17 @@
     />
     <ProviderEditModal v-model:show="showEditProvider" :provider="provider" @updated="reload" />
     <ImportModelsModal v-model:show="showImportModels" :provider-id="provider.id" @imported="onImported" />
+    <!-- The shared candidate edit modal the model page uses, opened on this
+         provider's mapping row. model-id comes from the ROW (each row belongs
+         to its own outward model) and drives the modal's PATCH URL. -->
+    <CandidateEditModal
+      v-model:show="showEditCandidate"
+      :model-id="editingRow?.model_id ?? 0"
+      :model-name="editingRow?.model_name ?? ''"
+      :editing-candidate="editableCandidate"
+      @saved="onCandidateEdited"
+      @retest="onModalRetest"
+    />
     <DeleteProviderModal v-model:show="showDeleteProvider" :provider="provider" @deleted="onProviderDeleted" />
   </div>
 </template>
@@ -114,7 +125,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpace, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
 import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle } from '@lucide/vue'
 import { useProvidersStore } from '../../store/providers'
-import { listProviderCandidates, retestCandidate, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
+import { listProviderCandidates, retestCandidate, deleteCandidate, getModel, type ImportProviderModelsResult, type ModelCandidate, type ProviderCandidate } from '../../api/models'
 import { candidateIsOwedWork, candidateProgressState, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress } from '../../utils/importProgress'
 import { candidateUnpriced } from '../../utils/imagePriceSummary'
 import { candidatePriceLines } from '../../utils/candidatePriceLines'
@@ -127,6 +138,7 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import KeyEditModal from '../../components/providers/KeyEditModal.vue'
 import ImportModelsModal from '../../components/models/ImportModelsModal.vue'
+import CandidateEditModal from '../../components/models/CandidateEditModal.vue'
 import ProviderEditModal from '../../components/providers/ProviderEditModal.vue'
 import DeleteProviderModal from '../../components/providers/DeleteProviderModal.vue'
 import KeyTestTargetsTag from '../../components/providers/KeyTestTargetsTag.vue'
@@ -506,6 +518,109 @@ async function onRetestCandidate(row: ProviderCandidate) {
   })
 }
 
+// ---- Inline candidate edit / delete (the models tab's actions column) ----
+
+// The mapping row currently open in the shared candidate edit modal, kept in
+// this page's own ProviderCandidate shape. The modal speaks the model page's
+// ModelCandidate vocabulary, so the row is adapted for it below; model_id —
+// which the modal needs for its PATCH URL but ModelCandidate does not carry —
+// is passed straight from the row (see the template's CandidateEditModal).
+const showEditCandidate = ref(false)
+const editingRow = ref<ProviderCandidate | null>(null)
+
+// Only the pricing/identity fields below are backfilled by the modal; the
+// model-page-only slots (capability flags, binding_count, sort_order, …) get
+// inert values because nothing in the modal reads them.
+const editableCandidate = computed<ModelCandidate | null>(() => {
+  const row = editingRow.value
+  if (!row) return null
+  return {
+    id: row.candidate_id,
+    provider_id: providerId,
+    provider_name: provider.value?.name ?? '',
+    provider_model_name: row.provider_model_name,
+    input_price: row.input_price,
+    output_price: row.output_price,
+    cache_write_price: row.cache_write_price,
+    cache_read_price: row.cache_read_price,
+    max_output: row.max_output,
+    billing_mode: row.billing_mode,
+    image_pricing_tiers: row.image_pricing_tiers,
+    video_pricing_tiers: row.video_pricing_tiers,
+    audio_unit_price: row.audio_unit_price,
+    supports_streaming: null,
+    supports_function_calling: null,
+    management_status: row.management_status,
+    sort_order: 1,
+    verification_status: row.verification_status,
+    routable: false,
+    blocked_by: '',
+    last_test_result: row.last_test_result,
+    last_test_duration_ms: null,
+    last_tested_at: row.last_tested_at,
+    binding_count: 0,
+  }
+})
+
+function onEditCandidate(row: ProviderCandidate) {
+  editingRow.value = row
+  showEditCandidate.value = true
+}
+
+// A saved edit rewrote this provider's mapping (price, upstream name, …) —
+// the rows refresh so the table shows the stored values.
+function onCandidateEdited() {
+  void loadCandidates()
+}
+
+// The "saved without a retest" toast offers one; the emit carries only the
+// candidate id while this page's retest also needs the row's model_id.
+function onModalRetest(candidateId: number) {
+  const row = candidateRows.value.find((r) => r.candidate_id === candidateId)
+  if (row) void onRetestCandidate(row)
+}
+
+// Deleting a model's last routable candidate on this provider takes the
+// provider off that model entirely — expected behavior, but said out loud
+// before the confirm. This page's rows carry no routable flag of their own,
+// so the model detail endpoint is prefetched before the dialog opens and the
+// remaining-routable count is computed exactly as the model page does it
+// (candidates' routable field, minus the row being deleted).
+async function onDeleteCandidate(row: ProviderCandidate) {
+  let lastRoutable = false
+  try {
+    const model = await getModel(row.model_id)
+    const rowRoutable = model.candidates.some((c) => c.id === row.candidate_id && c.routable)
+    const othersRoutable = model.candidates.some((c) => c.routable && c.id !== row.candidate_id)
+    lastRoutable = rowRoutable && !othersRoutable
+  } catch (err) {
+    if (redirectIfSessionExpired(err, router)) return
+    // The guard is advisory copy, not a precondition: a failed prefetch
+    // downgrades to the plain confirm instead of blocking a delete the
+    // backend would accept.
+  }
+  // A blank provider model name means "use the model's own name" — shown
+  // that way rather than as empty brackets.
+  const label = row.provider_model_name || row.model_name
+  dialog.warning({
+    title: t('models.confirmDeleteCandidateTitle'),
+    content: lastRoutable
+      ? t('providers.confirmDeleteCandidateLastRoutableContent', { model: row.model_name, name: label })
+      : t('providers.confirmDeleteCandidateContent', { model: row.model_name, name: label }),
+    positiveText: t('common.delete'),
+    negativeText: t('providers.cancel'),
+    onPositiveClick: async () => {
+      try {
+        await deleteCandidate(row.model_id, row.candidate_id)
+        await loadCandidates()
+      } catch (err) {
+        if (redirectIfSessionExpired(err, router)) return
+        message.error(displayMessage(err, t))
+      }
+    },
+  })
+}
+
 const modelColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
   {
     title: columnTitle(t('models.name'), t('models.name_tip')),
@@ -553,27 +668,73 @@ const modelColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
     render: renderFailReasonCell,
   },
   {
+    // Actions-column convention (same as the keys table above and the model
+    // page's candidate table): one compact "⋯" dropdown instead of inline
+    // text buttons. Edit/delete apply to EVERY row — a passed mapping is
+    // exactly the one worth repricing or renaming. Retest stays conditional:
+    // anything without a passing verdict that the probe queue does not
+    // already hold (failed rows and the "untested" leftovers of an
+    // interrupted queue alike); rows the queue holds get no retest because
+    // their probe is already coming.
     title: t('common.actions'),
     key: 'actions',
-    width: 110,
+    width: 60,
     align: 'center',
     render: (row) => {
-      // Retest applies to anything without a passing verdict: failed rows and
-      // the "untested" leftovers of an interrupted probe queue alike. Rows the
-      // queue currently holds get no button: their probe is already coming,
-      // and a manual one on top would only double the upstream traffic.
-      if (candidateProgressState(row) === 'passed') return null
-      if (row.queue_state === 'queued' || row.queue_state === 'probing') return null
+      const canRetest =
+        candidateProgressState(row) !== 'passed' &&
+        row.queue_state !== 'queued' &&
+        row.queue_state !== 'probing'
       const busy = retestAction.activeId.value !== null
       return h(
-        NButton,
+        ResponsiveDropdown,
         {
-          size: 'small',
+          trigger: 'click',
+          placement: 'bottom-end',
+          triggerText: t('common.actions'),
+          disabled: retestAction.activeId.value === row.candidate_id,
           loading: retestAction.activeId.value === row.candidate_id,
-          disabled: busy && retestAction.activeId.value !== row.candidate_id,
-          onClick: () => void onRetestCandidate(row),
+          height: 200,
+          options: [
+            { label: t('models.editCandidate'), key: 'edit' },
+            ...(canRetest
+              ? [
+                  // Titled so the dropdown says what a retest actually does —
+                  // it reruns all three probes and rewrites the stored
+                  // verdicts (same as the model page's menu). Disabled while
+                  // any retest is in flight: the single-flight runner would
+                  // silently ignore a second click.
+                  {
+                    label: t('models.retest'),
+                    key: 'retest',
+                    disabled: busy,
+                    props: { title: t('models.retest_tip') },
+                  },
+                ]
+              : []),
+            { type: 'divider', key: 'd' },
+            { label: t('models.deleteCandidate'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
+          ],
+          onSelect: (key: string) => {
+            if (key === 'edit') onEditCandidate(row)
+            else if (key === 'retest') void onRetestCandidate(row)
+            else if (key === 'delete') void onDeleteCandidate(row)
+          },
         },
-        { default: () => t('models.retest') },
+        {
+          default: () =>
+            h(
+              NButton,
+              {
+                size: 'small',
+                quaternary: true,
+                circle: true,
+                loading: retestAction.activeId.value === row.candidate_id,
+                disabled: retestAction.activeId.value === row.candidate_id,
+              },
+              { icon: () => h(MoreHorizontal, { size: 16 }) },
+            ),
+        },
       )
     },
   },

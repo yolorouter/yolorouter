@@ -142,6 +142,8 @@ export default {
   deleteProviderSevereWarning: 'After deletion, {count} models will have no routable source left; requests to them will fail immediately.',
   confirmDeleteKeyContent: 'Delete key "{label}"? This cannot be undone; historical request logs and statistics are not affected.',
   confirmDeleteKeyLastContent: '"{label}" is the last usable key of this provider — after deletion the provider will have no key to serve requests. This cannot be undone; historical request logs and statistics are not affected. Continue?',
+  confirmDeleteCandidateContent: 'Delete the candidate mapping "{name}" of model "{model}"? This cannot be undone; historical request logs and statistics are not affected.',
+  confirmDeleteCandidateLastRoutableContent: '"{name}" is the last routable candidate of model "{model}" on this provider — after deletion the model will lose this provider. This cannot be undone; historical request logs and statistics are not affected. Continue?',
   testAllButton: 'Test All',
   testAllPendingCount: '{count} keys pending',
   testAllRunning: 'Batch testing in progress…',

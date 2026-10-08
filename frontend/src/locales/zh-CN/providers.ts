@@ -144,6 +144,8 @@ export default {
   deleteProviderSevereWarning: '删除后将有 {count} 个模型失去全部可用渠道，指向它们的请求会立即失败。',
   confirmDeleteKeyContent: '确定删除 Key「{label}」？删除后不可恢复；历史调用记录与统计不受影响。',
   confirmDeleteKeyLastContent: '「{label}」是该供应商最后一个可用 Key，删除后该供应商将无 Key 可用。删除不可恢复；历史调用记录与统计不受影响。确定要继续吗？',
+  confirmDeleteCandidateContent: '确定删除模型「{model}」的候选映射「{name}」？删除后不可恢复；历史调用记录与统计不受影响。',
+  confirmDeleteCandidateLastRoutableContent: '「{name}」是模型「{model}」在此供应商下的最后一条可路由候选，删除后该模型将失去此供应商。删除不可恢复；历史调用记录与统计不受影响。确定要继续吗？',
   testAllButton: '批量测试',
   testAllPendingCount: '共 {count} 个待测',
   testAllRunning: '正在批量测试，请稍候…',

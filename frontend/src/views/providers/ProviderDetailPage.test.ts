@@ -1,15 +1,18 @@
 // @vitest-environment happy-dom
 //
 // The provider detail page's first mounted-DOM test suite — the regression
-// baseline for the provider-page inline-actions batch. This batch CHANGES the
-// models tab's actions column (edit/delete for every row) and adds search +
-// filtering; the assertions below pin the two behaviors that must survive it
-// untouched (TC-14):
+// baseline for the provider-page inline-actions batch. This batch CHANGED the
+// models tab's actions column into a '⋯' dropdown whose menu carries
+// edit/delete for every row (plus search + filtering); the assertions below
+// pin the two behaviors that must survive it untouched (TC-14):
 //
-//   - the existing retest conditional rendering: the actions cell offers a
-//     retest button ONLY to rows without a passing verdict that the probe
+//   - the existing retest conditional rendering: the row's '⋯' menu offers a
+//     retest entry ONLY to rows without a passing verdict that the probe
 //     queue does not already hold — passed rows and queued/probing rows get
-//     none — with the verification badge each state renders
+//     edit/delete only — with the verification badge each state renders.
+//     (Asserted on the dropdown's options here; the batch's own menu tests
+//     open the menu and assert the rendered items — see
+//     ProviderDetailPage.candidateActions.test.ts.)
 //   - the client-side pagination of the models tab: the table slices the
 //     fully-fetched list and the pager turns pages over it
 //
@@ -42,6 +45,7 @@ const listCandidatesMock = vi.mocked(listProviderCandidates)
 
 // Must be imported after the vi.mock factories are registered.
 import ProviderDetailPage from './ProviderDetailPage.vue'
+import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import zhCN from '../../locales/zh-CN'
 import { CANDIDATE_STATUS_DISABLED, CANDIDATE_STATUS_ENABLED, VERIFICATION_FAILED, VERIFICATION_PASSED, VERIFICATION_UNTESTED } from '../../api/candidateStatus'
 
@@ -179,6 +183,16 @@ function rowTr(modelName: string): HTMLTableRowElement {
   return tr!
 }
 
+// The menu labels of a candidate row's actions dropdown (dividers excluded),
+// in row order. The retest conditional is pinned here through the dropdown's
+// options — the batch's own tests cover the opened-menu DOM.
+function rowMenuLabels(rowIndex: number): string[] {
+  const dropdowns = wrapper!.findAllComponents(ResponsiveDropdown)
+  expect(dropdowns.length, 'one actions dropdown per candidate row').toBeGreaterThanOrEqual(rowIndex + 1)
+  const options = dropdowns[rowIndex].props('options') as Array<{ label?: unknown; type?: string }>
+  return options.filter((o) => o.type !== 'divider').map((o) => String(o.label))
+}
+
 function bodyText(): string {
   return document.body.textContent ?? ''
 }
@@ -226,16 +240,27 @@ describe('ProviderDetailPage baseline (TC-14)', () => {
 
     const passedRow = rowTr('model-passed')
     expect(passedRow.textContent ?? '').toContain(zhCN.models.importStatePassed)
-    expect(passedRow.querySelectorAll('button'), 'a passed row offers no retest').toHaveLength(0)
+    // A passed row still gets NO retest — its menu carries edit/delete only.
+    expect(rowMenuLabels(0), 'a passed row gets edit/delete but no retest').toEqual([
+      zhCN.models.editCandidate,
+      zhCN.models.deleteCandidate,
+    ])
 
     const failedRow = rowTr('model-failed')
     expect(failedRow.textContent ?? '').toContain(zhCN.models.importStateFailed)
-    expect(failedRow.textContent ?? '').toContain(zhCN.models.retest)
     expect(failedRow.textContent ?? '').toContain('upstream 500')
+    expect(rowMenuLabels(1), 'a failed row additionally offers the retest').toEqual([
+      zhCN.models.editCandidate,
+      zhCN.models.retest,
+      zhCN.models.deleteCandidate,
+    ])
 
     const queuedRow = rowTr('model-queued')
     expect(queuedRow.textContent ?? '').toContain(zhCN.models.importStateQueued)
-    expect(queuedRow.querySelectorAll('button'), 'a queue-held row offers no retest on top of its pending probe').toHaveLength(0)
+    expect(rowMenuLabels(2), 'a queue-held row gets no retest on top of its pending probe').toEqual([
+      zhCN.models.editCandidate,
+      zhCN.models.deleteCandidate,
+    ])
   })
 
   it('client-side pagination: the models tab slices the fetched list and the pager turns pages', async () => {
