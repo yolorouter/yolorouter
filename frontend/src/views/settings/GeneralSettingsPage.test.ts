@@ -30,8 +30,10 @@ import { NSelect } from 'naive-ui'
 import { defineComponent, nextTick } from 'vue'
 
 import {
+  getAdminAuditRetention,
   getKeyAutoRecovery,
   getRequestLogRetention,
+  updateAdminAuditRetention,
   updateKeyAutoRecovery,
   updateRequestLogRetention,
 } from '../../api/systemSettings'
@@ -41,10 +43,14 @@ vi.mock('../../api/systemSettings', () => ({
   getRequestLogRetention: vi.fn(),
   updateKeyAutoRecovery: vi.fn(),
   updateRequestLogRetention: vi.fn(),
+  getAdminAuditRetention: vi.fn(),
+  updateAdminAuditRetention: vi.fn(),
 }))
 
 const getRetentionMock = vi.mocked(getRequestLogRetention)
 const putRetentionMock = vi.mocked(updateRequestLogRetention)
+const getAuditRetentionMock = vi.mocked(getAdminAuditRetention)
+const putAuditRetentionMock = vi.mocked(updateAdminAuditRetention)
 const getRecoveryMock = vi.mocked(getKeyAutoRecovery)
 const putRecoveryMock = vi.mocked(updateKeyAutoRecovery)
 
@@ -78,6 +84,9 @@ let wrapper: VueWrapper | null = null
 // fail-open default 0 (keep forever); recovery starts disabled.
 function primeSettings(retentionDays = 0, retentionVersion = 5) {
   getRetentionMock.mockResolvedValue({ retention_days: retentionDays, version: retentionVersion })
+  // Audit retention starts at the seeded default 180 — the seeded row the
+  // migration writes on a fresh install (unlike the request-log default 0).
+  getAuditRetentionMock.mockResolvedValue({ retention_days: 180, version: 3 })
   getRecoveryMock.mockResolvedValue({ enabled: false, interval_minutes: 15, version: 9 })
 }
 
@@ -106,10 +115,16 @@ function intervalInput(): HTMLInputElement {
   return input!
 }
 
-function saveButton(section: 'retention' | 'recovery'): HTMLButtonElement {
+function saveButton(section: 'retention' | 'audit-retention' | 'recovery'): HTMLButtonElement {
   const btn = document.body.querySelector<HTMLButtonElement>(`.gs-${section}__save`)
   expect(btn, `${section} save button rendered`).toBeTruthy()
   return btn!
+}
+
+function auditRetentionInput(): HTMLInputElement {
+  const input = document.body.querySelector<HTMLInputElement>('.gs-audit-retention__days input')
+  expect(input, 'audit retention days input rendered').toBeTruthy()
+  return input!
 }
 
 function recoverySwitch(): HTMLElement {
@@ -129,6 +144,7 @@ function setInputValue(input: HTMLInputElement, value: string) {
 beforeEach(() => {
   primeSettings()
   putRetentionMock.mockReset()
+  putAuditRetentionMock.mockReset()
   putRecoveryMock.mockReset()
 })
 
@@ -140,24 +156,29 @@ afterEach(() => {
 })
 
 describe.each<Locale>(['zh-CN', 'en'])('GeneralSettingsPage render (%s)', (locale) => {
-  it('renders all three persistent-form items with the committed values', async () => {
+  it('renders all four persistent-form items with the committed values', async () => {
     await mountPage(locale)
     const text = document.body.textContent ?? ''
-    // The page header and all three section cards.
+    // The page header and all four section cards.
     expect(text).toContain(navCopy[locale].generalSettings)
     expect(text).toContain(gsCopy[locale].retention.title)
+    expect(text).toContain(gsCopy[locale].auditRetention.title)
     expect(text).toContain(gsCopy[locale].language.title)
     expect(text).toContain(karCopy[locale].title)
     expect(text).toContain(gsCopy[locale].retention.days)
+    expect(text).toContain(gsCopy[locale].auditRetention.days)
     expect(text).toContain(gsCopy[locale].language.label)
     expect(text).toContain(karCopy[locale].enabled)
     expect(text).toContain(karCopy[locale].interval)
-    // Committed values: retention shows the seeded 0, interval shows 15.
+    // Committed values: retention shows the seeded 0, audit retention the
+    // seeded 180, interval 15.
     expect(retentionInput().value).toBe('0')
+    expect(auditRetentionInput().value).toBe('180')
     expect(intervalInput().value).toBe('15')
     expect(recoverySwitch().getAttribute('aria-checked')).toBe('false')
-    // Both save buttons are present and enabled (both GETs resolved).
+    // All three save buttons are present and enabled (all GETs resolved).
     expect(saveButton('retention').disabled).toBe(false)
+    expect(saveButton('audit-retention').disabled).toBe(false)
     expect(saveButton('recovery').disabled).toBe(false)
   })
 })
@@ -173,6 +194,21 @@ describe('GeneralSettingsPage save interactions (en)', () => {
     // Save succeeds → the committed row is re-read (the GET fires again).
     await vi.waitFor(() => expect(getRetentionMock).toHaveBeenCalledTimes(2))
     expect(document.body.textContent ?? '').toContain(gsCopy.en.retention.saved)
+  })
+
+  it('PUTs the admin-audit-retention endpoint with its own CAS version when the days change', async () => {
+    await mountPage('en')
+    setInputValue(auditRetentionInput(), '90')
+    await nextTick()
+    saveButton('audit-retention').dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(putAuditRetentionMock).toHaveBeenCalledTimes(1))
+    // Its own endpoint, its own version — independent of the request-log
+    // retention row above it.
+    expect(putAuditRetentionMock).toHaveBeenCalledWith({ retention_days: 90, version: 3 })
+    expect(putRetentionMock, 'the sibling retention card stays untouched').not.toHaveBeenCalled()
+    // Save succeeds → the committed row is re-read.
+    await vi.waitFor(() => expect(getAuditRetentionMock).toHaveBeenCalledTimes(2))
+    expect(document.body.textContent ?? '').toContain(gsCopy.en.auditRetention.saved)
   })
 
   it('PUTs the existing key-auto-recovery endpoint when the switch is toggled (TC-06 / TC-10)', async () => {
@@ -210,6 +246,28 @@ describe('GeneralSettingsPage retention illegal-value matrix (en) — TC-02 fron
     await nextTick()
     expect(document.body.textContent ?? '', 'the form shows the issue message').toContain(draft.message)
     expect(putRetentionMock, 'an illegal retention never reaches the wire').not.toHaveBeenCalled()
+  })
+})
+
+describe('GeneralSettingsPage audit retention stays validated in form shape (en)', () => {
+  // Same drafts the pure validator rejects (utils/auditRetention) — one per
+  // issue, asserted at the form level with the audit card's own copy.
+  const drafts: { input: string; message: string }[] = [
+    { input: '-1', message: gsCopy.en.auditRetention.daysMin },
+    { input: '1.5', message: gsCopy.en.auditRetention.daysWholeNumber },
+    { input: '3651', message: gsCopy.en.auditRetention.daysMax },
+    { input: '', message: gsCopy.en.auditRetention.daysRequired },
+  ]
+
+  it.each(drafts)('input "$input" is rejected with its own message and no PUT', async (draft) => {
+    await mountPage('en')
+    setInputValue(auditRetentionInput(), draft.input)
+    await nextTick()
+    saveButton('audit-retention').dispatchEvent(new Event('click'))
+    await nextTick()
+    await nextTick()
+    expect(document.body.textContent ?? '', 'the form shows the issue message').toContain(draft.message)
+    expect(putAuditRetentionMock, 'an illegal retention never reaches the wire').not.toHaveBeenCalled()
   })
 })
 

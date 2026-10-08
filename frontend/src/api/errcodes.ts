@@ -15,6 +15,8 @@ export const COMPRESS_ENABLED_REQUIRED = 11015
 export const KEY_AUTO_RECOVERY_CONFLICT = 11019
 // Mirrors backend RequestLogRetentionConflict (pkg/errcode).
 export const REQUEST_LOG_RETENTION_CONFLICT = 11021
+// Mirrors backend AdminAuditRetentionConflict (pkg/errcode).
+export const ADMIN_AUDIT_RETENTION_CONFLICT = 11023
 export const PROVIDER_NOT_FOUND = 12001
 export const PROVIDER_NAME_TAKEN = 12002
 export const PROVIDER_KEY_NOT_FOUND = 12009

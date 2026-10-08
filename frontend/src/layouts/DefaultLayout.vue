@@ -183,6 +183,7 @@ import {
   MessagesSquare,
   Receipt,
   ScrollText,
+  ShieldCheck,
   Settings,
   UsersRound,
   Server,
@@ -284,6 +285,11 @@ const navItems = computed<NavItem[]>(() => {
     { key: 'group-analytics', label: t('nav.groupAnalytics'), group: true },
     { key: 'usage', label: t('nav.usage'), icon: BarChart3, to: '/analytics' },
     { key: 'log-audit', label: t('nav.logAudit'), icon: ScrollText, to: '/request-logs' },
+    // The console's own change trail — one entry below the request-log
+    // audit it complements (gateway traffic vs. console actions).
+    // Admin-only branch only: the member surface above is untouched,
+    // matching the /audit-logs route guard.
+    { key: 'admin-audit', label: t('nav.adminAudit'), icon: ShieldCheck, to: '/audit-logs' },
     // Tool-session aggregate view — sits next to Log Audit in the analytics
     // group because it answers the same audit questions one level up (per
     // calling-tool session instead of per request). Admin-only branch only:

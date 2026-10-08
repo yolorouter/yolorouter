@@ -105,6 +105,7 @@ function keyFixture(): ProviderKey {
     id: 1,
     label: 'primary',
     key_prefix: 'sk-abcd',
+    key_suffix: 'wxyz',
     sort_order: 1,
     test_model: 'gpt-x',
     management_status: CANDIDATE_STATUS_ENABLED,

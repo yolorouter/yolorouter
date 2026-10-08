@@ -9,6 +9,7 @@ function makeKey(id: number, usable: boolean): ProviderKey {
     id,
     label: `key-${id}`,
     key_prefix: 'sk-',
+    key_suffix: 'wxyz',
     sort_order: id,
     test_model: 'm',
     management_status: usable ? 1 : 2,

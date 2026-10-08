@@ -83,6 +83,7 @@ function keyFixture(): ProviderKey {
     id: 1,
     label: 'primary',
     key_prefix: 'sk-abcd',
+    key_suffix: 'wxyz',
     sort_order: 1,
     test_model: 'gpt-x',
     management_status: CANDIDATE_STATUS_ENABLED,
@@ -139,8 +140,8 @@ function candidateRow(overrides: Partial<ProviderCandidate> = {}): ProviderCandi
   }
 }
 
-async function mountPage(rows: ProviderCandidate[]) {
-  getProviderMock.mockResolvedValue(providerFixture())
+async function mountPage(rows: ProviderCandidate[], keys: ProviderKey[] = [keyFixture()]) {
+  getProviderMock.mockResolvedValue(providerFixture(keys))
   listCandidatesMock.mockResolvedValue({ list: rows })
   const i18n = createI18n({ legacy: false, locale: 'zh-CN', fallbackLocale: 'zh-CN', messages: { 'zh-CN': zhCN } })
   const router = createRouter({
@@ -300,5 +301,23 @@ describe('ProviderDetailPage baseline (TC-14)', () => {
     // rewired to a reload (e.g. server-side pagination) turns this red
     // instead of surviving green on the mount-time count alone.
     expect(listCandidatesMock, 'turning the page must not refetch').toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('ProviderDetailPage key display pair — prefix + last-4 suffix with legacy degradation', () => {
+  it('renders prefix***suffix on derived rows and degrades to prefix-only on legacy empty-suffix rows', async () => {
+    // The extreme row the pre-column era left behind: a real prefix with an
+    // empty suffix, exactly as a manual insert before the startup backfill
+    // ran would read. It must render the prefix-only form — no blank cell,
+    // no dangling separator, no error.
+    const legacy: ProviderKey = { ...keyFixture(), id: 2, label: 'legacy', key_suffix: '' }
+    await mountPage([], [keyFixture(), legacy])
+
+    const cells = [...document.body.querySelectorAll('.key-prefix-cell')].map(
+      (el) => el.textContent ?? '',
+    )
+    expect(cells.length, 'one key-plaintext cell per key row').toBe(2)
+    expect(cells[0], 'a derived row shows the prefix + last-4 pair').toBe('sk-abcd***wxyz')
+    expect(cells[1], 'a legacy row degrades to prefix-only, never blank').toBe('sk-abcd***')
   })
 })

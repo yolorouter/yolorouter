@@ -125,3 +125,28 @@ export function updateRequestLogRetention(payload: {
     body: JSON.stringify(payload),
   })
 }
+
+// Admin audit retention: how many days of admin audit-log rows the
+// background retention loop keeps. 0 means keep forever; the seeded default
+// is 180 (unlike the request-log setting's 0 — an unattended audit trail
+// slowly becomes a liability nobody reads). Same authoritative-read + CAS
+// contract as the settings above; a concurrent edit surfaces as errcode
+// 11023 (HTTP 409).
+export interface AdminAuditRetentionSetting {
+  retention_days: number
+  version: number
+}
+
+export function getAdminAuditRetention(): Promise<AdminAuditRetentionSetting> {
+  return apiFetch('/api/admin/system-settings/admin-audit-retention')
+}
+
+export function updateAdminAuditRetention(payload: {
+  retention_days: number
+  version: number
+}): Promise<AdminAuditRetentionSetting> {
+  return apiFetch('/api/admin/system-settings/admin-audit-retention', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
