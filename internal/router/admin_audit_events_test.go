@@ -158,8 +158,8 @@ func TestAdminAuditLoginThreeBranches(t *testing.T) {
 	assertRowsCarryNoPlaintext(t, rows, davePass, erinPass, wrongPass)
 }
 
-// TestAdminAuditSensitiveReadRevealIsAuditedAndOtherReadsSilent is the
-// sensitive-read boundary (TC-11) as an enumeration, not a promise: the
+// TestAdminAuditSensitiveReadRevealIsAuditedAndOtherReadsSilent pins the
+// sensitive-read boundary as an enumeration, not a promise: the
 // one enumerated sensitive read — GET /api-keys/:id/plaintext — must land
 // its api_key.reveal row, while EVERY other admin GET, enumerated from
 // the live router so a future GET cannot ship outside the assertion,

@@ -384,3 +384,82 @@ func PutRequestLogRetention(svc *systemsettings.SystemSettingsService) gin.Handl
 		response.Success(c, requestLogRetentionResponse{RetentionDays: s.Days, Version: ver})
 	}
 }
+
+// --- Admin audit retention --------------------------------------------------
+
+// adminAuditRetentionResponse is the handler-facing response DTO with
+// explicit json tags (retention_days/version), same wrapper pattern as the
+// settings families above.
+type adminAuditRetentionResponse struct {
+	RetentionDays int   `json:"retention_days"`
+	Version       int64 `json:"version"`
+}
+
+// putAdminAuditRetentionRequest: the pointer keeps an absent field
+// distinguishable from the legal zero (keep forever), so a partial body
+// cannot silently reset the audit retention to "never delete".
+type putAdminAuditRetentionRequest struct {
+	RetentionDays *int   `json:"retention_days"`
+	Version       *int64 `json:"version"`
+}
+
+// GetAdminAuditRetention returns the authoritative global state (DB read,
+// bypassing the cache) so the admin always sees the committed value.
+func GetAdminAuditRetention(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		s, ver, err := svc.GetAdminAuditRetentionForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		response.Success(c, adminAuditRetentionResponse{RetentionDays: s.Days, Version: ver})
+	}
+}
+
+// PutAdminAuditRetention validates + CAS-updates the row. version is
+// required (optimistic lock); retention_days must be present (pointer, zero
+// is a legal value meaning keep forever). A non-integer or out-of-domain
+// value and a CAS miss return the settings family's existing 400/409 forms,
+// with this setting's own business codes so the frontend can route retries
+// to the right control.
+//
+// Audit: same merge shape as PutRequestLogRetention — the committed change
+// parks a field-level diff on the automatic layer's single row. An audit
+// row about changing the audit retention is exactly the kind of meta-change
+// the trail itself should remember.
+func PutAdminAuditRetention(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req putAdminAuditRetentionRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.ParamError(c, err.Error())
+			return
+		}
+		if req.RetentionDays == nil || req.Version == nil || *req.Version < 1 {
+			response.ParamError(c, "retention_days and version (>=1) are both required")
+			return
+		}
+		before, _, err := svc.GetAdminAuditRetentionForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		s, ver, err := svc.UpdateAdminAuditRetention(c.Request.Context(), *req.Version, *req.RetentionDays)
+		if err != nil {
+			switch {
+			case errors.Is(err, errcode.ErrAdminAuditRetentionConflict):
+				// 409 is not produced by httpStatusForCode's range mapping; set it explicitly.
+				response.ErrorStatus(c, http.StatusConflict, errcode.AdminAuditRetentionConflict, errcode.GetMessage(errcode.AdminAuditRetentionConflict))
+			case errors.Is(err, errcode.ErrAdminAuditRetentionDaysInvalid):
+				response.Error(c, errcode.AdminAuditRetentionDaysInvalid, errcode.GetMessage(errcode.AdminAuditRetentionDaysInvalid))
+			default:
+				response.InternalError(c, err.Error())
+			}
+			return
+		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{"retention_days": before.Days},
+			map[string]any{"retention_days": s.Days},
+		))
+		response.Success(c, adminAuditRetentionResponse{RetentionDays: s.Days, Version: ver})
+	}
+}

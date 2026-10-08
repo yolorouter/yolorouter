@@ -62,6 +62,29 @@ func DefaultRequestLogRetentionSetting() RequestLogRetentionSetting {
 	return RequestLogRetentionSetting{Days: RequestLogRetentionDefaultDays}
 }
 
+// AdminAuditRetentionSetting is the typed snapshot of the global admin-audit
+// retention configuration: how many days of admin_audit_logs rows the audit
+// retention loop keeps. Zero means keep forever. The shipped default is 180
+// days — unlike the request-log retention's keep-forever default, console
+// audit volume is tiny and a bounded default keeps the trail honest without
+// anyone opting in. Same no-json-tags convention as the pairs above.
+type AdminAuditRetentionSetting struct {
+	Days int
+}
+
+// AdminAuditRetentionDefaultDays is the shipped default audit retention,
+// mirrored by the seeding migration (goose SQL cannot reference Go
+// constants).
+const AdminAuditRetentionDefaultDays = 180
+
+// DefaultAdminAuditRetentionSetting returns the shipped default. It is
+// served when the row is absent — a database that predates the seeding
+// migration — and as the fail-open value on a cold-cache refresh failure,
+// so both paths behave exactly like a freshly seeded deployment.
+func DefaultAdminAuditRetentionSetting() AdminAuditRetentionSetting {
+	return AdminAuditRetentionSetting{Days: AdminAuditRetentionDefaultDays}
+}
+
 // DefaultKeyAutoRecoverySetting returns the shipped default (enabled, 30
 // minutes). It is served when the rows are absent — a database that
 // predates the seeding migration — and as the fail-open value on a

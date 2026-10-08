@@ -16,6 +16,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/agentbackfill"
 	"github.com/yolorouter/yolorouter/internal/audit"
+	"github.com/yolorouter/yolorouter/internal/auditretention"
 	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
 	"github.com/yolorouter/yolorouter/internal/keyrecovery"
 	"github.com/yolorouter/yolorouter/internal/keysuffixbackfill"
@@ -422,6 +423,30 @@ func runServe(ctx context.Context, args []string) error {
 	defer func() {
 		retentionCancel()
 		stopRetention()
+	}()
+
+	// The admin-audit retention loop: the audit trail's own expiry schedule.
+	// Every heartbeat it re-reads the admin_audit_retention_days setting
+	// (0 = keep forever; the shipped default is a bounded 180 days) and,
+	// when a positive window is configured, drives one bounded sweep that
+	// removes the oldest expired admin_audit_logs rows. Same shape and same
+	// reasoning as the request-log retention loop above, one loop per
+	// retention domain: started here, after the migration has seeded the
+	// setting, holding its own settings-service instance so the loop's
+	// cached snapshot reads stay off the request-path instance; a saved
+	// change reaches the loop within one cache TTL plus one heartbeat. Runs
+	// on a context derived from serve's own ctx and is awaited by a
+	// deferred cancel + stop so the goroutine exits before the process
+	// does.
+	auditRetentionLoop := auditretention.NewLoop(auditretention.Config{
+		DB:       app.DB,
+		Settings: systemsettings.NewSystemSettingsService(app.DB),
+	})
+	auditRetentionCtx, auditRetentionCancel := context.WithCancel(ctx)
+	stopAuditRetention := auditRetentionLoop.Start(auditRetentionCtx)
+	defer func() {
+		auditRetentionCancel()
+		stopAuditRetention()
 	}()
 
 	// The agent-attribution backfill: one idempotent background pass over

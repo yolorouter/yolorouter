@@ -450,6 +450,18 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.PUT("/system-settings/key-auto-recovery", handler.PutKeyAutoRecovery(settingsSvc))
 	protected.GET("/system-settings/request-log-retention", handler.GetRequestLogRetention(settingsSvc))
 	protected.PUT("/system-settings/request-log-retention", handler.PutRequestLogRetention(settingsSvc))
+	protected.GET("/system-settings/admin-audit-retention", handler.GetAdminAuditRetention(settingsSvc))
+	protected.PUT("/system-settings/admin-audit-retention", handler.PutAdminAuditRetention(settingsSvc))
+
+	// The audit trail's own read surface. Reads only — the sweep test pins
+	// that no non-GET route may ever appear under the audit namespace, and
+	// the audit capture layer's method filter keeps these GETs out of the
+	// trail themselves (reading the audit log must never write to it).
+	// Admin-protected like every other cross-account view: a member has no
+	// reading of who configured what. Export registers before any future
+	// parameterized sibling so "export" can never be taken for an id.
+	protected.GET("/audit-logs", handler.GetAuditLogs(db))
+	protected.GET("/audit-logs/export", handler.ExportAuditLogsCSV(db))
 
 	// Dashboard / analytics / request logs.
 	// All three are read-only queries over request_logs (written by the

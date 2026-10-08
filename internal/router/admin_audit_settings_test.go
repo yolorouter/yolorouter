@@ -35,13 +35,13 @@ func diffDoc(t *testing.T, field string, oldV, newV any) string {
 //     a refused write changed nothing and must not claim it did
 //
 // and one leg per remaining family (input-compression, vision-fallback,
-// key-auto-recovery, request-log-retention) proves the merge is the
-// settings family's SHARED shape: every one of the five PUTs parks its
-// diff through the same audit.Event call, and each leg asserts that
-// family's own diff content — remove any family's parking call and its
-// leg goes red on the detail assertion. Every row reconciles with its
-// request's X-Request-Id, so "exactly one row per PUT" is asserted per
-// request, not just in aggregate.
+// key-auto-recovery, request-log-retention, admin-audit-retention) proves
+// the merge is the settings family's SHARED shape: every one of the six
+// PUTs parks its diff through the same audit.Event call, and each leg
+// asserts that family's own diff content — remove any family's parking
+// call and its leg goes red on the detail assertion. Every row reconciles
+// with its request's X-Request-Id, so "exactly one row per PUT" is
+// asserted per request, not just in aggregate.
 func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 	f := newAuditFixture(t)
 
@@ -132,9 +132,23 @@ func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 	rid8 := put("/api/admin/system-settings/request-log-retention",
 		fmt.Sprintf(`{"retention_days":%d,"version":%d}`, rlrDays, rlrVer), http.StatusOK)
 
+	// Leg 9: the admin-audit-retention family — the trail's own expiry
+	// window. Move the days off the seeded value (the migration plants 180;
+	// the leg picks a provably different day count either way).
+	aarBefore, aarVer, err := repository.GetAdminAuditRetention(f.db)
+	if err != nil {
+		t.Fatalf("read seeded admin audit retention: %v", err)
+	}
+	aarDays := 90
+	if aarBefore.Days == 90 {
+		aarDays = 365
+	}
+	rid9 := put("/api/admin/system-settings/admin-audit-retention",
+		fmt.Sprintf(`{"retention_days":%d,"version":%d}`, aarDays, aarVer), http.StatusOK)
+
 	rows := f.drain(t)
-	if len(rows) != 8 {
-		t.Fatalf("eight settings PUTs must land exactly eight rows, got %d", len(rows))
+	if len(rows) != 9 {
+		t.Fatalf("nine settings PUTs must land exactly nine rows, got %d", len(rows))
 	}
 	for _, row := range rows {
 		rowsByRequest[row.RequestID] = row
@@ -168,12 +182,13 @@ func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 	assertRow(rid4, "", model.AuditStatusError)
 	// Leg 5: the family shape holds on a second setting.
 	assertRow(rid5, diffDoc(t, "enabled", compBefore, !compBefore), model.AuditStatusSuccess)
-	// Legs 6-8: …and on the three remaining families, each with its own
+	// Legs 6-9: …and on the four remaining families, each with its own
 	// changed field — every family's parking call is under test, not just
 	// the first two endpoints'.
 	assertRow(rid6, diffDoc(t, "prompt", vfBefore.Prompt, vfPrompt), model.AuditStatusSuccess)
 	assertRow(rid7, diffDoc(t, "enabled", karBefore.Enabled, !karBefore.Enabled), model.AuditStatusSuccess)
 	assertRow(rid8, diffDoc(t, "retention_days", rlrBefore.Days, rlrDays), model.AuditStatusSuccess)
+	assertRow(rid9, diffDoc(t, "retention_days", aarBefore.Days, aarDays), model.AuditStatusSuccess)
 
 	// resource_id: each settings route identifies its subject by the final
 	// path segment (the stable slug), whichever leg fired.
@@ -187,6 +202,7 @@ func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 		rid6: "vision-fallback",
 		rid7: "key-auto-recovery",
 		rid8: "request-log-retention",
+		rid9: "admin-audit-retention",
 	}
 	for rid, slug := range wantSlug {
 		if row := rowsByRequest[rid]; row.ResourceID != slug {

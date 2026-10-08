@@ -705,3 +705,221 @@ func TestPutRequestLogRetentionConflictEmits11021(t *testing.T) {
 		t.Fatalf("errcode = %d, want 11021 (RequestLogRetentionConflict)", resp.Code)
 	}
 }
+
+// --- Admin audit retention --------------------------------------------------
+
+// setupAdminAuditRetentionRouter seeds the admin_audit_retention_days row
+// at the migration default (180 days). The gorm handle comes back too: the
+// fail-open tests need to delete the row out from under the service.
+func setupAdminAuditRetentionRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.Exec(`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('admin_audit_retention_days','180')`)
+	svc := systemsettings.NewSystemSettingsService(db)
+	r := gin.New()
+	r.GET("/api/admin/system-settings/admin-audit-retention", GetAdminAuditRetention(svc))
+	r.PUT("/api/admin/system-settings/admin-audit-retention", PutAdminAuditRetention(svc))
+	return r, db
+}
+
+// getAdminAuditRetentionDays is the shared GET-and-extract helper for the
+// audit retention tests: status must be 200 and the payload's
+// retention_days / version come back for the caller to assert on.
+func getAdminAuditRetentionDays(t *testing.T, r *gin.Engine) (int, int64) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/admin/system-settings/admin-audit-retention", nil))
+	if w.Code != 200 {
+		t.Fatalf("GET: status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			RetentionDays int   `json:"retention_days"`
+			Version       int64 `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	return resp.Data.RetentionDays, resp.Data.Version
+}
+
+// putAdminAuditRetentionRaw issues a PUT with an exact raw JSON body so the
+// invalid-matrix tests control the wire form byte for byte.
+func putAdminAuditRetentionRaw(t *testing.T, r *gin.Engine, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("PUT", "/api/admin/system-settings/admin-audit-retention", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestGetAdminAuditRetentionReturnsSeededDefault pins the seeded read: the
+// migration-planted row reads back as 180 at its seed version.
+func TestGetAdminAuditRetentionReturnsSeededDefault(t *testing.T) {
+	r, _ := setupAdminAuditRetentionRouter(t)
+	days, ver := getAdminAuditRetentionDays(t, r)
+	if days != 180 || ver != 1 {
+		t.Fatalf("want 180/v1 seeded, got %d/v%d", days, ver)
+	}
+}
+
+// TestGetAdminAuditRetentionMissingRowFailOpensToDefault pins the
+// fail-open read on a database that predates the seeding migration: the
+// absent row must read as the shipped 180-day default (version 0), never
+// as an error — the admin console and the retention loop both degrade to
+// the same window a freshly seeded deployment ships with.
+func TestGetAdminAuditRetentionMissingRowFailOpensToDefault(t *testing.T) {
+	r, db := setupAdminAuditRetentionRouter(t)
+	if res := db.Exec(`DELETE FROM system_settings WHERE key = 'admin_audit_retention_days'`); res.Error != nil {
+		t.Fatalf("drop the seeded row: %v", res.Error)
+	}
+	days, ver := getAdminAuditRetentionDays(t, r)
+	if days != 180 || ver != 0 {
+		t.Fatalf("want 180/v0 (shipped default on missing row), got %d/v%d", days, ver)
+	}
+}
+
+// TestPutAdminAuditRetentionSuccessAndReadBack pins the write half: PUT 30
+// commits (new version handed back) and the authoritative GET reads 30.
+func TestPutAdminAuditRetentionSuccessAndReadBack(t *testing.T) {
+	r, _ := setupAdminAuditRetentionRouter(t)
+	w := putAdminAuditRetentionRaw(t, r, `{"retention_days":30,"version":1}`)
+	if w.Code != 200 {
+		t.Fatalf("PUT 30: status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			RetentionDays int   `json:"retention_days"`
+			Version       int64 `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Data.RetentionDays != 30 || resp.Data.Version != 2 {
+		t.Fatalf("want 30/v2, got %d/v%d", resp.Data.RetentionDays, resp.Data.Version)
+	}
+	if days, ver := getAdminAuditRetentionDays(t, r); days != 30 || ver != 2 {
+		t.Fatalf("read after PUT: want 30/v2, got %d/v%d", days, ver)
+	}
+}
+
+// TestPutAdminAuditRetentionMissingFields400 and the zero-version form pin
+// the request shape: retention_days and version are both required, and a
+// version of 0 (what a missing-row read reports) is refused so the row can
+// only ever be created by the seeding migration.
+func TestPutAdminAuditRetentionMissingFields400(t *testing.T) {
+	r, _ := setupAdminAuditRetentionRouter(t)
+	for _, body := range []string{`{}`, `{"retention_days":30}`, `{"version":1}`} {
+		w := putAdminAuditRetentionRaw(t, r, body)
+		if w.Code != 400 {
+			t.Fatalf("body %s: status = %d, want 400", body, w.Code)
+		}
+	}
+}
+
+func TestPutAdminAuditRetentionZeroVersion400(t *testing.T) {
+	r, _ := setupAdminAuditRetentionRouter(t)
+	w := putAdminAuditRetentionRaw(t, r, `{"retention_days":30,"version":0}`)
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+// TestPutAdminAuditRetentionLegalDomainAccepted pins the inclusive domain:
+// 0 (keep forever), 1 and 3650 all commit; each accepted PUT advances the
+// version so the next one carries the fresh version.
+func TestPutAdminAuditRetentionLegalDomainAccepted(t *testing.T) {
+	r, _ := setupAdminAuditRetentionRouter(t)
+	step := func(ver int64, days int) int64 {
+		t.Helper()
+		body, _ := json.Marshal(map[string]interface{}{"retention_days": days, "version": ver})
+		w := putAdminAuditRetentionRaw(t, r, string(body))
+		if w.Code != 200 {
+			t.Fatalf("PUT days=%d ver=%d: status %d, body %s", days, ver, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Data struct {
+				Version int64 `json:"version"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return resp.Data.Version
+	}
+	if ver := step(1, 0); ver != 2 {
+		t.Fatalf("days 0: want v2, got v%d", ver)
+	}
+	if ver := step(2, 1); ver != 3 {
+		t.Fatalf("days 1: want v3, got v%d", ver)
+	}
+	if ver := step(3, 3650); ver != 4 {
+		t.Fatalf("days 3650: want v4, got v%d", ver)
+	}
+}
+
+// TestPutAdminAuditRetentionInvalidValuesRejected pins the domain's far
+// side, mirroring the request-log twin's split: integer values outside the
+// domain answer 400 carrying the setting's own business code (11024) and
+// leave the stored value untouched, while values that never bind into an
+// int field are rejected by JSON decoding with the generic 400.
+func TestPutAdminAuditRetentionInvalidValuesRejected(t *testing.T) {
+	r, _ := setupAdminAuditRetentionRouter(t)
+	for _, bad := range []string{"-1", "3651"} {
+		w := putAdminAuditRetentionRaw(t, r, `{"retention_days":`+bad+`,"version":1}`)
+		if w.Code != 400 {
+			t.Fatalf("days %s: status = %d, want 400, body: %s", bad, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Code int `json:"code"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("days %s: unmarshal: %v", bad, err)
+		}
+		if resp.Code != 11024 {
+			t.Fatalf("days %s: errcode = %d, want 11024 (AdminAuditRetentionDaysInvalid)", bad, resp.Code)
+		}
+		if days, ver := getAdminAuditRetentionDays(t, r); days != 180 || ver != 1 {
+			t.Fatalf("days %s: setting changed to %d/v%d, want 180/v1 unchanged", bad, days, ver)
+		}
+	}
+	// Values that never bind into an int field: rejected by JSON decoding.
+	for _, bad := range []string{`1.5`, `""`, `"abc"`} {
+		w := putAdminAuditRetentionRaw(t, r, `{"retention_days":`+bad+`,"version":1}`)
+		if w.Code != 400 {
+			t.Fatalf("days %s: status = %d, want 400, body: %s", bad, w.Code, w.Body.String())
+		}
+		if days, ver := getAdminAuditRetentionDays(t, r); days != 180 || ver != 1 {
+			t.Fatalf("days %s: setting changed to %d/v%d, want 180/v1 unchanged", bad, days, ver)
+		}
+	}
+}
+
+// TestPutAdminAuditRetentionConflictEmits11023 verifies the 409 response
+// carries errcode 11023 (AdminAuditRetentionConflict), distinct from the
+// other settings' conflict codes so the frontend can route the retry to
+// the right control.
+func TestPutAdminAuditRetentionConflictEmits11023(t *testing.T) {
+	r, _ := setupAdminAuditRetentionRouter(t)
+	w := putAdminAuditRetentionRaw(t, r, `{"retention_days":30,"version":99}`)
+	if w.Code != 409 {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	var resp struct {
+		Code int `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Code != 11023 {
+		t.Fatalf("errcode = %d, want 11023 (AdminAuditRetentionConflict)", resp.Code)
+	}
+}
