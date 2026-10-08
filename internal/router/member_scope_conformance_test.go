@@ -105,6 +105,13 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/api-keys/:id":           {concrete: "/api/admin/api-keys/" + uintToString(f.aliceKeyID), okStatuses: []int{http.StatusOK}},
 		"/api/admin/api-keys/:id/plaintext": {concrete: "/api/admin/api-keys/" + uintToString(f.aliceKeyID) + "/plaintext", okStatuses: []int{http.StatusOK, http.StatusBadRequest}, badRequestCode: 11016},
 		"/api/admin/dashboard":              {concrete: "/api/admin/dashboard", okStatuses: []int{http.StatusOK}},
+		// The Playground pickers: the key list pins to the session's own
+		// account inside the service (dedicated tests below hold the exact
+		// row set), the model list is the shared routing vocabulary. Both
+		// carry no cross-account rows, so the sentinel scan holds vacuously
+		// here — the pinning itself is what the dedicated tests pin.
+		"/api/admin/playground/keys":   {concrete: "/api/admin/playground/keys", okStatuses: []int{http.StatusOK}},
+		"/api/admin/playground/models": {concrete: "/api/admin/playground/models", okStatuses: []int{http.StatusOK}},
 	}
 
 	// Session/bootstrap surface: reachable pre-role or member-facing by

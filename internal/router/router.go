@@ -549,6 +549,13 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// on their own key, and the handler owner-checks it.
 	playgroundSvc := playground.New(db, secrets, relaySvc, bodiesDir)
 	scoped.POST("/playground/run", handler.PostPlaygroundRun(playgroundSvc))
+	// The Playground pickers read here, member-reachable like the run: the
+	// key list is pinned to the session's own account inside the service
+	// (both roles), and the model list carries only routing names plus
+	// modality declarations — the vocabulary a run needs and nothing an
+	// operator's comparison shouldn't expose.
+	scoped.GET("/playground/keys", handler.GetPlaygroundKeys(playgroundSvc))
+	scoped.GET("/playground/models", handler.GetPlaygroundModels(modelSvc))
 
 	v1 := gatewayGroup(r, "/v1", bodiesDir, db)
 	v1.POST("/chat/completions", gateway.PostChatCompletions(relaySvc))

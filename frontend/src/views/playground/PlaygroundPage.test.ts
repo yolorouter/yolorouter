@@ -1,0 +1,430 @@
+// @vitest-environment happy-dom
+//
+// Mounted-DOM coverage for the Playground page shell (acceptance cases
+// TC-06/13/18/19/20/23, frontend arms), in BOTH locales where copy is the
+// thing under test:
+//
+//   - TC-06: the key dropdown renders exactly the rows the pinned
+//     endpoint returned (own usable keys only — the pinning itself is the
+//     backend's test), and the model picker is fed by the picker endpoint
+//   - TC-23: the model picker offers only models serving the active
+//     modality tab; the other modality tabs are disabled placeholders
+//   - TC-13: a fifth selected model is refused (selection keeps four,
+//     unselected rows grey out at the cap)
+//   - TC-19: one run request carries the shared parameter row and applies
+//     it to every selected column — the payload is the assertion surface
+//   - TC-18: a re-run replaces the old column group; old results vanish
+//   - TC-20: labels are localized and follow a live locale switch
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import { createI18n } from 'vue-i18n'
+import naive, { NInputNumber, NSelect } from 'naive-ui'
+import { defineComponent, nextTick, type ComponentPublicInstance } from 'vue'
+
+import {
+  listPlaygroundKeys,
+  listPlaygroundModels,
+  type PlaygroundKeyOption,
+  type PlaygroundModelOption,
+} from '../../api/playground'
+
+// Keep the real stream runner (its SSE parsing is part of what these tests
+// exercise through a mocked fetch); only the two picker lists are mocked
+// so no test touches the network.
+vi.mock('../../api/playground', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/playground')>()),
+  listPlaygroundKeys: vi.fn(),
+  listPlaygroundModels: vi.fn(),
+}))
+
+const keysMock = vi.mocked(listPlaygroundKeys)
+const modelsMock = vi.mocked(listPlaygroundModels)
+
+// Must be imported after the vi.mock factories are registered.
+import PlaygroundPage from './PlaygroundPage.vue'
+import en from '../../locales/en'
+import zhCN from '../../locales/zh-CN'
+
+type Locale = 'en' | 'zh-CN'
+const copy = { en: en.playground, 'zh-CN': zhCN.playground } as const
+
+let wrapper: VueWrapper | null = null
+let i18n: ReturnType<typeof createI18n> | null = null
+
+// App.vue nests pages under n-config-provider > n-message-provider; the
+// page's useMessage() throws without that ancestry.
+const Host = defineComponent({
+  components: { PlaygroundPage },
+  template: '<NConfigProvider><NMessageProvider><PlaygroundPage /></NMessageProvider></NConfigProvider>',
+})
+
+function stubDesktopMatchMedia() {
+  const mql = {
+    matches: false,
+    media: '(max-width: 768px)',
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => true,
+  }
+  vi.stubGlobal('matchMedia', vi.fn(() => mql))
+}
+
+async function mountPage(locale: Locale) {
+  i18n = createI18n({ legacy: false, locale, fallbackLocale: 'zh-CN', messages: { en, 'zh-CN': zhCN } })
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { template: '<div />' } },
+      { path: '/playground', component: { template: '<div />' } },
+    ],
+  })
+  await router.push('/playground')
+  await router.isReady()
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  wrapper = mount(Host, { attachTo: document.body, global: { plugins: [pinia, router, i18n, naive] } })
+  await nextTick()
+  await nextTick()
+}
+
+const keyFixture: PlaygroundKeyOption[] = [
+  { id: 7, key_prefix: 'sk-yr-aaaa', remark: 'daily driver' },
+  { id: 9, key_prefix: 'sk-yr-bbbb', remark: '' },
+]
+
+const modelFixture: PlaygroundModelOption[] = [
+  { name: 'text-only-model', output_modalities: ['text'] },
+  { name: 'image-only-model', output_modalities: ['image'] },
+  { name: 'video-only-model', output_modalities: ['video'] },
+  { name: 'text-and-image-model', output_modalities: ['text', 'image'] },
+]
+
+// The models select, located by its marker class (the key select shares
+// the NSelect component type).
+type SelectProps = {
+  value?: string[] | number | null
+  options?: Array<{ label: string; value: string | number; disabled?: boolean }>
+}
+type SelectWrapper = VueWrapper<unknown, ComponentPublicInstance<SelectProps>>
+function findSelect(marker: string): SelectWrapper {
+  const sel = wrapper!.findAllComponents(NSelect).find((s) => s.classes().includes(marker))
+  expect(sel, `select with class ${marker} rendered`).toBeTruthy()
+  return sel as unknown as SelectWrapper
+}
+const modelsSelect = () => findSelect('pg-models-select')
+const keySelect = () => findSelect('pg-key-select')
+
+function sendButton(locale: Locale) {
+  const btn = wrapper!.findAll('button').find((b) => b.text() === copy[locale].send)
+  expect(btn, 'run button rendered').toBeTruthy()
+  return btn!
+}
+
+// A scripted aggregate-channel response: one done column (with its chunk)
+// and one failed column carrying a native OpenAI-shaped error object.
+const DONE_DELTA = 'pong answer'
+function twoColumnRunBody(): string {
+  return [
+    `event: chunk\ndata: ${JSON.stringify({ slot: 0, model: 'text-only-model', delta: DONE_DELTA })}\n\n`,
+    `event: done\ndata: ${JSON.stringify({
+      slot: 0,
+      model: 'text-only-model',
+      status: 200,
+      request_id: 'req-done-1',
+      usage: { input_tokens: 5, output_tokens: 3 },
+      cost_micros: 11,
+      cost_known: true,
+      duration_ms: 1234,
+    })}\n\n`,
+    `event: error\ndata: ${JSON.stringify({
+      slot: 1,
+      model: 'text-and-image-model',
+      status: 429,
+      request_id: 'req-fail-1',
+      error: { message: 'You exceeded your current quota', type: 'insufficient_quota' },
+    })}\n\n`,
+  ].join('')
+}
+
+function sseResponse(body: string): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(body))
+      controller.close()
+    },
+  })
+  return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } })
+}
+
+// Drives one full run: selects the key, selects models, sets the shared
+// parameters and prompt, clicks Run, waits for the stream to be consumed.
+async function driveRun(
+  locale: Locale,
+  modelNames: string[],
+  params: { system?: string; temperature?: number; maxTokens?: number },
+) {
+  keySelect().vm.$emit('update:value', 7)
+  modelsSelect().vm.$emit('update:value', modelNames)
+  await nextTick()
+  // Textareas in template order: prompt, system prompt.
+  const [promptBox, systemBox] = wrapper!.findAll('textarea')
+  await promptBox.setValue('compare this prompt')
+  if (params.system !== undefined) await systemBox.setValue(params.system)
+  // The two NInputNumber controls in template order: temperature, max tokens.
+  if (params.temperature !== undefined) wrapper!.findAllComponents(NInputNumber)[0].vm.$emit('update:value', params.temperature)
+  if (params.maxTokens !== undefined) wrapper!.findAllComponents(NInputNumber)[1].vm.$emit('update:value', params.maxTokens)
+  await nextTick()
+  await sendButton(locale).trigger('click')
+  await vi.waitFor(() => {
+    expect(document.querySelector('[data-testid="pg-columns"]')).not.toBeNull()
+    expect(document.body.textContent ?? '').toContain(copy[locale].columnStateDone)
+  })
+}
+
+beforeEach(() => {
+  stubDesktopMatchMedia()
+  keysMock.mockResolvedValue({ list: keyFixture })
+  modelsMock.mockResolvedValue({ list: modelFixture })
+})
+
+afterEach(() => {
+  wrapper?.unmount()
+  wrapper = null
+  i18n = null
+  vi.unstubAllGlobals()
+  vi.clearAllMocks()
+  document.body.innerHTML = ''
+})
+
+describe('PlaygroundPage pickers', () => {
+  it.each<Locale>(['zh-CN', 'en'])('TC-06/23: key dropdown renders the pinned endpoint rows; model picker filters by the active modality (%s)', async (locale) => {
+    await mountPage(locale)
+
+    await vi.waitFor(() => {
+      expect(keysMock).toHaveBeenCalledTimes(1)
+      expect(modelsMock).toHaveBeenCalledTimes(1)
+    })
+    await nextTick()
+
+    // Key dropdown: exactly the endpoint's rows (the endpoint pins to the
+    // signed-in account's own usable keys; values are key ids).
+    const keyOptions = keySelect().props('options')!
+    expect(keyOptions.map((o) => o.value)).toEqual([7, 9])
+    expect(keyOptions[0].label).toContain('sk-yr-aaaa')
+    expect(keyOptions[0].label).toContain('daily driver')
+    expect(keyOptions[1].label).toContain('sk-yr-bbbb')
+
+    // Model picker under the text tab: only models declaring text output.
+    const options = modelsSelect().props('options')!
+    expect(options.map((o) => o.value)).toEqual(['text-only-model', 'text-and-image-model'])
+
+    // The other modality tabs are disabled placeholders, so a cross-modality
+    // selection cannot even be attempted. The nav tab carries the disabled
+    // state as a class (a disabled pane component is never mounted).
+    const tab = (name: string) => document.querySelector(`.n-tabs-tab[data-name="${name}"]`)
+    for (const name of ['image', 'video', 'audio']) {
+      expect(tab(name)?.classList.contains('n-tabs-tab--disabled'), `tab ${name} is disabled`).toBe(true)
+    }
+    expect(tab('text')?.classList.contains('n-tabs-tab--disabled'), 'text tab is selectable').toBe(false)
+  })
+
+  it('TC-13: a fifth selected model is refused and unselected rows grey out at the cap', async () => {
+    // The shared fixture has only two text models and both end up selected,
+    // so the grey-out would have no row to bite on: offer a third
+    // text-declaring model that stays unselected for the whole test.
+    modelsMock.mockResolvedValue({
+      list: [...modelFixture, { name: 'text-extra-model', output_modalities: ['text'] }],
+    })
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    modelsSelect().vm.$emit('update:value', ['text-only-model', 'text-and-image-model'])
+    await nextTick()
+
+    // Below the cap nothing is greyed out: the unselected extra row stays
+    // pickable, or selections could never grow to the cap at all.
+    const optionsBelowCap = modelsSelect().props('options')!
+    expect(optionsBelowCap.find((o) => o.value === 'text-extra-model')?.disabled).toBeFalsy()
+
+    // The over-cap selection (5 names) is refused: the selection keeps its
+    // previous value.
+    modelsSelect().vm.$emit('update:value', [
+      'text-only-model',
+      'text-and-image-model',
+      'm3',
+      'm4',
+      'm5',
+    ])
+    await nextTick()
+    expect(modelsSelect().props('value')).toEqual(['text-only-model', 'text-and-image-model'])
+    // The refusal is explained, not silent.
+    expect(document.body.textContent ?? '').toContain(copy.en.modelCapReached)
+
+    // Four accepted...
+    modelsSelect().vm.$emit('update:value', ['text-only-model', 'text-and-image-model', 'm3', 'm4'])
+    await nextTick()
+    expect(modelsSelect().props('value')).toHaveLength(4)
+    // ...and at the cap every UNselected row is disabled in the dropdown —
+    // the fifth model cannot be picked even without the refusal toast —
+    // while the already-selected rows stay enabled (deselecting must
+    // remain possible).
+    const options = modelsSelect().props('options')!
+    expect(options.find((o) => o.value === 'text-extra-model')?.disabled, 'unselected row greys out at the cap').toBe(true)
+    expect(options.find((o) => o.value === 'text-only-model')?.disabled).toBeFalsy()
+    expect(options.find((o) => o.value === 'text-and-image-model')?.disabled).toBeFalsy()
+  })
+})
+
+describe('PlaygroundPage run', () => {
+  it('TC-18/19: one run request carries the shared params for all columns; columns render done/error states; a re-run replaces them', async () => {
+    const fetchMock = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(sseResponse(twoColumnRunBody())))
+    vi.stubGlobal('fetch', fetchMock)
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    await driveRun('en', ['text-only-model', 'text-and-image-model'], { system: 'be terse', temperature: 0.7, maxTokens: 128 })
+
+    // One request for the whole comparison: models, the prompt, and the
+    // shared parameter row applied to every column alike (a comparison
+    // varies the model, not the sampling).
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/admin/playground/run')
+    const payload = JSON.parse(init.body as string) as {
+      key_id: number
+      modality: string
+      models: string[]
+      messages: Array<{ role: string; content: string }>
+      params: { system?: string; temperature?: number; max_tokens?: number }
+    }
+    expect(payload.key_id).toBe(7)
+    expect(payload.modality).toBe('text')
+    expect(payload.models).toEqual(['text-only-model', 'text-and-image-model'])
+    expect(payload.messages).toEqual([{ role: 'user', content: 'compare this prompt' }])
+    expect(payload.params).toEqual({ system: 'be terse', temperature: 0.7, max_tokens: 128 })
+
+    // The done column: output, cost, latency, usage, and the audit row's
+    // request id for the log-page cross-reference.
+    const text = document.body.textContent ?? ''
+    expect(text).toContain(DONE_DELTA)
+    expect(text).toContain('0.000011')
+    expect(text).toContain('CNY')
+    expect(text).toContain('1.23s')
+    expect(text).toContain('req-done-1')
+    // The failed column keeps its native error shape: status, message and
+    // the dialect's error type, verbatim.
+    expect(text).toContain('HTTP 429')
+    expect(text).toContain('You exceeded your current quota')
+    expect(text).toContain('insufficient_quota')
+    expect(text).toContain('req-fail-1')
+
+    // Re-run after changing the input, the shared parameter row AND the
+    // model group (TC-18's full step): the old columns are replaced, not
+    // merged — the first run's output must be gone — and the re-run must
+    // carry the values current AT RE-SEND time. An implementation that
+    // snapshots the prompt/params on the first run and replays them on
+    // re-send sends the stale first-run values and fails the payload
+    // assertions below.
+    const secondBody = `event: done\ndata: ${JSON.stringify({
+      slot: 0,
+      model: 'text-only-model',
+      status: 200,
+      request_id: 'req-done-2',
+      usage: { input_tokens: 2, output_tokens: 1 },
+      cost_micros: 4,
+      cost_known: true,
+      duration_ms: 90,
+    })}\n\n`
+    fetchMock.mockImplementation(() => Promise.resolve(sseResponse(secondBody)))
+    // The columns render output in <pre> blocks, so the composer's controls
+    // are still the only textareas / number inputs on the page.
+    const [rerunPromptBox, rerunSystemBox] = wrapper!.findAll('textarea')
+    await rerunPromptBox.setValue('revised prompt for the re-run')
+    await rerunSystemBox.setValue('be verbose')
+    wrapper!.findAllComponents(NInputNumber)[0].vm.$emit('update:value', 1.3)
+    wrapper!.findAllComponents(NInputNumber)[1].vm.$emit('update:value', 256)
+    modelsSelect().vm.$emit('update:value', ['text-only-model'])
+    await nextTick()
+    const runButtons = wrapper!.findAll('button').filter((b) => b.text() === copy.en.resend)
+    expect(runButtons, 'the button relabels to run-again after a completed run').toHaveLength(1)
+    await runButtons[0].trigger('click')
+
+    await vi.waitFor(() => {
+      const body = document.body.textContent ?? ''
+      expect(body).toContain('req-done-2')
+      expect(body).not.toContain(DONE_DELTA)
+      expect(body).not.toContain('req-done-1')
+      expect(body).not.toContain('req-fail-1')
+    })
+    // Exactly two runs ever hit the endpoint, the second with the new
+    // single-model comparison AND the re-send-time prompt and parameter
+    // row — every revised value, none of the first run's.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const payload2 = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string) as {
+      models: string[]
+      messages: Array<{ role: string; content: string }>
+      params: { system?: string; temperature?: number; max_tokens?: number }
+    }
+    expect(payload2.models).toEqual(['text-only-model'])
+    expect(payload2.messages).toEqual([{ role: 'user', content: 'revised prompt for the re-run' }])
+    expect(payload2.params).toEqual({ system: 'be verbose', temperature: 1.3, max_tokens: 256 })
+
+    // And the column count follows the new run — one column, not two.
+    expect(document.querySelectorAll('.pg-column')).toHaveLength(1)
+  })
+
+  it('clears the placeholder columns when the run is refused before the stream (console envelope)', async () => {
+    const fetchMock = vi.fn((_path: string, _init?: RequestInit) =>
+      Promise.resolve(
+        new Response(JSON.stringify({ code: 11003, message: 'api key not found', timestamp: 1 }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['text-only-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('hello')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    await vi.waitFor(() => {
+      // The run never opened: the placeholder columns come back off and
+      // the refusal message names the failure.
+      expect(document.querySelector('[data-testid="pg-columns"]')).toBeNull()
+      expect(document.body.textContent ?? '').not.toContain(copy.en.columnStateRunning)
+    })
+  })
+})
+
+describe('PlaygroundPage locale', () => {
+  it('TC-20: labels follow a live locale switch without remount', async () => {
+    await mountPage('zh-CN')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    let text = document.body.textContent ?? ''
+    expect(text).toContain(zhCN.nav.playground)
+    expect(text).toContain(copy['zh-CN'].send)
+
+    // The composer's locale is a writable ref; the untyped createI18n
+    // return leaves it opaque, so write through the ref shape directly.
+    ;(i18n!.global.locale as { value: string }).value = 'en'
+    await nextTick()
+    await nextTick()
+    text = document.body.textContent ?? ''
+    expect(text).toContain(en.nav.playground)
+    expect(text).toContain(copy.en.send)
+    expect(text).not.toContain(copy['zh-CN'].send)
+  })
+})

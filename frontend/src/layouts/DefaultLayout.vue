@@ -172,6 +172,7 @@ import {
   BarChart3,
   Box,
   Check,
+  FlaskConical,
   Info,
   Key,
   KeyRound,
@@ -268,6 +269,9 @@ const navItems = computed<NavItem[]>(() => {
       { key: 'overview', label: t('nav.overview'), icon: LayoutGrid, to: '/' },
       { key: 'group-analytics', label: t('nav.groupAnalytics'), group: true },
       { key: 'usage', label: t('nav.usage'), icon: BarChart3, to: '/analytics' },
+      // The comparison bench sits next to usage for members too: they run
+      // it on their own key, matching the route's memberAllowed opt-in.
+      { key: 'playground', label: t('nav.playground'), icon: FlaskConical, to: '/playground' },
       { key: 'cost-stats', label: t('nav.costStats'), icon: Receipt, to: '/costs' },
       { key: 'tokens', label: t('nav.tokens'), icon: Key, to: '/api-keys' },
       { key: 'group-system', label: t('nav.groupSystem'), group: true },
@@ -283,6 +287,9 @@ const navItems = computed<NavItem[]>(() => {
 
     { key: 'group-analytics', label: t('nav.groupAnalytics'), group: true },
     { key: 'usage', label: t('nav.usage'), icon: BarChart3, to: '/analytics' },
+    // Admins compare models over their own key like members do; the same
+    // entry in both branches keeps the surface identical across roles.
+    { key: 'playground', label: t('nav.playground'), icon: FlaskConical, to: '/playground' },
     { key: 'log-audit', label: t('nav.logAudit'), icon: ScrollText, to: '/request-logs' },
     // Tool-session aggregate view — sits next to Log Audit in the analytics
     // group because it answers the same audit questions one level up (per

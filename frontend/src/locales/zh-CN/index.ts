@@ -20,6 +20,7 @@ import generalSettings from './generalSettings'
 import users from './users'
 import oauthProviders from './oauthProviders'
 import rateLimits from './rateLimits'
+import playground from './playground'
 
 export default {
   common,
@@ -43,5 +44,6 @@ export default {
   users,
   oauthProviders,
   rateLimits,
+  playground,
   errcodes,
 }

@@ -10,6 +10,7 @@ import KeyCostDetailPage from '../views/costs/KeyCostDetailPage.vue'
 import ModelCostDetailPage from '../views/costs/ModelCostDetailPage.vue'
 import ProviderCostDetailPage from '../views/costs/ProviderCostDetailPage.vue'
 import RequestLogListPage from '../views/request-logs/RequestLogListPage.vue'
+import PlaygroundPage from '../views/playground/PlaygroundPage.vue'
 import RequestLogDetailPage from '../views/request-logs/RequestLogDetailPage.vue'
 import AgentSessionListPage from '../views/agent-sessions/AgentSessionListPage.vue'
 import AgentSessionDetailPage from '../views/agent-sessions/AgentSessionDetailPage.vue'
@@ -41,6 +42,11 @@ export const router = createRouter({
       children: [
         { path: '', component: DashboardPage, meta: { memberAllowed: true } },
         { path: 'analytics', component: AnalyticsPage, meta: { memberAllowed: true } },
+        // The model comparison bench runs over the operator's own API key
+        // (the backend pins both the key picker and the run to the session
+        // account), so members reach it like the usage surfaces above —
+        // hence the explicit memberAllowed opt-in.
+        { path: 'playground', component: PlaygroundPage, meta: { memberAllowed: true } },
         { path: 'costs', component: CostStatsPage, meta: { memberAllowed: true } },
         { path: 'cost-optimization', component: CostOptimizationPage },
         { path: 'costs/keys/:id(\\d+)', component: KeyCostDetailPage, meta: { memberAllowed: true } },

@@ -96,6 +96,42 @@ func (s *Service) ResolveKey(viewerID, keyID uint) (*model.APIKey, error) {
 	return key, nil
 }
 
+// ownKeysListCap bounds the key picker's list. An account with more usable
+// keys than this can still run under any of them by id; the picker simply
+// stops growing, keeping the endpoint a single bounded query.
+const ownKeysListCap = 100
+
+// OwnKey is one row of the key picker: the identifying bits of an API key
+// the operator may run comparisons under. Nothing here can spend anything
+// on its own — every run re-resolves the key by id through ResolveKey, so
+// a stale picker row (revoked a minute ago) is refused at run time.
+type OwnKey struct {
+	ID        uint   `json:"id"`
+	KeyPrefix string `json:"key_prefix"`
+	Remark    string `json:"remark"`
+}
+
+// ListOwnKeys returns the keys the viewer may still run under: their own,
+// not revoked, not expired, and not already over the budget cap (the
+// admission chain refuses those on the next call anyway, so offering them
+// would only present columns that cannot start). Ownership is pinned by
+// the caller's own id — both roles — because the run endpoint accepts a
+// key only from its owner, so the picker must never offer another row.
+func (s *Service) ListOwnKeys(viewerID uint) ([]OwnKey, error) {
+	userID := viewerID
+	keys, err := repository.SearchAPIKeys(s.db, repository.APIKeyFilter{
+		Status: "active", UserID: &userID, Now: time.Now().UTC(),
+	}, 0, ownKeysListCap)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OwnKey, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, OwnKey{ID: k.ID, KeyPrefix: k.KeyPrefix, Remark: k.Remark})
+	}
+	return out, nil
+}
+
 // Message is one chat turn of the Playground request body.
 type Message struct {
 	Role    string `json:"role"`

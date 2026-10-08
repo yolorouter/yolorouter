@@ -15,6 +15,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yolorouter/yolorouter/internal/middleware"
+	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/internal/service/playground"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
@@ -93,6 +95,65 @@ type sseErrorEvent struct {
 	Status    int             `json:"status"`
 	RequestID string          `json:"request_id"`
 	Error     json.RawMessage `json:"error"`
+}
+
+// playgroundModelOption is one row of the model picker: the routing name a
+// run addresses the model by, plus the declared output modalities the
+// picker filters on. Carrying only these two fields keeps the
+// member-readable list to the vocabulary a run actually needs.
+type playgroundModelOption struct {
+	Name             string   `json:"name"`
+	OutputModalities []string `json:"output_modalities"`
+}
+
+// GetPlaygroundKeys handles GET /api/admin/playground/keys — the key
+// picker's list. The rows are pinned to the session's own account
+// server-side for both roles: the run endpoint accepts a key only from its
+// owner, so the picker never offers another account's row to begin with.
+func GetPlaygroundKeys(svc *playground.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		viewerID := c.MustGet(middleware.UserIDKey).(uint)
+		keys, err := svc.ListOwnKeys(viewerID)
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		response.Success(c, gin.H{"list": keys})
+	}
+}
+
+// GetPlaygroundModels handles GET /api/admin/playground/models — the model
+// picker's list: every routing-enabled model with at least one routable
+// candidate. Any signed-in account may read it because members run
+// comparisons under their own keys too; the projection above keeps the
+// payload to names and modality declarations, nothing about providers,
+// pricing, or topology.
+func GetPlaygroundModels(svc *modeladmin.ModelService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		views, err := svc.ListModels()
+		if err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		out := make([]playgroundModelOption, 0, len(views))
+		for _, v := range views {
+			if v.ManagementStatus != model.ModelStatusEnabled {
+				continue
+			}
+			routable := false
+			for _, cand := range v.Candidates {
+				if cand.Routable {
+					routable = true
+					break
+				}
+			}
+			if !routable {
+				continue
+			}
+			out = append(out, playgroundModelOption{Name: v.Name, OutputModalities: v.OutputModalities})
+		}
+		response.Success(c, gin.H{"list": out})
+	}
 }
 
 // writePlaygroundEvent writes one aggregate-channel SSE event. A marshal

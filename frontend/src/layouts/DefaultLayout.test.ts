@@ -102,6 +102,7 @@ async function mountLayout(locale: 'en' | 'zh-CN', role: 'admin' | 'member' = 'm
     routes: [
       '/',
       '/analytics',
+      '/playground',
       '/request-logs',
       '/agent-sessions',
       '/costs',
@@ -258,5 +259,44 @@ describe('DefaultLayout sidebar after the key-recovery modal removal (TC-11)', (
     // The removed entry's label — the nav copy itself is deleted from both
     // locale trees, so this also holds for a zh-CN render.
     expect(navText).not.toContain('Key Auto Recovery')
+  })
+})
+
+// The Playground entry arms (TC-06): the comparison bench is reachable
+// from BOTH sidebar branches — members run it on their own key, so the
+// member branch carries the same entry the admin branch does, next to
+// Usage in the analytics group.
+describe('DefaultLayout sidebar Playground entry (TC-06)', () => {
+  const playgroundLink = (): HTMLAnchorElement | null =>
+    document.querySelector<HTMLAnchorElement>('a[href="/playground"]')
+
+  it('member sidebar carries the Playground entry next to Usage', async () => {
+    media.setMobile(false)
+    wrapper = await mountLayout('en', 'member')
+    const link = playgroundLink()
+    expect(link, 'member sidebar links /playground').not.toBeNull()
+    expect(link!.textContent).toContain(en.nav.playground)
+    // It sits in the analytics group, after Usage — the nav's ordered text
+    // keeps the position assertion stable without pinning every entry.
+    const navText = document.querySelector('.sidebar-nav')?.textContent ?? ''
+    expect(navText.indexOf(en.nav.usage)).toBeLessThan(navText.indexOf(en.nav.playground))
+  })
+
+  it('admin sidebar carries the Playground entry too', async () => {
+    media.setMobile(false)
+    wrapper = await mountLayout('en', 'admin')
+    const link = playgroundLink()
+    expect(link, 'admin sidebar links /playground').not.toBeNull()
+    expect(link!.textContent).toContain(en.nav.playground)
+  })
+
+  it('the member drawer (mobile) exposes the entry as well', async () => {
+    // Mobile (the beforeEach default): the member nav lives in the drawer.
+    wrapper = await mountLayout('zh-CN', 'member')
+    document.querySelector<HTMLButtonElement>('.mobile-topbar__menu')!.click()
+    await nextTick()
+    const link = playgroundLink()
+    expect(link, 'member drawer links /playground').not.toBeNull()
+    expect(link!.textContent).toContain(zhCN.nav.playground)
   })
 })
