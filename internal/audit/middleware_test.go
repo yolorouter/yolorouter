@@ -347,6 +347,125 @@ func TestDetailSeatFlowsIntoRow(t *testing.T) {
 	}
 }
 
+// TestExplicitEventMergesIntoRow pins the explicit-event merge seat: an
+// event parked during the request replaces the route-derived action (with
+// the resource type recomputed from the override's namespace), pins the
+// status, and carries its detail — while the row stays exactly one and the
+// path-derived resource id survives.
+func TestExplicitEventMergesIntoRow(t *testing.T) {
+	f := newCaptureFixture(t)
+	f.group.POST("/auth/login", func(c *gin.Context) {
+		SetExplicitEvent(c, ExplicitEvent{
+			Action: ActionLoginDenied,
+			Status: model.AuditStatusDenied,
+			Detail: `{"username":"someone"}`,
+		})
+		middleware.WriteAdminError(c, http.StatusUnauthorized, 10001)
+	})
+
+	f.do(t, http.MethodPost, "/api/admin/auth/login", `{}`)
+
+	rows := f.rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("explicit event must merge into the one automatic row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.Action != ActionLoginDenied {
+		t.Errorf("action = %q, want the explicit override %q", row.Action, ActionLoginDenied)
+	}
+	if row.ResourceType != "auth" {
+		t.Errorf("resource type = %q, want the override's namespace (auth)", row.ResourceType)
+	}
+	if row.Status != model.AuditStatusDenied {
+		t.Errorf("status = %q, want the pinned denied", row.Status)
+	}
+	if row.Detail != `{"username":"someone"}` {
+		t.Errorf("detail = %q, want the event's detail document", row.Detail)
+	}
+}
+
+// TestExplicitEventStatusYieldsToPanic pins the precedence: a handler that
+// raised its explicit event and THEN panicked records the panic as an
+// error — a request that never finished has no outcome to pin, and the
+// status override must not launder an unwind into a "denied".
+func TestExplicitEventStatusYieldsToPanic(t *testing.T) {
+	f := newCaptureFixture(t, middleware.Recovery())
+	f.group.POST("/auth/login", func(c *gin.Context) {
+		SetExplicitEvent(c, ExplicitEvent{
+			Action: ActionLoginLocked,
+			Status: model.AuditStatusDenied,
+		})
+		panic("after the event")
+	})
+
+	f.do(t, http.MethodPost, "/api/admin/auth/login", "")
+
+	rows := f.rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.Action != ActionLoginLocked {
+		t.Errorf("action override = %q, want %q", row.Action, ActionLoginLocked)
+	}
+	if row.Status != model.AuditStatusError || row.ErrorBrief != "handler panic" {
+		t.Errorf("panic must win over the status override, got %s|%s", row.Status, row.ErrorBrief)
+	}
+}
+
+// TestDetailPassesRedactionBackstop pins the enforcement point: a detail
+// document that reached the seat WITHOUT going through the pipeline (a
+// contract-violating or future caller) is redacted by the capture layer's
+// own second pass before the row is submitted — the convention becomes a
+// guarantee at the last moment the middleware still owns the bytes.
+func TestDetailPassesRedactionBackstop(t *testing.T) {
+	f := newCaptureFixture(t)
+	f.group.POST("/widgets", func(c *gin.Context) {
+		SetDetail(c, `{"name":"fine","api_key":"sk-backstop-123456","note":"ghp_backstop0000000"}`)
+		c.JSON(http.StatusOK, gin.H{})
+	})
+
+	f.do(t, http.MethodPost, "/api/admin/widgets", `{}`)
+
+	rows := f.rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	detail := rows[0].Detail
+	for _, leak := range []string{"sk-backstop-123456", "ghp_backstop0000000"} {
+		if strings.Contains(detail, leak) {
+			t.Errorf("backstop missed plaintext %q, detail = %s", leak, detail)
+		}
+	}
+	for _, keep := range []string{`"name":"fine"`, `"api_key":"***"`, `"note":"***"`} {
+		if !strings.Contains(detail, keep) {
+			t.Errorf("backstopped detail must keep %s, got %s", keep, detail)
+		}
+	}
+}
+
+// TestUnparseableDetailIsDropped pins the drop rule for documents the
+// pipeline cannot even parse: an unverifiable blob is exactly the shape a
+// leaked secret could hide in, so the detail column loses it rather than
+// the guarantee.
+func TestUnparseableDetailIsDropped(t *testing.T) {
+	f := newCaptureFixture(t)
+	f.group.POST("/widgets", func(c *gin.Context) {
+		SetDetail(c, "not json at all")
+		c.JSON(http.StatusOK, gin.H{})
+	})
+
+	f.do(t, http.MethodPost, "/api/admin/widgets", `{}`)
+
+	rows := f.rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Detail != "" {
+		t.Errorf("unparseable detail must be dropped, got %q", rows[0].Detail)
+	}
+}
+
 // TestCapturedRequestContext pins the transport fields: source IP and
 // user agent ride the row (the agent capped), and created_at carries the
 // capture time rather than the flush time.

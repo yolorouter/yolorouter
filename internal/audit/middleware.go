@@ -42,6 +42,53 @@ func DetailFrom(c *gin.Context) string {
 	return ""
 }
 
+// ExplicitEvent is the explicit-event layer's contribution to the row the
+// middleware writes at request exit: a finer-grained action than the route
+// shape can express, a status the HTTP outcome cannot carry, and the
+// (already redacted) detail document. Parking an event MERGES into the
+// automatic layer's row — one request still produces exactly one record,
+// now speaking the service's language instead of the router's.
+//
+// Zero fields keep their middleware-derived values: an event carrying only
+// a Detail behaves exactly like SetDetail, an event with an Action but no
+// Status keeps the outcome-derived status.
+type ExplicitEvent struct {
+	// Action replaces the route-derived action ("auth.login" becomes
+	// "auth.login_denied"). ResourceType is recomputed from the override's
+	// namespace; ResourceID keeps the path-derived value.
+	Action string
+	// Status optionally pins the row's status. The login outcomes use it to
+	// fix "denied" by contract rather than by inference from whatever
+	// envelope shape carries the refusal. Empty keeps the classification.
+	// A panic always wins over this override — a stack unwind is an error
+	// no matter what the handler had already concluded.
+	Status string
+	// Detail is the event's (already redacted) JSON document. It takes
+	// precedence over a plain SetDetail in the same request: the explicit
+	// event is the semantically richer document.
+	Detail string
+}
+
+// explicitEventKey is the gin-context seat carrying the merged event.
+const explicitEventKey = "audit.explicit_event"
+
+// SetExplicitEvent parks the explicit event for the request in flight. The
+// middleware reads it once, at request exit, in buildRecord.
+func SetExplicitEvent(c *gin.Context, ev ExplicitEvent) {
+	c.Set(explicitEventKey, ev)
+}
+
+// ExplicitEventFrom reads the parked event, if any. Exported so tests can
+// drive the merge seat without stringly-typed context access.
+func ExplicitEventFrom(c *gin.Context) (ExplicitEvent, bool) {
+	v, ok := c.Get(explicitEventKey)
+	if !ok {
+		return ExplicitEvent{}, false
+	}
+	ev, ok := v.(ExplicitEvent)
+	return ev, ok
+}
+
 // userAgentCap bounds the stored User-Agent. Console traffic sends
 // browser UA strings well under this; a cap exists so a hostile client
 // cannot turn the audit table into blob storage. Truncation is at the
@@ -124,6 +171,27 @@ func buildRecord(c *gin.Context, db *gorm.DB, panicked bool) Record {
 		RequestID:    requestID(c),
 	}
 
+	// Merge the explicit event, if the request raised one. Action and
+	// detail carry the service's semantics; the status override yields to
+	// a panic (a request that never finished has no outcome to pin).
+	if ev, ok := ExplicitEventFrom(c); ok {
+		if ev.Action != "" {
+			rec.Action = ev.Action
+			rec.ResourceType = actionNamespace(ev.Action)
+		}
+		if ev.Status != "" && !panicked {
+			rec.Status = ev.Status
+		}
+		if ev.Detail != "" {
+			rec.Detail = ev.Detail
+		}
+	}
+	// Last gate before the row exists: every detail document passes the
+	// redaction pipeline again here, whatever its origin. Callers are
+	// contractually expected to redact before parking (RedactDetail), and
+	// this second pass is what turns that convention into a guarantee.
+	rec.Detail = sanitizeDetail(rec.Detail)
+
 	// Identity: whatever the session middleware resolved during the
 	// request. Absent for the public auth endpoints (no session exists
 	// yet) and for unauthenticated probes — those rows keep a NULL
@@ -186,4 +254,21 @@ func truncate(s string, limit int) string {
 		return s
 	}
 	return s[:limit]
+}
+
+// sanitizeDetail is the redaction pipeline's enforcement point at the
+// capture boundary: whatever detail reached the row gets one more pass
+// through RedactJSON before it is submitted. A document that cannot even
+// be parsed is dropped rather than stored — an unverifiable blob is
+// exactly the shape a leaked secret would hide in, and losing one detail
+// column costs far less than losing the guarantee.
+func sanitizeDetail(doc string) string {
+	if doc == "" {
+		return ""
+	}
+	out, err := RedactJSON(doc)
+	if err != nil {
+		return ""
+	}
+	return out
 }

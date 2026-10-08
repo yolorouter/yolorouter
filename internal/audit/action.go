@@ -37,7 +37,7 @@ var actionByRoute = map[string]string{
 	// Public auth group (no session yet): first-run setup, local login,
 	// and the OAuth state issuance the login page drives.
 	"POST /api/admin/auth/setup":       "auth.setup",
-	"POST /api/admin/auth/login":       "auth.login",
+	"POST /api/admin/auth/login":       ActionLogin,
 	"POST /api/admin/auth/oauth/state": "auth.oauth_state",
 
 	// Session-only group: any signed-in account may end its own session
@@ -111,6 +111,28 @@ var actionByRoute = map[string]string{
 	// One-click self-update.
 	"POST /api/admin/system/update": "system.update",
 }
+
+// Outcome-level auth actions. Unlike every name in the dictionary these
+// describe how a login attempt ENDED, not which route served it, so they
+// can never be route keys: the login endpoint is one route whose failures
+// the security audit needs to tell apart. The authentication flow's
+// explicit-event layer swaps the route-derived "auth.login" for one of
+// these at request exit (see ExplicitEvent), with the status pinned to
+// denied — a refused attempt is a denial whatever envelope shape carries
+// the refusal.
+const (
+	// ActionLogin names the login route's successful outcome — the one
+	// auth outcome the route shape alone expresses, which is why it is
+	// also the dictionary's name for the route.
+	ActionLogin = "auth.login"
+	// ActionLoginDenied marks credentials the account rejected: unknown
+	// username, wrong password, or a non-local username — deliberately
+	// indistinguishable, exactly like the response itself.
+	ActionLoginDenied = "auth.login_denied"
+	// ActionLoginLocked marks an attempt against an account the lockout
+	// state machine had already frozen.
+	ActionLoginLocked = "auth.login_locked"
+)
 
 // actionKey builds the dictionary key for a matched route.
 func actionKey(method, pattern string) string {
