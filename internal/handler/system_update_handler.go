@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/selfupdate"
 	"github.com/yolorouter/yolorouter/pkg/database"
@@ -136,6 +137,7 @@ func PostSystemUpdate(updateMode string, precheck UpdatePrecheck, apply UpdateAp
 			// The badge said an update existed but the release moved on (or a
 			// concurrent update already applied it). Nothing was changed; no
 			// restart.
+			audit.Event(c, "", "", updateTargetDetail(res.Target))
 			response.Success(c, gin.H{
 				"status": "up_to_date",
 				"target": res.Target,
@@ -144,12 +146,30 @@ func PostSystemUpdate(updateMode string, precheck UpdatePrecheck, apply UpdateAp
 		}
 
 		gate.Store(updateApplied)
+		audit.Event(c, "", "", updateTargetDetail(res.Target))
 		response.Success(c, gin.H{
 			"status": "updated",
 			"target": res.Target,
 		})
 		restart()
 	}
+}
+
+// updateTargetDetail builds the one-click update's audit detail: the
+// release this attempt resolved to, whether it was installed or found
+// already running. The audit row the automatic layer writes for the POST
+// is otherwise route-shaped ("a system update was requested") — the target
+// version is the fact only this handler knows, parked so the single row
+// carries it. Nothing but the version tag rides the document.
+func updateTargetDetail(target string) string {
+	detail, err := audit.RedactDetail(map[string]any{"target_version": target})
+	if err != nil {
+		// A map of one string cannot fail to marshal; an error here means
+		// the redaction pipeline refused the document, and an update row
+		// without the target beats no update row at all.
+		return ""
+	}
+	return detail
 }
 
 // updateUnsupportedMessage appends the mode-specific upgrade path to the

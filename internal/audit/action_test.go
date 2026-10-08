@@ -57,6 +57,10 @@ func TestDeriveFallbackAction(t *testing.T) {
 		// Nested routes still key off the first segment: the fallback is
 		// deliberately coarse — naming precision is the dictionary's job.
 		{http.MethodPost, "/api/admin/widgets/:id/parts", "widgets.create"},
+		// A read that reaches the derivation (an explicit event on a GET
+		// with no action of its own) degrades honestly to ".read", never
+		// to a write verb.
+		{http.MethodGet, "/api/admin/widgets", "widgets.read"},
 		// Degraded path: nothing derivable still yields a non-empty action.
 		{http.MethodPost, "/api/admin", "admin.write"},
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,10 @@ import (
 	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
+	"github.com/yolorouter/yolorouter/internal/service/apikey"
 	"github.com/yolorouter/yolorouter/internal/service/auth"
+	"github.com/yolorouter/yolorouter/internal/testutil"
+	"github.com/yolorouter/yolorouter/pkg/crypto"
 )
 
 // doBody fires one request with an explicit body and cookie (nil cookie =
@@ -152,6 +156,98 @@ func TestAdminAuditLoginThreeBranches(t *testing.T) {
 	// Zero-plaintext reverse assertion: every password that crossed the
 	// wire must be absent from every stored column.
 	assertRowsCarryNoPlaintext(t, rows, davePass, erinPass, wrongPass)
+}
+
+// TestAdminAuditSensitiveReadRevealIsAuditedAndOtherReadsSilent is the
+// sensitive-read boundary (TC-11) as an enumeration, not a promise: the
+// one enumerated sensitive read — GET /api-keys/:id/plaintext — must land
+// its api_key.reveal row, while EVERY other admin GET, enumerated from
+// the live router so a future GET cannot ship outside the assertion,
+// adds nothing. The reveal runs against a real key created through the
+// same service and master key the router wires, so the decryption
+// genuinely succeeds and the event genuinely parks; the admin session is
+// unscoped, exactly the reach-into-any-key case the design names as the
+// subject worth remembering.
+func TestAdminAuditSensitiveReadRevealIsAuditedAndOtherReadsSilent(t *testing.T) {
+	f := newAuditFixture(t)
+
+	// A caller key created through the service the router itself wires
+	// (same master key), so the reveal decrypts for real.
+	keySvc := apikey.NewAPIKeyService(f.db, crypto.NewSecretBox(testutil.ProviderMasterKey()))
+	created, err := keySvc.CreateAPIKey(apikey.CreateAPIKeyInput{UserID: f.adminID, AllowAllModels: true}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("seed caller key: %v", err)
+	}
+	idStr := strconv.FormatUint(uint64(created.APIKey.ID), 10)
+	revealKey := "GET /api/admin/api-keys/:id/plaintext"
+
+	// Enumerate the live admin GET surface; the reveal route must be on
+	// it — a wiring regression that drops the route fails loudly here
+	// instead of quietly passing the zero-noise half of the test.
+	liveReads := map[string]bool{}
+	for _, ri := range f.r.Routes() {
+		if ri.Method != http.MethodGet || !strings.HasPrefix(ri.Path, "/api/admin") {
+			continue
+		}
+		liveReads[ri.Method+" "+ri.Path] = true
+	}
+	if !liveReads[revealKey] {
+		t.Fatalf("the audited sensitive read %s is not registered on the live router", revealKey)
+	}
+	if len(liveReads) < 2 {
+		t.Fatalf("expected a realistic admin GET surface to sweep, got %d routes", len(liveReads))
+	}
+
+	// Fire every admin GET with the admin session. Path parameters get
+	// concrete values — :id resolves to the seeded key so the reveal
+	// succeeds; the others just need to route.
+	revealHeader := ""
+	for key := range liveReads {
+		_, pattern := splitRouteKey(key)
+		concrete := strings.NewReplacer(":requestId", "req-tc11", ":sessionId", "sess-tc11", ":id", idStr).Replace(pattern)
+		w := f.doWith(t, http.MethodGet, concrete, f.adminCk)
+		if key == revealKey {
+			if w.Code != http.StatusOK {
+				t.Fatalf("the reveal must succeed against the seeded key, got %d: %s", w.Code, w.Body.String())
+			}
+			revealHeader = w.Header().Get("X-Request-Id")
+		}
+	}
+	if revealHeader == "" {
+		t.Fatal("the reveal response carried no X-Request-Id")
+	}
+
+	// Positive half: every fired GET together leaves exactly one row, and
+	// it is the reveal's — reconciled by request id, naming the revealed
+	// key, carrying the acting admin's identity snapshot.
+	rows := f.drain(t)
+	if len(rows) != 1 {
+		t.Fatalf("%d admin GETs (incl. the reveal) must leave exactly 1 audit row — the reveal alone — got %d", len(liveReads), len(rows))
+	}
+	row := rows[0]
+	if row.Action != audit.ActionAPIKeyReveal {
+		t.Errorf("action = %q, want %q", row.Action, audit.ActionAPIKeyReveal)
+	}
+	if row.ResourceType != "api_key" {
+		t.Errorf("resource type = %q, want api_key", row.ResourceType)
+	}
+	if row.ResourceID != idStr {
+		t.Errorf("resource id = %q, want the revealed key %s", row.ResourceID, idStr)
+	}
+	if row.Status != model.AuditStatusSuccess {
+		t.Errorf("status = %q, want success", row.Status)
+	}
+	if row.RequestID != revealHeader {
+		t.Errorf("request id = %q, want the reveal response's %q", row.RequestID, revealHeader)
+	}
+	if row.AdminUserID == nil || *row.AdminUserID != f.adminID || row.AdminUsername != "boss" {
+		t.Errorf("identity = id:%v name:%q, want the acting admin %d boss", row.AdminUserID, row.AdminUsername, f.adminID)
+	}
+	// Negative half, restated: the count above is the zero-noise
+	// assertion — every GET that is not the reveal produced no row. And
+	// the plaintext that crossed the wire never reached any stored
+	// column: the reveal row names the key, it does not quote it.
+	assertRowsCarryNoPlaintext(t, rows, created.PlaintextKey)
 }
 
 // TestAdminAuditMemberDeniedOnAdminWrite is the denied contract: a member

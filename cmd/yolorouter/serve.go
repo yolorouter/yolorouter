@@ -18,6 +18,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
 	"github.com/yolorouter/yolorouter/internal/keyrecovery"
+	"github.com/yolorouter/yolorouter/internal/keysuffixbackfill"
 	"github.com/yolorouter/yolorouter/internal/pricecatalog"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/retention"
@@ -449,6 +450,35 @@ func runServe(ctx context.Context, args []string) error {
 	defer func() {
 		backfillCancel()
 		stopBackfill()
+	}()
+
+	// The provider key-suffix backfill: one idempotent background pass over
+	// the provider_keys history, started at boot and self-exiting when
+	// done. Rows stored before the key_suffix column existed still carry
+	// the empty not-yet-derived marker, and the pass decrypts each one
+	// in-process and fills the plaintext's last four characters — derived
+	// by the exact rule the insert path uses, so backfilled and fresh
+	// columns can never disagree. The plaintext's whole journey is
+	// ciphertext -> memory -> four display characters: it never reaches a
+	// log line or any other persistence. Rounds are small with a pause
+	// between them (each row is an AES-GCM decryption); whatever the pass
+	// cannot derive stays empty, and the next startup's pass rescans
+	// exactly that residue. Started here, after the migration added the
+	// column and the master-key fingerprint check validated the key, for
+	// the same reason the loops above wait: a pass against an unmigrated
+	// schema or a wrong master key would only fail its first query or
+	// derive nothing. Runs on a context derived from serve's own ctx and is
+	// awaited by a deferred cancel + stop so the goroutine exits before the
+	// process does.
+	keySuffixBackfill := keysuffixbackfill.NewTask(keysuffixbackfill.Config{
+		DB:      app.DB,
+		Secrets: crypto.NewSecretBox(masterKey),
+	})
+	keySuffixCtx, keySuffixCancel := context.WithCancel(ctx)
+	stopKeySuffixBackfill := keySuffixBackfill.Start(keySuffixCtx)
+	defer func() {
+		keySuffixCancel()
+		stopKeySuffixBackfill()
 	}()
 
 	serveErrCh := make(chan error, 1)

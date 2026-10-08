@@ -132,6 +132,13 @@ const (
 	// ActionLoginLocked marks an attempt against an account the lockout
 	// state machine had already frozen.
 	ActionLoginLocked = "auth.login_locked"
+	// ActionAPIKeyReveal names the audited sensitive read: the scoped GET
+	// that returns a caller API key's full plaintext. Reads never reach
+	// the automatic layer's method filter; the reveal endpoint parks this
+	// event so the one enumerated sensitive read leaves its trace — an
+	// admin's unscoped reach into any key is exactly the access the audit
+	// trail exists to remember.
+	ActionAPIKeyReveal = "api_key.reveal"
 )
 
 // actionKey builds the dictionary key for a matched route.
@@ -149,13 +156,15 @@ func KnownAction(method, pattern string) bool {
 	return ok
 }
 
-// fallbackVerb maps an HTTP write method to the generic verb used when a
-// route is not in the dictionary. PUT and PATCH both read as "update" —
-// the distinction is a wire habit, not a business fact, and the audit
-// trail should not invent a difference the endpoints themselves do not
-// carry. Methods that reach this table are writes by construction (the
-// middleware filters first), so the empty return is unreachable in
-// production and exists only so the derivation stays total.
+// fallbackVerb maps an HTTP method to the generic verb used when a route
+// is not in the dictionary. PUT and PATCH both read as "update" — the
+// distinction is a wire habit, not a business fact, and the audit trail
+// should not invent a difference the endpoints themselves do not carry.
+// GET maps to "read" so a read that raised an explicit event without an
+// action of its own degrades to an honest "<resource>.read" instead of a
+// nonsensical write name; reads only ever reach a row through that
+// explicit-event door, never from the route shape alone. The empty
+// return stays as the derivation's total-guard.
 func fallbackVerb(method string) string {
 	switch method {
 	case http.MethodPost:
@@ -164,6 +173,8 @@ func fallbackVerb(method string) string {
 		return "update"
 	case http.MethodDelete:
 		return "delete"
+	case http.MethodGet:
+		return "read"
 	default:
 		return ""
 	}
@@ -185,7 +196,7 @@ func fallbackResource(pattern string) string {
 }
 
 // DeriveFallbackAction composes the fallback action name
-// ("<resource>.<verb>") for a write route the dictionary does not name.
+// ("<resource>.<verb>") for a route the dictionary does not name.
 // Future endpoints get audited with this shape on day one, before anyone
 // gives them a dictionary entry; when both halves cannot be derived the
 // result is "admin.write" — an honest "unnamed console write" rather than

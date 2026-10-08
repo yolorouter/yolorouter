@@ -261,7 +261,7 @@ func CreateProviderKeyPendingTest(db *gorm.DB, key *model.ProviderKey, now time.
 // after an address change — creation is handled entirely by
 // CreateProviderKeyPendingTest instead, which has no prior row to race
 // against) in a SINGLE transaction: label, test_model, the new
-// encrypted_key/key_prefix, management_status (the caller always passes
+// encrypted_key/key_prefix/key_suffix, management_status (the caller always passes
 // disabled here — the service layer decides the real final status only
 // after the out-of-transaction network test completes), config_version+1,
 // verification_status forced to untested, and a claimed test_generation —
@@ -277,7 +277,7 @@ func CreateProviderKeyPendingTest(db *gorm.DB, key *model.ProviderKey, now time.
 // key transiently or permanently inherit the previous secret's "passed"
 // status. Folding every column into one UPDATE removes that window
 // entirely: the row is either fully old or fully new, never in between.
-func SwapProviderKeyPlaintext(db *gorm.DB, keyID uint, label, testModel, encryptedKey, keyPrefix string, managementStatus int, now time.Time) (configVersion, testGeneration, snapshotVersion int, err error) {
+func SwapProviderKeyPlaintext(db *gorm.DB, keyID uint, label, testModel, encryptedKey, keyPrefix, keySuffix string, managementStatus int, now time.Time) (configVersion, testGeneration, snapshotVersion int, err error) {
 	err = db.Transaction(func(tx *gorm.DB) error {
 		var key model.ProviderKey
 		if fetchErr := tx.Select("provider_id").Where("id = ?", keyID).First(&key).Error; fetchErr != nil {
@@ -295,14 +295,14 @@ func SwapProviderKeyPlaintext(db *gorm.DB, keyID uint, label, testModel, encrypt
 		}
 		updateErr := tx.Raw(`
 			UPDATE provider_keys
-			SET label = ?, test_model = ?, encrypted_key = ?, key_prefix = ?,
+			SET label = ?, test_model = ?, encrypted_key = ?, key_prefix = ?, key_suffix = ?,
 			    management_status = ?, verification_status = ?,
 			    config_version = config_version + 1,
 			    test_generation = test_generation + 1,
 			    updated_at = ?
 			WHERE id = ?
 			RETURNING config_version, test_generation
-		`, label, testModel, encryptedKey, keyPrefix, managementStatus, model.VerificationStatusUntested, now, keyID).
+		`, label, testModel, encryptedKey, keyPrefix, keySuffix, managementStatus, model.VerificationStatusUntested, now, keyID).
 			Scan(&result).Error
 		if updateErr != nil {
 			return updateErr

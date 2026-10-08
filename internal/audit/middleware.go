@@ -55,8 +55,16 @@ func DetailFrom(c *gin.Context) string {
 type ExplicitEvent struct {
 	// Action replaces the route-derived action ("auth.login" becomes
 	// "auth.login_denied"). ResourceType is recomputed from the override's
-	// namespace; ResourceID keeps the path-derived value.
+	// namespace; ResourceID keeps the path-derived value unless this event
+	// carries its own (see ResourceID).
 	Action string
+	// ResourceID optionally replaces the path-derived resource id. The
+	// path usually identifies the subject already (the settings routes
+	// carry their slug as the final segment); an event overrides it only
+	// when the audited subject is not a path parameter at all — a reveal
+	// names the exact key it exposed, an update names the release it
+	// installed. Empty keeps the path-derived value.
+	ResourceID string
 	// Status optionally pins the row's status. The login outcomes use it to
 	// fix "denied" by contract rather than by inference from whatever
 	// envelope shape carries the refusal. Empty keeps the classification.
@@ -99,8 +107,9 @@ const userAgentCap = 512
 // isWriteMethod filters what the automatic layer captures: every HTTP
 // method that mutates. Reads are deliberately excluded — an audit trail
 // of every console GET would bury the mutations it exists to record. The
-// sensitive-read exceptions (key reveal) are explicit events, not
-// middleware captures.
+// sensitive-read exceptions (key reveal) ride the explicit-event layer:
+// the read path above lands a row only for a request that raised an
+// explicit event, never from the route shape alone.
 func isWriteMethod(method string) bool {
 	switch method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
@@ -129,6 +138,25 @@ func isWriteMethod(method string) bool {
 func Middleware(db *gorm.DB, worker *Worker) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !isWriteMethod(c.Request.Method) {
+			// Reads stay outside the automatic capture, with exactly one
+			// door: a request that raised an explicit event at exit lands
+			// that event's row. The sensitive reads (key reveal) are
+			// audited through this door — an enumerated exception — while
+			// every other console GET stays silent. Checking the seat at
+			// exit, after the whole chain ran, is what keeps the door
+			// narrow: a handler that refused, failed, or never reached its
+			// auditable moment parks nothing, and its read costs no row.
+			// The panic handling mirrors the write path below: the event
+			// is classified as an error and the panic re-thrown untouched.
+			defer func() {
+				r := recover()
+				if _, ok := ExplicitEventFrom(c); ok {
+					worker.Submit(buildRecord(c, db, r != nil))
+				}
+				if r != nil {
+					panic(r)
+				}
+			}()
 			c.Next()
 			return
 		}
@@ -178,6 +206,9 @@ func buildRecord(c *gin.Context, db *gorm.DB, panicked bool) Record {
 		if ev.Action != "" {
 			rec.Action = ev.Action
 			rec.ResourceType = actionNamespace(ev.Action)
+		}
+		if ev.ResourceID != "" {
+			rec.ResourceID = ev.ResourceID
 		}
 		if ev.Status != "" && !panicked {
 			rec.Status = ev.Status

@@ -82,15 +82,20 @@ type Provider struct {
 func (Provider) TableName() string { return "providers" }
 
 // ProviderKey is one upstream API key belonging to a Provider's key pool.
-// EncryptedKey is never serialized; KeyPrefix is the only
-// display-safe representation of the plaintext.
+// EncryptedKey is never serialized; KeyPrefix and KeySuffix (first/last
+// few characters of the plaintext) are the display-safe representations.
 type ProviderKey struct {
 	ID           uint   `gorm:"column:id;primaryKey" json:"id"`
 	ProviderID   uint   `gorm:"column:provider_id" json:"provider_id"`
 	Label        string `gorm:"column:label" json:"label"`
 	EncryptedKey string `gorm:"column:encrypted_key" json:"-"`
 	KeyPrefix    string `gorm:"column:key_prefix" json:"key_prefix"`
-	SortOrder    int    `gorm:"column:sort_order" json:"sort_order"`
+	// KeySuffix is the plaintext's last four characters. Rows written
+	// before the column existed carry '' until the startup backfill pass
+	// derives it — an empty suffix is "not yet derived", never "key has
+	// none".
+	KeySuffix string `gorm:"column:key_suffix" json:"key_suffix"`
+	SortOrder int    `gorm:"column:sort_order" json:"sort_order"`
 	// TestModel is the model name every test call for this key uses
 	// (there is no real model mapping yet, so the admin
 	// supplies a temporary test model per key).

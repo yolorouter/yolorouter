@@ -194,9 +194,14 @@ type UpdateProviderInput struct {
 }
 
 type ProviderKeyView struct {
-	ID                 uint       `json:"id"`
-	Label              string     `json:"label"`
-	KeyPrefix          string     `json:"key_prefix"`
+	ID        uint   `json:"id"`
+	Label     string `json:"label"`
+	KeyPrefix string `json:"key_prefix"`
+	// KeySuffix completes the display pair: prefix says which key family,
+	// suffix tells near-identical keys apart. '' on rows the startup
+	// backfill has not derived yet (pre-column legacy rows) — the console
+	// renders prefix-only for those, never a blank column error.
+	KeySuffix          string     `json:"key_suffix"`
 	SortOrder          int        `json:"sort_order"`
 	TestModel          string     `json:"test_model"`
 	ManagementStatus   int        `json:"management_status"`
@@ -229,7 +234,7 @@ type ProviderView struct {
 
 func toKeyView(k model.ProviderKey, destinationVersion int) ProviderKeyView {
 	return ProviderKeyView{
-		ID: k.ID, Label: k.Label, KeyPrefix: k.KeyPrefix, SortOrder: k.SortOrder, TestModel: k.TestModel,
+		ID: k.ID, Label: k.Label, KeyPrefix: k.KeyPrefix, KeySuffix: k.KeySuffix, SortOrder: k.SortOrder, TestModel: k.TestModel,
 		ManagementStatus: k.ManagementStatus, VerificationStatus: k.VerificationStatus,
 		NeedsReentry:       k.AuthorizedDestinationVersion != destinationVersion,
 		LastTestResult:     k.LastTestResult,
@@ -290,6 +295,32 @@ func keyPrefixFor(plaintext string) string {
 		n = keyPrefixMaxExposed
 	}
 	return string(runes[:n])
+}
+
+// keySuffixExposed is how many trailing characters KeySuffixFor stores in
+// plaintext — the column this derives for is display metadata (telling
+// near-identical keys apart), and four trailing characters of a credential
+// whose accept-time minimum is far longer reveals nothing an attacker can
+// work with, the same reasoning that already exposes up to ten leading
+// ones.
+const keySuffixExposed = 4
+
+// KeySuffixFor computes the key_suffix: the last keySuffixExposed
+// characters of the plaintext, or nothing for a key so short that the
+// suffix would span (nearly) all of it — a suffix must never become a
+// second copy of the whole secret. Exported because the startup backfill
+// pass derives legacy rows' suffixes through the exact same rule the
+// insert path uses, so a backfilled column can never disagree with a
+// freshly written one.
+func KeySuffixFor(plaintext string) string {
+	// Rune-sliced for the same reason keyPrefixFor is: a byte-sliced
+	// suffix could split a multi-byte character and round-trip through
+	// JSON as U+FFFD.
+	runes := []rune(plaintext)
+	if len(runes) <= keySuffixExposed {
+		return ""
+	}
+	return string(runes[len(runes)-keySuffixExposed:])
 }
 
 func (s *ProviderService) ListProviders() ([]ProviderView, error) {
@@ -374,7 +405,7 @@ func (s *ProviderService) CreateProvider(ctx context.Context, input CreateProvid
 		CreatedAt: now, UpdatedAt: now,
 	}
 	key := &model.ProviderKey{
-		Label: input.KeyLabel, EncryptedKey: encryptedKey, KeyPrefix: keyPrefixFor(input.KeyPlaintext), TestModel: input.TestModel,
+		Label: input.KeyLabel, EncryptedKey: encryptedKey, KeyPrefix: keyPrefixFor(input.KeyPlaintext), KeySuffix: KeySuffixFor(input.KeyPlaintext), TestModel: input.TestModel,
 		SortOrder: 1, ManagementStatus: model.ProviderKeyStatusDisabled,
 		VerificationStatus:           model.VerificationStatusUntested,
 		AuthorizedDestinationVersion: 1, ConfigVersion: 1, TestGeneration: 1,
@@ -609,7 +640,7 @@ func (s *ProviderService) CreateProviderKey(ctx context.Context, providerID uint
 		}
 		key = &model.ProviderKey{
 			ProviderID: providerID, Label: input.Label, EncryptedKey: encryptedKey, KeyPrefix: keyPrefixFor(input.Plaintext),
-			TestModel: input.TestModel,
+			KeySuffix: KeySuffixFor(input.Plaintext), TestModel: input.TestModel,
 			SortOrder: nextOrder, ManagementStatus: model.ProviderKeyStatusDisabled,
 			VerificationStatus: model.VerificationStatusUntested,
 			CreatedAt:          now, UpdatedAt: now,
@@ -885,9 +916,6 @@ func classifyTestResult(result providerclient.TestResult) (verificationStatus in
 	}
 }
 
-// UpdateProviderKey handles both the label/status-only path (no plaintext
-// change — "retest" CAS if a retest is also requested) and the new-plaintext
-// path (PATCH .../keys/:keyId).
 // verifyKeyEnableAllowed enforces the rule that a
 // key can only be enabled if it has actually passed verification against
 // the CURRENT destination — shared by every entry point that can request
@@ -936,6 +964,9 @@ func (s *ProviderService) findKeyForProvider(providerID, keyID uint) (*model.Pro
 	return key, nil
 }
 
+// UpdateProviderKey handles both the label/status-only path (no plaintext
+// change — "retest" CAS if a retest is also requested) and the new-plaintext
+// path (PATCH .../keys/:keyId).
 func (s *ProviderService) UpdateProviderKey(ctx context.Context, providerID, keyID uint, input UpdateKeyInput, now time.Time) (*ProviderKeyView, error) {
 	key, err := s.findKeyForProvider(providerID, keyID)
 	if err != nil {
@@ -1017,7 +1048,7 @@ func (s *ProviderService) UpdateProviderKey(ctx context.Context, providerID, key
 	}
 
 	// SwapProviderKeyPlaintext atomically writes label + test_model +
-	// encrypted_key + key_prefix + management_status(disabled) +
+	// encrypted_key + key_prefix + key_suffix + management_status(disabled) +
 	// config_version bump + verification_status reset + test_generation
 	// claim in ONE transaction (the previous version split this across
 	// 3 separate statements —
@@ -1027,7 +1058,7 @@ func (s *ProviderService) UpdateProviderKey(ctx context.Context, providerID, key
 	// observe new ciphertext still paired with the OLD credential's
 	// config_version/verification_status).
 	configVersion, testGeneration, snapshotVersion, err := repository.SwapProviderKeyPlaintext(s.db, keyID,
-		input.Label, input.TestModel, encryptedKey, keyPrefixFor(*input.Plaintext), model.ProviderKeyStatusDisabled, now)
+		input.Label, input.TestModel, encryptedKey, keyPrefixFor(*input.Plaintext), KeySuffixFor(*input.Plaintext), model.ProviderKeyStatusDisabled, now)
 	if err != nil {
 		if repository.IsUniqueViolation(err) {
 			return nil, errcode.ErrProviderKeyLabelTaken
