@@ -15,9 +15,12 @@
      This is the shell: columns render per-column terminal results. The
      text modality streams its answers chunk by chunk; the image modality
      runs text-to-image columns that answer once (rendered as image cards,
-     with the truncation note when the channel cut an over-cap answer).
-     The audio and video tabs stay visible but disabled until their
-     dialects arrive. -->
+     with the truncation note when the channel cut an over-cap answer);
+     the audio modality runs text-to-speech columns whose voices are the
+     run's one per-column parameter (each column's dropdown offers only
+     its own model's vendors' voices) and whose answers render as audio
+     players fed by the console's owner-pinned playback route. The video
+     tab stays visible but disabled until its dialect arrives. -->
 <template>
   <div class="common-page">
     <PageHeader
@@ -30,13 +33,14 @@
     <section class="pg-card pg-control">
       <!-- The modality tab filters the model picker to the models that
            serve that modality and swaps the parameter row to the axes that
-           modality's dialect declares. Text and image are selectable;
-           audio and video stay disabled placeholders rather than omitted,
-           so the page's shape is stable while their dialects land. -->
+           modality's dialect declares. Text, image and audio are
+           selectable; video stays a disabled placeholder rather than
+           omitted, so the page's shape is stable until its dialect
+           lands. -->
       <NTabs :value="modality" type="line" size="small" class="pg-modality-tabs" @update:value="onModalityUpdate">
         <NTabPane name="text" :tab="t('models.outputModalityText')" />
         <NTabPane name="image" :tab="t('models.outputModalityImage')" />
-        <NTabPane name="audio" :tab="t('models.outputModalityAudio')" disabled />
+        <NTabPane name="audio" :tab="t('models.outputModalityAudio')" />
         <NTabPane name="video" :tab="t('models.outputModalityVideo')" disabled />
       </NTabs>
 
@@ -107,8 +111,11 @@
         <!-- The shared parameter row: whatever is set here is applied to
              EVERY selected column of the run — a comparison varies the
              model, not the sampling. Only parameters the gateway dialects
-             actually declare are exposed: the text family below, or the
-             image family's two axes (size and count). -->
+             actually declare are exposed: the text family below, the
+             image family's two axes (size and count), or the audio
+             family's one axis (the response format). The VOICE is not
+             here by design — it is the run's one per-column exception,
+             and each column gets its own control below. -->
         <div v-if="modality === 'text'" class="pg-params">
           <NFormItem>
             <template #label>
@@ -147,6 +154,38 @@
               <HelpLabel :tip="t('playground.imageCount_tip')">{{ t('playground.imageCount') }}</HelpLabel>
             </template>
             <NInputNumber v-model:value="imageCount" class="pg-param-number" :min="1" :max="10" :precision="0" data-testid="pg-image-count" />
+          </NFormItem>
+        </div>
+        <div v-else-if="modality === 'audio'" class="pg-params" data-testid="pg-audio-params">
+          <NFormItem>
+            <template #label>
+              <HelpLabel :tip="t('playground.audioFormat_tip')">{{ t('playground.audioFormat') }}</HelpLabel>
+            </template>
+            <NSelect v-model:value="audioFormat" class="pg-audio-format" clearable :options="audioFormatOptions" data-testid="pg-audio-format" />
+          </NFormItem>
+        </div>
+
+        <!-- The speech run's per-column voices — the ONE parameter that
+             is not shared. A voice is a vendor-private id: sending one
+             shared value would 400 every column of a mixed-vendor
+             comparison, so each selected model gets its own control
+             offering only that model's vendors' voices (taggable — a
+             vendor's cloned voice id is legal and unlisted, and the
+             upstream's own 400 is the only legality verdict). -->
+        <div v-if="modality === 'audio' && selectedModels.length > 0" class="pg-voices" data-testid="pg-voices">
+          <NFormItem v-for="name in selectedModels" :key="name">
+            <template #label>
+              <HelpLabel :tip="t('playground.voice_tip')">{{ t('playground.voiceLabel') }} · {{ name }}</HelpLabel>
+            </template>
+            <NSelect
+              :value="voiceOf(name)"
+              class="pg-voice-select"
+              filterable
+              tag
+              :options="voiceOptionsFor(name)"
+              :data-testid="`pg-voice-${name}`"
+              @update:value="(v: string) => setVoice(name, v)"
+            />
           </NFormItem>
         </div>
 
@@ -192,6 +231,13 @@
               <img :src="img.src" :alt="img.alt" class="pg-image" data-testid="pg-image-card" />
             </a>
           </div>
+          <!-- A finished speech column plays its delivered clip: the done
+               event's reference points at the console's owner-pinned
+               playback URL, and the native audio element streams it
+               same-origin with the session cookie. -->
+          <div v-else-if="col.state === 'done' && col.audio" class="pg-audio" data-testid="pg-audio-player">
+            <audio controls :src="col.audio.url" :type="col.audio.content_type" preload="none" />
+          </div>
           <div
             v-else-if="col.state === 'done' && col.responseTruncated"
             class="pg-column__truncated"
@@ -215,7 +261,10 @@
             <div class="pg-metric">
               <dt>{{ t('playground.usageLabel') }}</dt>
               <dd>
-                <template v-if="(col.usage?.images ?? 0) > 0">
+                <template v-if="(col.usage?.characters ?? 0) > 0">
+                  {{ t('playground.usageCharacters', { count: col.usage?.characters ?? 0 }) }}
+                </template>
+                <template v-else-if="(col.usage?.images ?? 0) > 0">
                   {{ t('playground.usageImages', { count: col.usage?.images ?? 0 }) }}
                 </template>
                 <template v-else>
@@ -312,6 +361,34 @@ const imageSizeOptions = ['512x512', '768x768', '1024x1024', '1024x1536', '1536x
   value: s,
 }))
 
+// The audio modality's shared axis — the response format, in the speech
+// dialect's own canonical vocabulary. Unset (cleared) leaves each
+// column's dialect default in force, which is the safest shared value
+// across a mixed selection (each vendor's default is one it serves).
+const audioFormat = ref<string | null>(null)
+const audioFormatOptions = ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'].map((f) => ({ label: f, value: f }))
+
+// The speech run's per-column voices: model name → the voice picked for
+// that column. The picker row carries each model's vendors' preset
+// vocabulary; a column with no listed presets still accepts a custom id
+// (cloned voices are legal and unlisted). The first preset is the default
+// so an immediate run never trips the voice gate.
+const voicesByModel = ref<Record<string, string>>({})
+function modelByName(name: string): PlaygroundModelOption | undefined {
+  return models.value.find((m) => m.name === name)
+}
+function voiceOptionsFor(name: string): Array<{ label: string; value: string }> {
+  return (modelByName(name)?.voices ?? []).map((v) => ({ label: v, value: v }))
+}
+function voiceOf(name: string): string {
+  const picked = voicesByModel.value[name]
+  if (picked) return picked
+  return modelByName(name)?.voices?.[0] ?? ''
+}
+function setVoice(name: string, value: string) {
+  voicesByModel.value = { ...voicesByModel.value, [name]: value }
+}
+
 // The vision attachment of the next run: name for display, data URL for
 // the wire. Re-read on every pick, so a re-run can swap or drop it.
 interface AttachedImage {
@@ -362,6 +439,15 @@ function onModelsUpdate(value: string[]) {
     return
   }
   selectedModels.value = value
+  // Voice picks follow the selection: a deselected model's pick cannot
+  // reach the wire (the payload rebuilds the map from the current
+  // selection), and dropping it here keeps the control's own state
+  // honest for a later re-select.
+  const kept: Record<string, string> = {}
+  for (const name of value) {
+    if (voicesByModel.value[name]) kept[name] = voicesByModel.value[name]
+  }
+  voicesByModel.value = kept
 }
 
 // Switching the modality tab empties the selection: a model chosen under
@@ -372,6 +458,11 @@ function onModalityUpdate(name: string | number) {
   if (next === modality.value) return
   modality.value = next
   selectedModels.value = []
+  // Voice picks belong to speech models; leaving the tab drops them with
+  // the selection (a stale pick for a model that is no longer selected
+  // would ride along in the payload's map otherwise — harmless to the
+  // backend, but not the page's contract with itself).
+  voicesByModel.value = {}
 }
 
 // A finished media column's renderable images: the artifacts the delivered
@@ -475,6 +566,13 @@ async function onSend() {
     message.warning(t('playground.needPrompt'))
     return
   }
+  // A speech column without a voice cannot run (the dialect requires
+  // one); the page refuses up front rather than letting the endpoint 400
+  // the whole run.
+  if (modality.value === 'audio' && selectedModels.value.some((name) => !voiceOf(name))) {
+    message.warning(t('playground.needVoice'))
+    return
+  }
 
   // A (re)run starts from a fresh column set built from the CURRENT
   // selection — the previous run's columns are replaced, never appended
@@ -487,9 +585,11 @@ async function onSend() {
   runController = new AbortController()
   // The run's body is the active modality's own shape: a text run sends
   // the user turn (with its optional vision attachment) and the sampling
-  // family; an image run sends the prompt and the two image axes. The
-  // other family's controls are not merely ignored — they are not on the
-  // wire at all, which is what the upstream whitelist asserts.
+  // family; an image run sends the prompt and the two image axes; an
+  // audio run sends the prompt, the shared format, and one voice PER
+  // COLUMN. The other families' controls are not merely ignored — they
+  // are not on the wire at all, which is what the upstream whitelist
+  // asserts.
   const input =
     modality.value === 'image'
       ? {
@@ -502,17 +602,28 @@ async function onSend() {
             n: imageCount.value ?? undefined,
           },
         }
-      : {
-          key_id: keyId.value,
-          modality: 'text' as const,
-          models: runModels,
-          messages: [{ role: 'user' as const, content: userContent() }],
-          params: {
-            system: systemPrompt.value || undefined,
-            temperature: temperature.value ?? undefined,
-            max_tokens: maxTokens.value ?? undefined,
-          },
-        }
+      : modality.value === 'audio'
+        ? {
+            key_id: keyId.value,
+            modality: 'audio' as const,
+            models: runModels,
+            prompt: prompt.value,
+            voices: Object.fromEntries(runModels.map((name) => [name, voiceOf(name)])),
+            params: {
+              format: audioFormat.value || undefined,
+            },
+          }
+        : {
+            key_id: keyId.value,
+            modality: 'text' as const,
+            models: runModels,
+            messages: [{ role: 'user' as const, content: userContent() }],
+            params: {
+              system: systemPrompt.value || undefined,
+              temperature: temperature.value ?? undefined,
+              max_tokens: maxTokens.value ?? undefined,
+            },
+          }
   try {
     await runPlayground(input, applyEvent, { signal: runController.signal })
   } catch (err) {
@@ -645,6 +756,28 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 0 var(--space-5);
+}
+
+/* The speech run's per-column voice controls: one compact row per
+   selected model, each offering only that model's vendors' voices. */
+.pg-voices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.pg-voice-select {
+  max-width: 420px;
+}
+
+/* A finished speech column's player: the console playback URL in a
+   native audio element, full column width. */
+.pg-audio {
+  width: 100%;
+}
+
+.pg-audio audio {
+  width: 100%;
 }
 
 .pg-param-number {

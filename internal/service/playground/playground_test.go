@@ -41,7 +41,7 @@ func TestBuildChatBodyMarshalFailure(t *testing.T) {
 // catch.
 func TestColumnTapDrainsCRLFFrames(t *testing.T) {
 	var got []string
-	tap := newColumnTap(func(p string) { got = append(got, p) })
+	tap := newColumnTap(func(p string) { got = append(got, p) }, columnBodyCap)
 
 	// CRLF spelling: each complete frame's data payloads reach the sink as
 	// they land, non-data lines carrying nothing.

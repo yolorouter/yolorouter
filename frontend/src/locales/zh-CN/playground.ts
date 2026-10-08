@@ -24,6 +24,13 @@ export default {
   imageSize_tip: '图片请求的尺寸参数，统一应用于全部所选模型。预置常见规格；模型不支持的取值会被其上游拒绝。',
   imageCount: '张数',
   imageCount_tip: '每个所选模型生成的图片数量（1–10），按实际交付张数计费。',
+  audioFormat: '格式',
+  audioFormat_tip:
+    '语音响应格式，统一应用于全部所选模型。留空则按各厂商自己的默认格式；不服务于所选格式的厂商会以原生错误拒绝该列。',
+  voiceLabel: '音色',
+  voice_tip:
+    '按列独立：音色是厂商私有取值，每列只从本列模型所属厂商的音色中挑选。可输入自定义音色（如复刻音色 id）；厂商不认识的取值会被其上游拒绝。',
+  needVoice: '请先为每个所选模型选择音色',
   stop: '停止',
   columnStateStreaming: '流式中',
   columnStateCancelled: '已取消',
@@ -47,6 +54,7 @@ export default {
   usageLabel: '用量',
   usageTokens: '输入 {input} / 输出 {output}',
   usageImages: '交付 {count} 张',
+  usageCharacters: '{count} 字符',
   responseTruncated: '响应超出通道内联上限，已截断显示——完整内容见本列 ID 对应的请求日志。',
   errorTypeLabel: '类型',
   requestLabel: '请求日志 ID',

@@ -19,11 +19,16 @@ export interface PlaygroundKeyOption {
 /**
  * One row of the model picker: a routing name plus the output modalities
  * it declares. The picker filters this list client-side by the active
- * modality tab, so the declaration travels with the name.
+ * modality tab, so the declaration travels with the name. A speech model
+ * additionally carries `voices` — the preset vocabulary its vendors serve
+ * (the backend reads it off the speech dialect table), because the voice
+ * control is PER COLUMN: a voice is a vendor-private id, and each column's
+ * dropdown offers only the voices its own model's vendors know.
  */
 export interface PlaygroundModelOption {
   name: string
   output_modalities: string[]
+  voices?: string[]
 }
 
 // The key list is pinned to the session's own account server-side for both
@@ -47,6 +52,11 @@ export interface PlaygroundTextParams {
 export interface PlaygroundImageParams {
   size?: string
   n?: number
+}
+
+/** The speech modality's one SHARED axis: the response format. The voice is per column, not a param. */
+export interface PlaygroundAudioParams {
+  format?: string
 }
 
 /** One member of a vision content array: text, or an attached image as a base64 data URL. */
@@ -73,6 +83,20 @@ export type PlaygroundRunInput =
       prompt: string
       params?: PlaygroundImageParams
     }
+  | {
+      /**
+       * A speech (text-to-audio) run. `voices` is the run's one per-column
+       * parameter — model name → the voice that column speaks in — because
+       * a voice is a vendor-private id and one shared value across a
+       * mixed-vendor comparison would 400 every foreign column.
+       */
+      key_id: number
+      modality: 'audio'
+      models: string[]
+      prompt: string
+      voices: Record<string, string>
+      params?: PlaygroundAudioParams
+    }
 
 /** One column's terminal usage reading, exactly as the done event carries it. */
 export interface PlaygroundUsage {
@@ -80,6 +104,8 @@ export interface PlaygroundUsage {
   output_tokens: number
   /** How many images an image column delivered; absent on token rows. */
   images?: number
+  /** How many characters a speech column settled by, in the vendor's own meter; absent on other rows. */
+  characters?: number
 }
 
 /** One delivered image of a media response: a remote reference, or inline base64 pixels. */
@@ -101,6 +127,19 @@ export interface PlaygroundImageArtifact {
  */
 export type PlaygroundMediaResponse = { data?: PlaygroundImageArtifact[] } | string
 
+/**
+ * A speech column's playback reference: the console URL that serves the
+ * retained clip (same session, same origin — a plain relative URL the
+ * audio element resolves itself), the content type the exchange
+ * announced, and the clip's size. Present only when the whole clip was
+ * retained; a cut clip carries no reference at all.
+ */
+export interface PlaygroundAudioRef {
+  url: string
+  content_type: string
+  bytes: number
+}
+
 // The aggregate channel's event family. slot is the column's position in
 // the submitted models list; every event names its slot, and this module
 // does nothing with that knowledge except hand the event to the caller —
@@ -119,6 +158,7 @@ export type PlaygroundStreamEvent =
       duration_ms: number
       response?: PlaygroundMediaResponse
       response_truncated?: boolean
+      audio?: PlaygroundAudioRef
     }
   | {
       type: 'error'
@@ -134,14 +174,15 @@ export type PlaygroundStreamEvent =
 // reuse the shared apiFetch client's 30s default: a comparison run holds
 // its columns open for as long as the slowest model generates, and cutting
 // the channel at 30s would cut columns the gateway is still legitimately
-// serving. Text and image get a generous whole-run budget (image
+// serving. Text, image and audio get a generous whole-run budget (media
 // generation legitimately runs minutes — the images modality's own
 // request budget is the same ten minutes); video reserves a minutes-level
 // budget ahead of its modality landing (its jobs run for minutes, not
 // seconds). Injectable per call via PlaygroundRunOptions.
-export const playgroundChannelTimeoutMs: Record<'text' | 'image' | 'video', number> = {
+export const playgroundChannelTimeoutMs: Record<'text' | 'image' | 'audio' | 'video', number> = {
   text: 10 * 60_000,
   image: 10 * 60_000,
+  audio: 10 * 60_000,
   video: 30 * 60_000,
 }
 

@@ -242,4 +242,60 @@ describe('playgroundDemux', () => {
     expect(columns[0]).toMatchObject({ state: 'done', responseTruncated: true })
     expect(columns[0].response).toBe('{"created":1,"data":[{"b64_json":"AAAA')
   })
+
+  it('folds a speech done event: character usage and the playback reference land on the column (TC-10 audio arm)', () => {
+    const columns = run(['speech-a', 'speech-b'], [
+      {
+        type: 'done',
+        slot: 0,
+        model: 'speech-a',
+        status: 200,
+        request_id: 'req-aud-0',
+        usage: { input_tokens: 0, output_tokens: 0, characters: 9 },
+        cost_micros: 18,
+        cost_known: true,
+        duration_ms: 2100,
+        audio: { url: '/api/admin/playground/audio/req-aud-0', content_type: 'audio/mpeg', bytes: 2048 },
+      },
+      // A cut clip carries NO reference at all — a cut clip is not
+      // playable and the fold never invents one.
+      {
+        type: 'done',
+        slot: 1,
+        model: 'speech-b',
+        status: 200,
+        request_id: 'req-aud-1',
+        usage: { input_tokens: 0, output_tokens: 0, characters: 1024 },
+        cost_micros: 2048,
+        cost_known: true,
+        duration_ms: 9000,
+      },
+    ])
+    expect(columns[0].usage).toMatchObject({ characters: 9 })
+    expect(columns[0].audio).toEqual({
+      url: '/api/admin/playground/audio/req-aud-0',
+      content_type: 'audio/mpeg',
+      bytes: 2048,
+    })
+    expect(columns[1].usage).toMatchObject({ characters: 1024 })
+    expect(columns[1].audio).toBeNull()
+  })
+
+  it('degrades a malformed audio reference without throwing and without inventing a clip', () => {
+    const columns = initialColumns(['speech-a'])
+    foldEvent(columns, {
+      type: 'done',
+      slot: 0,
+      model: 'speech-a',
+      status: 200,
+      request_id: 'req-aud-x',
+      usage: { input_tokens: 0, output_tokens: 0, characters: 3 },
+      cost_micros: 6,
+      cost_known: true,
+      duration_ms: 100,
+      audio: { content_type: 'audio/mpeg', bytes: 'huge' },
+    } as unknown as PlaygroundStreamEvent)
+    expect(columns[0]).toMatchObject({ state: 'done' })
+    expect(columns[0].audio).toBeNull()
+  })
 })

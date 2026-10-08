@@ -112,6 +112,13 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		// here — the pinning itself is what the dedicated tests pin.
 		"/api/admin/playground/keys":   {concrete: "/api/admin/playground/keys", okStatuses: []int{http.StatusOK}},
 		"/api/admin/playground/models": {concrete: "/api/admin/playground/models", okStatuses: []int{http.StatusOK}},
+		// A finished speech column's retained audio clip. The fixture runs
+		// no audio comparison, so the member's own honest answer for any id
+		// is 404 — reachable (a session gate in front would answer 401, an
+		// admin gate 403) and carrying nothing. The ownership pin (another
+		// account's retained clip answers the same nothing) is held by the
+		// dedicated audio tests in playground_audio_test.go.
+		"/api/admin/playground/audio/:request_id": {concrete: "/api/admin/playground/audio/req-alice-none", okStatuses: []int{http.StatusNotFound}},
 	}
 
 	// Session/bootstrap surface: reachable pre-role or member-facing by

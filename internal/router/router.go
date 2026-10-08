@@ -566,13 +566,19 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	playgroundRun := r.Group("/api/admin/playground", middleware.BodySizeLimit(playgroundRunBodyLimit))
 	playgroundRun.Use(middleware.RequireSession(db), middleware.MemberScope())
 	playgroundRun.POST("/run", handler.PostPlaygroundRun(playgroundSvc))
+	// A finished speech column's retained clip: the target of the done
+	// event's audio reference, served for the page session that ran it and
+	// owner-pinned inside the service. Same session + member-scope chain
+	// as the run itself.
+	playgroundRun.GET("/audio/:request_id", handler.GetPlaygroundAudio(playgroundSvc))
 	// The Playground pickers read here, member-reachable like the run: the
 	// key list is pinned to the session's own account inside the service
-	// (both roles), and the model list carries only routing names plus
-	// modality declarations — the vocabulary a run needs and nothing an
-	// operator's comparison shouldn't expose.
+	// (both roles), and the model list carries only routing names, modality
+	// declarations, and the speech models' preset voice vocabularies — the
+	// vocabulary a run needs and nothing an operator's comparison shouldn't
+	// expose.
 	scoped.GET("/playground/keys", handler.GetPlaygroundKeys(playgroundSvc))
-	scoped.GET("/playground/models", handler.GetPlaygroundModels(modelSvc))
+	scoped.GET("/playground/models", handler.GetPlaygroundModels(modelSvc, playgroundSvc))
 
 	v1 := gatewayGroup(r, "/v1", bodiesDir, db)
 	v1.POST("/chat/completions", gateway.PostChatCompletions(relaySvc))

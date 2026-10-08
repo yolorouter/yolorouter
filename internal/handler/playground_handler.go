@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
@@ -144,12 +145,15 @@ type playgroundRequestBody struct {
 	Prompt   string              `json:"prompt" binding:"omitempty,max=32000"`
 }
 
-// playgroundRunParams are the parameters the two modalities expose, one
+// playgroundRunParams are the parameters the modalities expose, one
 // family per modality. They are applied uniformly to every column of the
 // run (the comparison varies the model, not the sampling), and only the
 // active modality's family reaches its upstream request body — the body
 // builders are whitelists, so the other family's set values have nowhere
-// to go.
+// to go. The audio family's one axis is the response format; the VOICE is
+// deliberately not here — it is the run's one per-column parameter, a
+// vendor-private id whose shared value would 400 every foreign column of
+// a mixed-vendor comparison (see playgroundRunRequest.Voices).
 type playgroundRunParams struct {
 	System      *string  `json:"system" binding:"omitempty,max=32000"`
 	Temperature *float64 `json:"temperature" binding:"omitempty,gte=0,lte=2"`
@@ -159,17 +163,31 @@ type playgroundRunParams struct {
 	// ("1024x1024"); N is the image count.
 	Size *string `json:"size" binding:"omitempty,max=32"`
 	N    *int    `json:"n" binding:"omitempty,gte=1,lte=10"`
+	// Format is the audio modality's shared axis — the speech dialect's
+	// own response_format vocabulary, applied to every speech column
+	// alike (a column whose dialect does not serve the chosen format
+	// fails in its own native error shape, isolation intact). Empty
+	// leaves each column's dialect default in force.
+	Format *string `json:"format" binding:"omitempty,oneof=mp3 opus aac flac wav pcm"`
 }
 
 // playgroundRunRequest is the run contract: whose key to spend, which
 // modality's shape the request body has, which models to compare (1–4
-// columns), and the parameter set applied to all of them.
+// columns), and the parameter set applied to all of them. Voices is the
+// audio modality's per-column exception to that set: model name → the
+// voice that column speaks in. Voices do not travel between vendors (a
+// foreign voice is a terminal 400 at the upstream), so one shared value
+// would break every mixed-vendor comparison — the dropdown lists each
+// column's own vendor's voices, and the run carries one voice per column.
+// Entries for models not in the run are ignored; a selected model without
+// a non-empty voice is refused before the stream starts.
 type playgroundRunRequest struct {
 	KeyID    uint                  `json:"key_id" binding:"required"`
-	Modality string                `json:"modality" binding:"omitempty,oneof=text image"`
+	Modality string                `json:"modality" binding:"omitempty,oneof=text image audio"`
 	Models   []string              `json:"models" binding:"required,min=1,max=4,dive,required"`
 	Request  playgroundRequestBody `json:"request"`
 	Params   playgroundRunParams   `json:"params"`
+	Voices   map[string]string     `json:"voices" binding:"omitempty"`
 }
 
 // The aggregate channel's event payloads. slot is the column's stable
@@ -201,6 +219,10 @@ type sseChunkEvent struct {
 // prefix) — carries no Response at all. Text columns never carry
 // Response either — their text already arrived as chunk events, and
 // re-sending it whole would double the channel's payload for nothing.
+// Speech columns carry Audio instead: the delivered bytes are binary
+// audio, which the two-shape Response contract cannot represent, so the
+// service retains the whole clip and the event references it by its
+// console playback URL with the content type to announce it with.
 type sseDoneEvent struct {
 	Slot       int                    `json:"slot"`
 	Model      string                 `json:"model"`
@@ -212,6 +234,17 @@ type sseDoneEvent struct {
 	DurationMs int64                  `json:"duration_ms"`
 	Response   json.RawMessage        `json:"response,omitempty"`
 	Truncated  bool                   `json:"response_truncated,omitempty"`
+	Audio      *sseAudioRef           `json:"audio,omitempty"`
+}
+
+// sseAudioRef is a speech column's playback reference: the console URL
+// that serves the retained clip (same session, same origin), the content
+// type the exchange announced, and the clip's size. Present only when the
+// whole clip is retained — a cut clip gets no reference at all.
+type sseAudioRef struct {
+	URL         string `json:"url"`
+	ContentType string `json:"content_type"`
+	Bytes       int    `json:"bytes"`
 }
 
 // sseErrorEvent is a column's terminal failure. Error is the relay's
@@ -239,12 +272,18 @@ type sseCancelAckEvent struct {
 }
 
 // playgroundModelOption is one row of the model picker: the routing name a
-// run addresses the model by, plus the declared output modalities the
-// picker filters on. Carrying only these two fields keeps the
+// run addresses the model by, the declared output modalities the picker
+// filters on, and — for a model that speaks the speech modality — the
+// preset voice vocabulary its vendors serve (the union across the model's
+// routable candidates' dialects, first-seen order). Voices ride the row
+// because the voice control is PER COLUMN: a voice is a vendor-private
+// id, and each column's dropdown must offer only the voices its own
+// model's vendors know. Carrying only these fields keeps the
 // member-readable list to the vocabulary a run actually needs.
 type playgroundModelOption struct {
 	Name             string   `json:"name"`
 	OutputModalities []string `json:"output_modalities"`
+	Voices           []string `json:"voices,omitempty"`
 }
 
 // GetPlaygroundKeys handles GET /api/admin/playground/keys — the key
@@ -267,13 +306,41 @@ func GetPlaygroundKeys(svc *playground.Service) gin.HandlerFunc {
 // picker's list: every routing-enabled model with at least one routable
 // candidate. Any signed-in account may read it because members run
 // comparisons under their own keys too; the projection above keeps the
-// payload to names and modality declarations, nothing about providers,
-// pricing, or topology.
-func GetPlaygroundModels(svc *modeladmin.ModelService) gin.HandlerFunc {
+// payload to names, modality declarations, and the speech models' preset
+// voice vocabularies — nothing about providers, pricing, or topology.
+// Voices come from the speech dialect table keyed by the routable
+// candidates' provider base URLs (pgSvc), so the dropdown and the routing
+// bill read the same table.
+func GetPlaygroundModels(svc *modeladmin.ModelService, pgSvc *playground.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		views, err := svc.ListModels()
 		if err != nil {
 			writeServiceError(c, err)
+			return
+		}
+		// One base-URL read for every provider an audio model routes to;
+		// non-audio models never join this query.
+		providerIDs := map[uint]struct{}{}
+		for _, v := range views {
+			if v.ManagementStatus != model.ModelStatusEnabled {
+				continue
+			}
+			if !slices.Contains(v.OutputModalities, model.OutputModalityAudio) {
+				continue
+			}
+			for _, cand := range v.Candidates {
+				if cand.Routable {
+					providerIDs[cand.ProviderID] = struct{}{}
+				}
+			}
+		}
+		ids := make([]uint, 0, len(providerIDs))
+		for id := range providerIDs {
+			ids = append(ids, id)
+		}
+		voicesByProvider, err := pgSvc.ProviderSpeechVoices(ids)
+		if err != nil {
+			response.InternalError(c, err.Error())
 			return
 		}
 		out := make([]playgroundModelOption, 0, len(views))
@@ -291,9 +358,51 @@ func GetPlaygroundModels(svc *modeladmin.ModelService) gin.HandlerFunc {
 			if !routable {
 				continue
 			}
-			out = append(out, playgroundModelOption{Name: v.Name, OutputModalities: v.OutputModalities})
+			option := playgroundModelOption{Name: v.Name, OutputModalities: v.OutputModalities}
+			// A speech model's dropdown vocabulary: the union of its
+			// routable candidates' dialect voices, deduped in first-seen
+			// order. For the overwhelmingly common single-vendor model
+			// that IS its vendor's list; a multi-vendor model honestly
+			// offers what any of its candidates could serve.
+			if slices.Contains(v.OutputModalities, model.OutputModalityAudio) {
+				seen := map[string]struct{}{}
+				for _, cand := range v.Candidates {
+					if !cand.Routable {
+						continue
+					}
+					for _, voice := range voicesByProvider[cand.ProviderID] {
+						if _, dup := seen[voice]; dup {
+							continue
+						}
+						seen[voice] = struct{}{}
+						option.Voices = append(option.Voices, voice)
+					}
+				}
+			}
+			out = append(out, option)
 		}
 		response.Success(c, gin.H{"list": out})
+	}
+}
+
+// GetPlaygroundAudio handles GET /api/admin/playground/audio/:request_id —
+// a finished speech column's retained clip, served for the page session
+// that ran it. The reference arrives on the done event; this endpoint is
+// what it points at. Ownership is pinned to the account that ran the
+// column, and an id that is absent, expired, or another account's answers
+// the same nothing — the endpoint is not an enumeration oracle.
+func GetPlaygroundAudio(svc *playground.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		viewerID := c.MustGet(middleware.UserIDKey).(uint)
+		body, contentType, ok := svc.PlaybackAudio(c.Param("request_id"), viewerID)
+		if !ok {
+			response.NotFound(c, errcode.RequestLogNotFound, errcode.GetMessage(errcode.RequestLogNotFound))
+			return
+		}
+		c.Header("Content-Type", contentType)
+		c.Header("Cache-Control", "private, no-store")
+		c.Status(http.StatusOK)
+		_, _ = c.Writer.Write(body)
 	}
 }
 
@@ -422,7 +531,40 @@ func PostPlaygroundRun(svc *playground.Service) gin.HandlerFunc {
 				// body, so an image column has start and terminal events
 				// only — the response arrives with the terminal read.
 				result, err := svc.RunImage(ctx, key, columnRun)
-				settlePlaygroundColumn(stream, slot, model, result, err, true)
+				settlePlaygroundColumn(stream, slot, model, result, err, attachImageResponse(result))
+			}
+		case "audio":
+			if strings.TrimSpace(req.Request.Prompt) == "" {
+				response.ParamError(c, "an audio run requires a prompt")
+				return
+			}
+			// Every selected model must carry its own voice — the run's
+			// one per-column parameter, refused up front rather than as
+			// per-column upstream noise.
+			voices := make(map[string]string, len(req.Models))
+			for _, m := range req.Models {
+				voice := strings.TrimSpace(req.Voices[m])
+				if voice == "" {
+					response.ParamError(c, "an audio run requires a voice for every selected model")
+					return
+				}
+				voices[m] = voice
+			}
+			audioRun := playground.AudioRun{
+				Input:          req.Request.Prompt,
+				Voice:          "", // per column, below
+				ResponseFormat: derefString(req.Params.Format),
+			}
+			runColumn = func(ctx context.Context, stream *aggregateStream, slot int, model string) {
+				columnRun := audioRun
+				columnRun.Model = model
+				columnRun.Voice = voices[model]
+				// No payload sink and no inline response: the speech
+				// dialect answers binary audio, which the channel's
+				// two-shape response contract cannot carry — the service
+				// retains the clip and the done event references it.
+				result, err := svc.RunAudio(ctx, key, columnRun)
+				settlePlaygroundColumn(stream, slot, model, result, err, attachAudioRef(result))
 			}
 		default: // text
 			if len(req.Request.Messages) == 0 {
@@ -455,7 +597,7 @@ func PostPlaygroundRun(svc *playground.Service) gin.HandlerFunc {
 						stream.write("chunk", sseChunkEvent{Slot: slot, Model: model, Delta: delta})
 					}
 				})
-				settlePlaygroundColumn(stream, slot, model, result, err, false)
+				settlePlaygroundColumn(stream, slot, model, result, err, nil)
 			}
 		}
 
@@ -490,10 +632,12 @@ func PostPlaygroundRun(svc *playground.Service) gin.HandlerFunc {
 // settlePlaygroundColumn drives one comparison column from its exchange's
 // outcome to its terminal event: the audit row supplies the figures, the
 // row's fail_reason decides the aborted-by-disconnect case, and the relay
-// status decides done versus the native error shape. attachResponse says
-// whether the done event embeds the delivered body (the media modalities,
-// whose answers do not stream) — see sseDoneEvent for the two shapes.
-func settlePlaygroundColumn(stream *aggregateStream, slot int, model string, result *playground.ColumnResult, err error, attachResponse bool) {
+// status decides done versus the native error shape. decorate amends a
+// done event with the modality's delivered-answer member — the images
+// family embeds the response body (see sseDoneEvent for the two shapes),
+// the audio family attaches the playback reference, and text columns pass
+// nil (their text already streamed).
+func settlePlaygroundColumn(stream *aggregateStream, slot int, model string, result *playground.ColumnResult, err error, decorate func(*sseDoneEvent)) {
 	if err != nil {
 		// Pre-relay failure (body build, key decrypt): nothing ran, so
 		// there is no native shape to embed. The column gets a terminal
@@ -525,8 +669,8 @@ func settlePlaygroundColumn(stream *aggregateStream, slot int, model string, res
 			Usage: audit.Usage, CostMicros: audit.CostMicros, CostKnown: audit.CostKnown,
 			DurationMs: audit.DurationMs,
 		}
-		if attachResponse {
-			done.Response, done.Truncated = inlineColumnResponse(result)
+		if decorate != nil {
+			decorate(&done)
 		}
 		stream.write("done", done)
 		return
@@ -535,6 +679,34 @@ func settlePlaygroundColumn(stream *aggregateStream, slot int, model string, res
 		Slot: slot, Model: model, Status: result.Status, RequestID: result.RequestID,
 		Error: nativeErrorBody(result.Body),
 	})
+}
+
+// playgroundAudioRoute is the console's playback route for a retained
+// speech column, prefixed the way the done event's reference spells it.
+const playgroundAudioRoute = "/api/admin/playground/audio/"
+
+// attachImageResponse decorates a done event with the images family's
+// delivered body under the channel's two-shape response contract.
+func attachImageResponse(result *playground.ColumnResult) func(*sseDoneEvent) {
+	return func(e *sseDoneEvent) {
+		e.Response, e.Truncated = inlineColumnResponse(result)
+	}
+}
+
+// attachAudioRef decorates a done event with a speech column's playback
+// reference — present only when the service retained the whole clip
+// (RunAudio's own verdict; a cut or failed clip gets no reference).
+func attachAudioRef(result *playground.ColumnResult) func(*sseDoneEvent) {
+	return func(e *sseDoneEvent) {
+		if result == nil || !result.AudioPlayable {
+			return
+		}
+		e.Audio = &sseAudioRef{
+			URL:         playgroundAudioRoute + result.RequestID,
+			ContentType: result.ContentType,
+			Bytes:       len(result.Body),
+		}
+	}
 }
 
 // inlineColumnResponse shapes a terminal response body for a done event.

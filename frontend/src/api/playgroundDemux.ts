@@ -6,7 +6,12 @@
 // behaviours the channel promises (slot routing, per-column terminal
 // states, tolerance for truncation and stray events) are testable as a
 // function of input alone.
-import type { PlaygroundMediaResponse, PlaygroundStreamEvent, PlaygroundUsage } from './playground'
+import type {
+  PlaygroundAudioRef,
+  PlaygroundMediaResponse,
+  PlaygroundStreamEvent,
+  PlaygroundUsage,
+} from './playground'
 
 /** The lifecycle of one comparison column as the demux tracks it. */
 export type DemuxColumnState = 'running' | 'streaming' | 'done' | 'error' | 'cancelled'
@@ -35,6 +40,13 @@ export interface DemuxColumn {
   response: PlaygroundMediaResponse | null
   /** True when `response` is a cut prefix rather than the whole body. */
   responseTruncated: boolean
+  /**
+   * A speech column's playback reference (the console URL serving the
+   * retained clip). Null on every other column, and on a speech column
+   * whose clip was cut — a cut clip is not playable and the channel
+   * passes nothing off as whole audio.
+   */
+  audio: PlaygroundAudioRef | null
   errorStatus: number
   errorMessage: string
   errorType: string
@@ -54,6 +66,7 @@ export function initialColumns(models: string[]): DemuxColumn[] {
     durationMs: 0,
     response: null,
     responseTruncated: false,
+    audio: null,
     errorStatus: 0,
     errorMessage: '',
     errorType: '',
@@ -114,6 +127,7 @@ export function foldEvent(columns: DemuxColumn[], ev: PlaygroundStreamEvent): De
         duration_ms?: unknown
         response?: unknown
         response_truncated?: unknown
+        audio?: unknown
       }
       col.state = 'done'
       col.status = num(payload.status)
@@ -127,6 +141,7 @@ export function foldEvent(columns: DemuxColumn[], ev: PlaygroundStreamEvent): De
           input_tokens: num(usage.input_tokens),
           output_tokens: num(usage.output_tokens),
           images: num(usage.images),
+          characters: num(usage.characters),
         }
       }
       // A media answer rides the done event itself: the parsed answer JSON
@@ -143,6 +158,17 @@ export function foldEvent(columns: DemuxColumn[], ev: PlaygroundStreamEvent): De
       } else if (payload.response && typeof payload.response === 'object') {
         col.response = payload.response as PlaygroundMediaResponse
         col.responseTruncated = payload.response_truncated === true
+      }
+      // A speech column's playback reference — an object with a URL. A
+      // malformed frame degrades to "no reference" (no player) rather
+      // than throwing; nothing here ever invents a clip.
+      const audio = payload.audio as Partial<PlaygroundAudioRef> | undefined
+      if (audio && typeof audio === 'object' && typeof audio.url === 'string' && audio.url !== '') {
+        col.audio = {
+          url: audio.url,
+          content_type: typeof audio.content_type === 'string' ? audio.content_type : '',
+          bytes: num(audio.bytes),
+        }
       }
       return columns
     }

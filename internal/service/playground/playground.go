@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/protocols"
+	"github.com/yolorouter/yolorouter/internal/protocols/audio"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/pkg/crypto"
 )
@@ -53,6 +55,11 @@ type Service struct {
 	secrets   crypto.SecretBox
 	relay     *gateway.Service
 	bodiesDir string
+	// retained audio answers, keyed by the exchange's request id — see
+	// RetainAudio for what the store is and is not.
+	audioMu    sync.Mutex
+	audio      map[string]retainedAudio
+	audioOrder []string
 }
 
 // New builds a Playground service over the same relay instance the gateway
@@ -60,7 +67,7 @@ type Service struct {
 // runs a different admission state (rate windows, circuit, key pool) from
 // real traffic, which is exactly what the real-chain contract forbids.
 func New(db *gorm.DB, secrets crypto.SecretBox, relay *gateway.Service, bodiesDir string) *Service {
-	return &Service{db: db, secrets: secrets, relay: relay, bodiesDir: bodiesDir}
+	return &Service{db: db, secrets: secrets, relay: relay, bodiesDir: bodiesDir, audio: map[string]retainedAudio{}}
 }
 
 // ResolveKey loads the caller's chosen key and applies the console-side
@@ -180,11 +187,17 @@ type TextRun struct {
 // itself already reached the tap's sink as it was written. Truncated is
 // set when the exchange wrote past that cap — the retained Body is then a
 // prefix, and the channel says so rather than passing it off as whole.
+// ContentType is what the exchange announced (the staged header the relay
+// committed); a speech answer's audio/mpeg is what a playback reference
+// must re-announce. AudioPlayable says the delivered audio was retained
+// whole and a playback reference would be honest (see RunAudio).
 type ColumnResult struct {
-	RequestID string
-	Status    int
-	Body      []byte
-	Truncated bool
+	RequestID     string
+	Status        int
+	Body          []byte
+	Truncated     bool
+	ContentType   string
+	AudioPlayable bool
 }
 
 // FailReasonClientDisconnected is the audit row's fail_reason for an
@@ -198,6 +211,16 @@ const FailReasonClientDisconnected = "client_disconnected"
 // the sink live, so this is a guard against an exchange whose bytes grow
 // without bound, not a limit any honest answer hits.
 const columnBodyCap = 1 << 20
+
+// audioRetentionCap is what an AUDIO column's tap retains: a whole clip a
+// page can play back, not the 1 MiB reading copy the text/image taps keep.
+// A synthesis runs to a few megabytes ("a long synthesis" in the speech
+// modality's own words), so the cap sits above honest answers while still
+// bounding what a misbehaving upstream can park in the console process; a
+// clip that overruns it is marked truncated and gets NO playback
+// reference (a cut audio clip is not playable, and the channel never
+// claims completeness it does not have).
+const audioRetentionCap = 8 << 20
 
 // columnTap is the caller side of one Playground column's relay exchange.
 // The relay writes the exact bytes a real caller of the same ingress would
@@ -216,6 +239,9 @@ const columnBodyCap = 1 << 20
 // land on it synchronously.
 type columnTap struct {
 	sink func(payload string)
+	// cap is the body retention bound for this exchange — columnBodyCap
+	// for a reading copy, audioRetentionCap for a playable clip.
+	cap int
 	// frame holds the bytes of the SSE frame currently being written; a
 	// frame is only complete once its blank-line terminator arrives, so a
 	// write that ends mid-frame waits here for the rest.
@@ -231,8 +257,8 @@ type columnTap struct {
 	header http.Header
 }
 
-func newColumnTap(sink func(payload string)) *columnTap {
-	return &columnTap{sink: sink, header: http.Header{}}
+func newColumnTap(sink func(payload string), cap int) *columnTap {
+	return &columnTap{sink: sink, cap: cap, header: http.Header{}}
 }
 
 func (t *columnTap) Header() http.Header { return t.header }
@@ -249,7 +275,7 @@ func (t *columnTap) Write(p []byte) (int, error) {
 		// status was written first.
 		t.status = http.StatusOK
 	}
-	if room := columnBodyCap - len(t.body); room > 0 {
+	if room := t.cap - len(t.body); room > 0 {
 		if len(p) <= room {
 			t.body = append(t.body, p...)
 		} else {
@@ -259,8 +285,13 @@ func (t *columnTap) Write(p []byte) (int, error) {
 	} else if len(p) > 0 {
 		t.truncated = true
 	}
-	t.frame = append(t.frame, p...)
-	t.drainFrames(false)
+	// The frame buffer exists only to feed the sink; a column without one
+	// (a JSON or audio answer — nothing streams) would otherwise park the
+	// whole response a second time for no reader.
+	if t.sink != nil {
+		t.frame = append(t.frame, p...)
+		t.drainFrames(false)
+	}
 	return len(p), nil
 }
 
@@ -393,7 +424,7 @@ func (s *Service) RunText(ctx context.Context, key *model.APIKey, run TextRun, o
 	if err != nil {
 		return nil, err
 	}
-	return s.runExchange(ctx, key, chatCompletionsPath, body, onPayload)
+	return s.runExchange(ctx, key, chatCompletionsPath, body, onPayload, columnBodyCap)
 }
 
 // imagesGenerationPath is the ingress the synthetic image relay request
@@ -444,7 +475,63 @@ func (s *Service) RunImage(ctx context.Context, key *model.APIKey, run ImageRun)
 	if err != nil {
 		return nil, err
 	}
-	return s.runExchange(ctx, key, imagesGenerationPath, body, nil)
+	return s.runExchange(ctx, key, imagesGenerationPath, body, nil, columnBodyCap)
+}
+
+// AudioRun is one speech column: the model to speak through, the input
+// text, the VOICE the operator picked for this column (the run's one
+// per-column parameter — a voice is a vendor-private id, and one shared
+// value across mixed vendors would 400 every foreign column), and the
+// response format the shared parameter row selected (empty leaves the
+// dialect's own default in force). Speed and every other axis the speech
+// dialect declares stay unexposed: the page's audio family is format and
+// voice, nothing else.
+type AudioRun struct {
+	Model          string
+	Input          string
+	Voice          string
+	ResponseFormat string
+}
+
+// buildAudioBody serializes a speech run into an OpenAI audio/speech
+// request body. Same whitelist discipline as the other builders: only
+// model, input, voice, and — when the operator chose one — the response
+// format are ever emitted.
+func buildAudioBody(run AudioRun) ([]byte, error) {
+	body := map[string]any{"model": run.Model, "input": run.Input, "voice": run.Voice}
+	if run.ResponseFormat != "" {
+		body["response_format"] = run.ResponseFormat
+	}
+	return json.Marshal(body)
+}
+
+// RunAudio executes one speech column end to end through the real relay
+// pipeline — the same in-process exchange, admission chain, per-character
+// settlement, and audit row the other modalities drive, on the speech
+// ingress. The delivered answer is binary audio, which the SSE event
+// family cannot inline honestly (its two-shape response contract is
+// object-JSON-or-cut-prefix, and audio bytes are neither); instead the
+// whole clip — up to audioRetentionCap — is retained in the service's
+// page-session store and the done event carries a playback reference to
+// it. A clip that overran the retention cap is NOT retained and NOT
+// referenced: the column still settles with the audit row's figures, and
+// nothing on the channel claims an audio it cannot serve. The speech
+// modality's no-cross-vendor failover keeps the named voice's affinity,
+// exactly as for an outside caller.
+func (s *Service) RunAudio(ctx context.Context, key *model.APIKey, run AudioRun) (*ColumnResult, error) {
+	body, err := buildAudioBody(run)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.runExchange(ctx, key, gateway.SpeechPath, body, nil, audioRetentionCap)
+	if err != nil {
+		return nil, err
+	}
+	if result.Status >= 200 && result.Status < 300 && !result.Truncated && len(result.Body) > 0 && result.ContentType != "" {
+		s.RetainAudio(result.RequestID, result.Body, result.ContentType, key.UserID)
+		result.AudioPlayable = true
+	}
+	return result, nil
 }
 
 // runExchange drives one column's synthetic relay exchange: the request
@@ -453,8 +540,9 @@ func (s *Service) RunImage(ctx context.Context, key *model.APIKey, run ImageRun)
 // same slots the credential middleware fills for a real request — so the
 // plaintext cannot appear even in the exchange's masked header capture),
 // and the tap stands in for the caller's connection, writes landing on it
-// synchronously as the relay delivers. onPayload may be nil.
-func (s *Service) runExchange(ctx context.Context, key *model.APIKey, path string, body []byte, onPayload func(payload string)) (*ColumnResult, error) {
+// synchronously as the relay delivers. onPayload may be nil; bodyCap is
+// the tap's retention bound for this exchange's response bytes.
+func (s *Service) runExchange(ctx context.Context, key *model.APIKey, path string, body []byte, onPayload func(payload string), bodyCap int) (*ColumnResult, error) {
 	credential := ""
 	if key.EncryptedKey != "" {
 		var err error
@@ -468,7 +556,7 @@ func (s *Service) runExchange(ctx context.Context, key *model.APIKey, path strin
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	tap := newColumnTap(onPayload)
+	tap := newColumnTap(onPayload, bodyCap)
 	gc, _ := gin.CreateTestContext(tap)
 	gc.Request = req
 	requestID := uuid.NewString()
@@ -484,7 +572,99 @@ func (s *Service) runExchange(ctx context.Context, key *model.APIKey, path strin
 
 	s.relay.Handle(gc, osswire.APIKey(key))
 	tap.drainFrames(true)
-	return &ColumnResult{RequestID: requestID, Status: tap.status, Body: tap.body, Truncated: tap.truncated}, nil
+	return &ColumnResult{
+		RequestID:   requestID,
+		Status:      tap.status,
+		Body:        tap.body,
+		Truncated:   tap.truncated,
+		ContentType: tap.header.Get("Content-Type"),
+	}, nil
+}
+
+// retainedAudio is one playable speech answer held for the page session
+// that asked for it. This is deliberately NOT run history: the page keeps
+// no history, the request log keeps no audio bytes (the speech modality's
+// own LogPolicy drops the caller-facing half), and a reference has to
+// point somewhere — so the answer itself is held in process, bounded and
+// ephemeral, exactly long enough for the page that rendered the column to
+// play it back.
+type retainedAudio struct {
+	body        []byte
+	contentType string
+	owner       uint
+	expiresAt   time.Time
+}
+
+const (
+	// audioRetentionTTL is how long a retained clip stays playable — a
+	// page session's worth of slack, pruned lazily (no background
+	// goroutine to own or stop).
+	audioRetentionTTL = 10 * time.Minute
+	// audioRetentionMax is how many clips the store holds before the
+	// oldest are evicted — several full four-column runs, so a re-run
+	// never evicts the very columns it just replaced on screen.
+	audioRetentionMax = 16
+)
+
+// RetainAudio stores one delivered clip for playback. Bounded on both
+// axes (age and count), pruned lazily on every write and read.
+func (s *Service) RetainAudio(requestID string, body []byte, contentType string, owner uint) {
+	s.audioMu.Lock()
+	defer s.audioMu.Unlock()
+	if s.audio == nil {
+		s.audio = map[string]retainedAudio{}
+	}
+	now := time.Now()
+	// Prune expired entries, then evict oldest until the new clip fits.
+	kept := s.audioOrder[:0]
+	for _, id := range s.audioOrder {
+		if entry, ok := s.audio[id]; ok && entry.expiresAt.After(now) {
+			kept = append(kept, id)
+		} else {
+			delete(s.audio, id)
+		}
+	}
+	s.audioOrder = kept
+	for _, id := range s.audioOrder {
+		if len(s.audioOrder) < audioRetentionMax {
+			break
+		}
+		delete(s.audio, id)
+		s.audioOrder = s.audioOrder[1:]
+	}
+	s.audio[requestID] = retainedAudio{body: body, contentType: contentType, owner: owner, expiresAt: now.Add(audioRetentionTTL)}
+	s.audioOrder = append(s.audioOrder, requestID)
+}
+
+// PlaybackAudio answers the playable clip for a finished column, pinned
+// to the account that ran it: another account's id — like an absent or
+// expired one — answers nothing, so the endpoint is not an enumeration
+// oracle for other operators' runs.
+func (s *Service) PlaybackAudio(requestID string, viewerID uint) ([]byte, string, bool) {
+	s.audioMu.Lock()
+	defer s.audioMu.Unlock()
+	entry, ok := s.audio[requestID]
+	if !ok || entry.owner != viewerID || !entry.expiresAt.After(time.Now()) {
+		return nil, "", false
+	}
+	return entry.body, entry.contentType, true
+}
+
+// ProviderSpeechVoices maps each provider id to the preset voice
+// vocabulary of the speech dialect its base URL speaks — the model
+// picker's per-column voice lists, one dialect-table read per provider.
+// Unknown bases resolve to the OpenAI dialect like every other consumer
+// of the table.
+func (s *Service) ProviderSpeechVoices(providerIDs []uint) (map[uint][]string, error) {
+	urls, err := repository.FindProviderBaseURLs(s.db, providerIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint][]string, len(urls))
+	for id, baseURL := range urls {
+		out[id] = audio.DialectFor(baseURL).Voices
+	}
+	return out, nil
 }
 
 // ColumnAudit is the settled audit reading for one column: the numbers the
@@ -502,11 +682,15 @@ type ColumnAudit struct {
 
 // ColumnUsage is the volume half of the audit reading. Images carries the
 // per-image count an image exchange settled by (the row's image_count) and
-// is absent on token rows, so one reading reads in a single billing unit.
+// Characters the counted characters a speech exchange settled by (the
+// row's usage_characters, in the settling candidate's own billing meter);
+// both are absent on rows that did not bill by them, so one reading reads
+// in a single billing unit.
 type ColumnUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	Images       int `json:"images,omitempty"`
+	Characters   int `json:"characters,omitempty"`
 }
 
 // Audit reads the request_logs row one column's exchange wrote. The row is
@@ -523,6 +707,7 @@ func (s *Service) Audit(requestID string) (*ColumnAudit, error) {
 			InputTokens:  row.InputTokens,
 			OutputTokens: row.OutputTokens,
 			Images:       row.ImageCount,
+			Characters:   row.UsageCharacters,
 		},
 		CostMicros: row.CostMicros,
 		CostKnown:  row.CostKnown,

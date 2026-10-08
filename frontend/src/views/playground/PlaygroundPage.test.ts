@@ -111,6 +111,11 @@ const modelFixture: PlaygroundModelOption[] = [
   { name: 'image-only-model', output_modalities: ['image'] },
   { name: 'video-only-model', output_modalities: ['video'] },
   { name: 'text-and-image-model', output_modalities: ['text', 'image'] },
+  // Two speech models of two different vendors' dictionaries: each
+  // carries only its own vendor's voice presets (the picker endpoint
+  // derives them from the speech dialect table).
+  { name: 'audio-vendor-a', output_modalities: ['audio'], voices: ['alloy', 'echo', 'fable'] },
+  { name: 'audio-vendor-b', output_modalities: ['audio'], voices: ['tongtong', 'chuichui'] },
 ]
 
 // The models select, located by its marker class (the key select shares
@@ -238,16 +243,17 @@ describe('PlaygroundPage pickers', () => {
     const options = modelsSelect().props('options')!
     expect(options.map((o) => o.value)).toEqual(['text-only-model', 'text-and-image-model'])
 
-    // The audio and video modality tabs are disabled placeholders, so a
-    // cross-modality selection cannot even be attempted; text and image
-    // are the selectable dialects. The nav tab carries the disabled state
-    // as a class (a disabled pane component is never mounted).
+    // The video modality tab is a disabled placeholder, so a cross-modality
+    // selection cannot even be attempted; text, image and audio are the
+    // selectable dialects. The nav tab carries the disabled state as a
+    // class (a disabled pane component is never mounted).
     const tab = (name: string) => document.querySelector(`.n-tabs-tab[data-name="${name}"]`)
-    for (const name of ['video', 'audio']) {
+    for (const name of ['video']) {
       expect(tab(name)?.classList.contains('n-tabs-tab--disabled'), `tab ${name} is disabled`).toBe(true)
     }
-    expect(tab('text')?.classList.contains('n-tabs-tab--disabled'), 'text tab is selectable').toBe(false)
-    expect(tab('image')?.classList.contains('n-tabs-tab--disabled'), 'image tab is selectable').toBe(false)
+    for (const name of ['text', 'image', 'audio']) {
+      expect(tab(name)?.classList.contains('n-tabs-tab--disabled'), `tab ${name} is selectable`).toBe(false)
+    }
   })
 
   it('TC-23: switching to the image tab refilters the picker, drops the cross-modality selection, and swaps the parameter row', async () => {
@@ -512,6 +518,28 @@ function errorFrame(slot: number, model: string, over: Record<string, unknown> =
     ...over,
   })}\n\n`
 }
+// A done frame for an audio column: no chunks ever precede it (binary
+// audio has no deltas), the usage counts settled characters, and the
+// response rides as the playback reference instead of an inline body.
+function audioDoneFrame(slot: number, model: string, over: Record<string, unknown> = {}): string {
+  return `event: done\ndata: ${JSON.stringify({
+    slot,
+    model,
+    status: 200,
+    request_id: `req-aud-${slot}`,
+    usage: { input_tokens: 0, output_tokens: 0, characters: 9 },
+    cost_micros: 18,
+    cost_known: true,
+    duration_ms: 2100,
+    audio: {
+      url: `/api/admin/playground/audio/req-aud-${slot}`,
+      content_type: 'audio/mpeg',
+      bytes: 2048,
+    },
+    ...over,
+  })}\n\n`
+}
+
 // A done frame for an image column: no chunks ever precede it (a JSON
 // answer has no deltas), the usage counts delivered images, and the
 // response carries the artifacts — whole (object) or cut (string + flag).
@@ -894,6 +922,181 @@ describe('PlaygroundPage streaming columns', () => {
       expect(text).toContain(copy.en.columnCancelledNote)
       expect(document.querySelector('[data-testid="pg-stop"]')).toBeNull()
     })
+  })
+})
+
+describe('PlaygroundPage audio modality', () => {
+  // The speech run's per-model voice control, located by its DOM testid
+  // (every voice select carries the same marker class).
+  function voiceSelect(model: string): SelectWrapper {
+    const sel = wrapper!.findAllComponents(NSelect).find((s) => s.attributes('data-testid') === `pg-voice-${model}`)
+    expect(sel, `voice select for ${model} rendered`).toBeTruthy()
+    return sel as unknown as SelectWrapper
+  }
+
+  it('TC-10: per-column voice dropdowns list only their own vendor’s voices; the run carries one voice per column; done renders an audio player with character usage', async () => {
+    const stream = controlledEventStream()
+    const fetchMock = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(stream.response()))
+    vi.stubGlobal('fetch', fetchMock)
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'audio')
+    await nextTick()
+    // Under the audio tab the picker offers only speech models.
+    expect(modelsSelect().props('options')!.map((o) => o.value)).toEqual(['audio-vendor-a', 'audio-vendor-b'])
+
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['audio-vendor-a', 'audio-vendor-b'])
+    await nextTick()
+
+    // The voice control hangs on each column and lists ONLY that column's
+    // model's vendors — vendor A's dictionary never offers vendor B's ids
+    // and vice versa, so a cross-vendor voice slip cannot even be picked.
+    const optionsA = voiceSelect('audio-vendor-a').props('options')!
+    const optionsB = voiceSelect('audio-vendor-b').props('options')!
+    expect(optionsA.map((o) => o.value)).toEqual(['alloy', 'echo', 'fable'])
+    expect(optionsB.map((o) => o.value)).toEqual(['tongtong', 'chuichui'])
+    // Each column defaults to its own list's first preset.
+    expect(voiceSelect('audio-vendor-a').props('value')).toBe('alloy')
+    expect(voiceSelect('audio-vendor-b').props('value')).toBe('tongtong')
+
+    // One column picks a different voice of its OWN dictionary — the two
+    // columns run with two different vendor voices, the exact shape a
+    // shared-voice design would 400 on.
+    voiceSelect('audio-vendor-a').vm.$emit('update:value', 'echo')
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('a red cat')
+    // The shared parameter row is the audio family's one axis.
+    findSelect('pg-audio-format').vm.$emit('update:value', 'mp3')
+    await nextTick()
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const payload = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string) as {
+      key_id: number
+      modality: string
+      models: string[]
+      prompt: string
+      voices: Record<string, string>
+      messages?: unknown
+      params: { format?: string; size?: string; system?: string }
+    }
+    expect(payload.modality).toBe('audio')
+    expect(payload.models).toEqual(['audio-vendor-a', 'audio-vendor-b'])
+    expect(payload.prompt).toBe('a red cat')
+    expect(payload.messages).toBeUndefined()
+    expect(payload.voices).toEqual({ 'audio-vendor-a': 'echo', 'audio-vendor-b': 'tongtong' })
+    expect(payload.params).toEqual({ format: 'mp3' })
+
+    // Two-state: before any terminal event, both speech columns sit in
+    // the running placeholder — no player exists yet.
+    expect(document.body.textContent ?? '').toContain(copy.en.columnStateRunning)
+    expect(document.querySelector('[data-testid="pg-audio-player"]')).toBeNull()
+
+    stream.emit(audioDoneFrame(0, 'audio-vendor-a'))
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="pg-audio-player"]')).toHaveLength(1)
+    })
+    const player = document.querySelector('[data-testid="pg-audio-player"] audio') as HTMLAudioElement
+    expect(player.getAttribute('src')).toBe('/api/admin/playground/audio/req-aud-0')
+    expect(player.getAttribute('type')).toBe('audio/mpeg')
+    // The character usage line lands with the player.
+    const text0 = document.body.textContent ?? ''
+    expect(text0).toContain(copy.en.usageCharacters.replace('{count}', '9'))
+    expect(text0).toContain('0.000018')
+    // The second column is still running — its player arrives only with
+    // its own terminal event.
+    expect(text0).toContain(copy.en.columnStateRunning)
+
+    stream.emit(audioDoneFrame(1, 'audio-vendor-b'))
+    stream.close()
+    await vi.waitFor(() => expect(document.querySelectorAll('[data-testid="pg-audio-player"]')).toHaveLength(2))
+  })
+
+  it('TC-10 arm: a column with no listed presets still runs once a custom voice id is typed (taggable control)', async () => {
+    modelsMock.mockResolvedValue({
+      list: [...modelFixture, { name: 'audio-unknown-vendor', output_modalities: ['audio'] }],
+    })
+    const stream = controlledEventStream()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(stream.response())),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'audio')
+    await nextTick()
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['audio-unknown-vendor'])
+    await nextTick()
+
+    // No presets: the control renders empty and the send is refused with
+    // the voice warning rather than a doomed run.
+    const sel = voiceSelect('audio-unknown-vendor')
+    expect(sel.props('options')).toEqual([])
+    expect(sel.props('value')).toBe('')
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('hello')
+    await sendButton('en').trigger('click')
+    await nextTick()
+    expect(document.body.textContent ?? '').toContain(copy.en.needVoice)
+    expect(document.querySelector('[data-testid="pg-columns"]')).toBeNull()
+
+    // A typed-in id (a cloned voice) is accepted: the taggable control
+    // does not gate on the preset list.
+    sel.vm.$emit('update:value', 'voice-clone-8f2')
+    await nextTick()
+    await sendButton('en').trigger('click')
+    await nextTick()
+    const payload = JSON.parse(
+      ((vi.mocked(fetch) as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit).body as string,
+    ) as { voices: Record<string, string> }
+    expect(payload.voices).toEqual({ 'audio-unknown-vendor': 'voice-clone-8f2' })
+    stream.emit(audioDoneFrame(0, 'audio-unknown-vendor'))
+    stream.close()
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain(copy.en.columnStateDone))
+  })
+
+  it('TC-22 audio arm: a failed speech column keeps its native error placeholder while the neighbour renders its player', async () => {
+    const stream = controlledEventStream()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(stream.response())),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'audio')
+    await nextTick()
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['audio-vendor-a', 'audio-vendor-b'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('one fails one speaks')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    stream.emit(errorFrame(0, 'audio-vendor-a', { status: 400 }))
+    stream.emit(audioDoneFrame(1, 'audio-vendor-b'))
+    stream.close()
+
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? ''
+      // The failed column's native shape — no player, no running
+      // placeholder, the dialect's own error object verbatim.
+      expect(text).toContain('HTTP 400')
+      expect(text).toContain('You exceeded your current quota')
+      expect(text).toContain(copy.en.columnStateFailed)
+      // Its neighbour delivered playable audio all the same.
+      expect(document.querySelectorAll('[data-testid="pg-audio-player"]')).toHaveLength(1)
+    })
+    // Exactly one player for the whole run: the failed column never
+    // invents audio.
+    expect(document.querySelectorAll('[data-testid="pg-audio-player"]')).toHaveLength(1)
   })
 })
 

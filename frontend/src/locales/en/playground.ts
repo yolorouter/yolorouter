@@ -24,6 +24,13 @@ export default {
   imageSize_tip: 'The size axis of the image request, applied to every selected model. Common spellings are preset; a value a model does not serve is refused by its upstream.',
   imageCount: 'Images',
   imageCount_tip: 'How many images each selected model is asked to generate (1–10), billed per delivered image.',
+  audioFormat: 'Format',
+  audioFormat_tip:
+    'The speech response format, applied to every selected model. Leave empty to use each vendor’s own default; a vendor that does not serve the chosen format refuses the column with its native error.',
+  voiceLabel: 'Voice',
+  voice_tip:
+    'Per column: voices are vendor-private ids, so each column picks from its own model’s vendors. Custom ids (e.g. cloned voices) can be typed in; a value the vendor does not know is refused by its upstream.',
+  needVoice: 'Pick a voice for every selected model first',
   stop: 'Stop',
   columnStateStreaming: 'Streaming',
   columnStateCancelled: 'Cancelled',
@@ -48,6 +55,7 @@ export default {
   usageLabel: 'Usage',
   usageTokens: '{input} in / {output} out',
   usageImages: '{count} image(s) delivered',
+  usageCharacters: '{count} characters',
   responseTruncated:
     'The response exceeded the channel’s inline cap and is shown truncated — the full body is in the request log under this column id.',
   errorTypeLabel: 'Type',
