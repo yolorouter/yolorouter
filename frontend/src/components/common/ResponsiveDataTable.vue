@@ -27,7 +27,9 @@
     :row-props="rowProps"
     :pagination="pagination"
     :remote="remote"
+    :checked-row-keys="checkedRowKeys"
     size="small"
+    @update:checked-row-keys="onCheckedKeys"
   >
     <template #empty>
       <slot name="empty" />
@@ -110,9 +112,25 @@ const props = defineProps<{
   // panel-like content (an expand summary) that cannot share a half-width
   // cell with a sibling field.
   fullSpanKeys?: (string | number)[]
+  // Selection pass-through for tables whose columns carry a `type:
+  // 'selection'` entry: the parent stays the owner of the checked keys
+  // (v-model:checked-row-keys), exactly as it would with a bare NDataTable.
+  // Desktop only — the mobile card layout has no checkboxes, so parents that
+  // need selection gate the column themselves by isMobile.
+  checkedRowKeys?: Array<string | number>
+}>()
+
+const emit = defineEmits<{
+  'update:checkedRowKeys': [keys: Array<string | number>]
 }>()
 
 const isMobile = useIsMobile()
+
+// NDataTable hands (keys, rows, meta); the parent already owns the rows, so
+// only the keys travel on.
+function onCheckedKeys(keys: Array<string | number>) {
+  emit('update:checkedRowKeys', keys)
+}
 
 // Renders an already-built VNodeChild (a column's title or cell output) inline.
 // A tiny functional component so the template can drop naive/HelpLabel VNodes

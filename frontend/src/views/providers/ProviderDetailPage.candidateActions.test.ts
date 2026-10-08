@@ -7,7 +7,7 @@
 // and then reads the rendered items, rather than asserting on component
 // props.
 //
-// Covered acceptance cases (see the batch's cases doc):
+// Covered acceptance cases:
 //
 //   TC-01 every row's menu carries edit + delete — passed rows included (the
 //        pre-batch table rendered nothing at all for them) — and the retest
@@ -402,7 +402,7 @@ describe('ProviderDetailPage candidate actions (TC-01..04, TC-10, TC-18)', () =>
     await mountPage()
 
     // Mobile renders the table as cards; the row's actions trigger becomes a
-    // labelled "操作" button that raises the bottom sheet.
+    // labelled button (the common.actions copy) that raises the bottom sheet.
     const sheetLabels = async (modelName: string): Promise<string[]> => {
       const card = [...document.body.querySelectorAll('.rdt-card')].find((el) =>
         (el.textContent ?? '').includes(modelName),

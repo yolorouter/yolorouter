@@ -62,6 +62,16 @@
 
       <n-tab-pane name="models" :tab="t('providers.tabModels')">
         <div v-if="!isMobile" class="models-toolbar">
+          <n-button
+            type="error"
+            ghost
+            :disabled="checkedCandidateIds.length === 0 || batchDeleting"
+            :loading="batchDeleting"
+            @click="onBatchDelete"
+          >
+            <template #icon><Trash2 :size="16" /></template>
+            {{ batchDeleteButtonLabel }}
+          </n-button>
           <n-button type="primary" @click="openImportModels">
             <template #icon><CloudDownload :size="16" /></template>
             {{ t('models.importModelsButton') }}
@@ -71,14 +81,16 @@
         <EmptyState v-else-if="!candidatesLoading && candidateRows.length === 0" :title="t('providers.modelsEmpty')" />
         <div v-else class="data-table-wrapper">
           <ResponsiveDataTable
+            v-model:checked-row-keys="checkedCandidateIds"
             :columns="modelColumns"
             :data="candidateRows"
             :loading="candidatesLoading"
-            :scroll-x="932"
+            :scroll-x="972"
             :row-key="(row: ProviderCandidate) => row.candidate_id"
             :pagination="modelsPagination"
           />
         </div>
+        <n-alert v-if="batchDeleteFailedSummary" type="warning" class="summary">{{ batchDeleteFailedSummary }}</n-alert>
       </n-tab-pane>
     </n-tabs>
 
@@ -123,12 +135,13 @@ import { computed, h, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpace, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle } from '@lucide/vue'
+import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle, Trash2 } from '@lucide/vue'
 import { useProvidersStore } from '../../store/providers'
 import { listProviderCandidates, retestCandidate, deleteCandidate, getModel, type ImportProviderModelsResult, type ModelCandidate, type ProviderCandidate } from '../../api/models'
 import { candidateIsOwedWork, candidateProgressState, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress } from '../../utils/importProgress'
 import { candidateUnpriced } from '../../utils/imagePriceSummary'
 import { candidatePriceLines } from '../../utils/candidatePriceLines'
+import { BATCH_DELETE_CONCURRENCY, runWithLimit } from '../../utils/runWithLimit'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
@@ -621,7 +634,116 @@ async function onDeleteCandidate(row: ProviderCandidate) {
   })
 }
 
+// ---- Batch delete (the models tab's selection column + toolbar button) ----
+
+// Checked rows of the mapping table, as candidate ids (the table's row-key).
+// Desktop only: the mobile card layout has no checkboxes, so the toolbar
+// button (hidden on mobile) and the selection column (gated by isMobile in
+// modelColumns) travel together.
+const checkedCandidateIds = ref<Array<string | number>>([])
+const batchDeleting = ref(false)
+// The partial-failure summary shown under the table. Empty (no alert) after a
+// clean batch — only failures land here.
+const batchDeleteFailedSummary = ref('')
+
+const batchDeleteButtonLabel = computed(() =>
+  checkedCandidateIds.value.length === 0
+    ? t('providers.batchDeleteButton')
+    : t('providers.batchDeleteButtonWithCount', { count: checkedCandidateIds.value.length }),
+)
+
+// A failed row is named by the same pair everywhere a row is spoken about:
+// model name plus the upstream name (blank means "the model's own name").
+function candidateRowLabel(row: ProviderCandidate): string {
+  return `${row.model_name} (${row.provider_model_name || row.model_name})`
+}
+
+// The batch form of the single-row guard: one getModel per AFFECTED model —
+// several rows of the same model share the prefetch — and the remaining
+// routable count subtracts the WHOLE batch for that model, so deleting a
+// model's two routable candidates together is warned about, not smuggled
+// through one row at a time. A failed prefetch degrades to the plain copy
+// (the guard is advisory, same as the single-row delete).
+async function onBatchDelete() {
+  const rows = candidateRows.value.filter((r) => checkedCandidateIds.value.includes(r.candidate_id))
+  if (rows.length === 0 || batchDeleting.value) return
+  const rowsByModel = new Map<number, ProviderCandidate[]>()
+  for (const row of rows) {
+    const list = rowsByModel.get(row.model_id) ?? []
+    list.push(row)
+    rowsByModel.set(row.model_id, list)
+  }
+  const losingModels: string[] = []
+  for (const [modelId, modelRows] of rowsByModel) {
+    try {
+      const model = await getModel(modelId)
+      const deletingIds = new Set(modelRows.map((r) => r.candidate_id))
+      const deletingRoutable = model.candidates.some((c) => c.routable && deletingIds.has(c.id))
+      const othersRoutable = model.candidates.some((c) => c.routable && !deletingIds.has(c.id))
+      if (deletingRoutable && !othersRoutable) losingModels.push(model.name)
+    } catch (err) {
+      if (redirectIfSessionExpired(err, router)) return
+    }
+  }
+  dialog.warning({
+    title: t('providers.confirmBatchDeleteTitle'),
+    content:
+      losingModels.length > 0
+        ? t('providers.confirmBatchDeleteLastRoutableContent', {
+            count: rows.length,
+            models: losingModels.join(', '),
+          })
+        : t('providers.confirmBatchDeleteContent', { count: rows.length }),
+    positiveText: t('common.delete'),
+    negativeText: t('providers.cancel'),
+    onPositiveClick: () => runBatchDelete(rows),
+  })
+}
+
+// One DELETE per row through the shared concurrency limiter. Failures are
+// per-row by design: the failed rows survive (the server still returns them
+// on the refresh) and are summed up below, while every successful row's
+// disappearance is not held hostage by the failures.
+async function runBatchDelete(rows: ProviderCandidate[]) {
+  batchDeleting.value = true
+  batchDeleteFailedSummary.value = ''
+  try {
+    const outcomes = await runWithLimit(rows, BATCH_DELETE_CONCURRENCY, (row) =>
+      deleteCandidate(row.model_id, row.candidate_id),
+    )
+    const failed = outcomes.filter((o) => !o.ok)
+    for (const outcome of failed) {
+      // A dead session fails every row the same way — leave for the login
+      // page instead of dressing an auth expiry up as a per-row failure.
+      if (redirectIfSessionExpired(outcome.error, router)) return
+    }
+    if (failed.length === 0) {
+      message.success(t('providers.batchDeleteSucceeded', { count: rows.length }))
+    } else {
+      batchDeleteFailedSummary.value =
+        t('providers.batchDeleteFailedSummary', {
+          passed: rows.length - failed.length,
+          failed: failed.length,
+        }) +
+        ' ' +
+        t('providers.batchDeleteFailedRows', {
+          rows: failed.map((o) => candidateRowLabel(o.item)).join(', '),
+        })
+    }
+    await loadCandidates()
+  } finally {
+    // The selection never outlives its batch: the ids it references are gone
+    // or freshly refreshed, and the next batch must be an explicit choice.
+    checkedCandidateIds.value = []
+    batchDeleting.value = false
+  }
+}
+
 const modelColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
+  // Selection column for the batch delete — desktop only, because the mobile
+  // card layout cannot render checkboxes and the toolbar batch button is
+  // desktop-only with it (single-row delete stays available there).
+  ...(!isMobile.value ? [{ type: 'selection' } as const] : []),
   {
     title: columnTitle(t('models.name'), t('models.name_tip')),
     key: 'model_name',
