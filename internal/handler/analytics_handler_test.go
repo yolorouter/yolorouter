@@ -24,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
@@ -73,6 +74,9 @@ func newAnalyticsFixture(t *testing.T) (*gin.Engine, *gorm.DB, *http.Cookie) {
 		BodiesDir:         t.TempDir(),
 		Update:            config.UpdateConfig{Enabled: true},
 		Gateway:           config.DefaultGatewayConfig(),
+		// Unstarted audit worker: these tests never assert on audit rows;
+		// the capture layer only needs a sink to enqueue into.
+		Audit: audit.NewWorker(audit.Config{DB: db}),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)

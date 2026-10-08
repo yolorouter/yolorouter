@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/gateway"
 	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
@@ -164,6 +165,14 @@ type Deps struct {
 	// the sql pool handle for the rotation pin, none of which the router
 	// owns. A nil preflight (router tests) simply skips the gate.
 	UpdatePreflight func() error
+	// Audit is the admin audit pipeline's persistence worker. The router
+	// only hands it to the capture middleware it mounts at the /api/admin
+	// group root; the worker's lifecycle (start/stop with drain) belongs
+	// to the caller, same ownership as ProbeQueue. Required, not nil-
+	// optional: a router built without it would serve every admin write
+	// unaudited, and failing fast here is the only place that mistake
+	// cannot slip through silently.
+	Audit *audit.Worker
 }
 
 // New builds the router against the real embedded frontend (web.DistFS,
@@ -183,6 +192,9 @@ func New(deps Deps) (*gin.Engine, error) {
 }
 
 func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
+	if deps.Audit == nil {
+		return nil, fmt.Errorf("router deps: audit worker is required — an admin router without the audit capture layer would serve console writes unaudited")
+	}
 	db, secrets := deps.DB, crypto.NewSecretBox(deps.ProviderMasterKey)
 	bodiesDir, updateCfg := deps.BodiesDir, deps.Update
 	allowPrivateUpstreams, gatewayCfg := deps.AllowPrivateUpstreams, deps.Gateway
@@ -268,6 +280,17 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 
 	admin := r.Group("/api/admin")
 	admin.Use(middleware.BodySizeLimit(1 << 20)) // 1MiB limit
+	// The audit capture layer sits at the group ROOT, beside the body
+	// limit, not on any subgroup: console routes register on four
+	// different subgroups (public auth, session-only, ownership-scoped,
+	// admin-protected), and mounting the layer anywhere narrower would
+	// silently blind it to whichever endpoints live outside — the public
+	// auth group alone carries the failed-login events a security audit
+	// wants most. Mounted here, every console write route — present and
+	// future — is captured by construction, with the action dictionary in
+	// internal/audit naming today's surface and a fallback derivation
+	// covering anything not yet named.
+	admin.Use(audit.Middleware(db, deps.Audit))
 
 	// Public auth routes — the only /api/admin endpoints that don't require
 	// a session. Every other route on this group, including every future

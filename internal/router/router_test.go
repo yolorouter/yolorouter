@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/config"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/service/provider"
@@ -44,6 +45,10 @@ func testDeps(t *testing.T, db *gorm.DB) Deps {
 		BodiesDir:         t.TempDir(),
 		Update:            testUpdateConfig(),
 		Gateway:           testGatewayConfig(),
+		// Unstarted worker: the capture middleware enqueues into its buffer
+		// and nothing flushes unless a test starts (and stops) the worker
+		// itself — the audit sweep test does exactly that to observe rows.
+		Audit: audit.NewWorker(audit.Config{DB: db}),
 	}
 }
 

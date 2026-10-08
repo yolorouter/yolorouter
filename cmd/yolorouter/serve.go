@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/yolorouter/yolorouter/internal/agentbackfill"
+	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
 	"github.com/yolorouter/yolorouter/internal/keyrecovery"
 	"github.com/yolorouter/yolorouter/internal/pricecatalog"
@@ -123,6 +124,21 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("create bodies dir: %w", err)
 	}
 
+	// Admin audit pipeline: the capture middleware mounted at the /api/admin
+	// group root hands records to this worker, which batch-persists them off
+	// the request path. Constructed here because router.New requires the
+	// handle; started right away because the goroutine itself is inert until
+	// a record arrives — no traffic exists before the listener binds below,
+	// so it cannot flush against a not-yet-migrated schema. The deferred
+	// stop drains everything still queued, so console writes captured in
+	// the process's last moments still land. No Logger is passed: the
+	// worker's nil fallback forwards its loss-reporting warnings (queue
+	// full, flush failed) to the process-global pkg/logger — the same
+	// surface every other background loop here logs to.
+	auditWorker := audit.NewWorker(audit.Config{DB: app.DB})
+	auditStop := auditWorker.Start(ctx)
+	defer auditStop()
+
 	// Background probe queue: bulk import stores mappings disabled+untested
 	// and hands them here; each probe that passes auto-enables its mapping.
 	// The queue gets its own ModelService (services are stateless; the router
@@ -192,6 +208,7 @@ func runServe(ctx context.Context, args []string) error {
 		ProbeQueue:            probeQueue,
 		ProviderSvc:           providerSvc,
 		UpdatePreflight:       updatePreflight,
+		Audit:                 auditWorker,
 	})
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
