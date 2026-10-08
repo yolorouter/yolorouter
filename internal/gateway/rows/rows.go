@@ -193,6 +193,7 @@ const (
 	VideoTaskCancelled  = "cancelled"
 
 	RequestLogSourceVisionFallback = "vision_fallback"
+	RequestLogSourcePlayground     = "playground"
 
 	OutputModalityText  = "text"
 	OutputModalityImage = "image"

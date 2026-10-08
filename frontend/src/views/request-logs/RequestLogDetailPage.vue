@@ -61,8 +61,11 @@
           <NDescriptionsItem :label="t('requestLogs.fieldRequestEndpoint')" :span="2">
             <div class="mono-cell">{{ detail.request_path || '—' }}</div>
           </NDescriptionsItem>
+          <!-- Source badge labels the initiator; the tag text must follow the
+               actual source value — a playground row is NOT a vision-fallback
+               sub-call, and mislabeling it would defeat the marker's purpose. -->
           <NDescriptionsItem v-if="detail.source" :label="t('requestLogs.fieldSource')">
-            <NTag size="small" round :bordered="false" type="info">{{ t('requestLogs.sourceBadge') }}</NTag>
+            <NTag size="small" round :bordered="false" type="info">{{ sourceBadgeLabel }}</NTag>
           </NDescriptionsItem>
           <NDescriptionsItem v-if="detail.parent_request_id" :label="t('requestLogs.fieldParentRequest')">
             <RouterLink class="parent-link mono-cell" :to="`/request-logs/${encodeURIComponent(detail.parent_request_id)}`">
@@ -381,6 +384,14 @@ const router = useRouter()
 const message = useMessage()
 
 const detail = ref<RequestLogDetail | null>(null)
+
+// Source tag text follows the row's actual source value: vision-fallback
+// sub-calls and Playground runs share the field but not the label.
+const sourceBadgeLabel = computed(() =>
+  detail.value?.source === 'playground'
+    ? t('requestLogs.sourceBadgePlayground')
+    : t('requestLogs.sourceBadge'),
+)
 
 // Parsed per-image settlement snapshot: the raw column is JSON the server
 // built at settlement, and a rolling upgrade can serve a row whose value is

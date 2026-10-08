@@ -177,8 +177,8 @@ func parseRequestLogFilter(c *gin.Context) (repository.RequestLogFilter, bool) {
 		return repository.RequestLogFilter{}, false
 	}
 	source := c.Query("source")
-	if source != "" && source != model.RequestLogSourceVisionFallback && source != model.RequestLogSourceCallerFilter {
-		response.ParamError(c, "source must be one of: caller, vision_fallback")
+	if source != "" && source != model.RequestLogSourceVisionFallback && source != model.RequestLogSourceCallerFilter && source != model.RequestLogSourcePlayground {
+		response.ParamError(c, "source must be one of: caller, vision_fallback, playground")
 		return repository.RequestLogFilter{}, false
 	}
 	filter := repository.RequestLogFilter{
