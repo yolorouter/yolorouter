@@ -43,6 +43,12 @@ export interface PlaygroundTextParams {
   max_tokens?: number
 }
 
+/** The two request axes the image dialect declares: the size string and the image count. */
+export interface PlaygroundImageParams {
+  size?: string
+  n?: number
+}
+
 /** One member of a vision content array: text, or an attached image as a base64 data URL. */
 export type PlaygroundContentPart =
   | { type: 'text'; text: string }
@@ -51,20 +57,49 @@ export type PlaygroundContentPart =
 /** A run's user turn: plain text, or a vision turn carrying the prompt plus attached images. */
 export type PlaygroundUserContent = string | PlaygroundContentPart[]
 
-/** The run request: whose key to spend, which models to compare, the prompt itself. */
-export interface PlaygroundRunInput {
-  key_id: number
-  modality: 'text'
-  models: string[]
-  messages: Array<{ role: 'user'; content: PlaygroundUserContent }>
-  params: PlaygroundTextParams
-}
+/** The run request: whose key to spend, which models to compare, and the modality-shaped prompt itself. */
+export type PlaygroundRunInput =
+  | {
+      key_id: number
+      modality: 'text'
+      models: string[]
+      messages: Array<{ role: 'user'; content: PlaygroundUserContent }>
+      params?: PlaygroundTextParams
+    }
+  | {
+      key_id: number
+      modality: 'image'
+      models: string[]
+      prompt: string
+      params?: PlaygroundImageParams
+    }
 
 /** One column's terminal usage reading, exactly as the done event carries it. */
 export interface PlaygroundUsage {
   input_tokens: number
   output_tokens: number
+  /** How many images an image column delivered; absent on token rows. */
+  images?: number
 }
+
+/** One delivered image of a media response: a remote reference, or inline base64 pixels. */
+export interface PlaygroundImageArtifact {
+  url?: string
+  b64_json?: string
+  revised_prompt?: string
+}
+
+/**
+ * A media modality's delivered response body. Whole answers arrive as the
+ * response's own JSON (an images answer: `{ data: [...] }`); an answer the
+ * channel's inline cap cut arrives as the capped byte prefix in a plain
+ * string, with the event's `response_truncated` flag set — the two shapes
+ * are the channel's contract for "whole" versus "cut", never a guess. A
+ * body with no honest form under that contract (not JSON at all, or JSON
+ * that is not object-shaped — a bare string would be indistinguishable
+ * from a cut prefix) is not inlined: the done event carries no response.
+ */
+export type PlaygroundMediaResponse = { data?: PlaygroundImageArtifact[] } | string
 
 // The aggregate channel's event family. slot is the column's position in
 // the submitted models list; every event names its slot, and this module
@@ -82,6 +117,8 @@ export type PlaygroundStreamEvent =
       cost_micros: number
       cost_known: boolean
       duration_ms: number
+      response?: PlaygroundMediaResponse
+      response_truncated?: boolean
     }
   | {
       type: 'error'
@@ -97,11 +134,14 @@ export type PlaygroundStreamEvent =
 // reuse the shared apiFetch client's 30s default: a comparison run holds
 // its columns open for as long as the slowest model generates, and cutting
 // the channel at 30s would cut columns the gateway is still legitimately
-// serving. Text gets a generous whole-run budget; video reserves a
-// minutes-level budget ahead of its modality landing (its jobs run for
-// minutes, not seconds). Injectable per call via PlaygroundRunOptions.
-export const playgroundChannelTimeoutMs: Record<'text' | 'video', number> = {
+// serving. Text and image get a generous whole-run budget (image
+// generation legitimately runs minutes — the images modality's own
+// request budget is the same ten minutes); video reserves a minutes-level
+// budget ahead of its modality landing (its jobs run for minutes, not
+// seconds). Injectable per call via PlaygroundRunOptions.
+export const playgroundChannelTimeoutMs: Record<'text' | 'image' | 'video', number> = {
   text: 10 * 60_000,
+  image: 10 * 60_000,
   video: 30 * 60_000,
 }
 

@@ -177,11 +177,14 @@ type TextRun struct {
 // verbatim, so the column can render the same error a real caller would
 // see. For a streaming exchange the bytes are the SSE frames the relay
 // wrote to the column's caller side (bounded by columnBodyCap); the text
-// itself already reached the tap's sink as it was written.
+// itself already reached the tap's sink as it was written. Truncated is
+// set when the exchange wrote past that cap — the retained Body is then a
+// prefix, and the channel says so rather than passing it off as whole.
 type ColumnResult struct {
 	RequestID string
 	Status    int
 	Body      []byte
+	Truncated bool
 }
 
 // FailReasonClientDisconnected is the audit row's fail_reason for an
@@ -218,6 +221,11 @@ type columnTap struct {
 	// write that ends mid-frame waits here for the rest.
 	frame []byte
 	body  []byte
+	// truncated records that the exchange wrote MORE bytes than the body
+	// cap retains. The done event reports it, so an over-cap response is
+	// marked as cut on the channel rather than passed off as the whole
+	// body.
+	truncated bool
 	// status is what the exchange committed; 0 until something did.
 	status int
 	header http.Header
@@ -246,7 +254,10 @@ func (t *columnTap) Write(p []byte) (int, error) {
 			t.body = append(t.body, p...)
 		} else {
 			t.body = append(t.body, p[:room]...)
+			t.truncated = true
 		}
+	} else if len(p) > 0 {
+		t.truncated = true
 	}
 	t.frame = append(t.frame, p...)
 	t.drainFrames(false)
@@ -382,27 +393,81 @@ func (s *Service) RunText(ctx context.Context, key *model.APIKey, run TextRun, o
 	if err != nil {
 		return nil, err
 	}
+	return s.runExchange(ctx, key, chatCompletionsPath, body, onPayload)
+}
+
+// imagesGenerationPath is the ingress the synthetic image relay request
+// presents: the OpenAI Images API's generation route, which resolves to the
+// images modality end to end — the wire protocol the image modality speaks.
+const imagesGenerationPath = "/v1/images/generations"
+
+// ImageRun is one image-modality column: the model to call, the prompt to
+// render, and the two request axes the images dialect itself declares —
+// size and count. Those are the only parameters the console exposes for
+// the modality, and the only ones the body builder can emit.
+type ImageRun struct {
+	Model  string
+	Prompt string
+	// Size is the request's size axis (the per-image tier table's key
+	// alongside quality); empty leaves it to the upstream's own default.
+	Size string
+	// N is how many images to ask for; 0 leaves it unset (the API's own
+	// default of one applies upstream, not here — see ImageRun callers).
+	N int
+}
+
+// buildImageBody serializes an image run into an OpenAI images/generations
+// request body. Same whitelist discipline as buildChatBody: only model,
+// prompt, and the exposed axes are ever emitted, so a parameter the page
+// does not expose cannot reach the upstream body by omission of cleanup.
+func buildImageBody(run ImageRun) ([]byte, error) {
+	body := map[string]any{"model": run.Model, "prompt": run.Prompt}
+	if run.Size != "" {
+		body["size"] = run.Size
+	}
+	if run.N > 0 {
+		body["n"] = run.N
+	}
+	return json.Marshal(body)
+}
+
+// RunImage executes one image column end to end through the real relay
+// pipeline — the same in-process exchange, admission chain, and audit row
+// RunText drives, on the images ingress instead of the chat one. There is
+// no payload sink to hand over: the images dialect this build serves is
+// JSON in, JSON out (no progressive half), so an image column has start
+// and terminal events only — the response body arrives with the terminal
+// read, bounded by the tap's cap with the truncation flag doing the
+// honest marking.
+func (s *Service) RunImage(ctx context.Context, key *model.APIKey, run ImageRun) (*ColumnResult, error) {
+	body, err := buildImageBody(run)
+	if err != nil {
+		return nil, err
+	}
+	return s.runExchange(ctx, key, imagesGenerationPath, body, nil)
+}
+
+// runExchange drives one column's synthetic relay exchange: the request
+// carries no Authorization header at all (the relay receives the resolved
+// key row and the decrypted credential through gin context slots — the
+// same slots the credential middleware fills for a real request — so the
+// plaintext cannot appear even in the exchange's masked header capture),
+// and the tap stands in for the caller's connection, writes landing on it
+// synchronously as the relay delivers. onPayload may be nil.
+func (s *Service) runExchange(ctx context.Context, key *model.APIKey, path string, body []byte, onPayload func(payload string)) (*ColumnResult, error) {
 	credential := ""
 	if key.EncryptedKey != "" {
+		var err error
 		credential, err = s.secrets.Decrypt(key.EncryptedKey)
 		if err != nil {
 			return nil, err
 		}
 	}
-
-	// The synthetic request carries no Authorization header at all: the
-	// relay receives the resolved key row and the decrypted credential
-	// through gin context slots (the same slots the credential middleware
-	// fills for a real request), so the plaintext cannot appear even in
-	// the exchange's masked header capture. A constant method and a
-	// constant path cannot fail the constructor, so there is no error
-	// case here to branch on.
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsPath, bytes.NewReader(body))
+	// A constant method and a constant path cannot fail the constructor,
+	// so there is no error case here to branch on.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	// The tap stands in for the caller's connection. Writes land on it
-	// synchronously as the relay delivers, which is what turns an
-	// in-process relay call into a streaming one for this column.
 	tap := newColumnTap(onPayload)
 	gc, _ := gin.CreateTestContext(tap)
 	gc.Request = req
@@ -419,7 +484,7 @@ func (s *Service) RunText(ctx context.Context, key *model.APIKey, run TextRun, o
 
 	s.relay.Handle(gc, osswire.APIKey(key))
 	tap.drainFrames(true)
-	return &ColumnResult{RequestID: requestID, Status: tap.status, Body: tap.body}, nil
+	return &ColumnResult{RequestID: requestID, Status: tap.status, Body: tap.body, Truncated: tap.truncated}, nil
 }
 
 // ColumnAudit is the settled audit reading for one column: the numbers the
@@ -435,10 +500,13 @@ type ColumnAudit struct {
 	Source     string
 }
 
-// ColumnUsage is the volume half of the audit reading.
+// ColumnUsage is the volume half of the audit reading. Images carries the
+// per-image count an image exchange settled by (the row's image_count) and
+// is absent on token rows, so one reading reads in a single billing unit.
 type ColumnUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+	Images       int `json:"images,omitempty"`
 }
 
 // Audit reads the request_logs row one column's exchange wrote. The row is
@@ -454,6 +522,7 @@ func (s *Service) Audit(requestID string) (*ColumnAudit, error) {
 		Usage: ColumnUsage{
 			InputTokens:  row.InputTokens,
 			OutputTokens: row.OutputTokens,
+			Images:       row.ImageCount,
 		},
 		CostMicros: row.CostMicros,
 		CostKnown:  row.CostKnown,

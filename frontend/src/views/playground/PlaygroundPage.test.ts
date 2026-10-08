@@ -29,7 +29,7 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { createI18n } from 'vue-i18n'
-import naive, { NInputNumber, NSelect } from 'naive-ui'
+import naive, { NInputNumber, NSelect, NTabs } from 'naive-ui'
 import { defineComponent, nextTick, type ComponentPublicInstance } from 'vue'
 
 import {
@@ -127,6 +127,12 @@ function findSelect(marker: string): SelectWrapper {
 }
 const modelsSelect = () => findSelect('pg-models-select')
 const keySelect = () => findSelect('pg-key-select')
+
+// The modality tab group's current value (the controlled half of the tab
+// switch; the tests emit the update half directly).
+function modalityTabValue(): string | number | undefined {
+  return wrapper!.findAllComponents(NTabs)[0].props('value') as string | number | undefined
+}
 
 function sendButton(locale: Locale) {
   const btn = wrapper!.findAll('button').find((b) => b.text() === copy[locale].send)
@@ -232,14 +238,46 @@ describe('PlaygroundPage pickers', () => {
     const options = modelsSelect().props('options')!
     expect(options.map((o) => o.value)).toEqual(['text-only-model', 'text-and-image-model'])
 
-    // The other modality tabs are disabled placeholders, so a cross-modality
-    // selection cannot even be attempted. The nav tab carries the disabled
-    // state as a class (a disabled pane component is never mounted).
+    // The audio and video modality tabs are disabled placeholders, so a
+    // cross-modality selection cannot even be attempted; text and image
+    // are the selectable dialects. The nav tab carries the disabled state
+    // as a class (a disabled pane component is never mounted).
     const tab = (name: string) => document.querySelector(`.n-tabs-tab[data-name="${name}"]`)
-    for (const name of ['image', 'video', 'audio']) {
+    for (const name of ['video', 'audio']) {
       expect(tab(name)?.classList.contains('n-tabs-tab--disabled'), `tab ${name} is disabled`).toBe(true)
     }
     expect(tab('text')?.classList.contains('n-tabs-tab--disabled'), 'text tab is selectable').toBe(false)
+    expect(tab('image')?.classList.contains('n-tabs-tab--disabled'), 'image tab is selectable').toBe(false)
+  })
+
+  it('TC-23: switching to the image tab refilters the picker, drops the cross-modality selection, and swaps the parameter row', async () => {
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    // A selection made under the text tab…
+    modelsSelect().vm.$emit('update:value', ['text-only-model'])
+    await nextTick()
+
+    // …does not survive the switch: the image tab serves image models only.
+    const tabs = wrapper!.findAllComponents(NTabs)[0]
+    tabs.vm.$emit('update:value', 'image')
+    await nextTick()
+    expect(modalityTabValue()).toBe('image')
+    expect(modelsSelect().props('value')).toEqual([])
+    expect(modelsSelect().props('options')!.map((o) => o.value)).toEqual(['image-only-model', 'text-and-image-model'])
+
+    // The parameter row is the image family: size and count replace the
+    // text sampling controls, and the vision attach control is gone (an
+    // image run's input is the prompt itself).
+    expect(document.querySelector('[data-testid="pg-image-params"]')).not.toBeNull()
+    expect(document.querySelector('[data-testid="pg-attach-input"]')).toBeNull()
+    expect(wrapper!.findAll('textarea')).toHaveLength(1) // the prompt alone
+
+    // And switching back restores the text family.
+    tabs.vm.$emit('update:value', 'text')
+    await nextTick()
+    expect(document.querySelector('[data-testid="pg-image-params"]')).toBeNull()
+    expect(document.querySelector('[data-testid="pg-attach-input"]')).not.toBeNull()
   })
 
   it('TC-13: a fifth selected model is refused and unselected rows grey out at the cap', async () => {
@@ -474,6 +512,28 @@ function errorFrame(slot: number, model: string, over: Record<string, unknown> =
     ...over,
   })}\n\n`
 }
+// A done frame for an image column: no chunks ever precede it (a JSON
+// answer has no deltas), the usage counts delivered images, and the
+// response carries the artifacts — whole (object) or cut (string + flag).
+function imageDoneFrame(slot: number, model: string, over: Record<string, unknown> = {}): string {
+  return `event: done\ndata: ${JSON.stringify({
+    slot,
+    model,
+    status: 200,
+    request_id: `req-img-${slot}`,
+    usage: { input_tokens: 4, output_tokens: 0, images: 2 },
+    cost_micros: 80000,
+    cost_known: true,
+    duration_ms: 4321,
+    response: {
+      data: [
+        { url: 'https://img.example/one.png', revised_prompt: 'a red cat' },
+        { b64_json: 'QUJD' },
+      ],
+    },
+    ...over,
+  })}\n\n`
+}
 
 describe('PlaygroundPage streaming columns', () => {
   it('TC-04: columns typewriter as chunks arrive and the metrics land per column', async () => {
@@ -628,6 +688,151 @@ describe('PlaygroundPage streaming columns', () => {
     }
     const parts2 = payload2.messages[0].content
     expect(parts2[1].image_url?.url).toBe('data:image/png;base64,CQk=')
+  })
+
+  it('TC-09: an image run sends the prompt and both axes; done columns render image cards with per-image usage', async () => {
+    const stream = controlledEventStream()
+    const fetchMock = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(stream.response()))
+    vi.stubGlobal('fetch', fetchMock)
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    // The image tab, an image model, the prompt, and both exposed axes.
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'image')
+    await nextTick()
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['image-only-model', 'text-and-image-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('a red cat')
+    findSelect('pg-image-size').vm.$emit('update:value', '1024x1536')
+    wrapper!.findAllComponents(NInputNumber)[0].vm.$emit('update:value', 2)
+    await nextTick()
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    // The run request is the image modality's own shape: the prompt (no
+    // messages array), and the size/count axes — nothing from the text
+    // family rides along.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const payload = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string) as {
+      modality: string
+      models: string[]
+      prompt: string
+      messages?: unknown
+      params: { size?: string; n?: number; system?: string; temperature?: number; max_tokens?: number }
+    }
+    expect(payload.modality).toBe('image')
+    expect(payload.models).toEqual(['image-only-model', 'text-and-image-model'])
+    expect(payload.prompt).toBe('a red cat')
+    expect(payload.messages).toBeUndefined()
+    expect(payload.params).toEqual({ size: '1024x1536', n: 2 })
+
+    // Two-state: before any terminal event, both image columns sit in the
+    // running placeholder — an image column has no streaming state.
+    expect(document.body.textContent ?? '').toContain(copy.en.columnStateRunning)
+    expect(document.querySelector('[data-testid="pg-image-card"]')).toBeNull()
+
+    // The first column lands: two cards — the remote reference as-is, the
+    // inline base64 pixels as a data URL — with the per-image usage line.
+    stream.emit(imageDoneFrame(0, 'image-only-model'))
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="pg-image-card"]')).toHaveLength(2)
+    })
+    const cards = [...document.querySelectorAll('[data-testid="pg-image-card"]')] as HTMLImageElement[]
+    expect(cards[0].getAttribute('src')).toBe('https://img.example/one.png')
+    expect(cards[0].getAttribute('alt')).toBe('a red cat')
+    expect(cards[1].getAttribute('src')).toBe('data:image/png;base64,QUJD')
+    const text = document.body.textContent ?? ''
+    expect(text).toContain(copy.en.usageImages.replace('{count}', '2'))
+    expect(text).toContain('0.080000')
+    expect(text).toContain('4.32s')
+    // The second image column is still running — its cards arrive only
+    // with its own terminal event.
+    expect(text).toContain(copy.en.columnStateRunning)
+
+    stream.emit(imageDoneFrame(1, 'text-and-image-model'))
+    stream.close()
+    await vi.waitFor(() => expect(document.querySelectorAll('[data-testid="pg-image-card"]')).toHaveLength(4))
+  })
+
+  it('TC-22 image arm: a failed image column keeps its native error placeholder while the neighbour renders cards', async () => {
+    const stream = controlledEventStream()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(stream.response())),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'image')
+    await nextTick()
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['image-only-model', 'text-and-image-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('one fails one renders')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    stream.emit(errorFrame(0, 'image-only-model'))
+    stream.emit(imageDoneFrame(1, 'text-and-image-model'))
+    stream.close()
+
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? ''
+      // The failed column's native shape — no cards, no running
+      // placeholder, the dialect's own error object verbatim.
+      expect(text).toContain('HTTP 429')
+      expect(text).toContain('You exceeded your current quota')
+      expect(text).toContain(copy.en.columnStateFailed)
+      // Its neighbour delivered its images all the same.
+      expect(document.querySelectorAll('[data-testid="pg-image-card"]')).toHaveLength(2)
+    })
+  })
+
+  it('TC-17: an over-cap image answer shows the truncation note and the capped prefix, never silence', async () => {
+    const stream = controlledEventStream()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(stream.response())),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'image')
+    await nextTick()
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['image-only-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('huge answer')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    // The cut shape: the byte prefix as a plain string plus the flag —
+    // the channel never claims completeness it does not have.
+    const cutPrefix = '{"created":1,"data":[{"b64_json":"AAAA'
+    stream.emit(
+      imageDoneFrame(0, 'image-only-model', {
+        response: cutPrefix,
+        response_truncated: true,
+      }),
+    )
+    stream.close()
+
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? ''
+      expect(document.querySelector('[data-testid="pg-column-truncated"]')).not.toBeNull()
+      expect(text).toContain(copy.en.responseTruncated)
+      // The capped prefix stays inspectable — the answer is marked as
+      // cut, not swallowed whole.
+      expect(text).toContain(cutPrefix)
+      // And no card is invented from a cut body.
+      expect(document.querySelector('[data-testid="pg-image-card"]')).toBeNull()
+      // The figures that do not depend on the body bytes still land.
+      expect(text).toContain(copy.en.usageImages.replace('{count}', '2'))
+    })
   })
 
   it('TC-15: stopping mid-run disconnects the channel and settles unfinished columns as cancelled', async () => {

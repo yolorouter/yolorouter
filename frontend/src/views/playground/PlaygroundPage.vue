@@ -12,9 +12,12 @@
      run's own source remains the durable record — every column carries
      its audit row's request id for exactly that cross-reference).
 
-     This is the shell: columns render per-column terminal results, and
-     only the text modality is wired. The remaining modality tabs stay
-     visible but disabled until their dialects arrive. -->
+     This is the shell: columns render per-column terminal results. The
+     text modality streams its answers chunk by chunk; the image modality
+     runs text-to-image columns that answer once (rendered as image cards,
+     with the truncation note when the channel cut an over-cap answer).
+     The audio and video tabs stay visible but disabled until their
+     dialects arrive. -->
 <template>
   <div class="common-page">
     <PageHeader
@@ -26,12 +29,13 @@
     <!-- Control bar -->
     <section class="pg-card pg-control">
       <!-- The modality tab filters the model picker to the models that
-           serve that modality. Only text is selectable today; the other
-           tabs are disabled placeholders rather than omitted, so the
-           page's shape is stable while its dialects land. -->
-      <NTabs :value="modality" type="line" size="small" class="pg-modality-tabs">
+           serve that modality and swaps the parameter row to the axes that
+           modality's dialect declares. Text and image are selectable;
+           audio and video stay disabled placeholders rather than omitted,
+           so the page's shape is stable while their dialects land. -->
+      <NTabs :value="modality" type="line" size="small" class="pg-modality-tabs" @update:value="onModalityUpdate">
         <NTabPane name="text" :tab="t('models.outputModalityText')" />
-        <NTabPane name="image" :tab="t('models.outputModalityImage')" disabled />
+        <NTabPane name="image" :tab="t('models.outputModalityImage')" />
         <NTabPane name="audio" :tab="t('models.outputModalityAudio')" disabled />
         <NTabPane name="video" :tab="t('models.outputModalityVideo')" disabled />
       </NTabs>
@@ -74,8 +78,10 @@
             <NInput v-model:value="prompt" class="pg-prompt" type="textarea" :rows="3" />
             <!-- The vision attachment travels with the user turn, in the
                  dialect's own encoding (a base64 data URL); it is re-read
-                 per send, so a re-run can swap or drop it freely. -->
-            <div class="pg-attach">
+                 per send, so a re-run can swap or drop it freely. It
+                 belongs to the text modality alone — an image run's input
+                 is the prompt itself. -->
+            <div v-if="modality === 'text'" class="pg-attach">
               <input
                 ref="imageInput"
                 type="file"
@@ -101,8 +107,9 @@
         <!-- The shared parameter row: whatever is set here is applied to
              EVERY selected column of the run — a comparison varies the
              model, not the sampling. Only parameters the gateway dialects
-             actually accept are exposed. -->
-        <div class="pg-params">
+             actually declare are exposed: the text family below, or the
+             image family's two axes (size and count). -->
+        <div v-if="modality === 'text'" class="pg-params">
           <NFormItem>
             <template #label>
               <HelpLabel :tip="t('playground.systemPrompt_tip')">{{ t('playground.systemPrompt') }}</HelpLabel>
@@ -120,6 +127,26 @@
               <HelpLabel :tip="t('playground.maxTokens_tip')">{{ t('playground.maxTokens') }}</HelpLabel>
             </template>
             <NInputNumber v-model:value="maxTokens" class="pg-param-number" :min="1" :max="100000" :precision="0" />
+          </NFormItem>
+        </div>
+        <div v-else-if="modality === 'image'" class="pg-params" data-testid="pg-image-params">
+          <NFormItem>
+            <template #label>
+              <HelpLabel :tip="t('playground.imageSize_tip')">{{ t('playground.imageSize') }}</HelpLabel>
+            </template>
+            <NSelect
+              v-model:value="imageSize"
+              class="pg-image-size"
+              filterable
+              tag
+              :options="imageSizeOptions"
+            />
+          </NFormItem>
+          <NFormItem>
+            <template #label>
+              <HelpLabel :tip="t('playground.imageCount_tip')">{{ t('playground.imageCount') }}</HelpLabel>
+            </template>
+            <NInputNumber v-model:value="imageCount" class="pg-param-number" :min="1" :max="10" :precision="0" data-testid="pg-image-count" />
           </NFormItem>
         </div>
 
@@ -147,11 +174,33 @@
           </NTag>
         </header>
 
-        <!-- Streaming and finished columns show the text as it grows —
-             chunk by chunk, the first column to answer is the first column
-             on screen, never held back by a slower neighbour. -->
+        <!-- A finished column shows what its modality delivered: streamed
+             text, an image answer's cards, or — when the channel cut an
+             over-cap answer — the truncation note over the capped prefix.
+             Streaming columns show the text as it grows, chunk by chunk:
+             the first column to answer is the first column on screen,
+             never held back by a slower neighbour. -->
         <template v-if="col.state === 'streaming' || col.state === 'done'">
-          <pre class="pg-column__output" data-testid="pg-column-output">{{ col.output }}</pre>
+          <div v-if="col.state === 'done' && imageArtifacts(col).length > 0" class="pg-images">
+            <a
+              v-for="(img, k) in imageArtifacts(col)"
+              :key="k"
+              :href="img.src"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <img :src="img.src" :alt="img.alt" class="pg-image" data-testid="pg-image-card" />
+            </a>
+          </div>
+          <div
+            v-else-if="col.state === 'done' && col.responseTruncated"
+            class="pg-column__truncated"
+            data-testid="pg-column-truncated"
+          >
+            <div class="pg-column__truncated-note">{{ t('playground.responseTruncated') }}</div>
+            <pre class="pg-column__truncated-body">{{ col.response }}</pre>
+          </div>
+          <pre v-else class="pg-column__output" data-testid="pg-column-output">{{ col.output }}</pre>
           <dl v-if="col.state === 'done'" class="pg-metrics">
             <div class="pg-metric">
               <dt>{{ t('playground.costLabel') }}</dt>
@@ -166,7 +215,12 @@
             <div class="pg-metric">
               <dt>{{ t('playground.usageLabel') }}</dt>
               <dd>
-                {{ t('playground.usageTokens', { input: col.usage?.input_tokens ?? 0, output: col.usage?.output_tokens ?? 0 }) }}
+                <template v-if="(col.usage?.images ?? 0) > 0">
+                  {{ t('playground.usageImages', { count: col.usage?.images ?? 0 }) }}
+                </template>
+                <template v-else>
+                  {{ t('playground.usageTokens', { input: col.usage?.input_tokens ?? 0, output: col.usage?.output_tokens ?? 0 }) }}
+                </template>
               </dd>
             </div>
           </dl>
@@ -246,6 +300,18 @@ const systemPrompt = ref('')
 const temperature = ref<number | null>(null)
 const maxTokens = ref<number | null>(null)
 
+// The image modality's two axes — the request fields the images dialect
+// itself declares. The size vocabulary offers the ecosystem's common
+// spellings as presets and accepts any custom axis string (taggable
+// select): a model's tiers decide what its upstream honours, and the
+// console refuses to invent values on the dialect's behalf.
+const imageSize = ref('1024x1024')
+const imageCount = ref(1)
+const imageSizeOptions = ['512x512', '768x768', '1024x1024', '1024x1536', '1536x1024'].map((s) => ({
+  label: s,
+  value: s,
+}))
+
 // The vision attachment of the next run: name for display, data URL for
 // the wire. Re-read on every pick, so a re-run can swap or drop it.
 interface AttachedImage {
@@ -296,6 +362,32 @@ function onModelsUpdate(value: string[]) {
     return
   }
   selectedModels.value = value
+}
+
+// Switching the modality tab empties the selection: a model chosen under
+// one tab does not serve the next, and a cross-modality selection is not
+// a comparison the run endpoint could honestly execute.
+function onModalityUpdate(name: string | number) {
+  const next = String(name) as typeof modality.value
+  if (next === modality.value) return
+  modality.value = next
+  selectedModels.value = []
+}
+
+// A finished media column's renderable images: the artifacts the delivered
+// response carried, as src/alt pairs — a remote reference as-is, inline
+// base64 pixels wrapped into the data URL an <img> consumes. An answer
+// without artifacts (or a truncated one, whose bytes are a cut prefix)
+// answers empty and the column falls through to its other renderings.
+function imageArtifacts(col: DemuxColumn): Array<{ src: string; alt: string }> {
+  if (col.state !== 'done' || col.response === null || typeof col.response !== 'object') return []
+  const out: Array<{ src: string; alt: string }> = []
+  for (const d of col.response.data ?? []) {
+    const src = d.url ? d.url : d.b64_json ? `data:image/png;base64,${d.b64_json}` : ''
+    if (!src) continue
+    out.push({ src, alt: d.revised_prompt || col.model })
+  }
+  return out
 }
 
 const sendLabel = computed(() => {
@@ -393,22 +485,36 @@ async function onSend() {
   running.value = true
   sawStreamEvent = false
   runController = new AbortController()
+  // The run's body is the active modality's own shape: a text run sends
+  // the user turn (with its optional vision attachment) and the sampling
+  // family; an image run sends the prompt and the two image axes. The
+  // other family's controls are not merely ignored — they are not on the
+  // wire at all, which is what the upstream whitelist asserts.
+  const input =
+    modality.value === 'image'
+      ? {
+          key_id: keyId.value,
+          modality: 'image' as const,
+          models: runModels,
+          prompt: prompt.value,
+          params: {
+            size: imageSize.value || undefined,
+            n: imageCount.value ?? undefined,
+          },
+        }
+      : {
+          key_id: keyId.value,
+          modality: 'text' as const,
+          models: runModels,
+          messages: [{ role: 'user' as const, content: userContent() }],
+          params: {
+            system: systemPrompt.value || undefined,
+            temperature: temperature.value ?? undefined,
+            max_tokens: maxTokens.value ?? undefined,
+          },
+        }
   try {
-    await runPlayground(
-      {
-        key_id: keyId.value,
-        modality: 'text',
-        models: runModels,
-        messages: [{ role: 'user', content: userContent() }],
-        params: {
-          system: systemPrompt.value || undefined,
-          temperature: temperature.value ?? undefined,
-          max_tokens: maxTokens.value ?? undefined,
-        },
-      },
-      applyEvent,
-      { signal: runController.signal },
-    )
+    await runPlayground(input, applyEvent, { signal: runController.signal })
   } catch (err) {
     if (err instanceof RequestAbortedError) {
       // The operator stopped the run (or left the page): the columns that
@@ -613,6 +719,51 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* An image answer's cards: one per delivered artifact, opening the
+   reference in a new tab on click. */
+.pg-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--space-2);
+}
+
+.pg-image {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-hover);
+}
+
+/* A truncated media answer: the note explains the cut, the capped prefix
+   stays inspectable beneath it — the answer is marked, not swallowed. */
+.pg-column__truncated {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pg-column__truncated-note {
+  color: var(--color-warning, #f0a020);
+  font-size: var(--text-sm);
+}
+
+.pg-column__truncated-body {
+  max-height: 160px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-hover);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .pg-metrics {

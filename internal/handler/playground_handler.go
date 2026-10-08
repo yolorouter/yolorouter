@@ -134,19 +134,31 @@ func decodePlaygroundContent(raw json.RawMessage) (any, error) {
 	return out, nil
 }
 
-// playgroundTextRequest is the modality-shaped request body for text runs.
-type playgroundTextRequest struct {
-	Messages []playgroundMessage `json:"messages" binding:"required,min=1,dive"`
+// playgroundRequestBody is the modality-shaped request half of a run: the
+// chat turns a text run sends, or the prompt an image run renders. Each
+// modality validates the member it owns before the stream starts (below),
+// so the fields stay optional at the binding layer — the shapes of two
+// modalities share one envelope, and each refuses its own absences.
+type playgroundRequestBody struct {
+	Messages []playgroundMessage `json:"messages" binding:"omitempty,min=1,dive"`
+	Prompt   string              `json:"prompt" binding:"omitempty,max=32000"`
 }
 
-// playgroundTextParams are the text modality's exposed parameters. They
-// are applied uniformly to every column of the run (the comparison varies
-// the model, not the sampling), and only these reach the upstream request
-// body.
-type playgroundTextParams struct {
+// playgroundRunParams are the parameters the two modalities expose, one
+// family per modality. They are applied uniformly to every column of the
+// run (the comparison varies the model, not the sampling), and only the
+// active modality's family reaches its upstream request body — the body
+// builders are whitelists, so the other family's set values have nowhere
+// to go.
+type playgroundRunParams struct {
 	System      *string  `json:"system" binding:"omitempty,max=32000"`
 	Temperature *float64 `json:"temperature" binding:"omitempty,gte=0,lte=2"`
 	MaxTokens   *int     `json:"max_tokens" binding:"omitempty,gte=1,lte=100000"`
+	// Size and N are the image modality's axes — the two request fields
+	// the images dialect itself declares. Size is a short axis string
+	// ("1024x1024"); N is the image count.
+	Size *string `json:"size" binding:"omitempty,max=32"`
+	N    *int    `json:"n" binding:"omitempty,gte=1,lte=10"`
 }
 
 // playgroundRunRequest is the run contract: whose key to spend, which
@@ -154,10 +166,10 @@ type playgroundTextParams struct {
 // columns), and the parameter set applied to all of them.
 type playgroundRunRequest struct {
 	KeyID    uint                  `json:"key_id" binding:"required"`
-	Modality string                `json:"modality" binding:"omitempty,oneof=text"`
+	Modality string                `json:"modality" binding:"omitempty,oneof=text image"`
 	Models   []string              `json:"models" binding:"required,min=1,max=4,dive,required"`
-	Request  playgroundTextRequest `json:"request"`
-	Params   playgroundTextParams  `json:"params"`
+	Request  playgroundRequestBody `json:"request"`
+	Params   playgroundRunParams   `json:"params"`
 }
 
 // The aggregate channel's event payloads. slot is the column's stable
@@ -176,7 +188,19 @@ type sseChunkEvent struct {
 
 // sseDoneEvent is a column's terminal success reading: the relay's own
 // status, the audit row's id (the request-log page's key for this run),
-// and the usage/cost/latency figures the audit row settled on.
+// and the usage/cost/latency figures the audit row settled on. Media
+// modalities — whose answers do not stream chunk by chunk — additionally
+// carry the delivered response under Response: for a body that fit the
+// inline cap it is the response's own JSON embedded raw (a consumer
+// receives the parsed object); for one that did not, it is the capped
+// byte prefix as a plain string with Truncated set, so an over-cap answer
+// is marked as cut rather than silently passed off as the whole body. A
+// body with no honest form under that two-shape contract — not JSON at
+// all (an empty body, an HTML proxy page), or JSON that is not
+// object-shaped (a bare string would be indistinguishable from a cut
+// prefix) — carries no Response at all. Text columns never carry
+// Response either — their text already arrived as chunk events, and
+// re-sending it whole would double the channel's payload for nothing.
 type sseDoneEvent struct {
 	Slot       int                    `json:"slot"`
 	Model      string                 `json:"model"`
@@ -186,6 +210,8 @@ type sseDoneEvent struct {
 	CostMicros int64                  `json:"cost_micros"`
 	CostKnown  bool                   `json:"cost_known"`
 	DurationMs int64                  `json:"duration_ms"`
+	Response   json.RawMessage        `json:"response,omitempty"`
+	Truncated  bool                   `json:"response_truncated,omitempty"`
 }
 
 // sseErrorEvent is a column's terminal failure. Error is the relay's
@@ -310,10 +336,13 @@ func streamChunkDelta(payload string) string {
 // aggregateStream serializes event writes from the concurrently running
 // columns onto the one console response. Every event is flushed as it is
 // written: the channel's whole value is delivering each column's progress
-// while the others are still generating.
+// while the others are still generating. It carries the service so the
+// shared per-column settle choreography can read the audit row without
+// the modality drivers each threading the handle themselves.
 type aggregateStream struct {
-	c  *gin.Context
-	mu sync.Mutex
+	c   *gin.Context
+	svc *playground.Service
+	mu  sync.Mutex
 }
 
 func (s *aggregateStream) write(event string, payload any) {
@@ -370,22 +399,64 @@ func PostPlaygroundRun(svc *playground.Service) gin.HandlerFunc {
 			return
 		}
 
-		// The text body is decoded before the stream starts so a malformed
-		// turn (empty content, a smuggled content shape) answers with the
-		// console envelope and a real 400 — no column ever ran.
-		run := playground.TextRun{
-			Messages:    make([]playground.Message, len(req.Request.Messages)),
-			System:      derefString(req.Params.System),
-			Temperature: req.Params.Temperature,
-			MaxTokens:   req.Params.MaxTokens,
-		}
-		for i, m := range req.Request.Messages {
-			content, err := decodePlaygroundContent(m.Content)
-			if err != nil {
-				response.ParamError(c, err.Error())
+		// The modality's own body is decoded and validated before the
+		// stream starts so a malformed turn (a missing prompt, an empty
+		// content, a smuggled content shape) answers with the console
+		// envelope and a real 400 — no column ever ran.
+		var runColumn func(ctx context.Context, stream *aggregateStream, slot int, model string)
+		switch req.Modality {
+		case "image":
+			if strings.TrimSpace(req.Request.Prompt) == "" {
+				response.ParamError(c, "an image run requires a prompt")
 				return
 			}
-			run.Messages[i] = playground.Message{Role: m.Role, Content: content}
+			imageRun := playground.ImageRun{
+				Prompt: req.Request.Prompt,
+				Size:   derefString(req.Params.Size),
+				N:      derefInt(req.Params.N),
+			}
+			runColumn = func(ctx context.Context, stream *aggregateStream, slot int, model string) {
+				columnRun := imageRun
+				columnRun.Model = model
+				// No payload sink: the images dialect answers one JSON
+				// body, so an image column has start and terminal events
+				// only — the response arrives with the terminal read.
+				result, err := svc.RunImage(ctx, key, columnRun)
+				settlePlaygroundColumn(stream, slot, model, result, err, true)
+			}
+		default: // text
+			if len(req.Request.Messages) == 0 {
+				response.ParamError(c, "a text run requires at least one message")
+				return
+			}
+			textRun := playground.TextRun{
+				Messages:    make([]playground.Message, len(req.Request.Messages)),
+				System:      derefString(req.Params.System),
+				Temperature: req.Params.Temperature,
+				MaxTokens:   req.Params.MaxTokens,
+			}
+			for i, m := range req.Request.Messages {
+				content, err := decodePlaygroundContent(m.Content)
+				if err != nil {
+					response.ParamError(c, err.Error())
+					return
+				}
+				textRun.Messages[i] = playground.Message{Role: m.Role, Content: content}
+			}
+			runColumn = func(ctx context.Context, stream *aggregateStream, slot int, model string) {
+				columnRun := textRun
+				columnRun.Model = model
+				// The sink runs inside the relay's delivery, on this
+				// goroutine: each complete SSE payload the relay writes to
+				// the column's caller side becomes a chunk event the
+				// moment it lands.
+				result, err := svc.RunText(ctx, key, columnRun, func(payload string) {
+					if delta := streamChunkDelta(payload); delta != "" {
+						stream.write("chunk", sseChunkEvent{Slot: slot, Model: model, Delta: delta})
+					}
+				})
+				settlePlaygroundColumn(stream, slot, model, result, err, false)
+			}
 		}
 
 		// The stream starts only once the console-side gates have passed,
@@ -398,38 +469,31 @@ func PostPlaygroundRun(svc *playground.Service) gin.HandlerFunc {
 		c.Status(http.StatusOK)
 		c.Writer.Flush()
 
-		stream := &aggregateStream{c: c}
+		stream := &aggregateStream{c: c, svc: svc}
 		// The console caller's context is every column's relay context's
 		// parent: a caller disconnect cancels the in-flight columns the
-		// same way a gateway caller's disconnect cancels its attempt.
+		// same way a gateway caller's disconnect cancels its attempt —
+		// whichever modality those columns speak.
 		ctx := c.Request.Context()
 		var wg sync.WaitGroup
 		for slot, model := range req.Models {
 			wg.Add(1)
 			go func(slot int, model string) {
 				defer wg.Done()
-				runPlaygroundColumn(ctx, svc, stream, key, run, slot, model)
+				runColumn(ctx, stream, slot, model)
 			}(slot, model)
 		}
 		wg.Wait()
 	}
 }
 
-// runPlaygroundColumn drives one comparison column to its terminal event:
-// text deltas stream out as chunk events while the exchange runs, and the
-// terminal event is decided by what actually happened — the audit row for
-// the figures, the row's fail_reason for the aborted-by-disconnect case.
-func runPlaygroundColumn(ctx context.Context, svc *playground.Service, stream *aggregateStream, key *model.APIKey, run playground.TextRun, slot int, model string) {
-	columnRun := run
-	columnRun.Model = model
-	// The sink runs inside the relay's delivery, on this goroutine: each
-	// complete SSE payload the relay writes to the column's caller side
-	// becomes a chunk event the moment it lands.
-	result, err := svc.RunText(ctx, key, columnRun, func(payload string) {
-		if delta := streamChunkDelta(payload); delta != "" {
-			stream.write("chunk", sseChunkEvent{Slot: slot, Model: model, Delta: delta})
-		}
-	})
+// settlePlaygroundColumn drives one comparison column from its exchange's
+// outcome to its terminal event: the audit row supplies the figures, the
+// row's fail_reason decides the aborted-by-disconnect case, and the relay
+// status decides done versus the native error shape. attachResponse says
+// whether the done event embeds the delivered body (the media modalities,
+// whose answers do not stream) — see sseDoneEvent for the two shapes.
+func settlePlaygroundColumn(stream *aggregateStream, slot int, model string, result *playground.ColumnResult, err error, attachResponse bool) {
 	if err != nil {
 		// Pre-relay failure (body build, key decrypt): nothing ran, so
 		// there is no native shape to embed. The column gets a terminal
@@ -440,7 +504,7 @@ func runPlaygroundColumn(ctx context.Context, svc *playground.Service, stream *a
 		})
 		return
 	}
-	audit, auditErr := svc.Audit(result.RequestID)
+	audit, auditErr := stream.svc.Audit(result.RequestID)
 	if auditErr == nil && audit.FailReason == playground.FailReasonClientDisconnected {
 		// The console caller went away and the disconnect propagated
 		// through the exchange; the row has already recorded what it cost.
@@ -456,17 +520,52 @@ func runPlaygroundColumn(ctx context.Context, svc *playground.Service, stream *a
 		return
 	}
 	if result.Status >= 200 && result.Status < 300 {
-		stream.write("done", sseDoneEvent{
+		done := sseDoneEvent{
 			Slot: slot, Model: model, Status: result.Status, RequestID: result.RequestID,
 			Usage: audit.Usage, CostMicros: audit.CostMicros, CostKnown: audit.CostKnown,
 			DurationMs: audit.DurationMs,
-		})
+		}
+		if attachResponse {
+			done.Response, done.Truncated = inlineColumnResponse(result)
+		}
+		stream.write("done", done)
 		return
 	}
 	stream.write("error", sseErrorEvent{
 		Slot: slot, Model: model, Status: result.Status, RequestID: result.RequestID,
 		Error: nativeErrorBody(result.Body),
 	})
+}
+
+// inlineColumnResponse shapes a terminal response body for a done event.
+// The channel's contract is two-shaped and the demux folds by shape alone
+// — a plain string always means a cut body — so only a body that keeps the
+// two shapes tellable apart rides the event: the body's own JSON embedded
+// raw when it is whole and object-shaped (a consumer receives the parsed
+// object), and the capped byte prefix as a plain string with the Truncated
+// flag set when the exchange overran the inline cap. A body with no honest
+// form under that contract — one that is not JSON at all (an empty body,
+// an HTML proxy page) or JSON that is not object-shaped (a bare string
+// would arrive indistinguishable from a cut prefix) — is not inlined: the
+// column still settles with the audit row's figures, and nothing on the
+// channel claims to be the delivered answer.
+func inlineColumnResponse(result *playground.ColumnResult) (json.RawMessage, bool) {
+	if result.Truncated {
+		return json.RawMessage(jsonEscape(string(result.Body))), true
+	}
+	trimmed := strings.TrimSpace(string(result.Body))
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid([]byte(trimmed)) {
+		return json.RawMessage(result.Body), false
+	}
+	return nil, false
+}
+
+// derefInt returns *i or 0 for nil.
+func derefInt(i *int) int {
+	if i == nil {
+		return 0
+	}
+	return *i
 }
 
 // derefString returns *s or "" for nil.

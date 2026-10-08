@@ -6,7 +6,7 @@
 // behaviours the channel promises (slot routing, per-column terminal
 // states, tolerance for truncation and stray events) are testable as a
 // function of input alone.
-import type { PlaygroundStreamEvent, PlaygroundUsage } from './playground'
+import type { PlaygroundMediaResponse, PlaygroundStreamEvent, PlaygroundUsage } from './playground'
 
 /** The lifecycle of one comparison column as the demux tracks it. */
 export type DemuxColumnState = 'running' | 'streaming' | 'done' | 'error' | 'cancelled'
@@ -27,6 +27,14 @@ export interface DemuxColumn {
   costMicros: number
   costKnown: boolean
   durationMs: number
+  /**
+   * A media modality's delivered response: the parsed answer JSON when it
+   * arrived whole, or the capped byte prefix when the channel cut it.
+   * Null on text columns (their text arrived as chunks).
+   */
+  response: PlaygroundMediaResponse | null
+  /** True when `response` is a cut prefix rather than the whole body. */
+  responseTruncated: boolean
   errorStatus: number
   errorMessage: string
   errorType: string
@@ -44,6 +52,8 @@ export function initialColumns(models: string[]): DemuxColumn[] {
     costMicros: 0,
     costKnown: false,
     durationMs: 0,
+    response: null,
+    responseTruncated: false,
     errorStatus: 0,
     errorMessage: '',
     errorType: '',
@@ -102,6 +112,8 @@ export function foldEvent(columns: DemuxColumn[], ev: PlaygroundStreamEvent): De
         cost_micros?: unknown
         cost_known?: unknown
         duration_ms?: unknown
+        response?: unknown
+        response_truncated?: unknown
       }
       col.state = 'done'
       col.status = num(payload.status)
@@ -111,7 +123,26 @@ export function foldEvent(columns: DemuxColumn[], ev: PlaygroundStreamEvent): De
       col.costKnown = payload.cost_known === true
       const usage = payload.usage as Partial<PlaygroundUsage> | undefined
       if (usage && typeof usage === 'object') {
-        col.usage = { input_tokens: num(usage.input_tokens), output_tokens: num(usage.output_tokens) }
+        col.usage = {
+          input_tokens: num(usage.input_tokens),
+          output_tokens: num(usage.output_tokens),
+          images: num(usage.images),
+        }
+      }
+      // A media answer rides the done event itself: the parsed answer JSON
+      // when whole, the capped string prefix when the channel cut it. The
+      // string-or-object shape is the event's own contract — a string
+      // payload always folds as cut, even when a corrupted frame lost its
+      // response_truncated flag (guessing "whole" would pass a cut body
+      // off as complete; the channel never inlines a whole body as a
+      // string). Anything else (a malformed frame) degrades to "no
+      // response" rather than throwing.
+      if (typeof payload.response === 'string') {
+        col.response = payload.response
+        col.responseTruncated = true
+      } else if (payload.response && typeof payload.response === 'object') {
+        col.response = payload.response as PlaygroundMediaResponse
+        col.responseTruncated = payload.response_truncated === true
       }
       return columns
     }

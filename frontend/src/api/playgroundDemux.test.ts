@@ -151,4 +151,95 @@ describe('playgroundDemux', () => {
     foldEvent(columns, { type: 'done', slot: 0, model: 'm0' } as unknown as PlaygroundStreamEvent)
     expect(columns[0]).toMatchObject({ state: 'done', status: 0, requestId: '', costKnown: false, usage: null })
   })
+
+  it('folds a media done event: whole response as object, cut response as string (TC-09/17 image arms)', () => {
+    // Whole: the images answer arrives as its own JSON with the per-image
+    // count in usage — the column keeps the parsed object and no
+    // truncation.
+    const whole = run(['img-a', 'img-b'], [
+      {
+        type: 'done',
+        slot: 0,
+        model: 'img-a',
+        status: 200,
+        request_id: 'req-img-a',
+        usage: { input_tokens: 4, output_tokens: 0, images: 2 },
+        cost_micros: 80000,
+        cost_known: true,
+        duration_ms: 4321,
+        response: { data: [{ url: 'https://img.example/one.png' }, { b64_json: 'QUJD' }] },
+      },
+      {
+        type: 'done',
+        slot: 1,
+        model: 'img-b',
+        status: 200,
+        request_id: 'req-img-b',
+        usage: { input_tokens: 4, output_tokens: 0, images: 1 },
+        cost_micros: 40000,
+        cost_known: true,
+        duration_ms: 99,
+        response_truncated: true,
+        response: '{"created":1,"data":[{"b64_json":"AAAA… (cut',
+      },
+    ] satisfies PlaygroundStreamEvent[],
+    )
+    expect(whole[0]).toMatchObject({
+      state: 'done',
+      responseTruncated: false,
+      usage: { images: 2 },
+    })
+    expect(whole[0].response).toEqual({ data: [{ url: 'https://img.example/one.png' }, { b64_json: 'QUJD' }] })
+    // Cut: the byte prefix arrives as a plain string and the flag is set —
+    // the two shapes are the channel's whole-versus-cut contract, and a
+    // consumer never has to guess which one it holds.
+    expect(whole[1]).toMatchObject({
+      state: 'done',
+      responseTruncated: true,
+      response: '{"created":1,"data":[{"b64_json":"AAAA… (cut',
+      usage: { images: 1 },
+    })
+  })
+
+  it('degrades a malformed media response field without throwing', () => {
+    // A response that is neither object nor string (a corrupted frame)
+    // leaves the column responseless rather than broken.
+    const columns = initialColumns(['m0'])
+    foldEvent(columns, {
+      type: 'done',
+      slot: 0,
+      model: 'm0',
+      status: 200,
+      request_id: 'r',
+      usage: { input_tokens: 0, output_tokens: 0 },
+      cost_micros: 0,
+      cost_known: false,
+      duration_ms: 0,
+      response: 42,
+    } as unknown as PlaygroundStreamEvent)
+    expect(columns[0]).toMatchObject({ state: 'done', response: null, responseTruncated: false })
+  })
+
+  it('folds a string response as cut even when the flag is missing', () => {
+    // The shape alone is the whole-versus-cut contract: a plain string is
+    // always a cut prefix, and the channel never inlines a whole body as
+    // a string. A frame that lost its response_truncated flag between the
+    // channel and this fold still reads as cut — guessing "whole" would
+    // pass a cut body off as complete.
+    const columns = initialColumns(['img-a'])
+    foldEvent(columns, {
+      type: 'done',
+      slot: 0,
+      model: 'img-a',
+      status: 200,
+      request_id: 'req-img-a',
+      usage: { input_tokens: 2, output_tokens: 0 },
+      cost_micros: 9,
+      cost_known: true,
+      duration_ms: 7,
+      response: '{"created":1,"data":[{"b64_json":"AAAA',
+    })
+    expect(columns[0]).toMatchObject({ state: 'done', responseTruncated: true })
+    expect(columns[0].response).toBe('{"created":1,"data":[{"b64_json":"AAAA')
+  })
 })

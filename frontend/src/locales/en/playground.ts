@@ -20,6 +20,10 @@ export default {
   attachImage: 'Attach image',
   removeImage: 'Remove',
   imageTooLarge: 'Image exceeds the attachment size cap',
+  imageSize: 'Size',
+  imageSize_tip: 'The size axis of the image request, applied to every selected model. Common spellings are preset; a value a model does not serve is refused by its upstream.',
+  imageCount: 'Images',
+  imageCount_tip: 'How many images each selected model is asked to generate (1–10), billed per delivered image.',
   stop: 'Stop',
   columnStateStreaming: 'Streaming',
   columnStateCancelled: 'Cancelled',
@@ -43,6 +47,9 @@ export default {
   latencyLabel: 'Latency',
   usageLabel: 'Usage',
   usageTokens: '{input} in / {output} out',
+  usageImages: '{count} image(s) delivered',
+  responseTruncated:
+    'The response exceeded the channel’s inline cap and is shown truncated — the full body is in the request log under this column id.',
   errorTypeLabel: 'Type',
   requestLabel: 'Request log id',
 }
