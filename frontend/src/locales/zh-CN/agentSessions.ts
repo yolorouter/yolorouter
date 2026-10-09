@@ -28,37 +28,19 @@ export default {
   col_cost_tip: '会话内已知成本之和（人民币元）；无法定价的请求单列披露，不计入合计',
   costUnknownNote: '含 {n} 条成本未知',
 
-  // Detail page
+  // Detail page (the session replay)
   detailEyebrow: '统计分析',
-  detailTitle: '会话详情',
-  detailDescription: '该会话的全部请求按时间先后排列，逐条给出模型、状态与消耗。',
+  detailTitle: '会话回放',
+  detailDescription: '整个会话的连续对话回放：按时间先后去重展示每轮新增的输入与模型回复，轮次上直接标注模型、耗时与消耗。',
   backToList: '返回列表',
   notFound: '会话不存在或请求日志已被清理',
+  loadFailed: '加载会话回放失败',
   detailRequestsUnit: '条请求',
-  col_created: '时间',
-  col_created_tip: '请求开始时间，按浏览器时区显示',
-  col_model: '模型',
-  col_model_tip: '调用方请求的对外模型名',
-  col_status: '状态',
-  col_status_tip: '请求的最终结果分类：成功、失败、部分成功、调用方取消、被拒绝',
-  detail_col_tokens: 'Token',
-  detail_col_tokens_tip: '该请求的输入与输出 token 数',
-  col_duration: '耗时',
-  col_duration_tip: '该请求从接收到响应完成的端到端耗时',
-  col_waterfall: '时间线',
-  col_waterfall_tip: '每条请求在会话真实时间轴上的耗时条：位置对齐开始时间，长度对应耗时，颜色同状态分类；悬停查看精确开始时间与耗时',
-  waterfallTip: '{time} 开始 · 耗时 {duration}',
-
-  // Summary card (figures recomputed from the detail's own requests array,
-  // same semantics as the list aggregate)
-  summaryRequests: '请求数',
-  summaryRequests_tip: '该会话的请求总数及其中成功（五分类中的 success）的数量，口径与列表页一致',
-  summaryTokens: '总 Token',
-  summaryTokens_tip: '会话内全部请求的输入与输出 token 之和',
-  summaryCost: '成本',
-  summaryCost_tip: '会话内已知成本之和（人民币元）；无法定价的请求单列披露，不计入合计',
-  summaryDuration: '会话时长',
-  summaryDuration_tip: '会话内最晚一次请求与最早一次请求的时间差',
+  replayElapsed: '历时 {span}',
+  replaySuccessRatio: '成功 {success}/{total}',
+  replayRequestLink: '请求详情',
+  systemBlockTitle: '系统提示',
+  systemSeenAt: '首次出现于请求 {id}',
 
   // Message flow (bubble view of the captured bodies). The disclosure-row
   // and stream-merge keys below migrated here from the retired request
