@@ -59,6 +59,29 @@ func ListProviders(db *gorm.DB) ([]model.Provider, error) {
 	return providers, nil
 }
 
+// FindProviderBaseURLs loads just the id → base_url pairs for the given
+// ids. The base URL is the dialect table's key (which speech dialect a
+// provider's candidates speak); readers that only need that resolution —
+// the Playground's per-model voice lists — get it without loading whole
+// provider rows or their key material.
+func FindProviderBaseURLs(db *gorm.DB, ids []uint) (map[uint]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var rows []struct {
+		ID      uint
+		BaseURL string
+	}
+	if err := db.Model(&model.Provider{}).Select("id, base_url").Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint]string, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.BaseURL
+	}
+	return out, nil
+}
+
 // UpdateProviderNameNote updates only name/note — must never touch
 // destination_version (that's UpdateProviderBaseURL's sole responsibility).
 func UpdateProviderNameNote(db *gorm.DB, id uint, name, note string, now time.Time) error {

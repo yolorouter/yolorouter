@@ -29,6 +29,15 @@ type Dialect struct {
 	// omit the field entirely (a dialect whose endpoint applies its own
 	// documented default).
 	ProbeVoice string
+	// Voices is the dialect's preset voice vocabulary — the vendor's own
+	// documented voice ids in a stable order, the probe/default voice
+	// first. A PRESET list, never a gate: voice ids are vendor-private
+	// dictionaries (a cloned voice id is legal and unlisted), so consumers
+	// offer these as ready values and still accept any caller spelling,
+	// with the upstream's own 400 the only legality verdict. A dialect
+	// whose wider vocabulary is not pinned in-repo carries just its probe
+	// voice rather than an invented list.
+	Voices []string
 }
 
 func utf8ByteMeter(input string) int  { return len(input) }
@@ -53,6 +62,18 @@ var (
 		// TTS family: MOSS-TTSD-v0.5 accepts the CosyVoice-prefixed voice
 		// and passes the probe with it (live 2026-09-05).
 		ProbeVoice: "FunAudioLLM/CosyVoice2-0.5B:alex",
+		// The CosyVoice2-0.5B preset voices in the vendor's documented
+		// order, the live-pinned probe voice first.
+		Voices: []string{
+			"FunAudioLLM/CosyVoice2-0.5B:alex",
+			"FunAudioLLM/CosyVoice2-0.5B:anna",
+			"FunAudioLLM/CosyVoice2-0.5B:bella",
+			"FunAudioLLM/CosyVoice2-0.5B:benjamin",
+			"FunAudioLLM/CosyVoice2-0.5B:charles",
+			"FunAudioLLM/CosyVoice2-0.5B:claire",
+			"FunAudioLLM/CosyVoice2-0.5B:david",
+			"FunAudioLLM/CosyVoice2-0.5B:diana",
+		},
 	}
 	// DialectZhipu: wav and pcm only, wav the default an unspecified caller
 	// gets — announcing the OpenAI default mp3 there would promise bytes
@@ -67,6 +88,10 @@ var (
 		// name would tie the probe to a vocabulary list it has no other
 		// reason to carry.
 		ProbeVoice: "",
+		// The endpoint's documented voice table, pinned live 2026-09-03:
+		// tongtong the default, six more named voices, cloned voice ids
+		// on top (the presets' job is to fill a dropdown, not to gate).
+		Voices: []string{"tongtong", "chuichui", "xiaochen", "jam", "kazi", "douji", "luodo"},
 	}
 	// DialectOpenAI is the default: every base this build does not know by
 	// name is spoken to in the OpenAI speech shape, whole format
@@ -78,6 +103,8 @@ var (
 		Meter:         characterMeter,
 		MeterLabel:    "characters",
 		ProbeVoice:    "alloy",
+		// The OpenAI speech voices, the probe voice first.
+		Voices: []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"},
 	}
 	// DialectMiniMax carries only the table half of the t2a dialect — the
 	// format set and the meter — because its submit and answer shapes are
@@ -90,6 +117,10 @@ var (
 		Meter:         MiniMaxMeter,
 		MeterLabel:    "minimax_characters",
 		ProbeVoice:    "male-qn-qingse",
+		// Only the probe voice is pinned in-repo; the wider system-voice
+		// table is the vendor's to document, and a preset list that
+		// guesses at it would 400 on live traffic.
+		Voices: []string{"male-qn-qingse"},
 	}
 )
 

@@ -283,8 +283,9 @@ interface ListFilter {
   // except a trailing "/" selects the whole subtree (the Gemini option).
   request_path: string | null
   // "" would double as "all" and "normal", so the wire values are explicit:
-  // null = all, 'caller' = normal requests, 'vision_fallback' = sub-calls.
-  source: 'caller' | 'vision_fallback' | null
+  // null = all, 'caller' = normal requests, 'vision_fallback' = sub-calls,
+  // 'playground' = console Playground runs.
+  source: 'caller' | 'vision_fallback' | 'playground' | null
   // Calling tool recognized from the request's agent signature
   // (User-Agent prefix / dedicated headers); null = all tools. Values are
   // the recognizer's closed enum — see utils/agentClient.ts.
@@ -413,6 +414,7 @@ const costOptions = computed<SelectOption[]>(() => ([
 const sourceOptions = computed<SelectOption[]>(() => ([
   { label: t('requestLogs.sourceCaller'), value: 'caller' },
   { label: t('requestLogs.sourceVisionFallback'), value: 'vision_fallback' },
+  { label: t('requestLogs.sourcePlayground'), value: 'playground' },
 ]))
 
 // Agent-client options mirror the gateway recognizer's client enum
@@ -502,7 +504,7 @@ function applyQueryFilter() {
   if (typeof q.request_path === 'string' && q.request_path) {
     filter.request_path = q.request_path
   }
-  if (q.source === 'caller' || q.source === 'vision_fallback') {
+  if (q.source === 'caller' || q.source === 'vision_fallback' || q.source === 'playground') {
     filter.source = q.source
   }
   if (typeof q.api_key_id === 'string' && q.api_key_id) {
@@ -727,7 +729,7 @@ function onEndpointChange(v: string | null) {
   void onSearch()
 }
 
-function onSourceChange(v: 'caller' | 'vision_fallback' | null) {
+function onSourceChange(v: 'caller' | 'vision_fallback' | 'playground' | null) {
   filter.source = v
   void onSearch()
 }

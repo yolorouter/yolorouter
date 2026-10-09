@@ -89,8 +89,9 @@ type RequestLogFilter struct {
 	KeyPrefix string
 	// Source narrows on who initiated the request: "" = no constraint,
 	// model.RequestLogSourceVisionFallback = describe sub-calls only,
-	// model.RequestLogSourceCallerFilter = normal requests only (see that
-	// constant for why the sentinel exists).
+	// model.RequestLogSourceCallerFilter = normal requests only,
+	// model.RequestLogSourcePlayground = console Playground runs only (see
+	// those constants for why the caller sentinel exists).
 	Source string
 	// RequestPath narrows on the caller-side request path. Matched exactly,
 	// except a value ending in "/" selects the whole subtree — needed for the

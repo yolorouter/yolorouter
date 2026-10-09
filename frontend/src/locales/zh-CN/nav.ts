@@ -5,6 +5,9 @@ export default {
   menu: '菜单',
   groupAnalytics: '统计分析',
   usage: '用量统计',
+  // The model comparison bench: one prompt through up to 4 models over
+  // the real gateway.
+  playground: '模型对比',
   logAudit: '日志审计',
   agentSessions: '工具会话',
   costStats: '费用统计',

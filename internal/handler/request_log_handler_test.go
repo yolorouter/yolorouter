@@ -1097,6 +1097,65 @@ func TestListRequestLogsFiltersBySource(t *testing.T) {
 	}
 }
 
+// TestListRequestLogsFiltersBySourcePlayground pins the playground marker's
+// filter behaviour: a row stored with source=playground comes back under
+// the playground filter with its marker intact, stays out of the caller
+// and vision_fallback filters, and lists alongside normal rows when
+// unfiltered.
+func TestListRequestLogsFiltersBySourcePlayground(t *testing.T) {
+	r, db, _ := newRequestLogTestRouter(t)
+	now := time.Now().UTC()
+	seedRequestLog(t, db, "normal-req", now, func(rl *model.RequestLog) { rl.StatusCode = 200 })
+	seedRequestLog(t, db, "pg-req", now, func(rl *model.RequestLog) {
+		rl.StatusCode = 200
+		rl.Source = model.RequestLogSourcePlayground
+	})
+
+	listIDs := func(query string) []string {
+		t.Helper()
+		w, _ := doJSON(t, r, http.MethodGet, "/api/admin/request-logs"+query, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+		}
+		var env struct {
+			Data struct {
+				List []struct {
+					RequestID string `json:"request_id"`
+					Source    string `json:"source"`
+				} `json:"list"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		ids := make([]string, 0, len(env.Data.List))
+		for _, it := range env.Data.List {
+			ids = append(ids, it.RequestID)
+			if it.RequestID == "pg-req" && it.Source != model.RequestLogSourcePlayground {
+				t.Fatalf("pg-req row lost its source marker in the list JSON: %+v", it)
+			}
+		}
+		return ids
+	}
+
+	if got := listIDs(""); len(got) != 2 {
+		t.Fatalf("unfiltered = %v, want both rows", got)
+	}
+	if got := listIDs("?source=playground"); len(got) != 1 || got[0] != "pg-req" {
+		t.Fatalf("source=playground = %v, want [pg-req]", got)
+	}
+	// The caller sentinel means stored source = "" only: a playground row is
+	// a marked row, so filtering "caller requests" must NOT swallow it.
+	if got := listIDs("?source=caller"); len(got) != 1 || got[0] != "normal-req" {
+		t.Fatalf("source=caller = %v, want [normal-req] without the playground row", got)
+	}
+	// vision_fallback still means describe sub-calls only — a playground row
+	// is not one.
+	if got := listIDs("?source=vision_fallback"); len(got) != 0 {
+		t.Fatalf("source=vision_fallback = %v, want none", got)
+	}
+}
+
 // TestListRequestLogsFiltersByW3CTraceID pins the wire shape of the
 // trace-id filter: the w3c_trace_id query param narrows the list by exact
 // match, a present-but-empty param is a real constraint matching nothing

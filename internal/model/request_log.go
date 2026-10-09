@@ -135,7 +135,8 @@ type RequestLog struct {
 	AudioPricingSnapshot string `gorm:"column:audio_pricing_snapshot" json:"audio_pricing_snapshot"`
 	// Source marks who initiated the request: "" = a normal caller request,
 	// "vision_fallback" = an image-description sub-call the gateway made on
-	// behalf of the request named by ParentRequestID. Sub-calls are separate
+	// behalf of the request named by ParentRequestID, "playground" = a relay
+	// the console's Playground page launched. Sub-calls are separate
 	// rows so each row's tokens describe exactly one model; the description
 	// cost reaches the key's totals through the sub-call's own row.
 	Source          string  `gorm:"column:source" json:"source"`
@@ -159,6 +160,12 @@ func (RequestLog) TableName() string { return "request_logs" }
 // gateway describing images on behalf of another request (vision fallback
 // loopback sub-call). The empty string marks a normal caller request.
 const RequestLogSourceVisionFallback = "vision_fallback"
+
+// RequestLogSourcePlayground marks a request_logs row created by the
+// console's Playground page: a real relay the signed-in user launched from
+// the side-by-side comparison UI, billed and logged like any caller request
+// but attributable as "came from Playground" for filtering.
+const RequestLogSourcePlayground = "playground"
 
 // RequestLogSourceCallerFilter is the FILTER-ONLY sentinel meaning "normal
 // caller rows" (stored source = ”). It is never stored: the stored value

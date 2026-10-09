@@ -69,7 +69,8 @@ type RequestLogListItem struct {
 	// empty for rows rejected before relay and for rows predating the field.
 	RequestPath string `json:"request_path"`
 	// Source is "" for a caller request, "vision_fallback" for a describe
-	// sub-call working for ParentRequestID.
+	// sub-call working for ParentRequestID, "playground" for a console
+	// Playground run.
 	Source           string `json:"source"`
 	ParentRequestID  string `json:"parent_request_id"`
 	ProviderID       *uint  `json:"provider_id"`

@@ -54,6 +54,7 @@ const (
 	VideoTaskExpired                = rows.VideoTaskExpired
 	VideoTaskCancelled              = rows.VideoTaskCancelled
 	RequestLogSourceVisionFallback  = rows.RequestLogSourceVisionFallback
+	RequestLogSourcePlayground      = rows.RequestLogSourcePlayground
 	OutputModalityText              = rows.OutputModalityText
 	OutputModalityImage             = rows.OutputModalityImage
 	OutputModalityVideo             = rows.OutputModalityVideo

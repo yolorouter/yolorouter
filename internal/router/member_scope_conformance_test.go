@@ -1,6 +1,7 @@
 package router
 
 import (
+	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -104,6 +105,25 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/api-keys/:id":           {concrete: "/api/admin/api-keys/" + uintToString(f.aliceKeyID), okStatuses: []int{http.StatusOK}},
 		"/api/admin/api-keys/:id/plaintext": {concrete: "/api/admin/api-keys/" + uintToString(f.aliceKeyID) + "/plaintext", okStatuses: []int{http.StatusOK, http.StatusBadRequest}, badRequestCode: 11016},
 		"/api/admin/dashboard":              {concrete: "/api/admin/dashboard", okStatuses: []int{http.StatusOK}},
+		// The Playground pickers: the key list pins to the session's own
+		// account inside the service (dedicated tests below hold the exact
+		// row set), the model list is the shared routing vocabulary. Both
+		// carry no cross-account rows, so the sentinel scan holds vacuously
+		// here — the pinning itself is what the dedicated tests pin.
+		"/api/admin/playground/keys":   {concrete: "/api/admin/playground/keys", okStatuses: []int{http.StatusOK}},
+		"/api/admin/playground/models": {concrete: "/api/admin/playground/models", okStatuses: []int{http.StatusOK}},
+		// A finished speech column's retained audio clip. The fixture runs
+		// no audio comparison, so the member's own honest answer for any id
+		// is 404 — reachable (a session gate in front would answer 401, an
+		// admin gate 403) and carrying nothing. The ownership pin (another
+		// account's retained clip answers the same nothing) is held by the
+		// dedicated audio tests in playground_audio_test.go.
+		"/api/admin/playground/audio/:request_id": {concrete: "/api/admin/playground/audio/req-alice-none", okStatuses: []int{http.StatusNotFound}},
+		// A finished video column's proxied clip — the same shape of
+		// member-reachable miss as the audio route above (the fixture runs
+		// no video comparison); the ownership pin is held by the dedicated
+		// video tests in playground_video_test.go.
+		"/api/admin/playground/video/:request_id": {concrete: "/api/admin/playground/video/req-alice-none", okStatuses: []int{http.StatusNotFound}},
 	}
 
 	// Session/bootstrap surface: reachable pre-role or member-facing by
@@ -190,5 +210,73 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		if _, ok := classified[ri.Path]; !ok {
 			t.Errorf("unclassified admin GET route %s: add it to adminOnly, memberScoped (with a leak assertion) or sessionExempt in this test — this is the review gate that keeps a new data route from silently leaking other accounts' rows", ri.Path)
 		}
+	}
+
+	// The POST extension of the same review gate. GET dominates the admin
+	// surface, but a member-reachable POST spends the member's resources
+	// under their identity, which is exactly what must not escape
+	// classification. Today's member-reachable POST entries:
+	//
+	//   /api/admin/playground/run — the console Playground's aggregate
+	//   channel. A member reaches their OWN column (their key, their
+	//   spend, the run's outcome on the stream); another account's key id
+	//   is refused without confirming anything about it.
+	//
+	//   /api/admin/playground/video/stop-wait — the video column's
+	//   stop-waiting switch. It touches no one else's resources: the
+	//   service pins the in-flight wait to the account that ran it.
+	memberScopedPOST := map[string]func(){
+		"/api/admin/playground/run": func() {
+			own := fmt.Sprintf(`{"key_id":%d,"modality":"text","models":["no-such-model"],"request":{"messages":[{"role":"user","content":"hi"}]}}`, f.aliceKeyID)
+			w := f.do(t, http.MethodPost, "/api/admin/playground/run", own, f.aliceCk)
+			// Reaching one's own column means the channel opened for the
+			// member's own key: 200 + the event stream carrying the run's
+			// outcome (an error EVENT for the unknown model is a reached
+			// column — the relay answered — not a routing rejection).
+			if w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Content-Type"), "text/event-stream") {
+				t.Errorf("member-scoped POST /api/admin/playground/run: member must reach their own column (200 event-stream), got %d %s", w.Code, w.Body.String())
+				return
+			}
+			if !strings.Contains(w.Body.String(), "event: error") {
+				t.Errorf("member-scoped POST /api/admin/playground/run: expected the column's outcome on the stream, got %s", w.Body.String())
+			}
+			// Another account's key is refused at the console gate, and
+			// the refusal must not echo whose key it was.
+			foreign := fmt.Sprintf(`{"key_id":%d,"modality":"text","models":["no-such-model"],"request":{"messages":[{"role":"user","content":"hi"}]}}`, f.bobKeyID)
+			w = f.do(t, http.MethodPost, "/api/admin/playground/run", foreign, f.aliceCk)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("member-scoped POST /api/admin/playground/run: foreign key must get 403, got %d %s", w.Code, w.Body.String())
+				return
+			}
+			if m := sentinel.FindString(w.Body.String()); m != "" {
+				t.Errorf("member-scoped POST /api/admin/playground/run leaked another account's data (found %q):\n%s", m, w.Body.String())
+			}
+		},
+		"/api/admin/playground/video/stop-wait": func() {
+			// The fixture runs no video comparison, so no wait exists: the
+			// member's own honest answer is 404 — reachable and confirming
+			// nothing. The owner pin (another account's wait answers the
+			// same 404) is held by the dedicated video tests.
+			w := f.do(t, http.MethodPost, "/api/admin/playground/video/stop-wait", `{"request_id":"req-alice-none"}`, f.aliceCk)
+			if w.Code != http.StatusNotFound {
+				t.Errorf("member-scoped POST /api/admin/playground/video/stop-wait: expected 404 for an absent wait, got %d %s", w.Code, w.Body.String())
+			}
+		},
+	}
+	for route, probe := range memberScopedPOST {
+		// The entry must describe a really-registered route — a stale
+		// entry would pass forever while guarding nothing.
+		registered := false
+		for _, ri := range f.r.Routes() {
+			if ri.Method == http.MethodPost && ri.Path == route {
+				registered = true
+				break
+			}
+		}
+		if !registered {
+			t.Errorf("member-scoped POST %s: route is not registered — the classification entry is stale", route)
+			continue
+		}
+		probe()
 	}
 }

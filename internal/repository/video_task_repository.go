@@ -43,6 +43,23 @@ func FindVideoTaskForOwner(db *gorm.DB, apiKeyID uint, id string) (*model.VideoT
 	return &task, nil
 }
 
+// FindVideoTaskByRequestID reads the task whose submit wrote the named
+// request_logs row — the join the console's video playback route uses to
+// resolve a finished column's clip from its audit id. The caller owns the
+// ownership check (task → key → account): this read is by the globally
+// unique request id alone.
+func FindVideoTaskByRequestID(db *gorm.DB, requestID string) (*model.VideoTask, error) {
+	var task model.VideoTask
+	err := db.Where("request_id = ?", requestID).First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrVideoTaskNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
 // ClaimVideoTaskPoll compare-and-sets last_polled_at for a task that is
 // due a poll: the update matches only while the stored stamp is still the
 // one the caller read (nil meaning never polled), so two racing pollers

@@ -26,6 +26,7 @@ import (
 	"github.com/yolorouter/yolorouter/internal/service/dashboard"
 	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/internal/service/oauth"
+	"github.com/yolorouter/yolorouter/internal/service/playground"
 	"github.com/yolorouter/yolorouter/internal/service/provider"
 	"github.com/yolorouter/yolorouter/internal/service/providerclient"
 	"github.com/yolorouter/yolorouter/internal/service/requestlog"
@@ -67,6 +68,13 @@ func hasAnyFile(fsys fs.FS) bool {
 // "/" (an external https:// URL, a bare "#" anchor, etc.) is deliberately
 // left unmatched; there is nothing local to check it against.
 var localAssetRefPattern = regexp.MustCompile(`(?:src|href)="(/[^"]+)"`)
+
+// playgroundRunBodyLimit bounds the Playground run endpoint's request
+// body. The console-wide admin cap is 1 MiB, but a run may carry vision
+// attachments as inline base64 data URLs (megabytes each, capped per image
+// by the handler); 16 MiB holds a reasonable attachment set while staying
+// below the gateway's own 20 MiB request bound the relayed bytes inherit.
+const playgroundRunBodyLimit = 16 << 20
 
 // validateEmbeddedFrontend enforces the dist/index.html invariant at
 // startup rather than leaving it to be discovered per-request: a populated
@@ -539,6 +547,49 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	providerSvc.SetKeyRetestPassedListener(relaySvc.NoteKeyRetestPassed)
 
 	registerCapabilities(relaySvc, db, loopbackBase)
+
+	// The console Playground runs through the SAME relay instance the
+	// caller-facing routes above use — its runs must share the admission
+	// state (rate windows, circuit, key pool) of real traffic, so a second
+	// relay service here would defeat the real-chain contract the endpoint
+	// exists to serve. Member-reachable: a member runs on their own key,
+	// and the handler owner-checks it. The video leg additionally gets the
+	// SAME video job domain and poll transport the relay was built with:
+	// its bridge polls through the state machine a real caller's GET polls
+	// through, and its playback proxy fetches through the same rules.
+	playgroundVideoTasks := osswire.NewVideoTasks(videoDomain)
+	playgroundSvc := playground.New(db, secrets, relaySvc, playgroundVideoTasks, pollerClient, bodiesDir)
+	// The run endpoint accepts vision attachments as inline base64 data
+	// URLs, which the console-wide 1 MiB body cap cannot hold, so it
+	// registers on its own group rather than the scoped one — with the
+	// SAME session + member-scope chain and a cap still below the
+	// gateway's own 20 MiB request bound (nesting inside the scoped group
+	// would stack a second MaxBytesReader under the 1 MiB one and keep the
+	// smaller limit). The picker reads have no such payload and stay on
+	// the scoped group.
+	playgroundRun := r.Group("/api/admin/playground", middleware.BodySizeLimit(playgroundRunBodyLimit))
+	playgroundRun.Use(middleware.RequireSession(db), middleware.MemberScope())
+	playgroundRun.POST("/run", handler.PostPlaygroundRun(playgroundSvc))
+	// A finished speech column's retained clip: the target of the done
+	// event's audio reference, served for the page session that ran it and
+	// owner-pinned inside the service. Same session + member-scope chain
+	// as the run itself.
+	playgroundRun.GET("/audio/:request_id", handler.GetPlaygroundAudio(playgroundSvc))
+	// A finished video column's clip: the target of the done event's video
+	// reference, proxied from the upstream's own result URL for the owning
+	// account. And the video column's stop-waiting switch: it ends the
+	// page's bridged polling (never the task), so a long render has an
+	// honest escape hatch. Same session + member-scope chain as the run.
+	playgroundRun.GET("/video/:request_id", handler.GetPlaygroundVideo(playgroundSvc))
+	playgroundRun.POST("/video/stop-wait", handler.PostPlaygroundVideoStopWait(playgroundSvc))
+	// The Playground pickers read here, member-reachable like the run: the
+	// key list is pinned to the session's own account inside the service
+	// (both roles), and the model list carries only routing names, modality
+	// declarations, and the speech models' preset voice vocabularies — the
+	// vocabulary a run needs and nothing an operator's comparison shouldn't
+	// expose.
+	scoped.GET("/playground/keys", handler.GetPlaygroundKeys(playgroundSvc))
+	scoped.GET("/playground/models", handler.GetPlaygroundModels(modelSvc, playgroundSvc))
 
 	v1 := gatewayGroup(r, "/v1", bodiesDir, db)
 	v1.POST("/chat/completions", gateway.PostChatCompletions(relaySvc))

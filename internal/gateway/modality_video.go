@@ -186,6 +186,24 @@ var isKlingBase = videos.IsKlingBase
 // reason isArkBase is.
 var isMiniMaxBase = videos.IsMiniMaxBase
 
+// ReplaceArkBaseDetectorForTest swaps the Ark base detector and returns
+// the restore that puts the production one back. The var above is the
+// seam this package's own tests already use; it is exported for the
+// CROSS-package end-to-end tests (the console Playground's, which drive
+// the whole relay from the router package) because they face the same
+// wall those in-package tests do: a local httptest upstream never
+// carries the real hostname, so the vendor branch cannot be exercised
+// against a live stub without pointing the detector at the stub's URL.
+// Only the Ark detector is exposed — the ark branch has no model-name
+// gate, so one override opens the whole submit-then-poll dialect to a
+// stub without touching any other modality's routing. Production callers
+// never touch it; tests must defer the restore.
+func ReplaceArkBaseDetectorForTest(detector func(string) bool) (restore func()) {
+	prev := isArkBase
+	isArkBase = detector
+	return func() { isArkBase = prev }
+}
+
 func (p *videoPayload) Supports(cand Candidate) CandidateVerdict {
 	switch {
 	case isArkBase(cand.BaseURL):

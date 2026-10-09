@@ -416,6 +416,14 @@ func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 		// else's request row.
 		rc.parentRequestID = c.GetHeader(loopback.HeaderParent)
 	}
+	// The console Playground's in-process invocation marks its gin context
+	// before calling Handle directly. Unlike the loopback marker above it
+	// grants NO privilege: a Playground exchange runs the same admission
+	// chain (the !visionFallbackSubCall branch below) and settles, bills,
+	// and logs like any caller request — only its request_logs attribution
+	// changes (CallSource). Resolved here, before any admission, so every
+	// exit path's row — including admission rejections — carries it.
+	rc.playgroundCall = IsPlaygroundCall(c)
 	rc.authCredential = GatewayCredential(c)
 
 	if !s.checkKeyStateAndLimits(c, rc, apiKey, start) {

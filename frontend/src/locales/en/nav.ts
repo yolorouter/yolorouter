@@ -5,6 +5,9 @@ export default {
   menu: 'Menu',
   groupAnalytics: 'Analytics',
   usage: 'Usage',
+  // The model comparison bench: one prompt through up to 4 models over
+  // the real gateway.
+  playground: 'Playground',
   logAudit: 'Log Audit',
   agentSessions: 'Tool Sessions',
   costStats: 'Cost Statistics',
