@@ -6,7 +6,7 @@
 // the bubbles render, or into an explicit fallback/placeholder/truncation
 // signal when the body cannot be read as chat.
 //
-// Three entry points, one per body side:
+// Four entry points, three per body side plus one slice form:
 //   translateRequestBody  — OpenAI chat `messages[]` / Anthropic messages
 //                           content blocks
 //   translateResponseBody — OpenAI `choices[].message` / Anthropic
@@ -17,6 +17,13 @@
 //                           `content_block_delta.text_delta` sequences (block
 //                           boundaries included) concatenated back into the
 //                           full reply text
+//   translateMessageArray — a bare message-object array with no surrounding
+//                           body: the slice the session replay transcript
+//                           delivers per request (the messages a request
+//                           newly contributed, and the assistant copies a
+//                           client resends as history when the gateway never
+//                           recorded the reply). Emits the same internal
+//                           structure the whole-body paths emit.
 //
 // Format judgment order is FIXED: Anthropic features are
 // tested first (top-level `system`, content arrays that read as Anthropic
@@ -26,7 +33,7 @@
 // renders; the order only matters for bodies carrying features of both.
 //
 // This module is deliberately free of Vue/i18n/component imports — the
-// three matrices are pinned by table-driven vitest cases with zero DOM.
+// four matrices are pinned by table-driven vitest cases with zero DOM.
 
 // ---------------------------------------------------------------------------
 // Internal unified shape (the translator's output contract)
@@ -442,6 +449,59 @@ export function translateRequestBody(raw: string): TranslatedBody {
     return FALLBACK
   }
 
+  return messages.length > 0 ? { kind: 'messages', messages, truncated: false } : FALLBACK
+}
+
+// ---------------------------------------------------------------------------
+// Bare message-array slice (session replay)
+// ---------------------------------------------------------------------------
+
+// The session replay transcript cuts each request's ever-growing history
+// down to the slice it newly contributed and delivers that slice as raw
+// message objects, already parsed out of the request body; the assistant
+// copies a client resends as history (a reply the gateway never recorded)
+// arrive the same way. This entry translates such a bare array.
+//
+// There is no surrounding body object, so the whole-body format judgment
+// does not apply: no top-level system to lift (the replay carries system
+// prompts on its own channel) and no body-level dialect feature. Each
+// message is judged on its own content instead — a content array that
+// reads as Anthropic blocks walks the blocks parser, everything else
+// (string, OpenAI parts, absent) walks the OpenAI reading. The two parsers
+// emit the same internal structure for the shared vocabulary, so a
+// single-dialect array translates identically to the whole-body path and
+// a mixed one still renders.
+export function translateMessageArray(input: unknown): TranslatedBody {
+  // Nothing delivered at all (the transcript's not-recorded reply source
+  // carries no raw) — the placeholder note, the same reading an empty
+  // body string gets on the whole-body entries.
+  if (input === null || input === undefined) return PLACEHOLDER
+  if (!Array.isArray(input)) return FALLBACK
+
+  // tool_use id → tool name, walked across the whole array in order so a
+  // later tool_result block can name the tool it answers — the same walk
+  // the Anthropic whole-body path runs over its messages.
+  const toolNames = new Map<string, string>()
+  const messages: ChatMessage[] = []
+  for (const m of input) {
+    if (!isRecord(m)) continue
+    const role = typeof m.role === 'string' ? m.role : ''
+    const parts = contentToParts(m.content, isBlocksArray(m.content), toolNames)
+    // Assistant tool_calls live beside content, not inside it (the OpenAI
+    // resend copies) — one labeled part per call, appended in wire order.
+    if (Array.isArray(m.tool_calls)) {
+      for (const call of m.tool_calls) {
+        if (!isRecord(call)) continue
+        const fn = isRecord(call.function) ? call.function : {}
+        parts.push(toolPart(toolLabel('tool_calls', fn.name), toolDetail(fn.arguments)))
+      }
+    }
+    messages.push(makeMessage(role, parts))
+  }
+  // An array that yielded no messages — an empty list (a pure retry that
+  // contributed nothing) or one made only of non-record elements — has
+  // nothing to render as conversation: the same fallback an empty message
+  // list gets on the whole-body path.
   return messages.length > 0 ? { kind: 'messages', messages, truncated: false } : FALLBACK
 }
 

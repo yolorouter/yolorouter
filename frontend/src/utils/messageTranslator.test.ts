@@ -15,12 +15,18 @@
 //                        content_block_start/delta/stop boundaries,
 //                        interleaved and malformed lines, empty stream →
 //                        empty reply
+//   bare message array   the session-replay slice form: one message-object
+//                        array per dialect, asserted isomorphic to the
+//                        whole-body translation of the equivalent body,
+//                        plus the degradation legs (nothing delivered →
+//                        placeholder, no chat shape → fallback)
 //
 // Fixtures mirror the wire formats as the gateway relays them (the stream
 // fixtures match what the on-disk SSE capture contains: verbatim event:
 // lines plus `data: {json}` per chunk).
 import { describe, expect, it } from 'vitest'
 import {
+  translateMessageArray,
   translateRequestBody,
   translateResponseBody,
   translateStreamBody,
@@ -233,6 +239,116 @@ describe('translateRequestBody (request-side matrix)', () => {
     const out = translateRequestBody('   ')
     expect(out.kind).toBe('placeholder')
     expect(out.messages).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Bare message-array slice (session replay)
+// ---------------------------------------------------------------------------
+
+// The slice fixtures the replay transcript delivers: message objects with
+// the assistant/system roles already stripped (the added slice) or
+// assistant-only (the resend copies), one per dialect.
+const OPENAI_SLICE = [
+  { role: 'user', content: 'Weather in Beijing?' },
+  { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"北京"}' } }] },
+  { role: 'tool', tool_call_id: 'c1', content: '晴 26 度' },
+]
+const ANTHROPIC_SLICE = [
+  { role: 'user', content: [{ type: 'text', text: 'Run the deploy check' }] },
+  { role: 'assistant', content: [{ type: 'text', text: 'Checking.' }, { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'ls' } }] },
+  { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'total 0' }] },
+]
+
+describe('translateMessageArray (bare message-array matrix)', () => {
+  it.each([
+    ['OpenAI dialect group: user / assistant tool_calls / tool result', OPENAI_SLICE as unknown[], [
+      msg('user', 'Weather in Beijing?', [{ type: 'text', text: 'Weather in Beijing?' }]),
+      msg('assistant', '', [{ type: 'tool', label: 'tool_calls: get_weather', detail: '{\n  "city": "北京"\n}', detailLang: 'json' }]),
+      msg('tool', '晴 26 度', [{ type: 'text', text: '晴 26 度' }]),
+    ]],
+    ['Anthropic dialect group: blocks walk the blocks parser with in-array tool naming', ANTHROPIC_SLICE as unknown[], [
+      msg('user', 'Run the deploy check', [{ type: 'text', text: 'Run the deploy check' }]),
+      msg('assistant', 'Checking.', [
+        { type: 'text', text: 'Checking.' },
+        { type: 'tool', label: 'tool_use: Bash', detail: '{\n  "command": "ls"\n}', detailLang: 'json' },
+      ]),
+      msg('user', '', [{ type: 'tool', label: 'tool_result: Bash', detail: 'total 0' }]),
+    ]],
+  ] as Array<[string, unknown[], ChatMessage[]]>)('translates the %s', (_name, input, expected) => {
+    const out = translateMessageArray(input)
+    expect(out.kind).toBe('messages')
+    expect(out.truncated).toBe(false)
+    expect(out.messages).toEqual(expected)
+  })
+
+  it.each([
+    ['the OpenAI dialect slice', OPENAI_SLICE],
+    ['the Anthropic dialect slice', ANTHROPIC_SLICE],
+  ])('emits the same structure the whole-body translation emits for %s', (_name, slice) => {
+    // "Isomorphic to the whole-body translation" pinned literally: the
+    // bare array and the equivalent wrapped body must produce the exact
+    // same internal envelope, so the replay page renders slices through
+    // the very shape the existing message flow renders whole bodies.
+    expect(translateMessageArray(slice)).toEqual(translateRequestBody(JSON.stringify({ messages: slice })))
+  })
+
+  it('renders every resent assistant copy when several arrive (blocks and tool_calls shapes)', () => {
+    const out = translateMessageArray([
+      { role: 'assistant', content: [{ type: 'text', text: 'First attempt.' }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c9', type: 'function', function: { name: 'calc', arguments: '{}' } }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] },
+    ])
+    expect(out.kind).toBe('messages')
+    expect(out.messages).toEqual([
+      msg('assistant', 'First attempt.', [{ type: 'text', text: 'First attempt.' }]),
+      msg('assistant', '', [{ type: 'tool', label: 'tool_calls: calc' }]),
+      msg('assistant', 'Done.', [{ type: 'text', text: 'Done.' }]),
+    ])
+  })
+
+  it('judges each message on its own content, so a mixed-dialect array still renders', () => {
+    const out = translateMessageArray([
+      { role: 'user', content: 'string content walks the OpenAI reading' },
+      { role: 'user', content: [{ type: 'text', text: 'block content walks the blocks parser' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] },
+    ])
+    expect(out.kind).toBe('messages')
+    expect(out.messages).toEqual([
+      msg('user', 'string content walks the OpenAI reading', [{ type: 'text', text: 'string content walks the OpenAI reading' }]),
+      msg('user', 'block content walks the blocks parser', [
+        { type: 'text', text: 'block content walks the blocks parser' },
+        { type: 'image' },
+      ]),
+    ])
+  })
+
+  it('degrades a single untranslatable message to an empty bubble, not a failed array', () => {
+    const out = translateMessageArray([{ role: 'user', content: null }, 'not a record', 7])
+    expect(out.kind).toBe('messages')
+    expect(out.messages).toEqual([msg('user', '', [])])
+  })
+
+  it.each([
+    ['nothing delivered (null)', null],
+    ['nothing delivered (undefined)', undefined],
+  ])('returns the placeholder signal for %s', (_name, input) => {
+    const out = translateMessageArray(input)
+    expect(out.kind).toBe('placeholder')
+    expect(out.messages).toEqual([])
+    expect(out.truncated).toBe(false)
+  })
+
+  it.each([
+    ['a non-array object', { role: 'user', content: 'hi' }],
+    ['a bare string', 'hello'],
+    ['a number', 42],
+    ['an empty array (a pure retry that contributed nothing)', []],
+    ['an array of non-record elements only', [1, 'x', null]],
+  ])('falls back on %s', (_name, input) => {
+    const out = translateMessageArray(input)
+    expect(out.kind).toBe('fallback')
+    expect(out.messages).toEqual([])
+    expect(out.truncated).toBe(false)
   })
 })
 
