@@ -134,3 +134,22 @@ export function providerProxySavePlan(mode: string, url: string): ProviderProxyS
   }
   return { ok: true, payload: { proxy_mode: stance, proxy_url: '' } }
 }
+
+/**
+ * Whether a provider's outbound traffic is actually proxied once its own
+ * stance meets the global setting — the display rule behind the provider
+ * pages' warning icon. Mirrors the backend resolver's precedence (provider
+ * explicit > global > off) at the granularity the UI needs: custom is
+ * proxied whatever the global says, off is direct whatever the global
+ * says, and '' inherits (proxied exactly when the global mode is not off,
+ * system counting as proxied since its env vars are process-level facts
+ * the console cannot second-guess). Unknown values normalize like
+ * outboundProxyFormFromSetting does — an unknown provider stance falls
+ * to inherit (which can over-warn under a proxied global, erring toward
+ * the warning rather than hiding it), and an unknown global falls to off.
+ */
+export function providerProxyEffective(providerMode: string, globalMode: string): boolean {
+  if (providerMode === 'custom') return true
+  if (providerMode === 'off') return false
+  return globalMode === 'custom' || globalMode === 'system'
+}

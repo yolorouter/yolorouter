@@ -504,6 +504,14 @@ func GetOutboundProxy(svc *systemsettings.SystemSettingsService) gin.HandlerFunc
 // invalid mode or proxy URL is refused with the setting's own 400-class
 // business code and the stored rows keep their previous values; a CAS miss
 // returns 409 the same way the other settings families do.
+//
+// Audit: same merge shape as the settings families above — the committed
+// change parks a field-level diff (mode, proxy_url) on the automatic
+// layer's single row. proxy_url is an exact-name redaction field: its diff
+// entry collapses to the placeholder, recording THAT the URL changed
+// without ever recording the address (authenticated proxies embed
+// user:pass@ inside the URL, so the whole value is treated as a
+// credential).
 func PutOutboundProxy(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req putOutboundProxyRequest
@@ -513,6 +521,11 @@ func PutOutboundProxy(svc *systemsettings.SystemSettingsService) gin.HandlerFunc
 		}
 		if req.Mode == nil || req.URL == nil || req.Version == nil || *req.Version < 1 {
 			response.ParamError(c, "mode, url and version (>=1) are all required")
+			return
+		}
+		before, _, err := svc.GetOutboundProxyForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
 			return
 		}
 		s, ver, err := svc.UpdateOutboundProxy(c.Request.Context(), *req.Version, *req.Mode, *req.URL)
@@ -528,6 +541,10 @@ func PutOutboundProxy(svc *systemsettings.SystemSettingsService) gin.HandlerFunc
 			}
 			return
 		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{"mode": before.Mode, "proxy_url": before.URL},
+			map[string]any{"mode": s.Mode, "proxy_url": s.URL},
+		))
 		response.Success(c, outboundProxyResponse{Mode: s.Mode, URL: s.URL, Version: ver})
 	}
 }

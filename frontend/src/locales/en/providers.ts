@@ -194,6 +194,7 @@ export default {
   proxyUrlUnparseable: 'The proxy URL cannot be parsed as a valid URL',
   proxyUrlScheme: 'The proxy URL scheme must be http, https, socks5, or socks5h',
   proxyUrlNoHost: 'The proxy URL is missing its host',
+  proxyWarningTooltip: "This provider's outbound traffic goes through the configured proxy",
   editProvider: 'Edit Provider',
   editProtocolReverifyWarning: 'Changing the base URL or protocol requires this provider\'s keys to be re-verified before they route',
   saveSuccess: 'Saved',

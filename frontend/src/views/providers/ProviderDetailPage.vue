@@ -2,6 +2,12 @@
 <template>
   <div class="common-page" v-if="provider">
     <PageHeader class="actions-placeholder" :eyebrow="t('providers.eyebrow')" :title="provider.name" :description="provider.base_url">
+      <!-- The proxy warning rides the title: the header is where the page
+           states what this provider IS, and "its traffic leaves through a
+           proxy" belongs in that sentence. -->
+      <template #title-suffix>
+        <ProviderProxyWarning v-if="providerProxied" />
+      </template>
       <template #actions>
         <template v-if="!isMobile">
           <n-button size="small" @click="showEditProvider = true">{{ t('providers.editProvider') }}</n-button>
@@ -188,6 +194,7 @@ import CandidateEditModal from '../../components/models/CandidateEditModal.vue'
 import ProviderEditModal from '../../components/providers/ProviderEditModal.vue'
 import DeleteProviderModal from '../../components/providers/DeleteProviderModal.vue'
 import KeyTestTargetsTag from '../../components/providers/KeyTestTargetsTag.vue'
+import ProviderProxyWarning from '../../components/providers/ProviderProxyWarning.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
@@ -202,6 +209,8 @@ import { deleteLeavesProviderUnusable, isLastUsableKey } from '../../utils/provi
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
 import { useClientPagination } from '../../composables/useClientPagination'
 import { candidateVerificationFilterOptions, useCandidateTableFilter } from '../../composables/useCandidateTableFilter'
+import { useGlobalProxyMode } from '../../composables/useGlobalProxyMode'
+import { providerProxyEffective } from '../../utils/outboundProxy'
 import { useIsMobile } from '../../composables/useIsMobile'
 import { useBackoffPoll } from '../../composables/useBackoffPoll'
 
@@ -226,6 +235,12 @@ const {
 
 const providerId = Number(route.params.id)
 const provider = ref<Provider | null>(null)
+// The global outbound-proxy stance resolves this provider's warning icon
+// when its own stance inherits; fetched once per mount, fail-open to off.
+const { mode: globalProxyMode, fetchGlobalMode } = useGlobalProxyMode()
+const providerProxied = computed(() =>
+  provider.value !== null && providerProxyEffective(provider.value.proxy_mode, globalProxyMode.value),
+)
 const activeTab = ref('keys')
 const showAddKey = ref(false)
 const showEditKey = ref(false)
@@ -380,6 +395,9 @@ onMounted(async () => {
     message.error(displayMessage(err, t))
     return
   }
+  // Resolves the header's proxy warning for an inheriting stance; a failure
+  // only means no icon (fail-open to off), so it stays silent.
+  void fetchGlobalMode()
   await loadCandidates()
   resumeQueuePollingFromLoadedRows()
   // First-setup handoff: the create flow parked this provider's id in the

@@ -3,6 +3,7 @@ import {
   checkProxyUrl,
   outboundProxyFormFromSetting,
   outboundProxySavePlan,
+  providerProxyEffective,
   providerProxySavePlan,
   proxyUrlIssueMessageKey,
 } from './outboundProxy'
@@ -115,5 +116,35 @@ describe('providerProxySavePlan', () => {
     expect(providerProxySavePlan('custom', '')).toEqual({ ok: false, issue: 'empty' })
     expect(providerProxySavePlan('custom', 'ftp://p:21')).toEqual({ ok: false, issue: 'scheme' })
     expect(providerProxySavePlan('', 'socks5://')).toEqual({ ok: false, issue: 'noHost' })
+  })
+})
+
+// The display rule behind the provider pages' warning icon: whether a
+// provider's stance resolves to proxied once it meets the global setting —
+// provider explicit beats global, inherit resolves against it, and unknown
+// strings never invent a proxied claim.
+describe('providerProxyEffective', () => {
+  it('custom is proxied whatever the global says, off is direct whatever the global says', () => {
+    expect(providerProxyEffective('custom', 'off')).toBe(true)
+    expect(providerProxyEffective('custom', 'custom')).toBe(true)
+    expect(providerProxyEffective('custom', 'system')).toBe(true)
+    expect(providerProxyEffective('off', 'custom')).toBe(false)
+    expect(providerProxyEffective('off', 'system')).toBe(false)
+    expect(providerProxyEffective('off', 'off')).toBe(false)
+  })
+
+  it('inherit resolves against the global mode, system counting as proxied', () => {
+    expect(providerProxyEffective('', 'custom')).toBe(true)
+    expect(providerProxyEffective('', 'system')).toBe(true)
+    expect(providerProxyEffective('', 'off')).toBe(false)
+  })
+
+  it('unknown strings normalize without inventing a stance: global to off, provider to inherit', () => {
+    // A garbage global mode must not claim proxied (normalize-to-off); a
+    // garbage provider stance reads as inherit, so it resolves against the
+    // global — erring toward the warning rather than hiding it.
+    expect(providerProxyEffective('', 'garbage')).toBe(false)
+    expect(providerProxyEffective('garbage', 'custom')).toBe(true)
+    expect(providerProxyEffective('garbage', 'off')).toBe(false)
   })
 })

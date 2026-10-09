@@ -196,6 +196,7 @@ export default {
   proxyUrlUnparseable: '代理地址无法解析为合法 URL',
   proxyUrlScheme: '代理地址的协议必须是 http、https、socks5 或 socks5h',
   proxyUrlNoHost: '代理地址缺少主机名',
+  proxyWarningTooltip: '该供应商出站流量经过配置的代理',
   editProvider: '编辑供应商',
   editProtocolReverifyWarning: '修改 base URL 或协议会使该供应商的 Key 需要重新验证后才能路由',
   saveSuccess: '已保存',

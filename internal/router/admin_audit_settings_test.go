@@ -35,13 +35,15 @@ func diffDoc(t *testing.T, field string, oldV, newV any) string {
 //     a refused write changed nothing and must not claim it did
 //
 // and one leg per remaining family (input-compression, vision-fallback,
-// key-auto-recovery, request-log-retention, admin-audit-retention) proves
-// the merge is the settings family's SHARED shape: every one of the six
-// PUTs parks its diff through the same audit.Event call, and each leg
-// asserts that family's own diff content — remove any family's parking
-// call and its leg goes red on the detail assertion. Every row reconciles
-// with its request's X-Request-Id, so "exactly one row per PUT" is
-// asserted per request, not just in aggregate.
+// key-auto-recovery, request-log-retention, admin-audit-retention,
+// outbound-proxy) proves the merge is the settings family's SHARED shape:
+// every one of the seven PUTs parks its diff through the same audit.Event
+// call, and each leg asserts that family's own diff content — remove any
+// family's parking call and its leg goes red on the detail assertion. The
+// outbound-proxy legs additionally pin that family's redaction contract:
+// proxy_url's diff entry is the placeholder, never the address. Every row
+// reconciles with its request's X-Request-Id, so "exactly one row per PUT"
+// is asserted per request, not just in aggregate.
 func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 	f := newAuditFixture(t)
 
@@ -146,9 +148,37 @@ func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 	rid9 := put("/api/admin/system-settings/admin-audit-retention",
 		fmt.Sprintf(`{"retention_days":%d,"version":%d}`, aarDays, aarVer), http.StatusOK)
 
+	// Leg 10: the outbound-proxy family — turn the shipped default (off,
+	// empty URL) into custom with a URL carrying embedded basic auth, so the
+	// leg asserts both changed fields at once AND the redaction contract:
+	// the mode diffs in clear, while proxy_url's diff entry collapses to
+	// the placeholder and the credential-bearing URL must never reach any
+	// column of the row.
+	opBefore, opVer, err := repository.GetOutboundProxy(f.db)
+	if err != nil {
+		t.Fatalf("read seeded outbound proxy: %v", err)
+	}
+	opURL := "http://proxuser:proxpass@127.0.0.1:3128"
+	rid10 := put("/api/admin/system-settings/outbound-proxy",
+		fmt.Sprintf(`{"mode":"custom","url":%q,"version":%d}`, opURL, opVer), http.StatusOK)
+
+	// Leg 11: write the exact same values again — the CAS accepts, nothing
+	// changes, no diff-shaped detail.
+	opSame, opVer2, err := repository.GetOutboundProxy(f.db)
+	if err != nil {
+		t.Fatalf("read outbound proxy after leg 10: %v", err)
+	}
+	rid11 := put("/api/admin/system-settings/outbound-proxy",
+		fmt.Sprintf(`{"mode":%q,"url":%q,"version":%d}`, opSame.Mode, opSame.URL, opVer2), http.StatusOK)
+
+	// Leg 12: stale version — the optimistic lock refuses and the row must
+	// carry no diff.
+	rid12 := put("/api/admin/system-settings/outbound-proxy",
+		`{"mode":"off","url":"","version":1}`, http.StatusConflict)
+
 	rows := f.drain(t)
-	if len(rows) != 9 {
-		t.Fatalf("nine settings PUTs must land exactly nine rows, got %d", len(rows))
+	if len(rows) != 12 {
+		t.Fatalf("twelve settings PUTs must land exactly twelve rows, got %d", len(rows))
 	}
 	for _, row := range rows {
 		rowsByRequest[row.RequestID] = row
@@ -189,6 +219,24 @@ func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 	assertRow(rid7, diffDoc(t, "enabled", karBefore.Enabled, !karBefore.Enabled), model.AuditStatusSuccess)
 	assertRow(rid8, diffDoc(t, "retention_days", rlrBefore.Days, rlrDays), model.AuditStatusSuccess)
 	assertRow(rid9, diffDoc(t, "retention_days", aarBefore.Days, aarDays), model.AuditStatusSuccess)
+	// Leg 10: the outbound-proxy family's redaction shape — the mode's
+	// {old,new} diff in clear next to proxy_url collapsed to the placeholder
+	// (the change is recorded, the address and its embedded credential are
+	// not), built with json.Marshal the same way DiffDetail serializes so
+	// the assertion pins the shape without hard-coding key order.
+	redactedProxyDoc, err := json.Marshal(map[string]any{
+		"mode":      map[string]any{"old": opBefore.Mode, "new": "custom"},
+		"proxy_url": "***",
+	})
+	if err != nil {
+		t.Fatalf("marshal expected redacted proxy diff: %v", err)
+	}
+	assertRow(rid10, string(redactedProxyDoc), model.AuditStatusSuccess)
+	assertRowsCarryNoPlaintext(t, []model.AdminAuditLog{rowsByRequest[rid10]}, opURL, "proxpass", "proxuser")
+	// Leg 11: identical values — empty detail, still exactly one row.
+	assertRow(rid11, "", model.AuditStatusSuccess)
+	// Leg 12: the conflict is an error outcome carrying no diff.
+	assertRow(rid12, "", model.AuditStatusError)
 
 	// resource_id: each settings route identifies its subject by the final
 	// path segment (the stable slug), whichever leg fired.
@@ -198,11 +246,14 @@ func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 		}
 	}
 	wantSlug := map[string]string{
-		rid5: "input-compression",
-		rid6: "vision-fallback",
-		rid7: "key-auto-recovery",
-		rid8: "request-log-retention",
-		rid9: "admin-audit-retention",
+		rid5:  "input-compression",
+		rid6:  "vision-fallback",
+		rid7:  "key-auto-recovery",
+		rid8:  "request-log-retention",
+		rid9:  "admin-audit-retention",
+		rid10: "outbound-proxy",
+		rid11: "outbound-proxy",
+		rid12: "outbound-proxy",
 	}
 	for rid, slug := range wantSlug {
 		if row := rowsByRequest[rid]; row.ResourceID != slug {
