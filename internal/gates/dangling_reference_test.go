@@ -124,6 +124,14 @@ func TestCommentsNameOnlyIdentifiersThatExist(t *testing.T) {
 		"backgroundread":  "net/http internal goroutine name quoted in prose",
 		"resolvedoptions": "browser Intl API quoted in prose",
 
+		// safehttp's proxyAddrRegistry mirrors these three unexported
+		// net/http helpers to predict the dial address the transport hands
+		// DialContext for a proxied request; the prose names the mirrored
+		// identifier so a reader can diff against GOROOT directly.
+		"canonicaladdr": "net/http internal function name quoted in prose",
+		"idnaascii":     "net/http internal function name quoted in prose",
+		"schemeport":    "net/http internal function name quoted in prose",
+
 		"statusiskeyrotation":       "historical: one of the helpers classifyUpstreamStatus replaced",
 		"statusiscandidatefailover": "historical: one of the helpers classifyUpstreamStatus replaced",
 		"clienterrortypefor":        "historical: one of the helpers classifyUpstreamStatus replaced",
