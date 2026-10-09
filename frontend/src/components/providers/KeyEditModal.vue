@@ -35,6 +35,18 @@
         <n-input v-model:value="form.plaintext" type="password" show-password-on="click"
           :placeholder="plaintextPlaceholder" />
       </n-form-item>
+      <!-- Copy-only reveal of the STORED key (edit mode): the one way to get
+           the existing plaintext back out — it goes straight from the reveal
+           response into the clipboard and never touches this form (the field
+           above stays a fresh-entry control). -->
+      <n-form-item v-if="editingKey">
+        <template #label>
+          <HelpLabel :tip="t('providers.copyCurrentKey_tip')">{{ t('providers.copyCurrentKey') }}</HelpLabel>
+        </template>
+        <n-button size="small" :loading="copyingCurrentKey" @click="onCopyCurrentKey">
+          {{ t('common.copy') }}
+        </n-button>
+      </n-form-item>
       <ProviderModelTester
         v-model:value="form.testModel"
         :base-url="baseUrl"
@@ -58,7 +70,8 @@ import { useI18n } from 'vue-i18n'
 import { useMessage, type FormInst, type FormRules } from 'naive-ui'
 import { useProvidersStore } from '../../store/providers'
 import { displayMessage } from '../../api/client'
-import type { ProviderKey } from '../../api/providers'
+import { copyToClipboard } from '../../utils/clipboard'
+import { revealProviderKey, type ProviderKey } from '../../api/providers'
 import { keyLabelRule, keyPlaintextRule } from '../../utils/providerValidators'
 import HelpLabel from '../HelpLabel.vue'
 import ModalDrawer from '../common/ModalDrawer.vue'
@@ -99,6 +112,27 @@ const store = useProvidersStore()
 const formRef = ref<FormInst | null>(null)
 const submitting = ref(false)
 const form = reactive({ label: '', plaintext: '', testModel: '', enabled: false })
+// Spinner state for the stored-key copy below — a boolean only. The revealed
+// plaintext must never land in any of this component's state: it goes from
+// the response into the clipboard util and out of scope in one handler.
+const copyingCurrentKey = ref(false)
+
+// The stored key's one-time reveal, copied to the clipboard without ever
+// touching the form: form.plaintext stays a fresh-entry field (blank = keep
+// the current key), so nothing about the fetched key survives this handler.
+async function onCopyCurrentKey() {
+  if (!props.editingKey || copyingCurrentKey.value) return
+  copyingCurrentKey.value = true
+  try {
+    const { plaintext_key } = await revealProviderKey(props.providerId, props.editingKey.id)
+    if (await copyToClipboard(plaintext_key)) message.success(t('common.copied'))
+    else message.error(t('common.copyFailed'))
+  } catch (err) {
+    message.error(displayMessage(err, t))
+  } finally {
+    copyingCurrentKey.value = false
+  }
+}
 
 // computed: the plaintext field is required when adding a brand-new key
 // (no prior ciphertext to fall back on) but optional when editing an

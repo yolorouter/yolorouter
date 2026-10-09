@@ -95,6 +95,8 @@ export default {
   needsReentry: '需重新提交 Key 明文',
   notRun: '未测试',
   keepCurrentKeyHint: '留空表示保留当前 Key',
+  copyCurrentKey: '复制当前 Key',
+  copyCurrentKey_tip: '把已存储的 Key 明文一次性取回并写入剪贴板，不在屏幕上显示；每次复制都会记入管理审计',
   verificationUntested: '未测试',
   verificationPassed: '通过',
   verificationFailed: '失败',

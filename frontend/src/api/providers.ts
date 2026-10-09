@@ -308,6 +308,21 @@ export function deleteProviderKey(providerId: number, keyId: number): Promise<vo
   })
 }
 
+// The one-time reveal of a stored key's full plaintext. The server answers
+// with the plaintext exactly once under a no-store response and audits the
+// access; the caller must treat it as copy-only — held in a local variable
+// for the duration of one clipboard write, never component, Pinia, or DOM
+// state (that discipline is what the reveal's component tests pin).
+export interface RevealProviderKeyResult {
+  plaintext_key: string
+}
+
+export function revealProviderKey(providerId: number, keyId: number): Promise<RevealProviderKeyResult> {
+  return apiFetch(`/api/admin/providers/${providerId}/keys/${keyId}/reveal`, {
+    method: 'POST',
+  })
+}
+
 export function setProviderKeyStatus(providerId: number, keyId: number, enabled: boolean): Promise<void> {
   return apiFetch(`/api/admin/providers/${providerId}/keys/${keyId}/status`, {
     method: 'PATCH',

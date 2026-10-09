@@ -183,9 +183,11 @@ import { candidatePriceLines } from '../../utils/candidatePriceLines'
 import { BATCH_DELETE_CONCURRENCY, runWithLimit } from '../../utils/runWithLimit'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
 import { displayMessage } from '../../api/client'
+import { copyToClipboard } from '../../utils/clipboard'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
 import { providerDisableCopy } from '../../utils/impactSummary'
 import type { BatchTestResult, KeyTestTarget, Provider, ProviderKey } from '../../api/providers'
+import { revealProviderKey } from '../../api/providers'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import KeyEditModal from '../../components/providers/KeyEditModal.vue'
@@ -267,6 +269,10 @@ const testingAll = ref(false)
 // testingAll's batch run) so the actions button can show a spinner instead
 // of silently doing nothing until the request resolves.
 const testingKeyId = ref<number | null>(null)
+// Single-flight reveal-and-copy: the tracked value is deliberately an ID,
+// never the plaintext — reveal's contract is copy-only, so nothing about
+// the fetched key may survive the handler's scope.
+const copyAction = useSingleRowAction()
 // Single-flight reorder: only one key can be moving at a time, and the
 // clicked arrow shows a spinner (activeId + direction) while it runs.
 const reorderAction = useSingleRowAction()
@@ -1080,12 +1086,14 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
           options: [
             { label: t('providers.editKey'), key: 'edit' },
             { label: t('providers.testConnection'), key: 'test', disabled: row.needs_reentry },
+            { label: t('common.copy'), key: 'copy' },
             { type: 'divider', key: 'd' },
             { label: t('providers.deleteKey'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
           ],
           onSelect: (key: string) => {
             if (key === 'edit') onEditKey(row)
             else if (key === 'test') onTestOneKey(row.id)
+            else if (key === 'copy') void onCopyKey(row)
             else if (key === 'delete') onDeleteKey(row)
           },
         },
@@ -1104,6 +1112,24 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
 function onEditKey(key: ProviderKey) {
   editingKey.value = key
   showEditKey.value = true
+}
+
+// Reveal-and-copy from the row menu: the plaintext exists in ONE local
+// variable for the duration of a single clipboard write and then goes out of
+// scope — never a ref, never the store, never rendered. The server rate-limits
+// and audits every reveal; the in-flight guard keeps one impatient double
+// click from spending two of the caller's ten-per-minute budget on one copy.
+async function onCopyKey(row: ProviderKey) {
+  await copyAction.run(row.id, async () => {
+    try {
+      const { plaintext_key } = await revealProviderKey(providerId, row.id)
+      if (await copyToClipboard(plaintext_key)) message.success(t('common.copied'))
+      else message.error(t('common.copyFailed'))
+    } catch (err) {
+      if (redirectIfSessionExpired(err, router)) return
+      message.error(displayMessage(err, t))
+    }
+  })
 }
 
 // Deletion is final and needs no server-side precondition — any key can go,

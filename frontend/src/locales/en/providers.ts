@@ -95,6 +95,9 @@ export default {
   needsReentry: 'Please resubmit the key plaintext',
   notRun: 'Not tested',
   keepCurrentKeyHint: 'Leave blank to keep the current key',
+  copyCurrentKey: 'Copy current key',
+  copyCurrentKey_tip:
+    'Fetches the stored key\'s full plaintext once and writes it straight to the clipboard — it is never shown on screen, and every copy is recorded in the admin audit log',
   verificationUntested: 'Untested',
   verificationPassed: 'Passed',
   verificationFailed: 'Failed',
