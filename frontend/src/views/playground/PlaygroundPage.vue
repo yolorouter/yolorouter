@@ -1,11 +1,15 @@
 <!-- frontend/src/views/playground/PlaygroundPage.vue
 
-     The model comparison bench: one prompt, up to four models, the real
-     gateway underneath. The control bar at the top (modality tab, the
-     operator's own API key, the model multi-select, the shared parameter
-     row, the run button) submits a single run; the area below renders one
-     column per selected model — output, cost, latency, usage, or the
-     column's native error shape.
+     The model comparison workbench: one prompt, up to four models, the real
+     gateway underneath. The page is two panes — the bench (left, fixed
+     width, sticky) carries the whole run setup (the modality segment, the
+     operator's own API key, the model multi-select, the prompt, the shared
+     parameter area, the speech run's per-column voices) with the run
+     button pinned to the bench's foot; the canvas (right, the remaining
+     width) renders one column per selected model — output, cost, latency,
+     usage, or the column's native error shape — and, before any run, the
+     four-step guide. Narrow viewports stack the panes (bench above
+     canvas) rather than floating anything.
 
      Single-round semantics: the page keeps no run history. A re-run
      replaces the previous columns wholesale (the request log under the
@@ -27,183 +31,190 @@
      finished clip through the console's owner-pinned proxy on done. -->
 <template>
   <div class="common-page">
-    <PageHeader
-      :eyebrow="t('nav.groupAnalytics')"
-      :title="t('nav.playground')"
-      :description="t('playground.pageDescription')"
-    />
+    <PageHeader :title="t('nav.playground')" :description="t('playground.pageDescription')" />
 
-    <!-- Control bar -->
-    <section class="pg-card pg-control">
-      <!-- The modality tab filters the model picker to the models that
-           serve that modality and swaps the parameter row to the axes that
-           modality's dialect declares. -->
-      <NTabs :value="modality" type="line" size="small" class="pg-modality-tabs" @update:value="onModalityUpdate">
-        <NTabPane name="text" :tab="t('models.outputModalityText')" />
-        <NTabPane name="image" :tab="t('models.outputModalityImage')" />
-        <NTabPane name="audio" :tab="t('models.outputModalityAudio')" />
-        <NTabPane name="video" :tab="t('models.outputModalityVideo')" />
-      </NTabs>
+    <!-- The two-pane workbench. The layout containers are addressed by
+         their convention classes (.pg-workbench/.pg-bench/.pg-canvas) —
+         the batch's e2e contract for the split itself. -->
+    <div class="pg-workbench">
+      <!-- The bench: every control that shapes a run, vertically compact,
+           in a sticky left pane whose foot carries the run controls — the
+           button never scrolls out of view however long the setup grows. -->
+      <section class="pg-bench">
+        <!-- The modality segment filters the model picker to the models that
+             serve that modality and swaps the parameter row to the axes that
+             modality's dialect declares. -->
+        <NTabs :value="modality" type="segment" size="small" class="pg-modality-tabs" @update:value="onModalityUpdate">
+          <NTabPane name="text" :tab="t('models.outputModalityText')" />
+          <NTabPane name="image" :tab="t('models.outputModalityImage')" />
+          <NTabPane name="audio" :tab="t('models.outputModalityAudio')" />
+          <NTabPane name="video" :tab="t('models.outputModalityVideo')" />
+        </NTabs>
 
-      <NForm require-mark-placement="left">
-        <NFormItem>
-          <template #label>
-            <HelpLabel :tip="t('playground.apiKey_tip')">{{ t('playground.apiKey') }}</HelpLabel>
-          </template>
-          <NSelect
-            v-model:value="keyId"
-            class="pg-key-select"
-            :options="keyOptions"
-            :placeholder="keys.length === 0 ? t('playground.apiKeyEmpty') : ''"
-          />
-        </NFormItem>
-
-        <NFormItem>
-          <template #label>
-            <HelpLabel :tip="t('playground.modelSelect_tip')">{{ t('playground.modelSelect') }}</HelpLabel>
-          </template>
-          <div class="pg-models">
+        <NForm require-mark-placement="left" class="pg-bench__body">
+          <NFormItem>
+            <template #label>
+              <HelpLabel :tip="t('playground.apiKey_tip')">{{ t('playground.apiKey') }}</HelpLabel>
+            </template>
             <NSelect
-              class="pg-models-select"
-              multiple
-              clearable
-              :value="selectedModels"
-              :options="modelOptions"
-              @update:value="onModelsUpdate"
+              v-model:value="keyId"
+              class="pg-key-select"
+              :options="keyOptions"
+              :placeholder="keys.length === 0 ? t('playground.apiKeyEmpty') : ''"
             />
-            <span class="pg-models-count">{{ t('playground.modelCount', { count: selectedModels.length, max: MAX_MODELS }) }}</span>
-          </div>
-        </NFormItem>
+          </NFormItem>
 
-        <NFormItem>
-          <template #label>
-            <HelpLabel :tip="t('playground.prompt_tip')">{{ t('playground.prompt') }}</HelpLabel>
-          </template>
-          <div class="pg-prompt-block">
-            <NInput v-model:value="prompt" class="pg-prompt" type="textarea" :rows="3" />
-            <!-- The vision attachment travels with the user turn, in the
-                 dialect's own encoding (a base64 data URL); it is re-read
-                 per send, so a re-run can swap or drop it freely. It
-                 belongs to the text modality alone — an image run's input
-                 is the prompt itself. -->
-            <div v-if="modality === 'text'" class="pg-attach">
-              <input
-                ref="imageInput"
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                class="pg-attach-input"
-                data-testid="pg-attach-input"
-                @change="onImagePicked"
+          <NFormItem>
+            <template #label>
+              <HelpLabel :tip="t('playground.modelSelect_tip')">{{ t('playground.modelSelect') }}</HelpLabel>
+            </template>
+            <div class="pg-models">
+              <NSelect
+                class="pg-models-select"
+                multiple
+                clearable
+                :value="selectedModels"
+                :options="modelOptions"
+                @update:value="onModelsUpdate"
               />
-              <NButton size="small" :disabled="running" data-testid="pg-attach-button" @click="pickImage">
-                {{ t('playground.attachImage') }}
-              </NButton>
-              <template v-if="attachedImage">
-                <img :src="attachedImage.dataUrl" class="pg-attach-thumb" alt="" data-testid="pg-attach-thumb" />
-                <span class="pg-attach-name">{{ attachedImage.name }}</span>
-                <NButton size="tiny" quaternary data-testid="pg-attach-remove" @click="clearImage">
-                  {{ t('playground.removeImage') }}
-                </NButton>
-              </template>
+              <span class="pg-models-count">{{ t('playground.modelCount', { count: selectedModels.length, max: MAX_MODELS }) }}</span>
             </div>
+          </NFormItem>
+
+          <NFormItem>
+            <template #label>
+              <HelpLabel :tip="t('playground.prompt_tip')">{{ t('playground.prompt') }}</HelpLabel>
+            </template>
+            <div class="pg-prompt-block">
+              <NInput v-model:value="prompt" class="pg-prompt" type="textarea" :rows="3" />
+              <!-- The vision attachment travels with the user turn, in the
+                   dialect's own encoding (a base64 data URL); it is re-read
+                   per send, so a re-run can swap or drop it freely. It
+                   belongs to the text modality alone — an image run's input
+                   is the prompt itself. -->
+              <div v-if="modality === 'text'" class="pg-attach">
+                <input
+                  ref="imageInput"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  class="pg-attach-input"
+                  data-testid="pg-attach-input"
+                  @change="onImagePicked"
+                />
+                <NButton size="small" :disabled="running" data-testid="pg-attach-button" @click="pickImage">
+                  {{ t('playground.attachImage') }}
+                </NButton>
+                <template v-if="attachedImage">
+                  <img :src="attachedImage.dataUrl" class="pg-attach-thumb" alt="" data-testid="pg-attach-thumb" />
+                  <span class="pg-attach-name">{{ attachedImage.name }}</span>
+                  <NButton size="tiny" quaternary data-testid="pg-attach-remove" @click="clearImage">
+                    {{ t('playground.removeImage') }}
+                  </NButton>
+                </template>
+              </div>
+            </div>
+          </NFormItem>
+
+          <!-- The shared parameter row: whatever is set here is applied to
+               EVERY selected column of the run — a comparison varies the
+               model, not the sampling. Only parameters the gateway dialects
+               actually declare are exposed: the text family below, the
+               image family's two axes (size and count), or the audio
+               family's one axis (the response format). The VOICE is not
+               here by design — it is the run's one per-column exception,
+               and each column gets its own control below. -->
+          <div v-if="modality === 'text'" class="pg-params">
+            <NFormItem>
+              <template #label>
+                <HelpLabel :tip="t('playground.systemPrompt_tip')">{{ t('playground.systemPrompt') }}</HelpLabel>
+              </template>
+              <NInput v-model:value="systemPrompt" class="pg-param-system" type="textarea" :rows="2" />
+            </NFormItem>
+            <NFormItem>
+              <template #label>
+                <HelpLabel :tip="t('playground.temperature_tip')">{{ t('playground.temperature') }}</HelpLabel>
+              </template>
+              <NInputNumber v-model:value="temperature" class="pg-param-number" :min="0" :max="2" :step="0.1" />
+            </NFormItem>
+            <NFormItem>
+              <template #label>
+                <HelpLabel :tip="t('playground.maxTokens_tip')">{{ t('playground.maxTokens') }}</HelpLabel>
+              </template>
+              <NInputNumber v-model:value="maxTokens" class="pg-param-number" :min="1" :max="100000" :precision="0" />
+            </NFormItem>
           </div>
-        </NFormItem>
+          <div v-else-if="modality === 'image'" class="pg-params" data-testid="pg-image-params">
+            <NFormItem>
+              <template #label>
+                <HelpLabel :tip="t('playground.imageSize_tip')">{{ t('playground.imageSize') }}</HelpLabel>
+              </template>
+              <NSelect
+                v-model:value="imageSize"
+                class="pg-image-size"
+                filterable
+                tag
+                :options="imageSizeOptions"
+              />
+            </NFormItem>
+            <NFormItem>
+              <template #label>
+                <HelpLabel :tip="t('playground.imageCount_tip')">{{ t('playground.imageCount') }}</HelpLabel>
+              </template>
+              <NInputNumber v-model:value="imageCount" class="pg-param-number" :min="1" :max="10" :precision="0" data-testid="pg-image-count" />
+            </NFormItem>
+          </div>
+          <div v-else-if="modality === 'audio'" class="pg-params" data-testid="pg-audio-params">
+            <NFormItem>
+              <template #label>
+                <HelpLabel :tip="t('playground.audioFormat_tip')">{{ t('playground.audioFormat') }}</HelpLabel>
+              </template>
+              <NSelect v-model:value="audioFormat" class="pg-audio-format" clearable :options="audioFormatOptions" data-testid="pg-audio-format" />
+            </NFormItem>
+          </div>
+          <div v-else-if="modality === 'video'" class="pg-params" data-testid="pg-video-params">
+            <NFormItem>
+              <template #label>
+                <HelpLabel :tip="t('playground.videoSeconds_tip')">{{ t('playground.videoSeconds') }}</HelpLabel>
+              </template>
+              <NSelect v-model:value="videoSeconds" class="pg-video-seconds" clearable :options="videoSecondsOptions" data-testid="pg-video-seconds" />
+            </NFormItem>
+            <NFormItem>
+              <template #label>
+                <HelpLabel :tip="t('playground.videoSize_tip')">{{ t('playground.videoSize') }}</HelpLabel>
+              </template>
+              <NSelect v-model:value="videoSize" class="pg-video-size" clearable :options="videoSizeOptions" data-testid="pg-video-size" />
+            </NFormItem>
+          </div>
 
-        <!-- The shared parameter row: whatever is set here is applied to
-             EVERY selected column of the run — a comparison varies the
-             model, not the sampling. Only parameters the gateway dialects
-             actually declare are exposed: the text family below, the
-             image family's two axes (size and count), or the audio
-             family's one axis (the response format). The VOICE is not
-             here by design — it is the run's one per-column exception,
-             and each column gets its own control below. -->
-        <div v-if="modality === 'text'" class="pg-params">
-          <NFormItem>
-            <template #label>
-              <HelpLabel :tip="t('playground.systemPrompt_tip')">{{ t('playground.systemPrompt') }}</HelpLabel>
-            </template>
-            <NInput v-model:value="systemPrompt" class="pg-param-system" type="textarea" :rows="2" />
-          </NFormItem>
-          <NFormItem>
-            <template #label>
-              <HelpLabel :tip="t('playground.temperature_tip')">{{ t('playground.temperature') }}</HelpLabel>
-            </template>
-            <NInputNumber v-model:value="temperature" class="pg-param-number" :min="0" :max="2" :step="0.1" />
-          </NFormItem>
-          <NFormItem>
-            <template #label>
-              <HelpLabel :tip="t('playground.maxTokens_tip')">{{ t('playground.maxTokens') }}</HelpLabel>
-            </template>
-            <NInputNumber v-model:value="maxTokens" class="pg-param-number" :min="1" :max="100000" :precision="0" />
-          </NFormItem>
-        </div>
-        <div v-else-if="modality === 'image'" class="pg-params" data-testid="pg-image-params">
-          <NFormItem>
-            <template #label>
-              <HelpLabel :tip="t('playground.imageSize_tip')">{{ t('playground.imageSize') }}</HelpLabel>
-            </template>
-            <NSelect
-              v-model:value="imageSize"
-              class="pg-image-size"
-              filterable
-              tag
-              :options="imageSizeOptions"
-            />
-          </NFormItem>
-          <NFormItem>
-            <template #label>
-              <HelpLabel :tip="t('playground.imageCount_tip')">{{ t('playground.imageCount') }}</HelpLabel>
-            </template>
-            <NInputNumber v-model:value="imageCount" class="pg-param-number" :min="1" :max="10" :precision="0" data-testid="pg-image-count" />
-          </NFormItem>
-        </div>
-        <div v-else-if="modality === 'audio'" class="pg-params" data-testid="pg-audio-params">
-          <NFormItem>
-            <template #label>
-              <HelpLabel :tip="t('playground.audioFormat_tip')">{{ t('playground.audioFormat') }}</HelpLabel>
-            </template>
-            <NSelect v-model:value="audioFormat" class="pg-audio-format" clearable :options="audioFormatOptions" data-testid="pg-audio-format" />
-          </NFormItem>
-        </div>
-        <div v-else-if="modality === 'video'" class="pg-params" data-testid="pg-video-params">
-          <NFormItem>
-            <template #label>
-              <HelpLabel :tip="t('playground.videoSeconds_tip')">{{ t('playground.videoSeconds') }}</HelpLabel>
-            </template>
-            <NSelect v-model:value="videoSeconds" class="pg-video-seconds" clearable :options="videoSecondsOptions" data-testid="pg-video-seconds" />
-          </NFormItem>
-          <NFormItem>
-            <template #label>
-              <HelpLabel :tip="t('playground.videoSize_tip')">{{ t('playground.videoSize') }}</HelpLabel>
-            </template>
-            <NSelect v-model:value="videoSize" class="pg-video-size" clearable :options="videoSizeOptions" data-testid="pg-video-size" />
-          </NFormItem>
-        </div>
+          <!-- The speech run's per-column voices — the ONE parameter that
+               is not shared. A voice is a vendor-private id: sending one
+               shared value would 400 every column of a mixed-vendor
+               comparison, so each selected model gets its own control
+               offering only that model's vendors' voices (taggable — a
+               vendor's cloned voice id is legal and unlisted, and the
+               upstream's own 400 is the only legality verdict). -->
+          <div v-if="modality === 'audio' && selectedModels.length > 0" class="pg-voices" data-testid="pg-voices">
+            <NFormItem v-for="name in selectedModels" :key="name">
+              <template #label>
+                <HelpLabel :tip="t('playground.voice_tip')">{{ t('playground.voiceLabel') }} · {{ name }}</HelpLabel>
+              </template>
+              <NSelect
+                :value="voiceOf(name)"
+                class="pg-voice-select"
+                filterable
+                tag
+                :options="voiceOptionsFor(name)"
+                :data-testid="`pg-voice-${name}`"
+                @update:value="(v: string) => setVoice(name, v)"
+              />
+            </NFormItem>
+          </div>
 
-        <!-- The speech run's per-column voices — the ONE parameter that
-             is not shared. A voice is a vendor-private id: sending one
-             shared value would 400 every column of a mixed-vendor
-             comparison, so each selected model gets its own control
-             offering only that model's vendors' voices (taggable — a
-             vendor's cloned voice id is legal and unlisted, and the
-             upstream's own 400 is the only legality verdict). -->
-        <div v-if="modality === 'audio' && selectedModels.length > 0" class="pg-voices" data-testid="pg-voices">
-          <NFormItem v-for="name in selectedModels" :key="name">
-            <template #label>
-              <HelpLabel :tip="t('playground.voice_tip')">{{ t('playground.voiceLabel') }} · {{ name }}</HelpLabel>
-            </template>
-            <NSelect
-              :value="voiceOf(name)"
-              class="pg-voice-select"
-              filterable
-              tag
-              :options="voiceOptionsFor(name)"
-              :data-testid="`pg-voice-${name}`"
-              @update:value="(v: string) => setVoice(name, v)"
-            />
-          </NFormItem>
-        </div>
+        </NForm>
 
+        <!-- The bench's pinned foot: the run controls stay in view while
+             the setup above them scrolls — the form body owns the scroll,
+             the foot never leaves the screen. -->
         <div class="pg-actions">
           <NButton type="primary" :loading="running" @click="onSend">{{ sendLabel }}</NButton>
           <!-- Stopping disconnects the aggregate channel: the backend
@@ -213,147 +224,164 @@
             {{ t('playground.stop') }}
           </NButton>
         </div>
-      </NForm>
-    </section>
+      </section>
 
-    <!-- Comparison columns. :key on the grid is the run counter, so a
-         re-run remounts the column set instead of patching the old one —
-         old results are replaced, never merged into the new run. -->
-    <section v-if="columns.length > 0" :key="runId" class="pg-grid" data-testid="pg-columns">
-      <article v-for="(col, i) in columns" :key="i" class="pg-column" :class="`pg-column--${col.state}`">
-        <header class="pg-column__head">
-          <span class="pg-column__model">{{ col.model }}</span>
-          <NTag size="small" :type="col.state === 'done' ? 'success' : col.state === 'error' ? 'error' : col.state === 'cancelled' || col.state === 'stopped' ? 'warning' : 'info'">
-            {{ stateLabel(col.state) }}
-          </NTag>
-        </header>
+      <!-- The canvas: the results pane — the page's main character. Empty
+           runs see the four-step guide; a run renders its columns. -->
+      <section class="pg-canvas">
+        <!-- The grid's :key is the run counter, so a re-run remounts the
+             column set instead of patching the old one — old results are
+             replaced, never merged into the new run. -->
+        <section v-if="columns.length > 0" :key="runId" class="pg-grid" data-testid="pg-columns">
+          <article v-for="(col, i) in columns" :key="i" class="pg-column" :class="`pg-column--${col.state}`">
+            <header class="pg-column__head">
+              <span class="pg-column__model">{{ col.model }}</span>
+              <NTag size="small" :type="col.state === 'done' ? 'success' : col.state === 'error' ? 'error' : col.state === 'cancelled' || col.state === 'stopped' ? 'warning' : 'info'">
+                {{ stateLabel(col.state) }}
+              </NTag>
+            </header>
 
-        <!-- A finished column shows what its modality delivered: streamed
-             text, an image answer's cards, or — when the channel cut an
-             over-cap answer — the truncation note over the capped prefix.
-             Streaming columns show the text as it grows, chunk by chunk:
-             the first column to answer is the first column on screen,
-             never held back by a slower neighbour. -->
-        <template v-if="col.state === 'streaming' || col.state === 'done'">
-          <div v-if="col.state === 'done' && imageArtifacts(col).length > 0" class="pg-images">
-            <a
-              v-for="(img, k) in imageArtifacts(col)"
-              :key="k"
-              :href="img.src"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <img :src="img.src" :alt="img.alt" class="pg-image" data-testid="pg-image-card" />
-            </a>
-          </div>
-          <!-- A finished speech column plays its delivered clip: the done
-               event's reference points at the console's owner-pinned
-               playback URL, and the native audio element streams it
-               same-origin with the session cookie. -->
-          <div v-else-if="col.state === 'done' && col.audio" class="pg-audio" data-testid="pg-audio-player">
-            <audio controls :src="col.audio.url" :type="col.audio.content_type" preload="none" />
-          </div>
-          <!-- A finished video column plays its delivered clip the same
-               way: the reference points at the console's owner-pinned
-               proxy of the upstream's result URL. -->
-          <div v-else-if="col.state === 'done' && col.video" class="pg-video" data-testid="pg-video-card">
-            <video controls :src="col.video.url" :type="col.video.content_type" preload="metadata" />
-          </div>
-          <div
-            v-else-if="col.state === 'done' && col.responseTruncated"
-            class="pg-column__truncated"
-            data-testid="pg-column-truncated"
-          >
-            <div class="pg-column__truncated-note">{{ t('playground.responseTruncated') }}</div>
-            <pre class="pg-column__truncated-body">{{ col.response }}</pre>
-          </div>
-          <pre v-else class="pg-column__output" data-testid="pg-column-output">{{ col.output }}</pre>
-          <dl v-if="col.state === 'done'" class="pg-metrics">
-            <div class="pg-metric">
-              <dt>{{ t('playground.costLabel') }}</dt>
-              <dd>
-                {{ col.costKnown ? `${formatMicros(col.costMicros)} ${t('playground.currencyUnit')}` : t('playground.costUnknown') }}
-              </dd>
+            <!-- A finished column shows what its modality delivered: streamed
+                 text, an image answer's cards, or — when the channel cut an
+                 over-cap answer — the truncation note over the capped prefix.
+                 Streaming columns show the text as it grows, chunk by chunk:
+                 the first column to answer is the first column on screen,
+                 never held back by a slower neighbour. -->
+            <template v-if="col.state === 'streaming' || col.state === 'done'">
+              <div v-if="col.state === 'done' && imageArtifacts(col).length > 0" class="pg-images">
+                <a
+                  v-for="(img, k) in imageArtifacts(col)"
+                  :key="k"
+                  :href="img.src"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <img :src="img.src" :alt="img.alt" class="pg-image" data-testid="pg-image-card" />
+                </a>
+              </div>
+              <!-- A finished speech column plays its delivered clip: the done
+                   event's reference points at the console's owner-pinned
+                   playback URL, and the native audio element streams it
+                   same-origin with the session cookie. -->
+              <div v-else-if="col.state === 'done' && col.audio" class="pg-audio" data-testid="pg-audio-player">
+                <audio controls :src="col.audio.url" :type="col.audio.content_type" preload="none" />
+              </div>
+              <!-- A finished video column plays its delivered clip the same
+                   way: the reference points at the console's owner-pinned
+                   proxy of the upstream's result URL. -->
+              <div v-else-if="col.state === 'done' && col.video" class="pg-video" data-testid="pg-video-card">
+                <video controls :src="col.video.url" :type="col.video.content_type" preload="metadata" />
+              </div>
+              <div
+                v-else-if="col.state === 'done' && col.responseTruncated"
+                class="pg-column__truncated"
+                data-testid="pg-column-truncated"
+              >
+                <div class="pg-column__truncated-note">{{ t('playground.responseTruncated') }}</div>
+                <pre class="pg-column__truncated-body">{{ col.response }}</pre>
+              </div>
+              <pre v-else class="pg-column__output" data-testid="pg-column-output">{{ col.output }}</pre>
+              <dl v-if="col.state === 'done'" class="pg-metrics">
+                <div class="pg-metric">
+                  <dt>{{ t('playground.costLabel') }}</dt>
+                  <dd>
+                    {{ col.costKnown ? `${formatMicros(col.costMicros)} ${t('playground.currencyUnit')}` : t('playground.costUnknown') }}
+                  </dd>
+                </div>
+                <div class="pg-metric">
+                  <dt>{{ t('playground.latencyLabel') }}</dt>
+                  <dd>{{ formatDuration(col.durationMs) }}</dd>
+                </div>
+                <div class="pg-metric">
+                  <dt>{{ t('playground.usageLabel') }}</dt>
+                  <dd>
+                    <template v-if="(col.usage?.seconds ?? 0) > 0">
+                      {{ t('playground.usageSeconds', { count: col.usage?.seconds ?? 0 }) }}
+                    </template>
+                    <template v-else-if="(col.usage?.characters ?? 0) > 0">
+                      {{ t('playground.usageCharacters', { count: col.usage?.characters ?? 0 }) }}
+                    </template>
+                    <template v-else-if="(col.usage?.images ?? 0) > 0">
+                      {{ t('playground.usageImages', { count: col.usage?.images ?? 0 }) }}
+                    </template>
+                    <template v-else>
+                      {{ t('playground.usageTokens', { input: col.usage?.input_tokens ?? 0, output: col.usage?.output_tokens ?? 0 }) }}
+                    </template>
+                  </dd>
+                </div>
+              </dl>
+            </template>
+
+            <!-- A running VIDEO column shows the elapsed render clock (the
+                 only thing the page can honestly promise about a task whose
+                 cost is decided late) and, once its submit is acknowledged,
+                 the stop-waiting escape hatch: stopping the wait stops THIS
+                 PAGE's polling — the task itself keeps running at full cost. -->
+            <div v-else-if="col.state === 'running' && modality === 'video'" class="pg-column__state pg-video-running">
+              <span data-testid="pg-video-timer">{{ t('playground.columnStateRunning') }} · {{ elapsedText() }}</span>
+              <NButton
+                v-if="col.requestId"
+                size="tiny"
+                class="pg-stop-wait"
+                :data-testid="`pg-stop-wait-${slotOf(col)}`"
+                @click="onStopWait(col)"
+              >
+                {{ t('playground.stopWaiting') }}
+              </NButton>
             </div>
-            <div class="pg-metric">
-              <dt>{{ t('playground.latencyLabel') }}</dt>
-              <dd>{{ formatDuration(col.durationMs) }}</dd>
+            <div v-else-if="col.state === 'running'" class="pg-column__state">{{ t('playground.columnStateRunning') }}</div>
+
+            <!-- A cancelled column: the run was stopped from this page; what
+                 it had already cost is in the request log under its id. -->
+            <div v-else-if="col.state === 'cancelled'" class="pg-column__state" data-testid="pg-column-cancelled">
+              {{ t('playground.columnCancelledNote') }}
             </div>
-            <div class="pg-metric">
-              <dt>{{ t('playground.usageLabel') }}</dt>
-              <dd>
-                <template v-if="(col.usage?.seconds ?? 0) > 0">
-                  {{ t('playground.usageSeconds', { count: col.usage?.seconds ?? 0 }) }}
-                </template>
-                <template v-else-if="(col.usage?.characters ?? 0) > 0">
-                  {{ t('playground.usageCharacters', { count: col.usage?.characters ?? 0 }) }}
-                </template>
-                <template v-else-if="(col.usage?.images ?? 0) > 0">
-                  {{ t('playground.usageImages', { count: col.usage?.images ?? 0 }) }}
-                </template>
-                <template v-else>
-                  {{ t('playground.usageTokens', { input: col.usage?.input_tokens ?? 0, output: col.usage?.output_tokens ?? 0 }) }}
-                </template>
-              </dd>
+
+            <!-- A stopped-waiting VIDEO column: the honest reading. The task
+                 was NOT cancelled — it keeps rendering at full cost, and the
+                 bill lands in the request log when completion is next
+                 observed. The page promises no live cost figure for it. -->
+            <div v-else-if="col.state === 'stopped'" class="pg-column__state" data-testid="pg-column-stopped">
+              {{ t('playground.columnStoppedNote') }}
             </div>
-          </dl>
-        </template>
 
-        <!-- A running VIDEO column shows the elapsed render clock (the
-             only thing the page can honestly promise about a task whose
-             cost is decided late) and, once its submit is acknowledged,
-             the stop-waiting escape hatch: stopping the wait stops THIS
-             PAGE's polling — the task itself keeps running at full cost. -->
-        <div v-else-if="col.state === 'running' && modality === 'video'" class="pg-column__state pg-video-running">
-          <span data-testid="pg-video-timer">{{ t('playground.columnStateRunning') }} · {{ elapsedText() }}</span>
-          <NButton
-            v-if="col.requestId"
-            size="tiny"
-            class="pg-stop-wait"
-            :data-testid="`pg-stop-wait-${slotOf(col)}`"
-            @click="onStopWait(col)"
-          >
-            {{ t('playground.stopWaiting') }}
-          </NButton>
-        </div>
-        <div v-else-if="col.state === 'running'" class="pg-column__state">{{ t('playground.columnStateRunning') }}</div>
+            <!-- A failed column shows the failure in its native dialect shape:
+                 the status the relay produced and the error object the gateway
+                 answered, verbatim — quota, rate-limit and upstream failures
+                 read the way the API reports them. -->
+            <div v-else class="pg-column__error">
+              <div class="pg-column__error-status">HTTP {{ col.errorStatus }}</div>
+              <div class="pg-column__error-message">{{ col.errorMessage }}</div>
+              <div v-if="col.errorType" class="pg-column__error-type">{{ t('playground.errorTypeLabel') }}: {{ col.errorType }}</div>
+            </div>
 
-        <!-- A cancelled column: the run was stopped from this page; what
-             it had already cost is in the request log under its id. -->
-        <div v-else-if="col.state === 'cancelled'" class="pg-column__state" data-testid="pg-column-cancelled">
-          {{ t('playground.columnCancelledNote') }}
-        </div>
+            <footer v-if="col.requestId" class="pg-column__request">
+              {{ t('playground.requestLabel') }}: {{ col.requestId }}
+            </footer>
+          </article>
+        </section>
 
-        <!-- A stopped-waiting VIDEO column: the honest reading. The task
-             was NOT cancelled — it keeps rendering at full cost, and the
-             bill lands in the request log when completion is next
-             observed. The page promises no live cost figure for it. -->
-        <div v-else-if="col.state === 'stopped'" class="pg-column__state" data-testid="pg-column-stopped">
-          {{ t('playground.columnStoppedNote') }}
-        </div>
-
-        <!-- A failed column shows the failure in its native dialect shape:
-             the status the relay produced and the error object the gateway
-             answered, verbatim — quota, rate-limit and upstream failures
-             read the way the API reports them. -->
-        <div v-else class="pg-column__error">
-          <div class="pg-column__error-status">HTTP {{ col.errorStatus }}</div>
-          <div class="pg-column__error-message">{{ col.errorMessage }}</div>
-          <div v-if="col.errorType" class="pg-column__error-type">{{ t('playground.errorTypeLabel') }}: {{ col.errorType }}</div>
-        </div>
-
-        <footer v-if="col.requestId" class="pg-column__request">
-          {{ t('playground.requestLabel') }}: {{ col.requestId }}
-        </footer>
-      </article>
-    </section>
-
-    <EmptyState
-      v-else
-      :icon="FlaskConical"
-      :title="t('playground.emptyTitle')"
-      :description="t('playground.emptyDescription')"
-    />
+        <!-- The empty canvas: the shared EmptyState with the four-step guide
+             riding its #detail slot — no bespoke empty styling. The steps
+             mirror the bench top-to-bottom, so the guide reads as a walkthrough
+             of the pane beside it. -->
+        <EmptyState
+          v-else
+          :icon="FlaskConical"
+          :title="t('playground.emptyTitle')"
+          :description="t('playground.emptyDescription')"
+        >
+          <template #detail>
+            <ol class="pg-empty-steps">
+              <li>{{ t('playground.emptyStepKey') }}</li>
+              <li>{{ t('playground.emptyStepModels') }}</li>
+              <li>{{ t('playground.emptyStepPrompt') }}</li>
+              <li>{{ t('playground.emptyStepRun') }}</li>
+            </ol>
+          </template>
+        </EmptyState>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -823,11 +851,43 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
 </script>
 
 <style scoped lang="less">
-.pg-card {
-  padding: var(--space-5) var(--space-6);
+/* The two-pane workbench: bench (settings) beside canvas (results). The
+   containers are the batch's e2e addressing contract — .pg-workbench /
+   .pg-bench / .pg-canvas — so the split itself is assertable. */
+.pg-workbench {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+}
+
+/* The bench: a fixed-width sticky card whose body scrolls on its own, so
+   the run controls pinned to its foot stay on screen however long the
+   setup grows. The scroll container it sticks in is the layout's own
+   .layout-content (100dvh, overflow auto), hence the viewport-relative
+   max-height. */
+.pg-bench {
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: var(--space-3);
+  width: 360px;
+  flex-shrink: 0;
+  // 2 × --space-3 equals --space-6 on the spacing scale; written as the
+  // single token so LESS never rewrites the calc arithmetic.
+  max-height: calc(100dvh - var(--space-6));
+  padding: var(--space-4) var(--space-5);
   background: var(--color-surface);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
+}
+
+/* The scrollable settings body of the bench — everything above the pinned
+   foot. Select menus portal to body, so the clip never hides them. */
+.pg-bench__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .pg-modality-tabs {
@@ -835,7 +895,7 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
 }
 
 .pg-key-select {
-  max-width: 420px;
+  width: 100%;
 }
 
 .pg-models {
@@ -862,7 +922,6 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   flex-direction: column;
   gap: var(--space-2);
   width: 100%;
-  max-width: 640px;
 }
 
 .pg-prompt {
@@ -899,10 +958,13 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   white-space: nowrap;
 }
 
+/* The shared parameter area: one axis per row — the bench is narrow, so
+   the axes stack vertically instead of the old wide page's two-column
+   grid. */
 .pg-params {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: 0 var(--space-5);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
 }
 
 /* The speech run's per-column voice controls: one compact row per
@@ -914,7 +976,7 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
 }
 
 .pg-voice-select {
-  max-width: 420px;
+  width: 100%;
 }
 
 /* A finished speech column's player: the console playback URL in a
@@ -931,10 +993,29 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   width: 100%;
 }
 
+/* The bench's pinned foot: outside the scrolling body, so the run
+   controls stay visible through any scroll of the settings above. The
+   primary run control takes the row's width — the one action the whole
+   bench exists for. */
 .pg-actions {
   display: flex;
-  justify-content: flex-end;
+  flex-shrink: 0;
+  gap: var(--space-2);
   margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.pg-actions > .n-button:first-child {
+  flex: 1 1 auto;
+}
+
+/* The canvas: the results pane, taking every remaining pixel beside the
+   bench. min-width: 0 lets wide columns shrink inside instead of pushing
+   the layout wider. */
+.pg-canvas {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* Comparison columns: a responsive grid that settles at four abreast —
@@ -1121,9 +1202,34 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   white-space: nowrap;
 }
 
+/* The empty canvas's four-step guide: the shared EmptyState's #detail
+   block owns the alignment; this only keeps the steps visually compact
+   (native ordered numbering, one line per step). */
+.pg-empty-steps {
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.8;
+}
+
 @media (max-width: @mobile-breakpoint) {
-  .pg-params {
-    grid-template-columns: minmax(0, 1fr);
+  /* Narrow viewports stack the two panes — bench above canvas — with the
+     bench back in normal flow: no sticky, no internal scroll, the page
+     scrolls as one column. */
+  .pg-workbench {
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .pg-bench {
+    position: static;
+    width: 100%;
+    max-height: none;
+  }
+
+  .pg-bench__body {
+    overflow: visible;
   }
 }
 </style>

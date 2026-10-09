@@ -1,6 +1,5 @@
 export default {
-  pageDescription:
-    '同一条提示词并发发给最多 4 个模型，走真实网关链路——真实转发、真实结算、真实延迟。每次运行都会以独立来源落进请求日志。',
+  pageDescription: '一条提示词并发发给最多 4 个模型，走真实网关链路并排对比。',
   apiKey: 'API 密钥',
   apiKey_tip:
     '运行消耗所选密钥的额度：预算、限流都按它计。下拉只列出当前账号本人未吊销、未过期的密钥。',
@@ -52,7 +51,11 @@ export default {
   needPrompt: '请先输入提示词',
   modelCapReached: '每次运行最多选 4 个模型',
   emptyTitle: '还没有对比结果',
-  emptyDescription: '选好密钥和最多 4 个模型，写下提示词，然后运行。',
+  emptyDescription: '在左侧试验台完成设置，对比结果会在这里逐列呈现。',
+  emptyStepKey: '选择一把 API 密钥',
+  emptyStepModels: '选择最多 4 个模型',
+  emptyStepPrompt: '写下提示词',
+  emptyStepRun: '点击运行',
   columnStateRunning: '运行中',
   columnStateDone: '完成',
   columnStateFailed: '失败',

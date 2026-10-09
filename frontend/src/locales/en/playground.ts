@@ -1,6 +1,5 @@
 export default {
-  pageDescription:
-    'Send one prompt to up to 4 models side by side over the real gateway — real routing, real settlement, real latency. Every run lands in the request log under its own source.',
+  pageDescription: 'Send one prompt to up to 4 models side by side over the real gateway.',
   apiKey: 'API key',
   apiKey_tip:
     'Runs are charged to the selected key: its budget, its rate limits. Only keys of the signed-in account that are not revoked or expired are offered.',
@@ -53,7 +52,11 @@ export default {
   needPrompt: 'Enter a prompt first',
   modelCapReached: 'At most 4 models per run',
   emptyTitle: 'No comparison yet',
-  emptyDescription: 'Pick a key and up to 4 models, write the prompt, then run.',
+  emptyDescription: 'Set up the run in the bench on the left — results land here, one column per model.',
+  emptyStepKey: 'Select an API key',
+  emptyStepModels: 'Select up to 4 models',
+  emptyStepPrompt: 'Write the prompt',
+  emptyStepRun: 'Hit run',
   columnStateRunning: 'Running',
   columnStateDone: 'Done',
   columnStateFailed: 'Failed',

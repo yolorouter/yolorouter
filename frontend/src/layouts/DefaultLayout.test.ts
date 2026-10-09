@@ -264,39 +264,82 @@ describe('DefaultLayout sidebar after the key-recovery modal removal (TC-11)', (
 
 // The Playground entry arms (TC-06): the comparison bench is reachable
 // from BOTH sidebar branches — members run it on their own key, so the
-// member branch carries the same entry the admin branch does, next to
-// Usage in the analytics group.
-describe('DefaultLayout sidebar Playground entry (TC-06)', () => {
+// member branch carries the same entry the admin branch does.
+//
+// Menu-reposition arms (TC-25/26/27): the entry is now a TOP-LEVEL item —
+// directly below Overview in document order, ahead of the analytics group
+// heading and of Usage — in the admin sidebar (TC-25), the member sidebar
+// (TC-26), and the member mobile drawer (TC-27) alike. It used to sit
+// inside the analytics group next to Usage; the nav level now reads
+// "workbench", not "report".
+describe('DefaultLayout sidebar Playground entry (TC-06, TC-25/26/27)', () => {
   const playgroundLink = (): HTMLAnchorElement | null =>
     document.querySelector<HTMLAnchorElement>('a[href="/playground"]')
 
-  it('member sidebar carries the Playground entry next to Usage', async () => {
+  // Position oracle for the repositioned entry, shared by every arm below:
+  // within the rendered nav, Playground must come after Overview and before
+  // both the analytics group heading and Usage. The DOM-order check against
+  // the real group-heading node (not just text indexes) is what proves
+  // "top-level, outside the analytics group".
+  function expectPlaygroundTopLevel(labels: { overview: string; group: string; usage: string; playground: string }) {
+    const link = playgroundLink()
+    expect(link, 'sidebar links /playground').not.toBeNull()
+    expect(link!.textContent).toContain(labels.playground)
+
+    const nav = document.querySelector('.sidebar-nav')
+    expect(nav, 'sidebar nav rendered').not.toBeNull()
+    const navText = nav!.textContent ?? ''
+    expect(
+      navText.indexOf(labels.playground),
+      'Playground comes after Overview in the nav text order',
+    ).toBeGreaterThan(navText.indexOf(labels.overview))
+    expect(
+      navText.indexOf(labels.playground),
+      'Playground comes before Usage in the nav text order',
+    ).toBeLessThan(navText.indexOf(labels.usage))
+
+    const groupHeading = [...nav!.querySelectorAll<HTMLElement>('.sidebar-nav__group')].find((g) =>
+      g.textContent?.includes(labels.group),
+    )
+    expect(groupHeading, 'the analytics group heading is rendered').toBeTruthy()
+    expect(
+      link!.compareDocumentPosition(groupHeading!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the Playground link renders before the analytics group heading (top-level item, outside the group)',
+    ).toBeTruthy()
+  }
+
+  it('member sidebar carries the Playground entry as a top-level item below Overview (TC-26)', async () => {
     media.setMobile(false)
     wrapper = await mountLayout('en', 'member')
-    const link = playgroundLink()
-    expect(link, 'member sidebar links /playground').not.toBeNull()
-    expect(link!.textContent).toContain(en.nav.playground)
-    // It sits in the analytics group, after Usage — the nav's ordered text
-    // keeps the position assertion stable without pinning every entry.
-    const navText = document.querySelector('.sidebar-nav')?.textContent ?? ''
-    expect(navText.indexOf(en.nav.usage)).toBeLessThan(navText.indexOf(en.nav.playground))
+    expectPlaygroundTopLevel({
+      overview: en.nav.overview,
+      group: en.nav.groupAnalytics,
+      usage: en.nav.usage,
+      playground: en.nav.playground,
+    })
   })
 
-  it('admin sidebar carries the Playground entry too', async () => {
+  it('admin sidebar carries the Playground entry as a top-level item below Overview too (TC-25)', async () => {
     media.setMobile(false)
     wrapper = await mountLayout('en', 'admin')
-    const link = playgroundLink()
-    expect(link, 'admin sidebar links /playground').not.toBeNull()
-    expect(link!.textContent).toContain(en.nav.playground)
+    expectPlaygroundTopLevel({
+      overview: en.nav.overview,
+      group: en.nav.groupAnalytics,
+      usage: en.nav.usage,
+      playground: en.nav.playground,
+    })
   })
 
-  it('the member drawer (mobile) exposes the entry as well', async () => {
+  it('the member drawer (mobile) exposes the entry as a top-level item as well (TC-27)', async () => {
     // Mobile (the beforeEach default): the member nav lives in the drawer.
     wrapper = await mountLayout('zh-CN', 'member')
     document.querySelector<HTMLButtonElement>('.mobile-topbar__menu')!.click()
     await nextTick()
-    const link = playgroundLink()
-    expect(link, 'member drawer links /playground').not.toBeNull()
-    expect(link!.textContent).toContain(zhCN.nav.playground)
+    expectPlaygroundTopLevel({
+      overview: zhCN.nav.overview,
+      group: zhCN.nav.groupAnalytics,
+      usage: zhCN.nav.usage,
+      playground: zhCN.nav.playground,
+    })
   })
 })

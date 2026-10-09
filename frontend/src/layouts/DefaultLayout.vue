@@ -262,17 +262,20 @@ onMounted(() => {
 // navigating.
 const navItems = computed<NavItem[]>(() => {
   // A member's sidebar carries exactly the self-service surface: overview,
-  // usage, costs, their API keys, and language. The change-password entry
+  // the playground comparison bench, usage, costs, their API keys, and
+  // language. The change-password entry
   // additionally requires a password-backed local account — an OAuth
   // account has no password to change.
   if (!authStore.isAdmin) {
     const items: NavItem[] = [
       { key: 'overview', label: t('nav.overview'), icon: LayoutGrid, to: '/' },
+      // A top-level workbench entry directly below Overview — NOT a report
+      // under the analytics group: members run it on their own key
+      // (matching the route's memberAllowed opt-in), and the nav level
+      // should read "place to run experiments", not "stats page".
+      { key: 'playground', label: t('nav.playground'), icon: FlaskConical, to: '/playground' },
       { key: 'group-analytics', label: t('nav.groupAnalytics'), group: true },
       { key: 'usage', label: t('nav.usage'), icon: BarChart3, to: '/analytics' },
-      // The comparison bench sits next to usage for members too: they run
-      // it on their own key, matching the route's memberAllowed opt-in.
-      { key: 'playground', label: t('nav.playground'), icon: FlaskConical, to: '/playground' },
       { key: 'cost-stats', label: t('nav.costStats'), icon: Receipt, to: '/costs' },
       { key: 'tokens', label: t('nav.tokens'), icon: Key, to: '/api-keys' },
       { key: 'group-system', label: t('nav.groupSystem'), group: true },
@@ -285,12 +288,14 @@ const navItems = computed<NavItem[]>(() => {
   }
   return [
     { key: 'overview', label: t('nav.overview'), icon: LayoutGrid, to: '/' },
+    // Top-level workbench entry right below Overview, mirroring the member
+    // branch: admins compare models over their own key too, and the entry
+    // reads as a workbench peer of Overview rather than a report buried in
+    // the analytics group.
+    { key: 'playground', label: t('nav.playground'), icon: FlaskConical, to: '/playground' },
 
     { key: 'group-analytics', label: t('nav.groupAnalytics'), group: true },
     { key: 'usage', label: t('nav.usage'), icon: BarChart3, to: '/analytics' },
-    // Admins compare models over their own key like members do; the same
-    // entry in both branches keeps the surface identical across roles.
-    { key: 'playground', label: t('nav.playground'), icon: FlaskConical, to: '/playground' },
     { key: 'log-audit', label: t('nav.logAudit'), icon: ScrollText, to: '/request-logs' },
     // The console's own change trail — one entry below the request-log
     // audit it complements (gateway traffic vs. console actions).

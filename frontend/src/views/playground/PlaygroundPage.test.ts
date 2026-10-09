@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 //
 // Mounted-DOM coverage for the Playground page (acceptance cases
-// TC-04/05/06/12/13/15/18/19/20/23, frontend arms), in BOTH locales where
-// copy is the thing under test:
+// TC-04/05/06/12/13/15/18/19/20/23/29/34, frontend arms), in BOTH locales
+// where copy is the thing under test:
 //
 //   - TC-04: two columns typewriter their text as chunks arrive — the
 //     first column to answer shows text while the other still runs — and
@@ -24,6 +24,11 @@
 //   - TC-15: stopping mid-run disconnects the channel; unfinished columns
 //     settle as cancelled, finished ones keep their results
 //   - TC-20: labels are localized and follow a live locale switch
+//   - TC-29: the empty canvas renders the four-step guide (key → models →
+//     prompt → run) through the shared EmptyState's #detail slot, inside
+//     the two-pane shell (bench beside canvas)
+//   - TC-34: the speech run's per-column voice controls render inside the
+//     bench, stacked after the shared parameter area
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -1474,5 +1479,82 @@ describe('PlaygroundPage locale', () => {
     expect(text).toContain(en.nav.playground)
     expect(text).toContain(copy.en.send)
     expect(text).not.toContain(copy['zh-CN'].send)
+  })
+})
+
+describe('PlaygroundPage workbench shell', () => {
+  it.each<Locale>(['zh-CN', 'en'])(
+    'TC-29: the empty canvas renders the four-step guide in the shared EmptyState #detail slot, inside the bench/canvas shell (%s)',
+    async (locale) => {
+      await mountPage(locale)
+      await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+      // The two-pane shell exists, addressed by the convention classes the
+      // batch's e2e relies on (layout containers deliberately carry no
+      // testid).
+      const bench = document.querySelector('.pg-bench')
+      const canvas = document.querySelector('.pg-canvas')
+      expect(document.querySelector('.pg-workbench')).not.toBeNull()
+      expect(bench, 'bench pane rendered').not.toBeNull()
+      expect(canvas, 'canvas pane rendered').not.toBeNull()
+
+      // The bench carries the whole run setup: the modality segment, the
+      // key and model selects, the prompt — all inside the left pane.
+      expect(bench!.querySelector('.pg-modality-tabs')).not.toBeNull()
+      expect(bench!.querySelector('.pg-key-select')).not.toBeNull()
+      expect(bench!.querySelector('.pg-models-select')).not.toBeNull()
+      expect(bench!.querySelector('textarea')).not.toBeNull()
+
+      // The run controls are the bench's pinned foot — its LAST block, so
+      // the button sits at the pane's bottom edge (TC-32's DOM half; the
+      // stays-visible-while-scrolling half is the e2e's).
+      const actions = bench!.querySelector('.pg-actions')
+      expect(actions, 'pinned actions foot rendered').not.toBeNull()
+      expect(actions!.textContent).toContain(copy[locale].send)
+      expect(bench!.lastElementChild).toBe(actions)
+
+      // The empty canvas is the shared EmptyState with the four-step guide
+      // riding its #detail slot — no bespoke empty styling, four steps in
+      // bench order: key → models → prompt → run.
+      const detail = canvas!.querySelector('.empty-state__detail')
+      expect(detail, 'EmptyState #detail block rendered in the canvas').not.toBeNull()
+      const steps = [...detail!.querySelectorAll('li')].map((li) => li.textContent)
+      expect(steps).toEqual([
+        copy[locale].emptyStepKey,
+        copy[locale].emptyStepModels,
+        copy[locale].emptyStepPrompt,
+        copy[locale].emptyStepRun,
+      ])
+    },
+  )
+
+  it('TC-34: per-column voice controls stack inside the bench after the shared parameter area', async () => {
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+
+    wrapper!.findAllComponents(NTabs)[0].vm.$emit('update:value', 'audio')
+    await nextTick()
+
+    // No models selected yet: the per-column block has nothing to show.
+    expect(document.querySelector('[data-testid="pg-voices"]')).toBeNull()
+
+    modelsSelect().vm.$emit('update:value', ['audio-vendor-a', 'audio-vendor-b'])
+    await nextTick()
+
+    // With a speech selection the voices live INSIDE the bench, one
+    // compact control per selected column.
+    const bench = document.querySelector('.pg-bench')!
+    const voices = bench.querySelector('[data-testid="pg-voices"]')
+    expect(voices, 'voices block rendered inside the bench').not.toBeNull()
+    expect(voices!.querySelectorAll('.pg-voice-select')).toHaveLength(2)
+
+    // And they follow the shared parameter area — the per-column exception
+    // reads after the shared axes it excepts, not before them.
+    const params = bench.querySelector('[data-testid="pg-audio-params"]')
+    expect(params, 'audio parameter area rendered inside the bench').not.toBeNull()
+    expect(
+      params!.compareDocumentPosition(voices!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'voices render after the parameter area',
+    ).toBeTruthy()
   })
 })
