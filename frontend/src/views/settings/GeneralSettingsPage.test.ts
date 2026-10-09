@@ -32,9 +32,11 @@ import { defineComponent, nextTick } from 'vue'
 import {
   getAdminAuditRetention,
   getKeyAutoRecovery,
+  getOutboundProxy,
   getRequestLogRetention,
   updateAdminAuditRetention,
   updateKeyAutoRecovery,
+  updateOutboundProxy,
   updateRequestLogRetention,
 } from '../../api/systemSettings'
 
@@ -45,6 +47,8 @@ vi.mock('../../api/systemSettings', () => ({
   updateRequestLogRetention: vi.fn(),
   getAdminAuditRetention: vi.fn(),
   updateAdminAuditRetention: vi.fn(),
+  getOutboundProxy: vi.fn(),
+  updateOutboundProxy: vi.fn(),
 }))
 
 const getRetentionMock = vi.mocked(getRequestLogRetention)
@@ -53,6 +57,11 @@ const getAuditRetentionMock = vi.mocked(getAdminAuditRetention)
 const putAuditRetentionMock = vi.mocked(updateAdminAuditRetention)
 const getRecoveryMock = vi.mocked(getKeyAutoRecovery)
 const putRecoveryMock = vi.mocked(updateKeyAutoRecovery)
+const getProxyMock = vi.mocked(getOutboundProxy)
+const putProxyMock = vi.mocked(updateOutboundProxy)
+
+import { APIError } from '../../api/client'
+import { OUTBOUND_PROXY_CONFLICT } from '../../api/errcodes'
 
 // Must be imported after the vi.mock factory is registered.
 import GeneralSettingsPage from './GeneralSettingsPage.vue'
@@ -88,6 +97,8 @@ function primeSettings(retentionDays = 0, retentionVersion = 5) {
   // migration writes on a fresh install (unlike the request-log default 0).
   getAuditRetentionMock.mockResolvedValue({ retention_days: 180, version: 3 })
   getRecoveryMock.mockResolvedValue({ enabled: false, interval_minutes: 15, version: 9 })
+  // Outbound proxy starts at the seeded default: mode off, empty URL.
+  getProxyMock.mockResolvedValue({ mode: 'off', url: '', version: 7 })
 }
 
 async function mountPage(locale: Locale) {
@@ -115,7 +126,7 @@ function intervalInput(): HTMLInputElement {
   return input!
 }
 
-function saveButton(section: 'retention' | 'audit-retention' | 'recovery'): HTMLButtonElement {
+function saveButton(section: 'retention' | 'audit-retention' | 'proxy' | 'recovery'): HTMLButtonElement {
   const btn = document.body.querySelector<HTMLButtonElement>(`.gs-${section}__save`)
   expect(btn, `${section} save button rendered`).toBeTruthy()
   return btn!
@@ -125,6 +136,32 @@ function auditRetentionInput(): HTMLInputElement {
   const input = document.body.querySelector<HTMLInputElement>('.gs-audit-retention__days input')
   expect(input, 'audit retention days input rendered').toBeTruthy()
   return input!
+}
+
+// The proxy card's URL input (a plain NInput, unlike the NInputNumber ones).
+function proxyUrlInput(): HTMLInputElement {
+  const input = document.body.querySelector<HTMLInputElement>('.gs-proxy__url input')
+  expect(input, 'proxy URL input rendered').toBeTruthy()
+  return input!
+}
+
+// NInput keeps its v-model in sync per keystroke, same as NInputNumber.
+function setPlainInput(input: HTMLInputElement, value: string) {
+  input.value = value
+  input.dispatchEvent(new Event('input'))
+}
+
+// Drives the proxy mode select exactly like a user pick: the emitted
+// update:value is what the v-model / @update:value wiring receives in the
+// browser. The select is identified by its passthrough class, not by
+// mounting order.
+function pickProxyMode(value: 'off' | 'system' | 'custom') {
+  const page = wrapper!.findComponent(GeneralSettingsPage)
+  const select = page
+    .findAllComponents(NSelect)
+    .find((c) => (c.element as HTMLElement | undefined)?.classList?.contains('gs-proxy__mode'))
+  expect(select, 'proxy mode select rendered').toBeTruthy()
+  select!.vm.$emit('update:value', value)
 }
 
 function recoverySwitch(): HTMLElement {
@@ -145,6 +182,7 @@ beforeEach(() => {
   primeSettings()
   putRetentionMock.mockReset()
   putAuditRetentionMock.mockReset()
+  putProxyMock.mockReset()
   putRecoveryMock.mockReset()
 })
 
@@ -165,6 +203,14 @@ describe.each<Locale>(['zh-CN', 'en'])('GeneralSettingsPage render (%s)', (local
     expect(text).toContain(gsCopy[locale].auditRetention.title)
     expect(text).toContain(gsCopy[locale].language.title)
     expect(text).toContain(karCopy[locale].title)
+    expect(text).toContain(gsCopy[locale].outboundProxy.title)
+    expect(text).toContain(gsCopy[locale].outboundProxy.mode)
+    // The system-mode notice exists in the copy but stays hidden while the
+    // committed mode is off — it renders only once system is selected.
+    expect(
+      document.body.querySelector('[data-testid="proxy-system-notice"]'),
+      'system-mode notice hidden while mode is off',
+    ).toBeNull()
     expect(text).toContain(gsCopy[locale].retention.days)
     expect(text).toContain(gsCopy[locale].auditRetention.days)
     expect(text).toContain(gsCopy[locale].language.label)
@@ -179,6 +225,7 @@ describe.each<Locale>(['zh-CN', 'en'])('GeneralSettingsPage render (%s)', (local
     // All three save buttons are present and enabled (all GETs resolved).
     expect(saveButton('retention').disabled).toBe(false)
     expect(saveButton('audit-retention').disabled).toBe(false)
+    expect(saveButton('proxy').disabled).toBe(false)
     expect(saveButton('recovery').disabled).toBe(false)
   })
 })
@@ -301,7 +348,14 @@ describe('GeneralSettingsPage language dual-entry same source — TC-09', () => 
   // Drives the select exactly like a user pick: the emitted update:value is
   // what the @update:value handler receives in the browser.
   function pickLanguage(value: 'zh-CN' | 'en') {
-    wrapper!.findComponent(GeneralSettingsPage).findComponent(NSelect).vm.$emit('update:value', value)
+    // The proxy card added a second NSelect to the page, so the language
+    // one is identified by its passthrough class, not by being first.
+    const select = wrapper!
+      .findComponent(GeneralSettingsPage)
+      .findAllComponents(NSelect)
+      .find((c) => (c.element as HTMLElement | undefined)?.classList?.contains('gs-language__select'))
+    expect(select, 'language select component found').toBeTruthy()
+    select!.vm.$emit('update:value', value)
   }
 
   async function mountPageOnAppI18n() {
@@ -365,5 +419,133 @@ describe('GeneralSettingsPage language dual-entry same source — TC-09', () => 
     // settings API (the two server-backed PUTs stay untouched).
     expect(putRetentionMock).not.toHaveBeenCalled()
     expect(putRecoveryMock).not.toHaveBeenCalled()
+  })
+})
+
+// --- Outbound proxy card -----------------------------------------------------
+
+// The system-mode hint. Mounting the settings area and switching
+// the mode to system must surface the copy that says what that mode
+// actually reads (the process environment variables) and the operational
+// caveat that env changes in a container need a container restart. Both
+// locales ship their own copy, so both are asserted on the copy itself.
+describe.each<Locale>(['zh-CN', 'en'])('GeneralSettingsPage system-mode notice (%s)', (locale) => {
+  it('shows the process-environment notice when system mode is selected, and hides it otherwise', async () => {
+    await mountPage(locale)
+    // Off is the committed default: no notice rendered.
+    expect(document.body.querySelector('[data-testid="proxy-system-notice"]')).toBeNull()
+
+    pickProxyMode('system')
+    await nextTick()
+    await nextTick()
+
+    const notice = document.body.querySelector<HTMLElement>('[data-testid="proxy-system-notice"]')
+    expect(notice, 'system-mode notice rendered').toBeTruthy()
+    const copy = notice!.textContent ?? ''
+    expect(copy).toContain(gsCopy[locale].outboundProxy.systemNotice)
+    // The two non-negotiable facts, asserted on the rendered text itself:
+    // the mode reads the process environment variables, and container-side
+    // changes need a container restart.
+    expect(copy).toContain(
+      locale === 'zh-CN' ? '读取进程环境变量' : 'reads the process environment variables',
+    )
+    expect(copy).toContain(locale === 'zh-CN' ? '重启容器' : 'container restart')
+
+    // Switching back to off removes the notice again.
+    pickProxyMode('off')
+    await nextTick()
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="proxy-system-notice"]')).toBeNull()
+  })
+})
+
+describe('GeneralSettingsPage outbound proxy interactions (en)', () => {
+  it('PUTs the outbound-proxy endpoint with the CAS version when mode and URL are set', async () => {
+    await mountPage('en')
+    pickProxyMode('custom')
+    await nextTick()
+    setPlainInput(proxyUrlInput(), 'socks5h://192.168.1.5:1080')
+    await nextTick()
+    saveButton('proxy').dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(putProxyMock).toHaveBeenCalledTimes(1))
+    expect(putProxyMock).toHaveBeenCalledWith({
+      mode: 'custom',
+      url: 'socks5h://192.168.1.5:1080',
+      version: 7,
+    })
+    // Save succeeds → the committed row is re-read.
+    await vi.waitFor(() => expect(getProxyMock).toHaveBeenCalledTimes(2))
+    expect(document.body.textContent ?? '').toContain(gsCopy.en.outboundProxy.saved)
+  })
+
+  it('saves mode-only changes (off) with an empty URL', async () => {
+    getProxyMock.mockResolvedValue({ mode: 'custom', url: 'http://127.0.0.1:7890', version: 7 })
+    await mountPage('en')
+    pickProxyMode('off')
+    await nextTick()
+    // The parked URL rides along unless cleared; clearing it under off is
+    // legal (and is what the "turn it off" intent means).
+    setPlainInput(proxyUrlInput(), '')
+    await nextTick()
+    saveButton('proxy').dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(putProxyMock).toHaveBeenCalledTimes(1))
+    expect(putProxyMock).toHaveBeenCalledWith({ mode: 'off', url: '', version: 7 })
+  })
+
+  it.each([
+    { input: 'ftp://proxy.example.com:21', message: gsCopy.en.outboundProxy.proxyUrlScheme },
+    { input: 'proxy.example.com:7890', message: gsCopy.en.outboundProxy.proxyUrlScheme },
+    { input: '', message: gsCopy.en.outboundProxy.proxyUrlRequired },
+  ])('input "$input" under custom mode blocks the save with its own message and no PUT', async (draft) => {
+    await mountPage('en')
+    pickProxyMode('custom')
+    await nextTick()
+    setPlainInput(proxyUrlInput(), draft.input)
+    await nextTick()
+    saveButton('proxy').dispatchEvent(new Event('click'))
+    await nextTick()
+    await nextTick()
+    expect(document.body.textContent ?? '', 'the form shows the issue message').toContain(draft.message)
+    expect(putProxyMock, 'an illegal proxy URL never reaches the wire').not.toHaveBeenCalled()
+  })
+
+  it('mode flips do not validate eagerly — the message waits for the save click, and a flip clears a shown one', async () => {
+    await mountPage('en')
+    // Flip to custom while the URL is still empty: no message appears —
+    // picking a mode only resets the previous mode's feedback.
+    pickProxyMode('custom')
+    await nextTick()
+    await nextTick()
+    expect(document.body.textContent ?? '', 'no eager validation on mode select').not.toContain(
+      gsCopy.en.outboundProxy.proxyUrlRequired,
+    )
+    // The save click is what runs the rule and surfaces the message.
+    saveButton('proxy').dispatchEvent(new Event('click'))
+    await nextTick()
+    await nextTick()
+    expect(document.body.textContent ?? '', 'the save surfaces the required message').toContain(
+      gsCopy.en.outboundProxy.proxyUrlRequired,
+    )
+    expect(putProxyMock).not.toHaveBeenCalled()
+    // Flipping the mode away clears the shown feedback (restoreValidation).
+    pickProxyMode('off')
+    await nextTick()
+    await nextTick()
+    expect(document.body.textContent ?? '', 'mode flip clears the stale message').not.toContain(
+      gsCopy.en.outboundProxy.proxyUrlRequired,
+    )
+  })
+
+  it('surfaces the 409 conflict and reloads the committed row', async () => {
+    await mountPage('en')
+    pickProxyMode('custom')
+    await nextTick()
+    setPlainInput(proxyUrlInput(), 'socks5://10.0.0.9:1080')
+    await nextTick()
+    putProxyMock.mockRejectedValueOnce(new APIError(OUTBOUND_PROXY_CONFLICT))
+    saveButton('proxy').dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(putProxyMock).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(getProxyMock).toHaveBeenCalledTimes(2))
+    expect(document.body.textContent ?? '').toContain(gsCopy.en.outboundProxy.conflict)
   })
 })

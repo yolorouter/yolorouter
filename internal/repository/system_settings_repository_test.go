@@ -302,3 +302,92 @@ func TestUpdateKeyAutoRecoveryCASConflict(t *testing.T) {
 		t.Fatalf("want ErrKeyAutoRecoveryConflict, got %v", err)
 	}
 }
+
+// --- Outbound proxy pair ------------------------------------------------------
+
+func newOutboundProxyTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.Exec(`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('proxy_mode','off'),('proxy_url','')`)
+	return db
+}
+
+// Missing rows (a database migrated before the seeding migration) degrade
+// to the shipped off default, not an error — the read path never fails
+// closed on configuration, and the fail-open direction is DIRECT.
+func TestGetOutboundProxyMissingRowsReturnOffDefault(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.Exec(`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
+	s, ver, err := GetOutboundProxy(db)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if s.Mode != "off" || s.URL != "" || ver != 0 {
+		t.Fatalf("want off/empty/v0 default, got %+v v%d", s, ver)
+	}
+}
+
+// A lone row of the pair is a torn write, not a default — it must surface
+// as an error so the corruption is visible instead of silently masked.
+func TestGetOutboundProxyRejectsLoneRow(t *testing.T) {
+	db := newOutboundProxyTestDB(t)
+	db.Exec(`DELETE FROM system_settings WHERE key='proxy_url'`)
+	if _, _, err := GetOutboundProxy(db); err == nil {
+		t.Fatal("expected error for a single-row pair, got nil")
+	}
+}
+
+// A mode outside the off/system/custom vocabulary is corrupt data (the
+// write path validates before storing) and must surface as an error.
+func TestGetOutboundProxyRejectsCorruptMode(t *testing.T) {
+	db := newOutboundProxyTestDB(t)
+	db.Exec(`UPDATE system_settings SET value='sometimes' WHERE key='proxy_mode'`)
+	if _, _, err := GetOutboundProxy(db); err == nil {
+		t.Fatal("expected error for corrupt proxy_mode value, got nil")
+	}
+}
+
+// A version mismatch inside the pair breaks the shared-version CAS
+// contract and must surface as an error, not a silently torn snapshot.
+func TestGetOutboundProxyRejectsVersionMismatch(t *testing.T) {
+	db := newOutboundProxyTestDB(t)
+	db.Exec(`UPDATE system_settings SET version=2 WHERE key='proxy_mode'`)
+	if _, _, err := GetOutboundProxy(db); err == nil {
+		t.Fatal("expected error for version mismatch between proxy rows, got nil")
+	}
+}
+
+func TestUpdateOutboundProxyReturnsNewSnapshot(t *testing.T) {
+	db := newOutboundProxyTestDB(t)
+	s, ver, err := UpdateOutboundProxy(db, 1, "custom", "socks5://192.168.1.5:1080")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if s.Mode != "custom" || s.URL != "socks5://192.168.1.5:1080" || ver != 2 {
+		t.Fatalf("want custom/socks5 URL/v2, got %+v v%d", s, ver)
+	}
+	got, gver, err := GetOutboundProxy(db)
+	if err != nil || got != s || gver != ver {
+		t.Fatalf("read-back mismatch: %+v v%d err=%v", got, gver, err)
+	}
+}
+
+func TestUpdateOutboundProxyCASConflict(t *testing.T) {
+	db := newOutboundProxyTestDB(t)
+	// First successful update bumps version 1 -> 2.
+	if _, _, err := UpdateOutboundProxy(db, 1, "system", ""); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	// Stale expectedVersion=1 must conflict.
+	_, _, err := UpdateOutboundProxy(db, 1, "custom", "http://127.0.0.1:7890")
+	if !errors.Is(err, errcode.ErrOutboundProxyConflict) {
+		t.Fatalf("want ErrOutboundProxyConflict, got %v", err)
+	}
+}

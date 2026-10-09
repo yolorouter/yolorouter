@@ -97,6 +97,28 @@ func DefaultKeyAutoRecoverySetting() KeyAutoRecoverySetting {
 	}
 }
 
+// OutboundProxySetting is the typed snapshot of the global outbound proxy
+// configuration: Mode is one of off/system/custom (the mode strings live in
+// internal/outboundproxy, which owns the vocabulary) and URL carries the
+// custom-mode proxy address. Read as a whole for the same torn-read reason
+// as the pairs above. The shipped default is Mode off — an existing
+// deployment changes nothing on upgrade. It intentionally has NO json tags;
+// handlers wrap it in their own response DTO with json tags, same
+// convention as the settings families above.
+type OutboundProxySetting struct {
+	Mode string
+	URL  string
+}
+
+// DefaultOutboundProxySetting returns the shipped default (proxying off).
+// Served when the rows are absent — a database that predates the seeding
+// migration — and as the fail-open value on a cold-cache refresh failure:
+// fail-open to DIRECT, never to a guessed proxy, so a DB hiccup can never
+// start routing traffic through an address the admin did not choose.
+func DefaultOutboundProxySetting() OutboundProxySetting {
+	return OutboundProxySetting{Mode: "off", URL: ""}
+}
+
 // VisionFallbackDefaultPrompt is the runtime fallback describe instruction,
 // used only when the stored prompt is empty (never configured, or cleared on
 // purpose). It is NOT what the console displays: the console prefills its

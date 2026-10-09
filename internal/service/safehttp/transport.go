@@ -101,6 +101,23 @@ func matchCIDR(normalized, original net.IP, cidrs []*net.IPNet) error {
 	return nil
 }
 
+// ProxyAddressAllowed reports whether ip may serve as the address of a
+// configured outbound proxy. A proxy address is admin-declared trusted
+// configuration, not an arbitrary dial target: private and loopback ranges
+// are allowed (a LAN proxy or loopback test stub is the primary self-hosted
+// topology), and only the always-denied reserved ranges (multicast,
+// benchmark, reserved, unspecified) are rejected — the same ranges
+// checkIPAllowed refuses under any allowPrivate setting. Both the save-time
+// proxy-URL validation and the proxy dial path call this so the address
+// policy has one source of truth.
+func ProxyAddressAllowed(ip net.IP) bool {
+	normalized := ip
+	if v4 := ip.To4(); v4 != nil {
+		normalized = v4
+	}
+	return matchCIDR(normalized, ip, deniedCIDRs) == nil
+}
+
 // NewTransport returns an *http.Transport with SSRF protections wired in:
 // custom DialContext validating every resolved IP before connecting,
 // environment-variable proxying disabled, and no other defaults changed.
@@ -159,6 +176,7 @@ func NewTransport(allowPrivate bool, connectTimeout, tlsHandshake time.Duration)
 // produces an already-expired context, which would fail every dial
 // immediately instead of disabling the bound. In that case the parent ctx is
 // used directly, unmodified, for the dial phase too.
+
 // resolveHost is net.DefaultResolver.LookupIPAddr behind a variable so a test
 // can see which context resolution is handed. That is the whole of the
 // "connectTimeout does not bound DNS" contract, and it is invisible from

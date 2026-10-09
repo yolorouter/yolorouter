@@ -111,6 +111,69 @@
       </NForm>
     </section>
 
+    <!-- Outbound proxy: the global default for upstream traffic. Same card
+         lifecycle as the retention items (authoritative GET, version-CAS
+         PUT, 409 → reload and re-save). The system-mode notice renders only
+         while that mode is selected — it is the one mode whose knobs this
+         console cannot reach (they live in the process environment). -->
+    <section class="settings-card">
+      <h2 class="settings-card__title">{{ t('generalSettings.outboundProxy.title') }}</h2>
+      <p class="settings-card__desc">{{ t('generalSettings.outboundProxy.desc') }}</p>
+      <div v-if="proxyLoad === 'loading'" class="settings-card__state">{{ t('common.loading') }}</div>
+      <div v-else-if="proxyLoad === 'error'" class="settings-card__state settings-card__state--err">
+        <span>{{ t('generalSettings.outboundProxy.loadFailed') }}</span>
+        <NButton size="small" @click="loadProxy">{{ t('generalSettings.outboundProxy.retry') }}</NButton>
+      </div>
+      <NForm v-else ref="proxyFormRef" :model="proxyForm" :rules="proxyRules" require-mark-placement="left">
+        <NFormItem path="mode">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.outboundProxy.modeTip')">{{
+              t('generalSettings.outboundProxy.mode')
+            }}</HelpLabel>
+          </template>
+          <NSelect
+            v-model:value="proxyForm.mode"
+            class="gs-proxy__mode"
+            :options="proxyModeOptions"
+            @update:value="onProxyModeSelect"
+          />
+        </NFormItem>
+        <!-- The notice is the system mode's own documentation: env vars are
+             process-level, so a container-side change needs a container
+             restart — worth saying exactly when the admin picks that mode. -->
+        <p v-if="proxyForm.mode === 'system'" class="gs-proxy__system-notice" data-testid="proxy-system-notice">
+          {{ t('generalSettings.outboundProxy.systemNotice') }}
+        </p>
+        <NFormItem path="url">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.outboundProxy.urlTip')">{{
+              t('generalSettings.outboundProxy.url')
+            }}</HelpLabel>
+          </template>
+          <!-- Kept visible-but-disabled outside custom mode: a previously
+               saved URL stays readable (and rides along on save) instead of
+               vanishing the moment the mode flips. -->
+          <NInput
+            v-model:value="proxyForm.url"
+            class="gs-proxy__url"
+            :placeholder="t('generalSettings.outboundProxy.urlPlaceholder')"
+            :disabled="proxyForm.mode !== 'custom'"
+          />
+        </NFormItem>
+        <div class="settings-card__actions">
+          <NButton
+            type="primary"
+            class="gs-proxy__save"
+            :loading="proxySaving"
+            :disabled="proxyLoad !== 'ready'"
+            @click="saveProxy"
+          >
+            {{ t('common.save') }}
+          </NButton>
+        </div>
+      </NForm>
+    </section>
+
     <!-- Language: personal, per-browser — reads/writes the locale store the
          sidebar Language entry also uses (one source of truth), applies on
          pick. No load state (the store reads synchronously) and no save
@@ -184,12 +247,14 @@ import {
   NButton,
   NForm,
   NFormItem,
+  NInput,
   NInputNumber,
   NSelect,
   NSwitch,
   useMessage,
   type FormInst,
   type FormRules,
+  type SelectOption,
 } from 'naive-ui'
 import PageHeader from '../../components/PageHeader.vue'
 import HelpLabel from '../../components/HelpLabel.vue'
@@ -199,14 +264,17 @@ import { APIError, displayMessage } from '../../api/client'
 import {
   getAdminAuditRetention,
   getKeyAutoRecovery,
+  getOutboundProxy,
   getRequestLogRetention,
   updateAdminAuditRetention,
   updateKeyAutoRecovery,
+  updateOutboundProxy,
   updateRequestLogRetention,
 } from '../../api/systemSettings'
 import {
   ADMIN_AUDIT_RETENTION_CONFLICT,
   KEY_AUTO_RECOVERY_CONFLICT,
+  OUTBOUND_PROXY_CONFLICT,
   REQUEST_LOG_RETENTION_CONFLICT,
 } from '../../api/errcodes'
 import {
@@ -230,6 +298,13 @@ import {
   keyRecoverySavePlan,
   type KeyRecoveryForm,
 } from '../../utils/keyAutoRecovery'
+import {
+  checkProxyUrl,
+  outboundProxyFormFromSetting,
+  outboundProxySavePlan,
+  proxyUrlIssueMessageKey,
+  type OutboundProxyForm,
+} from '../../utils/outboundProxy'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -409,6 +484,101 @@ async function saveAuditRetention() {
   }
 }
 
+// --- Outbound proxy ---------------------------------------------------------
+
+// Identical lifecycle to the retention items above; the setting family is
+// its own endpoint + conflict code (11025). The URL rule's bounds stay
+// owned by utils/outboundProxy — the client pre-checks syntax (parseable,
+// host, supported scheme) and the server remains the authority, additionally
+// refusing reserved-range addresses the browser cannot judge from the
+// router's network position.
+const proxyLoad = ref<'loading' | 'error' | 'ready'>('loading')
+const proxySaving = ref(false)
+const proxyVersion = ref(0)
+const proxyFormRef = ref<FormInst | null>(null)
+const proxyForm = reactive<OutboundProxyForm>({ mode: 'off', url: '' })
+
+const proxyModeOptions = computed<SelectOption[]>(() => [
+  { value: 'off', label: t('generalSettings.outboundProxy.modeOff') },
+  { value: 'system', label: t('generalSettings.outboundProxy.modeSystem') },
+  { value: 'custom', label: t('generalSettings.outboundProxy.modeCustom') },
+])
+
+const proxyRules = computed<FormRules>(() => ({
+  url: [
+    {
+      // Required only under custom mode; a parked URL elsewhere is still
+      // syntax-checked (the same rule the server enforces), but clearing it
+      // under off/system is legal.
+      required: true,
+      validator: (_rule, value: string) =>
+        proxyForm.mode !== 'custom' || checkProxyUrl(value).ok,
+      message: proxyValidationMessage(),
+      trigger: ['blur'],
+    },
+  ],
+}))
+
+function proxyValidationMessage(): string {
+  const check = checkProxyUrl(proxyForm.url)
+  return check.ok ? '' : t(proxyUrlIssueMessageKey('settings', check.issue))
+}
+
+// Selecting a mode only clears the previous mode's validation feedback:
+// the URL rule is mode-dependent (required under custom alone), so a
+// message left by an earlier failed save must not linger once the stance
+// changed. No eager validation runs here — the message (re)appears at the
+// next save click.
+function onProxyModeSelect() {
+  void proxyFormRef.value?.restoreValidation()
+}
+
+async function loadProxy() {
+  proxyLoad.value = 'loading'
+  try {
+    const s = await getOutboundProxy()
+    const next = outboundProxyFormFromSetting(s)
+    proxyForm.mode = next.mode
+    proxyForm.url = next.url
+    proxyVersion.value = s.version
+    proxyFormRef.value?.restoreValidation()
+    proxyLoad.value = 'ready'
+  } catch (err) {
+    proxyLoad.value = 'error'
+    if (!(err instanceof APIError)) message.error(displayMessage(err, t))
+  }
+}
+
+async function saveProxy() {
+  if (proxyLoad.value !== 'ready' || proxySaving.value) return
+  try {
+    await proxyFormRef.value?.validate()
+  } catch {
+    return
+  }
+  const plan = outboundProxySavePlan({ mode: proxyForm.mode, url: proxyForm.url }, proxyVersion.value)
+  if (!plan.ok) {
+    // Defensive double lock, same as the retention item.
+    message.error(t(proxyUrlIssueMessageKey('settings', plan.issue)))
+    return
+  }
+  proxySaving.value = true
+  try {
+    await updateOutboundProxy(plan.payload)
+    message.success(t('generalSettings.outboundProxy.saved'))
+    await loadProxy()
+  } catch (err) {
+    if (err instanceof APIError && err.code === OUTBOUND_PROXY_CONFLICT) {
+      message.error(t('generalSettings.outboundProxy.conflict'))
+      void loadProxy()
+    } else {
+      message.error(displayMessage(err, t))
+    }
+  } finally {
+    proxySaving.value = false
+  }
+}
+
 // --- Key auto recovery ----------------------------------------------------
 
 // Identical lifecycle to the retention item above; only the setting family
@@ -490,6 +660,7 @@ async function saveRecovery() {
 onMounted(() => {
   void loadRetention()
   void loadAuditRetention()
+  void loadProxy()
   void loadRecovery()
 })
 </script>
@@ -545,5 +716,18 @@ onMounted(() => {
    matching the migrated modal's block-switch treatment. */
 :deep(.gs-recovery__switch) {
   margin-left: auto;
+}
+
+/* The system-mode notice is a mode-scoped caveat, not a form error: quiet
+   callout styling instead of the alert component's loud framing. */
+.gs-proxy__system-notice {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
 }
 </style>

@@ -112,6 +112,7 @@ var actionByRoute = map[string]string{
 	"PUT /api/admin/system-settings/key-auto-recovery":     "system_settings.update",
 	"PUT /api/admin/system-settings/request-log-retention": "system_settings.update",
 	"PUT /api/admin/system-settings/admin-audit-retention": "system_settings.update",
+	"PUT /api/admin/system-settings/outbound-proxy":        "system_settings.update",
 
 	// One-click self-update.
 	"POST /api/admin/system/update": "system.update",

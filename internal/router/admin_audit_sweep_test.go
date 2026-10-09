@@ -60,7 +60,7 @@ func newAuditFixture(t *testing.T) *auditFixture {
 	}
 	// The logout endpoint deletes the session its cookie presents; the
 	// sweep therefore fires it through a dedicated throwaway session so
-	// the main session survives all 52 requests.
+	// the main session survives all 55 requests.
 	if err := repository.CreateSession(db, "tok-audit-sweep-logout", admin.ID, now.Add(time.Hour), now); err != nil {
 		t.Fatalf("seed throwaway logout session: %v", err)
 	}
@@ -178,6 +178,7 @@ var expectedWriteActions = map[string]string{
 	"PUT /api/admin/system-settings/key-auto-recovery":     "system_settings.update",
 	"PUT /api/admin/system-settings/request-log-retention": "system_settings.update",
 	"PUT /api/admin/system-settings/admin-audit-retention": "system_settings.update",
+	"PUT /api/admin/system-settings/outbound-proxy":        "system_settings.update",
 	// One-click self-update.
 	"POST /api/admin/system/update": "system.update",
 }
@@ -214,8 +215,8 @@ func TestAdminAuditSweepCapturesEveryWriteEndpoint(t *testing.T) {
 			t.Errorf("expectation table names %s, but no such live write route exists — remove the stale entry", key)
 		}
 	}
-	if len(expectedWriteActions) != 54 {
-		t.Errorf("expected the console write surface to hold 54 endpoints, table lists %d", len(expectedWriteActions))
+	if len(expectedWriteActions) != 55 {
+		t.Errorf("expected the console write surface to hold 55 endpoints, table lists %d", len(expectedWriteActions))
 	}
 
 	// Fire one request per live write route. Handlers answer with whatever

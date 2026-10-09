@@ -126,6 +126,8 @@ function providerFixture(keys: ProviderKey[] = [keyFixture()]): Provider {
     keys,
     created_at: '2026-09-01T00:00:00Z',
     protocol_endpoints: '',
+    proxy_mode: '',
+    proxy_url: '',
   }
 }
 
