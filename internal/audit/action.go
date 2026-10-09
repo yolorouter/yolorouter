@@ -101,6 +101,10 @@ var actionByRoute = map[string]string{
 	"DELETE /api/admin/oauth-providers/:id":    "oauth_provider.delete",
 	"POST /api/admin/oauth-providers/discover": "oauth_provider.discover",
 
+	// Playground console runs (comparison traffic; subjects are the key/model set).
+	"POST /api/admin/playground/run":             "playground.run",
+	"POST /api/admin/playground/video/stop-wait": "playground.stop_wait",
+
 	// Typed system settings: one PUT per named setting.
 	"PUT /api/admin/system-settings/custom-system-prompt":  "system_settings.update",
 	"PUT /api/admin/system-settings/input-compression":     "system_settings.update",

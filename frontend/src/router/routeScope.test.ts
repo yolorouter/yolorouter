@@ -29,6 +29,7 @@ const MEMBER_ALLOWED_PATHS = new Set([
   'costs/models',
   'costs/models/:name(.*)',
   'api-keys',
+  'playground',
 ])
 
 // Layout-child paths that must STAY admin-only. Mirrors the backend's

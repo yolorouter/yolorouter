@@ -604,6 +604,12 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// the scoped group.
 	playgroundRun := r.Group("/api/admin/playground", middleware.BodySizeLimit(playgroundRunBodyLimit))
 	playgroundRun.Use(middleware.RequireSession(db), middleware.MemberScope())
+	// The audit capture layer again, explicitly: this group deliberately
+	// registers outside the /api/admin group object (to swap the body cap),
+	// so it does not inherit the group-root audit middleware — without this
+	// line its write routes would silently escape capture. The admin-audit
+	// sweep test holds this group to the same one-row-per-write contract.
+	playgroundRun.Use(audit.Middleware(db, deps.Audit))
 	playgroundRun.POST("/run", handler.PostPlaygroundRun(playgroundSvc))
 	// A finished speech column's retained clip: the target of the done
 	// event's audio reference, served for the page session that ran it and
