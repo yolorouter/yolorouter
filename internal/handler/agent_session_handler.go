@@ -2,13 +2,17 @@
 // RequestLogService the request-log views use; all SQL lives in the
 // repository, all composition in the service.
 //
-// Two routes, both admin-only (registered on the protected group, and pinned
+// Three routes, all admin-only (registered on the protected group, and pinned
 // by the member-scope route conformance test like every other admin GET):
 //
 //   - GET /api/admin/agent-sessions            paginated aggregate list,
 //     optional agent_client attribution filter
 //   - GET /api/admin/agent-sessions/:sessionId full request timeline of one
 //     tool session, chronological
+//   - GET /api/admin/agent-sessions/:sessionId/transcript
+//     the session's deduplicated replay transcript (aggregate + system
+//     timeline + one block per request), assembled by the service over the
+//     pure replay pass
 package handler
 
 import (
@@ -67,5 +71,31 @@ func GetAgentSessionDetail(svc *requestlog.RequestLogService) gin.HandlerFunc {
 			return
 		}
 		response.Success(c, detail)
+	}
+}
+
+// GetAgentSessionTranscript handles GET
+// /api/admin/agent-sessions/:sessionId/transcript — the whole session replay
+// in one payload (session aggregate, deduplicated system timeline, one block
+// per request), so the replay page needs a single fetch instead of per-request
+// round trips. An unknown session id answers the domain 404 envelope, the
+// same convention the detail endpoint holds.
+func GetAgentSessionTranscript(svc *requestlog.RequestLogService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		sessionID := c.Param("sessionId")
+		if sessionID == "" {
+			response.ParamError(c, "sessionId is required")
+			return
+		}
+		transcript, err := svc.GetAgentSessionTranscript(sessionID)
+		if err != nil {
+			if errors.Is(err, errcode.ErrAgentSessionNotFound) {
+				response.NotFound(c, errcode.AgentSessionNotFound, errcode.GetMessage(errcode.AgentSessionNotFound))
+				return
+			}
+			response.Error(c, errcode.InternalError, errcode.GetMessage(errcode.InternalError))
+			return
+		}
+		response.Success(c, transcript)
 	}
 }

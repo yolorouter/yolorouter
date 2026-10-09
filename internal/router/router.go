@@ -504,6 +504,9 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// session-level reading of other callers' traffic.
 	protected.GET("/agent-sessions", handler.GetAgentSessions(requestLogSvc))
 	protected.GET("/agent-sessions/:sessionId", handler.GetAgentSessionDetail(requestLogSvc))
+	// The session's full replay transcript — read-only like its two siblings,
+	// same admin-only classification (cross-account callers' conversations).
+	protected.GET("/agent-sessions/:sessionId/transcript", handler.GetAgentSessionTranscript(requestLogSvc))
 
 	// Video tasks: read-only admin window over the task domain. The task
 	// row is its own lifecycle record and billing evidence; refreshes
