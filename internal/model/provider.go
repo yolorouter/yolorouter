@@ -69,8 +69,18 @@ type Provider struct {
 	// (beyond ProviderType) to an optional per-protocol base URL; empty
 	// string means no extra protocols.
 	ProtocolEndpoints string `gorm:"column:protocol_endpoints" json:"protocol_endpoints"`
-	Note              string `gorm:"column:note" json:"note"`
-	ManagementStatus  int    `gorm:"column:management_status" json:"management_status"`
+	// ProxyMode is this provider's outbound-proxy stance: '' inherits the
+	// global setting (the column default — every provider row existing
+	// before this column keeps exactly its old behaviour), 'off' forces
+	// direct even when the global setting proxies, 'custom' proxies
+	// through this row's ProxyURL. 'system' is deliberately not a provider
+	// value: it is a statement about the process environment, not a
+	// per-provider choice.
+	ProxyMode string `gorm:"column:proxy_mode" json:"proxy_mode"`
+	// ProxyURL carries the custom-mode proxy address; empty when unused.
+	ProxyURL         string `gorm:"column:proxy_url" json:"proxy_url"`
+	Note             string `gorm:"column:note" json:"note"`
+	ManagementStatus int    `gorm:"column:management_status" json:"management_status"`
 	// DestinationVersion is json:"-": it's an internal CAS/versioning
 	// primitive, never something the frontend reads or
 	// writes directly.

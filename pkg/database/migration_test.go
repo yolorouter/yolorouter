@@ -984,3 +984,132 @@ func TestMigration00050RequestLogRetention(t *testing.T) {
 		t.Fatalf("legacy request_logs rows after replay = %d, want 1 (upgrade must not touch data)", legacyCount)
 	}
 }
+
+// TestMigration00055OutboundProxy verifies that migration 00055 seeds the
+// outbound-proxy settings pair (mode off, empty URL — the zero-behavior-
+// change default) and adds the two provider override columns with the
+// inherit default, on a fresh database and on an upgraded one alike, and
+// that the Down removes exactly what the Up added.
+func TestMigration00055OutboundProxy(t *testing.T) {
+	assertSeeded := func(t *testing.T, db *sql.DB, context string) {
+		t.Helper()
+		rows, err := db.Query("SELECT key, value, version FROM system_settings WHERE key IN ('proxy_mode','proxy_url') ORDER BY key")
+		if err != nil {
+			t.Fatalf("%s: query proxy pair: %v", context, err)
+		}
+		defer func() { _ = rows.Close() }()
+		got := map[string]struct {
+			value   string
+			version int64
+		}{}
+		for rows.Next() {
+			var k, v string
+			var ver int64
+			if err := rows.Scan(&k, &v, &ver); err != nil {
+				t.Fatalf("%s: scan: %v", context, err)
+			}
+			got[k] = struct {
+				value   string
+				version int64
+			}{v, ver}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: iterate: %v", context, err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("%s: seeded %d proxy rows, want 2 (%v)", context, len(got), got)
+		}
+		mode := got["proxy_mode"]
+		url := got["proxy_url"]
+		if mode.value != "off" || url.value != "" {
+			t.Fatalf("%s: seed = %q/%q, want off/empty (proxying disabled by default)", context, mode.value, url.value)
+		}
+		if mode.version != url.version {
+			t.Fatalf("%s: seed versions differ: %d vs %d", context, mode.version, url.version)
+		}
+		if mode.version < 1 {
+			t.Fatalf("%s: seed version = %d, want >= 1 (the PUT path refuses version < 1)", context, mode.version)
+		}
+	}
+
+	hasColumn := func(t *testing.T, db *sql.DB, table, col string) bool {
+		t.Helper()
+		rows, err := db.Query("PRAGMA table_info(" + table + ")")
+		if err != nil {
+			t.Fatalf("PRAGMA table_info(%s): %v", table, err)
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var (
+				cid        int
+				name       string
+				colType    string
+				notNull    int
+				defaultVal sql.NullString
+				pk         int
+			)
+			if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+				t.Fatalf("scan table_info(%s) row: %v", table, err)
+			}
+			if name == col {
+				return true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate table_info(%s) rows: %v", table, err)
+		}
+		return false
+	}
+
+	// Fresh database: the full chain including 00055 runs.
+	db := newMemoryDB(t)
+	if err := RunMigrations(db, "sqlite", migrations.SQLiteFS, "sqlite"); err != nil {
+		t.Fatalf("RunMigrations failed: %v", err)
+	}
+	assertSeeded(t, db, "fresh database")
+
+	// The provider override columns exist with the inherit default: an
+	// existing provider row keeps behaving exactly as before the columns.
+	if _, err := db.Exec(`INSERT INTO providers (name, provider_type, base_url, management_status, destination_version, created_at, updated_at)
+		VALUES ('legacy', 'openai', 'https://example.invalid', 1, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+	var mode, url string
+	if err := db.QueryRow("SELECT proxy_mode, proxy_url FROM providers WHERE name = 'legacy'").Scan(&mode, &url); err != nil {
+		t.Fatalf("read provider proxy columns: %v", err)
+	}
+	if mode != "" || url != "" {
+		t.Fatalf("provider proxy defaults = %q/%q, want empty/empty (inherit)", mode, url)
+	}
+
+	// Upgrade replay: roll back to 54 (pair and columns gone), plant a
+	// provider row the old schema shape, then re-run — the seed must land
+	// on the upgraded database exactly as on a fresh one, and the legacy
+	// provider row must survive untouched.
+	if err := RollbackTo(db, "sqlite", migrations.SQLiteFS, "sqlite", 54); err != nil {
+		t.Fatalf("RollbackTo(54) failed: %v", err)
+	}
+	if hasColumn(t, db, "providers", "proxy_mode") || hasColumn(t, db, "providers", "proxy_url") {
+		t.Fatal("proxy columns still present after rollback to 54")
+	}
+	var remaining string
+	err := db.QueryRow("SELECT value FROM system_settings WHERE key = 'proxy_mode'").Scan(&remaining)
+	if err == nil {
+		t.Fatalf("proxy_mode still present after rollback: value=%q", remaining)
+	}
+	if _, err := db.Exec(`INSERT INTO providers (name, provider_type, base_url, management_status, destination_version, created_at, updated_at)
+		VALUES ('pre-upgrade', 'openai', 'https://pre.example.invalid', 1, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`); err != nil {
+		t.Fatalf("seed pre-upgrade provider: %v", err)
+	}
+	if err := RunMigrations(db, "sqlite", migrations.SQLiteFS, "sqlite"); err != nil {
+		t.Fatalf("re-running migrations failed: %v", err)
+	}
+	assertSeeded(t, db, "upgraded database")
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM providers").Scan(&count); err != nil {
+		t.Fatalf("count providers after replay: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("providers after replay = %d, want 2 (upgrade must not touch data)", count)
+	}
+}

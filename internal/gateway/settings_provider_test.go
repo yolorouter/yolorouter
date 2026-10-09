@@ -151,7 +151,7 @@ func TestSettingsReadErrorDoesNotBlockTheRequest(t *testing.T) {
 		},
 	}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, failing, testGatewayConfig())
+	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, failing, testGatewayConfig(), ProxyResolvers{})
 	svc.client.httpClient.Transport = &http.Transport{}
 
 	p := createProvider(t, db, "p1", upstream.URL)
@@ -315,7 +315,7 @@ func TestSettingsResolveRunsBeforeTheBodyIsValidated(t *testing.T) {
 	stub := stubSettingsProvider{}
 	counting := &countingProvider{inner: stub}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig())
+	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig(), ProxyResolvers{})
 	svc.client.httpClient.Transport = &http.Transport{}
 	// A bare Service records nothing; the recorder is wired here because the
 	// settled reason below is asserted from the persisted row, as production
@@ -371,7 +371,7 @@ func TestSettingsResolveRunsBeforeAnIngressRewriterRefuses(t *testing.T) {
 	stub := stubSettingsProvider{}
 	counting := &countingProvider{inner: stub}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig())
+	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, counting, testGatewayConfig(), ProxyResolvers{})
 	svc.client.httpClient.Transport = &http.Transport{}
 	// Wired for the same reason as the validation twin: the settled reason is
 	// asserted from the persisted row.

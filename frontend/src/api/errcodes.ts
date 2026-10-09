@@ -17,6 +17,8 @@ export const KEY_AUTO_RECOVERY_CONFLICT = 11019
 export const REQUEST_LOG_RETENTION_CONFLICT = 11021
 // Mirrors backend AdminAuditRetentionConflict (pkg/errcode).
 export const ADMIN_AUDIT_RETENTION_CONFLICT = 11023
+// Mirrors backend OutboundProxyConflict (pkg/errcode).
+export const OUTBOUND_PROXY_CONFLICT = 11025
 export const PROVIDER_NOT_FOUND = 12001
 export const PROVIDER_NAME_TAKEN = 12002
 export const PROVIDER_KEY_NOT_FOUND = 12009

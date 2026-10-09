@@ -2,10 +2,12 @@ package systemsettings
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/yolorouter/yolorouter/internal/outboundproxy"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/settings"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
@@ -41,6 +43,7 @@ const (
 	keyAutoRecoveryCacheKey     = "key_auto_recovery"
 	requestLogRetentionCacheKey = "request_log_retention"
 	adminAuditRetentionCacheKey = "admin_audit_retention"
+	outboundProxyCacheKey       = "outbound_proxy"
 )
 
 // Bounds for the key-auto-recovery probe interval, in whole minutes. One
@@ -133,6 +136,7 @@ func NewSystemSettingsService(db *gorm.DB) *SystemSettingsService {
 			keyAutoRecoveryCacheKey:     {},
 			requestLogRetentionCacheKey: {},
 			adminAuditRetentionCacheKey: {},
+			outboundProxyCacheKey:       {},
 		},
 	}
 }
@@ -165,6 +169,11 @@ func (s *SystemSettingsService) requestLogRetentionEntry() *settingEntry {
 // adminAuditRetentionEntry returns the admin-audit-retention cache slot.
 func (s *SystemSettingsService) adminAuditRetentionEntry() *settingEntry {
 	return s.entries[adminAuditRetentionCacheKey]
+}
+
+// outboundProxyEntry returns the outbound-proxy cache slot.
+func (s *SystemSettingsService) outboundProxyEntry() *settingEntry {
+	return s.entries[outboundProxyCacheKey]
 }
 
 // readCached is the shared hot-path read for any registered setting. It serves
@@ -542,5 +551,63 @@ func (s *SystemSettingsService) UpdateAdminAuditRetention(ctx context.Context, e
 		return settings.AdminAuditRetentionSetting{}, 0, err
 	}
 	s.publishIfNewer(s.adminAuditRetentionEntry(), got, ver)
+	return got, ver, nil
+}
+
+// --- Outbound proxy ---------------------------------------------------------
+
+// GetOutboundProxy returns the cached snapshot (non-blocking, fail-open to
+// the shipped off/direct default) — the transport resolution path's read.
+// On cold cache or stale snapshot it triggers a singleflight refresh with a
+// strict short timeout; on failure it returns last-known-good + error.
+// Fail-open here means fail-open to DIRECT: a DB hiccup must never route
+// traffic through a proxy the admin did not choose.
+func (s *SystemSettingsService) GetOutboundProxy(ctx context.Context) (settings.OutboundProxySetting, int64, error) {
+	v, ver, err := s.readCached(ctx, outboundProxyCacheKey, s.outboundProxyEntry(),
+		func(ctx context.Context) (any, int64, error) {
+			snap, v, e := repository.GetOutboundProxy(s.db.WithContext(ctx))
+			return snap, v, e
+		},
+		settings.DefaultOutboundProxySetting())
+	if err != nil {
+		return v.(settings.OutboundProxySetting), ver, err
+	}
+	return v.(settings.OutboundProxySetting), ver, nil
+}
+
+// GetOutboundProxyForHandler is the authoritative read for the handler GET:
+// straight from the DB, bound to the request ctx so a client disconnect
+// cancels the in-flight DB call.
+func (s *SystemSettingsService) GetOutboundProxyForHandler(ctx context.Context) (settings.OutboundProxySetting, int64, error) {
+	return repository.GetOutboundProxy(s.db.WithContext(ctx))
+}
+
+// UpdateOutboundProxy validates and CAS-updates the pair, then publishes the
+// committed snapshot to the cache so the transport sees the change within
+// one cache TTL, without a restart.
+//
+// Validation: mode must be one of off/system/custom; custom requires a
+// non-empty proxy URL; and any non-empty proxy URL — whatever the mode —
+// must be a storable proxy URL (parseable, supported scheme, host present,
+// address outside the reserved ranges) so a value parked behind off/system
+// can never become active unvalidated later. A refused value leaves the
+// stored rows untouched (the old value is retained).
+func (s *SystemSettingsService) UpdateOutboundProxy(ctx context.Context, expectedVersion int64, mode, proxyURL string) (settings.OutboundProxySetting, int64, error) {
+	if !outboundproxy.ValidGlobalMode(mode) {
+		return settings.OutboundProxySetting{}, 0, errcode.ErrOutboundProxyURLInvalid
+	}
+	if mode == outboundproxy.ModeCustom && strings.TrimSpace(proxyURL) == "" {
+		return settings.OutboundProxySetting{}, 0, errcode.ErrOutboundProxyURLInvalid
+	}
+	if proxyURL != "" {
+		if err := outboundproxy.ValidateProxyURL(ctx, proxyURL); err != nil {
+			return settings.OutboundProxySetting{}, 0, errcode.ErrOutboundProxyURLInvalid
+		}
+	}
+	got, ver, err := repository.UpdateOutboundProxy(s.db.WithContext(ctx), expectedVersion, mode, proxyURL)
+	if err != nil {
+		return settings.OutboundProxySetting{}, 0, err
+	}
+	s.publishIfNewer(s.outboundProxyEntry(), got, ver)
 	return got, ver, nil
 }

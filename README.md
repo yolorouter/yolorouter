@@ -195,6 +195,40 @@ issue an API key and start calling.
 → **Full installation guide for every platform, including building from source:**
 [yolorouter.com/docs/self-hosted/installation](https://yolorouter.com/docs/self-hosted/installation?utm_source=oss-readme&utm_medium=repo)
 
+### Upstream proxy
+
+Self-hosting on a network where providers are only reachable through a proxy
+— the common case in mainland China — needs no sidecar or wrapper process:
+Yolorouter can route its upstream traffic through your own proxy, globally
+or per provider. Both levels are configured in the admin console and take
+effect on new requests within about 30 seconds, without a restart.
+
+- **Global default** (Settings → General → Outbound proxy): three modes.
+  `off` (the default — everything direct); `system` (honor the process's
+  `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` environment variables); and
+  `custom` (an explicit `http://`, `https://`, `socks5://` or `socks5h://`
+  URL). In `system` mode the variables are read from the process
+  environment, so if you run in Docker and change them, restart the
+  container.
+- **Per-provider override** (each provider's edit dialog): force `off` or
+  `custom` for just that provider, or leave it inheriting the global
+  setting — the typical setup is one or two providers needing a proxy while
+  everything else stays direct.
+
+Connection tests ride the same proxy as real traffic, so a green test means
+the chain actually works. Relay requests, provider connection tests, and the
+secondary fetches of URLs quoted in upstream answers are covered; the update
+check and OAuth identity providers keep their own configuration.
+
+One security trade-off to know about: with a proxy active, the per-IP target
+validation that normally guards against SSRF is skipped for that traffic —
+inside the proxy channel, DNS and the connection happen on the proxy side,
+so validating locally would be neither possible nor meaningful. The proxy
+address itself is still validated (reserved ranges are rejected; private
+and loopback addresses are allowed, since a LAN proxy is a legitimate
+topology), and providers whose traffic goes through a proxy carry a warning
+icon in the console.
+
 ## Protocols
 
 Every ingress below authenticates with the **same** Yolorouter API key, supports

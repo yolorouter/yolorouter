@@ -1,7 +1,10 @@
 // Package safehttp provides an SSRF-safe outbound HTTP transport shared by
 // provider connection tests and intended for
-// future gateway relay calls. Every dial validates the resolved IP
-// before connecting; proxy environment variables are disabled; redirects
+// future gateway relay calls. Every direct dial validates the resolved IP
+// before connecting; proxy environment variables are never honored, the
+// only proxy source being an injected ProxyResolver (NewProxyingTransport),
+// under which the dial goes to the proxy address — reserved-range-checked
+// only, with target validation intentionally skipped; redirects
 // are not followed by callers that use http.Client{CheckRedirect} (left to
 // the caller, since this package only controls the Transport).
 package safehttp
@@ -11,6 +14,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"sync"
 	"time"
 )
 
@@ -101,9 +106,39 @@ func matchCIDR(normalized, original net.IP, cidrs []*net.IPNet) error {
 	return nil
 }
 
+// ProxyAddressAllowed reports whether ip may serve as the address of a
+// configured outbound proxy. A proxy address is admin-declared trusted
+// configuration, not an arbitrary dial target: private and loopback ranges
+// are allowed (a LAN proxy or loopback test stub is the primary self-hosted
+// topology), and only the always-denied reserved ranges (multicast,
+// benchmark, reserved, unspecified) are rejected — the same ranges
+// checkIPAllowed refuses under any allowPrivate setting. Both the save-time
+// proxy-URL validation and the proxy dial path call this so the address
+// policy has one source of truth.
+func ProxyAddressAllowed(ip net.IP) bool {
+	normalized := ip
+	if v4 := ip.To4(); v4 != nil {
+		normalized = v4
+	}
+	return matchCIDR(normalized, ip, deniedCIDRs) == nil
+}
+
+// ProxyResolver decides, for one outbound request, which proxy URL the
+// request should travel through, or nil for a direct connection. It is
+// injected at assembly time (NewProxyingTransport) and consulted per request
+// by the transport's Proxy callback, so a config snapshot read behind it
+// takes effect on new requests without rebuilding the transport — the
+// "dynamic proxy callback" mechanism. A returned error aborts the request:
+// traffic the operator explicitly asked to proxy must never leak out
+// unproxied because the stored configuration went bad.
+type ProxyResolver func(*http.Request) (*url.URL, error)
+
 // NewTransport returns an *http.Transport with SSRF protections wired in:
 // custom DialContext validating every resolved IP before connecting,
 // environment-variable proxying disabled, and no other defaults changed.
+// It is NewProxyingTransport with a nil resolver (never-proxy semantics),
+// kept as the original constructor so existing call sites and tests are
+// untouched.
 //
 // allowPrivate=true opens ONLY the privateCIDRs ranges (loopback, private,
 // link-local, CGNAT, unique-local) for self-hosted operators pointing at a
@@ -121,14 +156,189 @@ func matchCIDR(normalized, original net.IP, cidrs []*net.IPNet) error {
 // handshake-level bound (kept explicit rather than silently defaulting, so
 // the caller stays in control of the value).
 func NewTransport(allowPrivate bool, connectTimeout, tlsHandshake time.Duration) *http.Transport {
+	return assembleTransport(allowPrivate, connectTimeout, tlsHandshake, nil)
+}
+
+// NewProxyingTransport is the unified transport assembly every outbound call
+// site funnels through: NewTransport's allowPrivate/timeouts wiring plus an
+// injectable ProxyResolver mounted as the transport's Proxy callback. A nil
+// resolver is exactly NewTransport (Proxy stays nil — environment proxying
+// never reappears).
+//
+// Proxy semantics (SSRF redefined when the resolver returns a proxy URL):
+//
+//   - http, https, socks5, and socks5h schemes are all handled natively by
+//     net/http; socks5 and socks5h are treated identically, and in both the
+//     target hostname is handed to the proxy unresolved (proxy-side DNS).
+//     There is no custom dialer and no extra dependency.
+//   - The dial the transport performs is TO THE PROXY, so it runs under the
+//     proxy-address policy (ProxyAddressAllowed: private and loopback proxy
+//     addresses allowed — a LAN proxy or loopback test stub is the primary
+//     self-hosted topology — reserved ranges rejected). The target's own
+//     per-IP validation is skipped entirely: inside the proxy channel both
+//     DNS and the connect happen proxy-side, so a local resolve-and-check
+//     would be neither necessary nor correct.
+//   - A resolver error fails the request outright; it never falls back to a
+//     direct connection.
+//   - Orthogonal to allowPrivate: with a proxy in play, reachability is the
+//     proxy's decision and AllowPrivateUpstreams degrades to "may connect to
+//     the proxy" for that request.
+//
+// Distinguishing a proxy dial from a target dial relies on the registry
+// documented on proxyAddrRegistry.
+func NewProxyingTransport(allowPrivate bool, connectTimeout, tlsHandshake time.Duration, proxy ProxyResolver) *http.Transport {
+	if proxy == nil {
+		return assembleTransport(allowPrivate, connectTimeout, tlsHandshake, nil)
+	}
+	proxies := &proxyAddrRegistry{addrs: make(map[string]struct{})}
+	transport := assembleTransport(allowPrivate, connectTimeout, tlsHandshake, proxies)
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		u, err := proxy(req)
+		if err != nil {
+			return nil, err
+		}
+		if u == nil {
+			// Direct: the callback returning nil, nil is how net/http spells
+			// "no proxy for this request" — and a non-nil Proxy callback
+			// already means the environment is never consulted.
+			return nil, nil
+		}
+		// Register BEFORE returning: net/http calls Proxy synchronously in
+		// roundTrip and only then queues the dial, so the registry entry is
+		// guaranteed visible to DialContext for this request's connection.
+		proxies.add(u)
+		return u, nil
+	}
+	return transport
+}
+
+// assembleTransport builds the one *http.Transport every constructor above
+// produces, differing only in whether the dial path must be able to
+// recognize configured proxy addresses. proxies==nil keeps the historical
+// never-proxy behavior byte-for-byte: the Proxy field is left nil (not a
+// func returning nil) and every dial goes through the full target policy.
+func assembleTransport(allowPrivate bool, connectTimeout, tlsHandshake time.Duration, proxies *proxyAddrRegistry) *http.Transport {
 	dialer := &net.Dialer{Timeout: connectTimeout}
 	return &http.Transport{
 		Proxy:               nil, // never honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY
 		TLSHandshakeTimeout: tlsHandshake,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if proxies != nil && proxies.isProxyAddr(addr) {
+				return dialProxyAddress(ctx, dialer, network, addr, connectTimeout)
+			}
 			return safeDialContext(ctx, dialer, network, addr, allowPrivate, connectTimeout)
 		},
 	}
+}
+
+// proxyAddrRegistry remembers the canonical dial addresses of proxies the
+// resolver has returned, so DialContext can tell a dial TO a configured
+// proxy (proxy-address policy: reserved ranges only) from a dial to an
+// actual upstream target (full per-IP policy). net/http offers no direct
+// signal for this: it resolves the Proxy callback's URL into a connect
+// method and then hands DialContext the proxy's canonical address as an
+// opaque string, so membership against the addresses we ourselves produced
+// is the only correlation channel.
+//
+// Entries are never removed: the set is bounded by the distinct proxy
+// addresses the admin's configuration has ever produced (config scale, a
+// handful of entries). A subsequent direct request whose target happens to
+// be exactly a registered proxy address is validated under the proxy policy
+// instead of the target policy — that address is one the operator already
+// declared dialable, so no new reachability is granted beyond it.
+type proxyAddrRegistry struct {
+	mu    sync.Mutex
+	addrs map[string]struct{}
+}
+
+// add records u's canonical dial address.
+func (r *proxyAddrRegistry) add(u *url.URL) {
+	key := canonicalProxyAddr(u)
+	r.mu.Lock()
+	r.addrs[key] = struct{}{}
+	r.mu.Unlock()
+}
+
+// isProxyAddr reports whether addr is a registered proxy dial address.
+func (r *proxyAddrRegistry) isProxyAddr(addr string) bool {
+	r.mu.Lock()
+	_, ok := r.addrs[addr]
+	r.mu.Unlock()
+	return ok
+}
+
+// canonicalProxyAddr mirrors net/http's private canonicalAddr (GOROOT
+// net/http/transport.go): for a proxied request, the address handed to
+// DialContext is JoinHostPort(idnaASCII(u.Hostname()), port-or-scheme-default).
+// For an ASCII host idnaASCII returns it unchanged (no case folding), which
+// is where the mirror is byte-exact; a non-ASCII proxy host registers its
+// unicode form while the transport would dial the punycode form — such a
+// miss falls back to the STRICTER target policy (fail closed), never to a
+// looser one, so the edge is deliberately not handled with an IDNA
+// dependency.
+func canonicalProxyAddr(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		port = proxySchemePort(u.Scheme)
+	}
+	return net.JoinHostPort(u.Hostname(), port)
+}
+
+// proxySchemePort mirrors net/http's schemePort defaults for the schemes a
+// proxy URL may carry.
+func proxySchemePort(scheme string) string {
+	switch scheme {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	case "socks5", "socks5h":
+		return "1080"
+	default:
+		return ""
+	}
+}
+
+// dialProxyAddress dials the address of a configured proxy: resolve the
+// proxy host (an IP literal needs no DNS), reject reserved-range addresses
+// with ProxyAddressAllowed — the transport-level backstop enforcing the
+// same policy the save-time validation applies, so a value that slipped
+// past or changed under the stored URL still cannot be dialed — and connect
+// to the first address that passes. The target behind the proxy is never
+// resolved or validated here: it is the proxy's side of the channel.
+func dialProxyAddress(ctx context.Context, dialer *net.Dialer, network, addr string, connectTimeout time.Duration) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("split proxy host/port: %w", err)
+	}
+	var ips []net.IPAddr
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IPAddr{{IP: ip}}
+	} else {
+		// Same resolution contract as target dials: bounded by the caller's
+		// ctx, never by connectTimeout (see safeDialContext's doc comment).
+		ips, err = resolveHost(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve proxy address %q: %w", host, err)
+		}
+	}
+	connectCtx := ctx
+	if connectTimeout > 0 {
+		var cancel context.CancelFunc
+		connectCtx, cancel = context.WithTimeout(ctx, connectTimeout)
+		defer cancel()
+	}
+	return dialValidatedIPs(connectCtx, dialer, network, ips, port, checkProxyAddressAllowed)
+}
+
+// checkProxyAddressAllowed adapts ProxyAddressAllowed to dialValidatedIPs's
+// policy shape, with the message wording the save-time validation already
+// uses so both surfaces read identically.
+func checkProxyAddressAllowed(ip net.IP) error {
+	if ProxyAddressAllowed(ip) {
+		return nil
+	}
+	return fmt.Errorf("proxy address %s is in a reserved range (multicast, benchmark, reserved, or unspecified)", ip)
 }
 
 // safeDialContext resolves addr's host exactly once, validates every
@@ -159,6 +369,7 @@ func NewTransport(allowPrivate bool, connectTimeout, tlsHandshake time.Duration)
 // produces an already-expired context, which would fail every dial
 // immediately instead of disabling the bound. In that case the parent ctx is
 // used directly, unmodified, for the dial phase too.
+
 // resolveHost is net.DefaultResolver.LookupIPAddr behind a variable so a test
 // can see which context resolution is handed. That is the whole of the
 // "connectTimeout does not bound DNS" contract, and it is invisible from
@@ -195,9 +406,19 @@ func safeDialContext(ctx context.Context, dialer *net.Dialer, network, addr stri
 // connects successfully. Split out from safeDialContext so tests can feed
 // it a fixed IP list without depending on real DNS resolution.
 func dialResolvedIPs(ctx context.Context, dialer *net.Dialer, network string, ips []net.IPAddr, port string, allowPrivate bool) (net.Conn, error) {
+	return dialValidatedIPs(ctx, dialer, network, ips, port, func(ip net.IP) error {
+		return checkIPAllowed(ip, allowPrivate)
+	})
+}
+
+// dialValidatedIPs is the policy-generic core both dial paths share (target
+// dials via checkIPAllowed, proxy dials via checkProxyAddressAllowed): try
+// each IP in order, skip the ones the policy rejects, dial the first one
+// that both passes and connects, and surface the last failure otherwise.
+func dialValidatedIPs(ctx context.Context, dialer *net.Dialer, network string, ips []net.IPAddr, port string, validate func(net.IP) error) (net.Conn, error) {
 	var lastErr error
 	for _, ipAddr := range ips {
-		if err := checkIPAllowed(ipAddr.IP, allowPrivate); err != nil {
+		if err := validate(ipAddr.IP); err != nil {
 			lastErr = err
 			continue
 		}

@@ -197,18 +197,27 @@ type HTTPProviderClient struct {
 }
 
 // NewHTTPProviderClient builds the connection-test client. allowPrivate is
-// forwarded to safehttp.NewTransport so a self-hosted operator testing a
-// LAN/localhost model server can opt out of the SSRF IP-range denial (see
-// config.SecurityConfig.AllowPrivateUpstreams). The dial bound is
+// forwarded to safehttp's SSRF-safe transport so a self-hosted operator
+// testing a LAN/localhost model server can opt out of the SSRF IP-range
+// denial (see config.SecurityConfig.AllowPrivateUpstreams). The dial bound is
 // providerClientConnectTimeout (not GatewayConfig.ConnectTimeout) because
 // connection tests are an admin-only path with their own timeout model
 // (providerClientTimeout=60s overall cap, no streaming relay, no failover
 // budget), so the dial bound stays at this layer instead of being threaded
 // from the gateway config.
-func NewHTTPProviderClient(allowPrivate bool) *HTTPProviderClient {
+//
+// proxy is the SAME provider-bound resolver the gateway relay rides
+// (ProxyResolvers.Upstream): a probe must travel exactly the channel real
+// traffic will, or a provider that only works through its proxy would test
+// green direct and then fail every routed request. The resolver sees the
+// provider's stance when the caller stamped it onto the call's context
+// (gateway.WithUpstreamProxyStance); a probe without one (e.g. an unsaved
+// provider preview, which has no stored stance) resolves as global-only.
+// nil keeps the never-proxy transport.
+func NewHTTPProviderClient(allowPrivate bool, proxy safehttp.ProxyResolver) *HTTPProviderClient {
 	return &HTTPProviderClient{
 		httpClient: &http.Client{
-			Transport: safehttp.NewTransport(allowPrivate, providerClientConnectTimeout, providerClientTLSHandshakeTimeout),
+			Transport: safehttp.NewProxyingTransport(allowPrivate, providerClientConnectTimeout, providerClientTLSHandshakeTimeout, proxy),
 			// Never follow redirects. Without this,
 			// Go's default http.Client follows up to 10 redirect hops and
 			// may carry the credential header (the decrypted upstream
@@ -1113,13 +1122,13 @@ func classifyResponse(proto protocols.ProtocolID, resp *http.Response, body []by
 	return res
 }
 
-// upstreamErrorDetail builds the concise, admin-facing diagnostic string for
-// a failed response: the HTTP status, plus the upstream's own error message
-// (truncated) when the body carries a recognizable one.
 // maxUpstreamDetailBytes bounds the upstream error message kept in a Detail
 // string — long enough to be diagnostic, short enough not to bloat the field.
 const maxUpstreamDetailBytes = 300
 
+// upstreamErrorDetail builds the concise, admin-facing diagnostic string for
+// a failed response: the HTTP status, plus the upstream's own error message
+// (truncated) when the body carries a recognizable one.
 func upstreamErrorDetail(proto protocols.ProtocolID, statusCode int, body []byte) string {
 	msg := extractUpstreamMessage(proto, body)
 	if msg == "" {

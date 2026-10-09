@@ -59,6 +59,7 @@ var serviceErrorTable = []serviceErrorEntry{
 	// validation (e.g. "invalid provider_type: claude"), not internal
 	// crypto/gorm error detail.
 	{sentinel: errcode.ErrProviderProtocolInvalid, code: errcode.ProviderProtocolInvalid, verbatim: true},
+	{sentinel: errcode.ErrProviderProxyInvalid, code: errcode.ProviderProxyInvalid},
 	// validatePlaintextLength (provider_service.go) wraps this sentinel —
 	// Gin's own binding tags currently make that check unreachable via HTTP,
 	// but without this row a future change (a looser binding tag, a new

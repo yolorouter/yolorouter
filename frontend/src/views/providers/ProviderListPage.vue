@@ -100,11 +100,14 @@ import { displayMessage } from '../../api/client'
 import type { Provider } from '../../api/providers'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
 import { providerDisableCopy } from '../../utils/impactSummary'
+import { useGlobalProxyMode } from '../../composables/useGlobalProxyMode'
+import { providerProxyEffective } from '../../utils/outboundProxy'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import NewProviderModal from '../../components/providers/NewProviderModal.vue'
 import ProviderEditModal from '../../components/providers/ProviderEditModal.vue'
 import DeleteProviderModal from '../../components/providers/DeleteProviderModal.vue'
+import ProviderProxyWarning from '../../components/providers/ProviderProxyWarning.vue'
 import { useRowModal } from '../../composables/useRowModal'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
@@ -126,6 +129,10 @@ const store = useProvidersStore()
 const modelsStore = useModelsStore()
 const isMobile = useIsMobile()
 const showCreate = ref(false)
+// The global outbound-proxy stance resolves the inheriting rows' warning
+// icons (explicit custom/off rows decide their own); fetched once per
+// mount, fail-open to off.
+const { mode: globalProxyMode, fetchGlobalMode } = useGlobalProxyMode()
 
 // First-setup handoff: a freshly created provider goes straight to its detail
 // page with the import dialog auto-opened, so the admin lands in "pick your
@@ -220,6 +227,10 @@ onMounted(() => {
   // only degrades that panel (it reads as "no models"), so it reports the
   // same way as the main fetch but doesn't block the list.
   void modelsStore.fetchList().catch((err) => message.error(displayMessage(err, t)))
+  // The global proxy mode resolves the inheriting rows' warning icons; a
+  // failure only means no icons, the same fail-open-to-off the backend's
+  // own read applies, so it stays silent.
+  void fetchGlobalMode()
 })
 
 function goDetail(id: number) {
@@ -348,7 +359,15 @@ const sharedColumns = computed<DataTableColumns<Provider>>(() => [
     title: columnTitle(t('providers.name'), t('providers.name_tip')),
     key: 'name',
     minWidth: 200,
-    render: (row) => h('span', { class: 'provider-name-cell' }, row.name),
+    render: (row) =>
+      h('span', { class: 'provider-name-cell' }, [
+        row.name,
+        // The proxy warning rides the name cell: one glance answers "whose
+        // traffic leaves through the proxy" without a column of its own.
+        providerProxyEffective(row.proxy_mode, globalProxyMode.value)
+          ? h(ProviderProxyWarning)
+          : null,
+      ]),
   },
   {
     title: columnTitle(t('providers.baseUrl'), t('providers.baseUrl_tip')),
@@ -444,6 +463,9 @@ const sharedColumns = computed<DataTableColumns<Provider>>(() => [
 
 <style scoped>
 :deep(.provider-name-cell) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 650;
   color: var(--color-text);
 }

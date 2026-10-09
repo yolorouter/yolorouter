@@ -48,6 +48,14 @@ type updateProviderRequest struct {
 	// couldn't distinguish from "not supplied".
 	ProviderType      *string `json:"provider_type"`
 	ProtocolEndpoints *string `json:"protocol_endpoints"`
+	// ProxyMode / ProxyURL carry the provider's outbound-proxy override in
+	// the same PATCH pointer convention as the fields above: nil leaves the
+	// stored stance untouched; a present mode ("" = inherit | off | custom)
+	// and URL (required non-empty for custom) are authoritative. Untagged
+	// beyond the JSON names because the service layer owns the vocabulary
+	// check, mirroring ProviderType's treatment.
+	ProxyMode *string `json:"proxy_mode"`
+	ProxyURL  *string `json:"proxy_url"`
 }
 
 type setStatusRequest struct {
@@ -195,10 +203,12 @@ func PatchProvider(svc *provider.ProviderService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		view, err := svc.UpdateProvider(id, provider.UpdateProviderInput{
+		view, err := svc.UpdateProvider(c.Request.Context(), id, provider.UpdateProviderInput{
 			Name: req.Name, BaseURL: req.BaseURL, Note: req.Note,
 			ProviderType:      req.ProviderType,
 			ProtocolEndpoints: req.ProtocolEndpoints,
+			ProxyMode:         req.ProxyMode,
+			ProxyURL:          req.ProxyURL,
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)

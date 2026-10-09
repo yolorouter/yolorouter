@@ -415,3 +415,65 @@ func TestAdminAuditOAuthClientSecretRedacted(t *testing.T) {
 	// Zero-plaintext reverse assertion across all three rows, both secrets.
 	assertRowsCarryNoPlaintext(t, rows, createSecret, rotateSecret)
 }
+
+// TestAdminAuditProviderProxyColumnsCoveredByAutomaticLayer pins the
+// provider half of the outbound-proxy audit contract: changing a
+// provider's proxy stance raises no explicit event, because the automatic
+// layer's provider.update row IS the trail — one PATCH, exactly one row,
+// never a second one from any explicit parking. The row speaks the route's
+// language (action, path-derived id, no field diff — the capture layer
+// never reads bodies), the stance the PATCH carried actually persists, and
+// the credential-bearing proxy URL in the request body must not appear in
+// any column of the row.
+func TestAdminAuditProviderProxyColumnsCoveredByAutomaticLayer(t *testing.T) {
+	f := newAuditFixture(t)
+
+	now := time.Now().UTC()
+	p := &model.Provider{Name: "proxied-upstream", ProviderType: "openai",
+		BaseURL: "https://upstream.example", CreatedAt: now, UpdatedAt: now}
+	if err := f.db.Create(p).Error; err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+
+	// The edit dialog always resends name/base_url alongside the proxy pair
+	// (both are binding-required); the planted URL carries embedded basic
+	// auth so the zero-plaintext leg is meaningful.
+	plantedURL := "http://proxuser:proxpass@127.0.0.1:3128"
+	w := f.doBody(t, http.MethodPatch, "/api/admin/providers/"+strconv.FormatUint(uint64(p.ID), 10),
+		`{"name":"proxied-upstream","base_url":"https://upstream.example",`+
+			`"proxy_mode":"custom","proxy_url":"`+plantedURL+`"}`, f.adminCk)
+	if w.Code != http.StatusOK {
+		t.Fatalf("provider proxy PATCH must succeed, got %d: %s", w.Code, w.Body.String())
+	}
+
+	rows := f.drain(t)
+	if len(rows) != 1 {
+		t.Fatalf("one provider PATCH must land exactly one row — the automatic layer needs no explicit event and must not double-write, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.Action != "provider.update" {
+		t.Errorf("action = %q, want provider.update", row.Action)
+	}
+	if row.Status != model.AuditStatusSuccess {
+		t.Errorf("status = %q, want success", row.Status)
+	}
+	if want := strconv.FormatUint(uint64(p.ID), 10); row.ResourceID != want {
+		t.Errorf("resource_id = %q, want the path-carried provider id %s", row.ResourceID, want)
+	}
+	// The automatic layer captures the write, not the fields: no diff-shaped
+	// detail, and nothing the request body carried may surface elsewhere.
+	if row.Detail != "" {
+		t.Errorf("detail = %s, want empty — the provider family rides the automatic layer alone", row.Detail)
+	}
+	assertRowsCarryNoPlaintext(t, rows, plantedURL, "proxpass", "proxuser")
+
+	// The audited change is real: the stance persisted through the service's
+	// own update path.
+	got, err := repository.FindProviderByID(f.db, p.ID)
+	if err != nil {
+		t.Fatalf("reread provider: %v", err)
+	}
+	if got.ProxyMode != "custom" || got.ProxyURL != plantedURL {
+		t.Errorf("stance did not persist: proxy_mode = %q, proxy_url = %q", got.ProxyMode, got.ProxyURL)
+	}
+}

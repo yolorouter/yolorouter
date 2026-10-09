@@ -164,7 +164,7 @@ func newSvcWithSettingsAndGateway(t *testing.T, db *gorm.DB, sp stubSettingsProv
 	t.Helper()
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
 	master := ycrypto.NewSecretBox(masterKey)
-	svc := NewService(testStoreFrom(db), nil, master, false, sp, gateway)
+	svc := NewService(testStoreFrom(db), nil, master, false, sp, gateway, ProxyResolvers{})
 	svc.client.httpClient.Transport = &http.Transport{}
 	svc.videoTasks = newTestVideoTasks(t, db, master, testStoreFrom(db), svc.client)
 	videoTasks = svc.videoTasks

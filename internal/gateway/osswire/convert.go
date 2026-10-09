@@ -38,7 +38,9 @@ func APIKey(k *model.APIKey) *rows.APIKey {
 	}
 }
 
-// Provider copies the routing-relevant provider face.
+// Provider copies the routing-relevant provider face, including the
+// provider's outbound-proxy stance (the kernel stamps it onto each
+// dispatch's request context so its transport resolves per-provider).
 func Provider(p *model.Provider) *rows.Provider {
 	if p == nil {
 		return nil
@@ -51,6 +53,8 @@ func Provider(p *model.Provider) *rows.Provider {
 		ProtocolEndpoints:  p.ProtocolEndpoints,
 		ManagementStatus:   p.ManagementStatus,
 		DestinationVersion: p.DestinationVersion,
+		ProxyMode:          p.ProxyMode,
+		ProxyURL:           p.ProxyURL,
 		CreatedAt:          p.CreatedAt,
 		UpdatedAt:          p.UpdatedAt,
 	}

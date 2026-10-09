@@ -87,6 +87,9 @@ func (p *klingImagePoller) Poll(ctx context.Context, providerID uint, destinatio
 // getTask performs one bounded status read and parses it in the dialect,
 // handing the raw body back beside the parse.
 func (p *klingImagePoller) getTask(ctx context.Context, provider Provider, plaintext, taskID, taskPathPrefix string) (images.KlingImageTask, []byte, *images.KlingImageBizError, error) {
+	// Same rule as the video querier's polls: a poll is provider-bound
+	// traffic, so it carries the provider's proxy stance.
+	ctx = WithUpstreamProxyStance(ctx, UpstreamProxyStance{Mode: provider.ProxyMode, URL: provider.ProxyURL})
 	body, err := fetchTaskBounded(ctx, p.client, protocols.OriginURL(provider.BaseURL, taskPathPrefix+taskID), plaintext, "kling image")
 	if err != nil {
 		return images.KlingImageTask{}, nil, nil, err

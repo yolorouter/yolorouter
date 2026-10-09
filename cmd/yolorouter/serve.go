@@ -158,8 +158,15 @@ func runServe(ctx context.Context, args []string) error {
 	// would stamp queued rows with abandonment notes moments before the
 	// fingerprint check aborts the boot, and those rows would no longer be
 	// recovered once the key is fixed.
+	// The ONE system-settings service instance for the whole process: the
+	// outbound proxy resolvers (and the router's settings handlers) read and
+	// publish through it, so an admin's proxy save reaches every outbound
+	// surface — relay, probes, secondary fetches — from one cache the moment
+	// the save commits.
+	sharedSettings := systemsettings.NewSystemSettingsService(app.DB)
+	proxyResolvers := osswire.NewProxyResolvers(sharedSettings)
 	probeSvc := modeladmin.NewModelService(app.DB, crypto.NewSecretBox(masterKey),
-		providerclient.NewHTTPProviderClient(app.Config.Security.AllowPrivateUpstreams))
+		providerclient.NewHTTPProviderClient(app.Config.Security.AllowPrivateUpstreams, proxyResolvers.Upstream))
 	probeQueue := modeladmin.NewProbeQueue(probeSvc, modeladmin.DefaultProbeWorkers)
 	// Disarmed once gracefulShutdown takes over: that path stops the queue
 	// inside the 15s budget itself, and letting this defer wait ANOTHER second
@@ -183,7 +190,7 @@ func runServe(ctx context.Context, args []string) error {
 	// demotion benched. Same construction the router used to do internally;
 	// hoisted here only so both consumers hold the same instance.
 	providerSvc := provider.NewProviderService(app.DB, crypto.NewSecretBox(masterKey),
-		providerclient.NewHTTPProviderClient(app.Config.Security.AllowPrivateUpstreams))
+		providerclient.NewHTTPProviderClient(app.Config.Security.AllowPrivateUpstreams, proxyResolvers.Upstream))
 	// The button-layer preflight for the in-app update entry: on sqlite it
 	// rotates old pre-migration backups and refuses an update whose backup
 	// filesystem is too full — BEFORE any download starts, while the
@@ -209,6 +216,7 @@ func runServe(ctx context.Context, args []string) error {
 		ExternalURL:           app.Config.Server.ExternalURL,
 		ProbeQueue:            probeQueue,
 		ProviderSvc:           providerSvc,
+		Settings:              sharedSettings,
 		UpdatePreflight:       updatePreflight,
 		Audit:                 auditWorker,
 	})

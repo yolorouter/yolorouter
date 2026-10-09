@@ -701,10 +701,17 @@ func (s *Service) releaseDelivery(_ *gin.Context, rc *Exchange) {
 // gateway at a provider on their own network — but that permission was granted
 // for destinations an operator configured, and a secondary URL is chosen by
 // whoever answered the request.
+//
+// Its proxy seat is equally deliberate: the global-only resolver
+// (ProxyResolvers.Fetch), never the provider-bound one. A secondary URL was
+// picked by whoever answered the request, so no provider's override may
+// decide how it is fetched — the global setting is the only stance that
+// speaks for this deployment. nil (the zero value) keeps the fetch direct,
+// exactly as before proxies existed.
 func (s *Service) secondaryFetchClient() *http.Client {
 	s.secondaryFetchOnce.Do(func() {
 		s.secondaryFetch = &http.Client{
-			Transport: safehttp.NewTransport(false, s.gateway.ConnectTimeout, s.gateway.TLSHandshakeTimeout),
+			Transport: safehttp.NewProxyingTransport(false, s.gateway.ConnectTimeout, s.gateway.TLSHandshakeTimeout, s.proxies.Fetch),
 			Timeout:   secondaryFetchTimeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse

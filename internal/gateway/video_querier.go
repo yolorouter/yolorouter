@@ -226,6 +226,10 @@ func (q *videoTaskQuerier) getTask(ctx context.Context, provider Provider, plain
 	route func(taskID string) string, vendor string,
 	parse func(body []byte) (taskObservation, *videos.Refusal, error),
 ) (taskObservation, *videos.Refusal, error) {
+	// A poll is provider-bound traffic like the submit it follows: stamp the
+	// provider's proxy stance so the poll travels the same channel the
+	// delivery's upstream exchange did.
+	ctx = WithUpstreamProxyStance(ctx, UpstreamProxyStance{Mode: provider.ProxyMode, URL: provider.ProxyURL})
 	body, err := fetchTaskBounded(ctx, q.client, videos.Origin(provider.BaseURL)+route(taskID), plaintext, vendor)
 	if err != nil {
 		return taskObservation{}, nil, err

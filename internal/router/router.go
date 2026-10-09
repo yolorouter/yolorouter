@@ -156,6 +156,14 @@ type Deps struct {
 	// rate-limit bench, and a loop probing through any second instance would
 	// flip the database row without ever firing that listener.
 	ProviderSvc *provider.ProviderService
+	// Settings is the shared system-settings service the outbound proxy
+	// resolvers read through. Passed in by the caller (serve assembly) so
+	// every outbound surface in the process — relay, probes, secondary
+	// fetches — resolves against ONE cache, and an admin's save publishes
+	// into the very snapshot those surfaces read. Nil (router tests)
+	// constructs a local instance; only the sharing is lost, never the
+	// behavior.
+	Settings *systemsettings.SystemSettingsService
 	// Gateway carries the relay timeouts and limits, threaded through so the
 	// wiring stays identical to production instead of a zero struct.
 	Gateway config.GatewayConfig
@@ -402,7 +410,17 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.GET("/rate-limits", handler.GetRateLimits(db))
 	protected.DELETE("/rate-limits/:id", handler.DeleteRateLimit(db))
 
-	modelSvc := modeladmin.NewModelService(db, secrets, providerclient.NewHTTPProviderClient(allowPrivateUpstreams))
+	// The outbound proxy resolvers every outbound surface in this router
+	// resolves through (gateway relay + task polls, mapping probes, and the
+	// secondary-fetch half riding inside the gateway service): one settings
+	// cache, one resolution logic, so a probe's verdict is the channel real
+	// traffic gets.
+	settingsSvc := deps.Settings
+	if settingsSvc == nil {
+		settingsSvc = systemsettings.NewSystemSettingsService(db)
+	}
+	proxies := osswire.NewProxyResolvers(settingsSvc)
+	modelSvc := modeladmin.NewModelService(db, secrets, providerclient.NewHTTPProviderClient(allowPrivateUpstreams, proxies.Upstream))
 	protected.GET("/models", handler.GetModels(modelSvc))
 	protected.POST("/models", handler.PostModel(modelSvc))
 	protected.POST("/models/batch", handler.PostModelsBatch(modelSvc))
@@ -439,8 +457,8 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 
 	// Custom system prompt (global setting). Read returns the authoritative
 	// DB state; PUT uses CAS on version. Registered alongside the other admin
-	// resources under the session-protected group.
-	settingsSvc := systemsettings.NewSystemSettingsService(db)
+	// resources under the session-protected group. settingsSvc itself is the
+	// shared instance built above the model service.
 	oauthProviderSvc := oauth.NewOAuthProviderService(db, secrets)
 	protected.GET("/oauth-providers", handler.GetOAuthProviders(oauthProviderSvc, externalURL))
 	protected.POST("/oauth-providers", handler.PostOAuthProvider(oauthProviderSvc))
@@ -460,6 +478,8 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.PUT("/system-settings/request-log-retention", handler.PutRequestLogRetention(settingsSvc))
 	protected.GET("/system-settings/admin-audit-retention", handler.GetAdminAuditRetention(settingsSvc))
 	protected.PUT("/system-settings/admin-audit-retention", handler.PutAdminAuditRetention(settingsSvc))
+	protected.GET("/system-settings/outbound-proxy", handler.GetOutboundProxy(settingsSvc))
+	protected.PUT("/system-settings/outbound-proxy", handler.PutOutboundProxy(settingsSvc))
 
 	// The audit trail's own read surface. Reads only — the sweep test pins
 	// that no non-GET route may ever appear under the audit namespace, and
@@ -567,10 +587,10 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// (built on its own transport so the domain exists before the relay
 	// service does — both clients share the same transport rules).
 	store := osswire.NewStore(db)
-	pollerClient := gateway.NewUpstreamClient(allowPrivateUpstreams, gatewayCfg.HeaderTimeout, gatewayCfg.ConnectTimeout, gatewayCfg.TLSHandshakeTimeout)
+	pollerClient := gateway.NewUpstreamClient(allowPrivateUpstreams, gatewayCfg.HeaderTimeout, gatewayCfg.ConnectTimeout, gatewayCfg.TLSHandshakeTimeout, proxies.Upstream)
 	poller := gateway.NewVideoTaskPoller(store, secrets, pollerClient)
 	videoDomain := videotask.NewService(osswire.NewVideoStore(db), osswire.QuerierAdapter{Poller: poller})
-	relaySvc := gateway.NewService(store, osswire.NewVideoTasks(videoDomain), secrets, allowPrivateUpstreams, settingsSvc, gatewayCfg)
+	relaySvc := gateway.NewService(store, osswire.NewVideoTasks(videoDomain), secrets, allowPrivateUpstreams, settingsSvc, gatewayCfg, proxies)
 	// The model detail view shows per-candidate sticky-binding counts for
 	// balanced models; both sides must read the registry the relay actually
 	// routes through, so the gateway's instance is handed over rather than a

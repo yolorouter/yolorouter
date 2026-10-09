@@ -348,7 +348,7 @@ func TestCreateProviderRejectsMalformedProtocolEndpoints(t *testing.T) {
 
 func TestUpdateProviderNotFound(t *testing.T) {
 	svc, _, _ := newTestProviderService(t)
-	_, err := svc.UpdateProvider(9999, UpdateProviderInput{Name: "x", BaseURL: "https://a.example.com"}, time.Now().UTC())
+	_, err := svc.UpdateProvider(context.Background(), 9999, UpdateProviderInput{Name: "x", BaseURL: "https://a.example.com"}, time.Now().UTC())
 	if !errors.Is(err, errcode.ErrProviderNotFound) {
 		t.Fatalf("expected ErrProviderNotFound, got %v", err)
 	}
@@ -358,7 +358,7 @@ func TestUpdateProviderErrorsWhenProvidersTableMissing(t *testing.T) {
 	svc, db, _ := newTestProviderService(t)
 	testutil.DropTable(t, db, "providers")
 
-	_, err := svc.UpdateProvider(1, UpdateProviderInput{Name: "x", BaseURL: "https://a.example.com"}, time.Now().UTC())
+	_, err := svc.UpdateProvider(context.Background(), 1, UpdateProviderInput{Name: "x", BaseURL: "https://a.example.com"}, time.Now().UTC())
 	if err == nil || errors.Is(err, errcode.ErrProviderNotFound) {
 		t.Fatalf("expected a raw DB error (not ErrProviderNotFound), got %v", err)
 	}
@@ -375,7 +375,7 @@ func TestUpdateProviderErrorsWhenBaseURLUpdateFails(t *testing.T) {
 	}
 	testutil.BlockTableWrites(t, db, "providers", "UPDATE")
 
-	_, err = svc.UpdateProvider(provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now)
+	_, err = svc.UpdateProvider(context.Background(), provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now)
 	if err == nil {
 		t.Fatalf("expected an error when the base_url UPDATE fails")
 	}
@@ -396,7 +396,7 @@ func TestUpdateProviderRejectsDuplicateNameOnRename(t *testing.T) {
 		t.Fatalf("CreateProvider(other) failed: %v", err)
 	}
 
-	_, err = svc.UpdateProvider(other.ID, UpdateProviderInput{Name: "taken", BaseURL: other.BaseURL}, now)
+	_, err = svc.UpdateProvider(context.Background(), other.ID, UpdateProviderInput{Name: "taken", BaseURL: other.BaseURL}, now)
 	if !errors.Is(err, errcode.ErrProviderNameTaken) {
 		t.Fatalf("expected ErrProviderNameTaken, got %v", err)
 	}
@@ -426,7 +426,7 @@ func TestUpdateProviderRollsBackBaseURLWhenNameConflicts(t *testing.T) {
 		t.Fatalf("CreateProvider(other) failed: %v", err)
 	}
 
-	_, err = svc.UpdateProvider(other.ID, UpdateProviderInput{Name: "taken", BaseURL: "https://changed.example.com"}, now)
+	_, err = svc.UpdateProvider(context.Background(), other.ID, UpdateProviderInput{Name: "taken", BaseURL: "https://changed.example.com"}, now)
 	if !errors.Is(err, errcode.ErrProviderNameTaken) {
 		t.Fatalf("expected ErrProviderNameTaken, got %v", err)
 	}
@@ -456,7 +456,7 @@ func TestUpdateProviderErrorsWhenNameNoteUpdateFailsForNonUniqueReason(t *testin
 
 	// Same BaseURL — skips UpdateProviderBaseURL entirely, isolating the
 	// UpdateProviderNameNote failure.
-	_, err = svc.UpdateProvider(provider.ID, UpdateProviderInput{Name: "renamed", Note: strptr("n"), BaseURL: provider.BaseURL}, now)
+	_, err = svc.UpdateProvider(context.Background(), provider.ID, UpdateProviderInput{Name: "renamed", Note: strptr("n"), BaseURL: provider.BaseURL}, now)
 	if err == nil || errors.Is(err, errcode.ErrProviderNameTaken) {
 		t.Fatalf("expected a raw DB error (not ErrProviderNameTaken), got %v", err)
 	}
@@ -485,7 +485,7 @@ func TestUpdateProviderNameOnlyPatchDoesNotChangeProviderTypeOrBumpDestinationVe
 	}
 
 	// PATCH omits provider_type/protocol_endpoints entirely (name-only edit).
-	updated, err := svc.UpdateProvider(created.ID, UpdateProviderInput{Name: "renamed", BaseURL: created.BaseURL}, now)
+	updated, err := svc.UpdateProvider(context.Background(), created.ID, UpdateProviderInput{Name: "renamed", BaseURL: created.BaseURL}, now)
 	if err != nil {
 		t.Fatalf("UpdateProvider failed: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestUpdateProviderProtocolChangeBumpsDestinationVersionAndPersists(t *testi
 		t.Fatalf("expected default provider_type=openai, got %q", created.ProviderType)
 	}
 
-	updated, err := svc.UpdateProvider(created.ID, UpdateProviderInput{
+	updated, err := svc.UpdateProvider(context.Background(), created.ID, UpdateProviderInput{
 		Name: created.Name, BaseURL: created.BaseURL,
 		ProviderType: strptr("anthropic"), ProtocolEndpoints: strptr(`{"responses":"https://gw/v1"}`),
 	}, now)
@@ -549,7 +549,7 @@ func TestUpdateProviderProtocolEndpointsSemanticReSubmitDoesNotBumpVersion(t *te
 		t.Fatalf("CreateProvider failed: %v", err)
 	}
 
-	updated, err := svc.UpdateProvider(created.ID, UpdateProviderInput{
+	updated, err := svc.UpdateProvider(context.Background(), created.ID, UpdateProviderInput{
 		Name: created.Name, BaseURL: created.BaseURL,
 		ProtocolEndpoints: strptr(`{"responses":"https://gw/r","anthropic":"https://gw/a"}`),
 	}, now)
@@ -574,7 +574,7 @@ func TestUpdateProviderRejectsInvalidProviderType(t *testing.T) {
 		t.Fatalf("CreateProvider failed: %v", err)
 	}
 
-	_, err = svc.UpdateProvider(created.ID, UpdateProviderInput{
+	_, err = svc.UpdateProvider(context.Background(), created.ID, UpdateProviderInput{
 		Name: created.Name, BaseURL: created.BaseURL, ProviderType: strptr("not-a-real-protocol"),
 	}, now)
 	if !errors.Is(err, errcode.ErrProviderProtocolInvalid) {
@@ -609,7 +609,7 @@ func TestUpdateProviderClearingLastEndpointRemovesItAndBumpsVersion(t *testing.T
 		t.Fatalf("expected the newly-created key to be authorized against the initial destination, got needs_reentry=true")
 	}
 
-	updated, err := svc.UpdateProvider(created.ID, UpdateProviderInput{
+	updated, err := svc.UpdateProvider(context.Background(), created.ID, UpdateProviderInput{
 		Name: created.Name, BaseURL: created.BaseURL,
 		ProviderType: strptr("openai"), ProtocolEndpoints: strptr(""),
 	}, now)
@@ -651,7 +651,7 @@ func TestUpdateProviderSwitchingPrimaryToSoleExtraEndpointClearsStaleOverride(t 
 		t.Fatalf("CreateProvider failed: %v", err)
 	}
 
-	updated, err := svc.UpdateProvider(created.ID, UpdateProviderInput{
+	updated, err := svc.UpdateProvider(context.Background(), created.ID, UpdateProviderInput{
 		Name: created.Name, BaseURL: created.BaseURL,
 		ProviderType: strptr("anthropic"), ProtocolEndpoints: strptr(""),
 	}, now)
@@ -695,7 +695,7 @@ func TestUpdateProviderNoteOmittedPreservedPresentEmptyClears(t *testing.T) {
 	}
 
 	// PATCH omits note (nil) — a name-only edit must preserve the stored note.
-	if _, err := svc.UpdateProvider(created.ID, UpdateProviderInput{Name: "renamed", BaseURL: created.BaseURL}, now); err != nil {
+	if _, err := svc.UpdateProvider(context.Background(), created.ID, UpdateProviderInput{Name: "renamed", BaseURL: created.BaseURL}, now); err != nil {
 		t.Fatalf("UpdateProvider (note omitted) failed: %v", err)
 	}
 	var afterOmit model.Provider
@@ -707,7 +707,7 @@ func TestUpdateProviderNoteOmittedPreservedPresentEmptyClears(t *testing.T) {
 	}
 
 	// PATCH with a present-empty note explicitly clears it.
-	if _, err := svc.UpdateProvider(created.ID, UpdateProviderInput{Name: "renamed", BaseURL: created.BaseURL, Note: strptr("")}, now); err != nil {
+	if _, err := svc.UpdateProvider(context.Background(), created.ID, UpdateProviderInput{Name: "renamed", BaseURL: created.BaseURL, Note: strptr("")}, now); err != nil {
 		t.Fatalf("UpdateProvider (note cleared) failed: %v", err)
 	}
 	var afterClear model.Provider
@@ -737,7 +737,7 @@ func TestUpdateProviderNameOnlyPatchLeavesProtocolUnchanged(t *testing.T) {
 		t.Fatalf("CreateProvider failed: %v", err)
 	}
 
-	updated, err := svc.UpdateProvider(created.ID, UpdateProviderInput{
+	updated, err := svc.UpdateProvider(context.Background(), created.ID, UpdateProviderInput{
 		Name: "renamed", Note: strptr("updated note"), BaseURL: created.BaseURL,
 		// ProviderType/ProtocolEndpoints intentionally omitted (nil).
 	}, now)
@@ -835,7 +835,7 @@ func TestUpdateProviderBaseURLResetsAllKeysToNeedsReentry(t *testing.T) {
 		t.Fatalf("CreateProvider failed: %v", err)
 	}
 
-	updated, err := svc.UpdateProvider(view.ID, UpdateProviderInput{Name: "provider-a", BaseURL: "https://new.example.com"}, now)
+	updated, err := svc.UpdateProvider(context.Background(), view.ID, UpdateProviderInput{Name: "provider-a", BaseURL: "https://new.example.com"}, now)
 	if err != nil {
 		t.Fatalf("UpdateProvider failed: %v", err)
 	}
@@ -1244,7 +1244,7 @@ func TestUpdateProviderKeyLabelOnlyEditCannotEnableKeyNeedingReentry(t *testing.
 	if err != nil {
 		t.Fatalf("CreateProvider failed: %v", err)
 	}
-	if _, err := svc.UpdateProvider(provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now); err != nil {
+	if _, err := svc.UpdateProvider(context.Background(), provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now); err != nil {
 		t.Fatalf("UpdateProvider failed: %v", err)
 	}
 	// The key passed verification against the OLD address; the base_url
@@ -1276,7 +1276,7 @@ func TestSetProviderKeyStatusRejectsReenablingKeyThatNeedsReentry(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreateProvider failed: %v", err)
 	}
-	if _, err := svc.UpdateProvider(provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now); err != nil {
+	if _, err := svc.UpdateProvider(context.Background(), provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now); err != nil {
 		t.Fatalf("UpdateProvider failed: %v", err)
 	}
 
@@ -1643,7 +1643,7 @@ func TestTestProviderKeyRejectsWhenNeedsReentry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProvider failed: %v", err)
 	}
-	if _, err := svc.UpdateProvider(provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now); err != nil {
+	if _, err := svc.UpdateProvider(context.Background(), provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now); err != nil {
 		t.Fatalf("UpdateProvider failed: %v", err)
 	}
 
@@ -2202,7 +2202,7 @@ func TestTestAllProviderKeysSkipsNeedsReentryWithoutNetworkCall(t *testing.T) {
 	}, now); err != nil {
 		t.Fatalf("re-enable after create failed: %v", err)
 	}
-	if _, err := svc.UpdateProvider(provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now); err != nil {
+	if _, err := svc.UpdateProvider(context.Background(), provider.ID, UpdateProviderInput{Name: provider.Name, BaseURL: "https://new.example.com"}, now); err != nil {
 		t.Fatalf("UpdateProvider failed: %v", err)
 	}
 
@@ -2649,7 +2649,7 @@ func TestCreateProviderKeyHitsRealAnthropicProtocolEndpointHost(t *testing.T) {
 	}))
 	defer anthropicSrv.Close()
 
-	realClient := providerclient.NewHTTPProviderClient(true)
+	realClient := providerclient.NewHTTPProviderClient(true, nil)
 	// allowPrivate=true: safehttp's SSRF-safe transport denies loopback
 	// dials by default, which is exactly where httptest servers listen; the
 	// allow-private mode is the production-supported way to permit them.
@@ -3602,5 +3602,153 @@ func TestKeyPreviewSpeechFallbackCoversZhipuAndMiniMaxBases(t *testing.T) {
 				t.Fatalf("the speech arm must verify on %s, got outcome %d detail %q", tc.name, result.Outcome, result.Detail)
 			}
 		})
+	}
+}
+
+// --- Outbound proxy override (providers.proxy_mode / proxy_url) ---------------
+
+// createProxyTestProvider creates one provider through the public path and
+// returns the service + view. A fresh provider carries the inherit stance
+// ("" mode, empty URL).
+func createProxyTestProvider(t *testing.T, name string) (*ProviderService, *ProviderView) {
+	t.Helper()
+	svc, _, _ := newTestProviderService(t)
+	now := time.Now().UTC()
+	view, err := svc.CreateProvider(context.Background(), CreateProviderInput{
+		Name: name, BaseURL: "https://a.example.com", KeyLabel: "k1",
+		KeyPlaintext: "sk-abcdefghijklmnopqrstuvwxyz1234",
+		TestModel:    "gpt-4o-mini", ManagementStatus: model.ProviderStatusEnabled,
+	}, now)
+	if err != nil {
+		t.Fatalf("CreateProvider failed: %v", err)
+	}
+	return svc, view
+}
+
+// A fresh provider inherits: the view exposes the empty stance so the edit
+// dialog can prefill it (tri-state semantics leg 1: "" = inherit).
+func TestProviderProxyDefaultsToInheritInView(t *testing.T) {
+	_, view := createProxyTestProvider(t, "proxy-defaults")
+	if view.ProxyMode != "" || view.ProxyURL != "" {
+		t.Fatalf("fresh provider proxy stance = %q/%q, want empty/empty (inherit)", view.ProxyMode, view.ProxyURL)
+	}
+}
+
+// All three legal stances round-trip through UpdateProvider and come back
+// in the view (tri-state semantics legs: inherit, off, custom).
+func TestProviderProxyTriStateRoundTrip(t *testing.T) {
+	svc, view := createProxyTestProvider(t, "proxy-tristate")
+	now := time.Now().UTC()
+
+	// inherit -> custom with its own URL
+	updated, err := svc.UpdateProvider(context.Background(), view.ID, UpdateProviderInput{
+		Name: view.Name, BaseURL: view.BaseURL,
+		ProxyMode: strptr("custom"), ProxyURL: strptr("socks5://192.168.1.5:1080"),
+	}, now)
+	if err != nil {
+		t.Fatalf("set custom: %v", err)
+	}
+	if updated.ProxyMode != "custom" || updated.ProxyURL != "socks5://192.168.1.5:1080" {
+		t.Fatalf("custom stance = %q/%q", updated.ProxyMode, updated.ProxyURL)
+	}
+
+	// custom -> off (explicit direct even under a proxied global setting)
+	updated, err = svc.UpdateProvider(context.Background(), view.ID, UpdateProviderInput{
+		Name: view.Name, BaseURL: view.BaseURL,
+		ProxyMode: strptr("off"), ProxyURL: strptr(""),
+	}, now)
+	if err != nil {
+		t.Fatalf("set off: %v", err)
+	}
+	if updated.ProxyMode != "off" || updated.ProxyURL != "" {
+		t.Fatalf("off stance = %q/%q", updated.ProxyMode, updated.ProxyURL)
+	}
+
+	// off -> back to inherit (present-empty mode is the authoritative
+	// "no provider stance" signal, not a silent clear)
+	updated, err = svc.UpdateProvider(context.Background(), view.ID, UpdateProviderInput{
+		Name: view.Name, BaseURL: view.BaseURL,
+		ProxyMode: strptr(""), ProxyURL: strptr(""),
+	}, now)
+	if err != nil {
+		t.Fatalf("set inherit: %v", err)
+	}
+	if updated.ProxyMode != "" || updated.ProxyURL != "" {
+		t.Fatalf("inherit stance = %q/%q", updated.ProxyMode, updated.ProxyURL)
+	}
+}
+
+// A PATCH that omits the proxy fields entirely leaves the stored stance
+// untouched — the same PATCH pointer semantics the protocol fields use, so
+// older clients never clobber a proxy stance they do not know about.
+func TestProviderProxyOmittedFieldsLeaveStanceUntouched(t *testing.T) {
+	svc, view := createProxyTestProvider(t, "proxy-omit")
+	now := time.Now().UTC()
+	if _, err := svc.UpdateProvider(context.Background(), view.ID, UpdateProviderInput{
+		Name: view.Name, BaseURL: view.BaseURL,
+		ProxyMode: strptr("custom"), ProxyURL: strptr("http://127.0.0.1:7890"),
+	}, now); err != nil {
+		t.Fatalf("set custom: %v", err)
+	}
+	updated, err := svc.UpdateProvider(context.Background(), view.ID, UpdateProviderInput{
+		Name: "proxy-omit-renamed", BaseURL: view.BaseURL,
+	}, now)
+	if err != nil {
+		t.Fatalf("rename without proxy fields: %v", err)
+	}
+	if updated.ProxyMode != "custom" || updated.ProxyURL != "http://127.0.0.1:7890" {
+		t.Fatalf("omitted proxy fields must leave the stance, got %q/%q", updated.ProxyMode, updated.ProxyURL)
+	}
+}
+
+// Refused proxy saves leave the stored stance untouched: an unknown mode,
+// a custom stance without a URL, an unsupported scheme, and a
+// reserved-range address all bounce, and the previously committed custom
+// stance survives (old value retained).
+func TestProviderProxyInvalidValuesRejectedKeepOldStance(t *testing.T) {
+	svc, view := createProxyTestProvider(t, "proxy-reject")
+	now := time.Now().UTC()
+	if _, err := svc.UpdateProvider(context.Background(), view.ID, UpdateProviderInput{
+		Name: view.Name, BaseURL: view.BaseURL,
+		ProxyMode: strptr("custom"), ProxyURL: strptr("socks5://192.168.1.5:1080"),
+	}, now); err != nil {
+		t.Fatalf("seed custom stance: %v", err)
+	}
+	refusals := []UpdateProviderInput{
+		{Name: view.Name, BaseURL: view.BaseURL, ProxyMode: strptr("system"), ProxyURL: strptr("")},                    // system is not a provider value
+		{Name: view.Name, BaseURL: view.BaseURL, ProxyMode: strptr("sometimes"), ProxyURL: strptr("")},                 // unknown vocabulary
+		{Name: view.Name, BaseURL: view.BaseURL, ProxyMode: strptr("custom"), ProxyURL: strptr("")},                    // custom without a URL
+		{Name: view.Name, BaseURL: view.BaseURL, ProxyMode: strptr("custom"), ProxyURL: strptr("ftp://p:21")},          // unsupported scheme
+		{Name: view.Name, BaseURL: view.BaseURL, ProxyMode: strptr("custom"), ProxyURL: strptr("http://0.0.0.0:7890")}, // reserved address
+	}
+	for i, input := range refusals {
+		if _, err := svc.UpdateProvider(context.Background(), view.ID, input, now); !errors.Is(err, errcode.ErrProviderProxyInvalid) {
+			t.Errorf("refusal %d: got %v, want ErrProviderProxyInvalid", i, err)
+		}
+	}
+	detail, err := svc.GetProviderDetail(view.ID)
+	if err != nil {
+		t.Fatalf("GetProviderDetail: %v", err)
+	}
+	if detail.ProxyMode != "custom" || detail.ProxyURL != "socks5://192.168.1.5:1080" {
+		t.Fatalf("refused saves must retain the old stance, got %q/%q", detail.ProxyMode, detail.ProxyURL)
+	}
+}
+
+// A proxy change is a transport-layer choice, not a destination change:
+// flipping the stance must neither bump destination_version nor strand the
+// provider's keys into needs-re-entry.
+func TestProviderProxyChangeDoesNotBumpDestinationVersion(t *testing.T) {
+	svc, view := createProxyTestProvider(t, "proxy-nobump")
+	now := time.Now().UTC()
+	updated, err := svc.UpdateProvider(context.Background(), view.ID, UpdateProviderInput{
+		Name: view.Name, BaseURL: view.BaseURL,
+		ProxyMode: strptr("custom"), ProxyURL: strptr("socks5h://192.168.1.5:1080"),
+	}, now)
+	if err != nil {
+		t.Fatalf("set custom: %v", err)
+	}
+	if updated.Keys[0].NeedsReentry {
+		t.Fatal("a proxy change must not put the key into needs-re-entry (destination_version must not bump)")
 	}
 }

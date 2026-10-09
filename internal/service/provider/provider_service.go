@@ -7,11 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/gateway"
 	"github.com/yolorouter/yolorouter/internal/model"
+	"github.com/yolorouter/yolorouter/internal/outboundproxy"
 	"github.com/yolorouter/yolorouter/internal/providerproto"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
@@ -191,6 +194,12 @@ type UpdateProviderInput struct {
 	Note              *string
 	ProviderType      *string
 	ProtocolEndpoints *string
+	// ProxyMode and ProxyURL follow the same PATCH pointer semantics for
+	// the outbound-proxy override pair: nil leaves the stored stance
+	// untouched, a present value (incl. empty mode = back to inherit, empty
+	// URL = clear) is authoritative.
+	ProxyMode *string
+	ProxyURL  *string
 }
 
 type ProviderKeyView struct {
@@ -220,16 +229,21 @@ type ProviderKeyView struct {
 }
 
 type ProviderView struct {
-	ID                uint              `json:"id"`
-	Name              string            `json:"name"`
-	ProviderType      string            `json:"provider_type"`
-	ProtocolEndpoints string            `json:"protocol_endpoints"`
-	BaseURL           string            `json:"base_url"`
-	Note              string            `json:"note"`
-	ManagementStatus  int               `json:"management_status"`
-	RunningStatus     string            `json:"running_status"`
-	Keys              []ProviderKeyView `json:"keys"`
-	CreatedAt         time.Time         `json:"created_at"`
+	ID                uint   `json:"id"`
+	Name              string `json:"name"`
+	ProviderType      string `json:"provider_type"`
+	ProtocolEndpoints string `json:"protocol_endpoints"`
+	BaseURL           string `json:"base_url"`
+	// ProxyMode / ProxyURL expose the outbound-proxy override so the edit
+	// dialog can prefill it and the list can derive who is proxied (''
+	// mode means "inherit the global setting").
+	ProxyMode        string            `json:"proxy_mode"`
+	ProxyURL         string            `json:"proxy_url"`
+	Note             string            `json:"note"`
+	ManagementStatus int               `json:"management_status"`
+	RunningStatus    string            `json:"running_status"`
+	Keys             []ProviderKeyView `json:"keys"`
+	CreatedAt        time.Time         `json:"created_at"`
 }
 
 func toKeyView(k model.ProviderKey, destinationVersion int) ProviderKeyView {
@@ -254,6 +268,8 @@ func (s *ProviderService) toProviderView(provider *model.Provider, keys []model.
 		ID: provider.ID, Name: provider.Name, ProviderType: provider.ProviderType,
 		ProtocolEndpoints: provider.ProtocolEndpoints,
 		BaseURL:           provider.BaseURL, Note: provider.Note, ManagementStatus: provider.ManagementStatus,
+		ProxyMode:     provider.ProxyMode,
+		ProxyURL:      provider.ProxyURL,
 		RunningStatus: computeRunningStatus(keys, provider.DestinationVersion),
 		Keys:          views, CreatedAt: provider.CreatedAt,
 	}
@@ -470,7 +486,10 @@ func validatePlaintextLength(plaintext string) error {
 // endpoint or repoint the primary protocol without a stale leftover entry
 // surviving in the stored JSON. Name and BaseURL stay plain strings because
 // they carry binding:"required" and are always resent.
-func (s *ProviderService) UpdateProvider(id uint, input UpdateProviderInput, now time.Time) (*ProviderView, error) {
+//
+// ctx bounds the proxy-URL validation's best-effort DNS lookup; the DB
+// writes themselves go through s.db as before.
+func (s *ProviderService) UpdateProvider(ctx context.Context, id uint, input UpdateProviderInput, now time.Time) (*ProviderView, error) {
 	provider, err := repository.FindProviderByID(s.db, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -505,11 +524,38 @@ func (s *ProviderService) UpdateProvider(id uint, input UpdateProviderInput, now
 		note = *input.Note
 	}
 
+	// Outbound-proxy override, same PATCH resolution: nil keeps the stored
+	// stance, a present value wins. Validated up front (before any DB work)
+	// against the same rules the save path enforces: mode must be one of
+	// inherit/off/custom, custom requires a non-empty proxy URL, and any
+	// non-empty stored URL must itself be a storable proxy URL so a value
+	// parked behind inherit/off can never become active unvalidated later.
+	proxyMode := provider.ProxyMode
+	if input.ProxyMode != nil {
+		proxyMode = *input.ProxyMode
+	}
+	proxyURL := provider.ProxyURL
+	if input.ProxyURL != nil {
+		proxyURL = *input.ProxyURL
+	}
+	if !outboundproxy.ValidProviderMode(proxyMode) {
+		return nil, errcode.ErrProviderProxyInvalid
+	}
+	if proxyMode == outboundproxy.ModeCustom && strings.TrimSpace(proxyURL) == "" {
+		return nil, errcode.ErrProviderProxyInvalid
+	}
+	if proxyURL != "" {
+		if err := outboundproxy.ValidateProxyURL(ctx, proxyURL); err != nil {
+			return nil, errcode.ErrProviderProxyInvalid
+		}
+	}
+	proxyChanged := proxyMode != provider.ProxyMode || proxyURL != provider.ProxyURL
+
 	// These writes previously ran
 	// as independent, non-transactional statements: if UpdateProviderBaseURL
 	// committed (bumping destination_version, which instantly invalidates
-	// every key's authorization) and UpdateProviderNameNote then failed on a
-	// duplicate name, the admin saw a failed request but the base_url change
+	// every key's authorization) and UpdateProviderNameNote then failed on
+	// a duplicate name, the admin saw a failed request but the base_url change
 	// — and its destination_version bump — had already silently landed.
 	// All writes now share one transaction so a name conflict rolls back
 	// the base_url/protocol change too.
@@ -541,6 +587,14 @@ func (s *ProviderService) UpdateProvider(id uint, input UpdateProviderInput, now
 				return errcode.ErrProviderNameTaken
 			}
 			return err
+		}
+		// The proxy override rides the same transaction: a refused name
+		// change must not leave a half-applied proxy stance either. No
+		// destination_version bump — see UpdateProviderProxy.
+		if proxyChanged {
+			if _, err := repository.UpdateProviderProxy(tx, id, proxyMode, proxyURL, now); err != nil {
+				return err
+			}
 		}
 		// A destination change strands every in-flight video task the old
 		// destination issued: its upstream task id is unqueryable at the new
@@ -709,6 +763,12 @@ func verificationSeverity(r providerclient.TestResult) int {
 // same way, so what a preview probes is exactly what creating the provider
 // will verify.
 func (s *ProviderService) verifyKeyAllDestinations(ctx context.Context, provider *model.Provider, plaintext, testModel string) (providerclient.TestResult, []KeyTestTargetResult, error) {
+	// Stamp the provider's proxy stance onto the call context so the probe
+	// client's transport resolves the SAME channel routed traffic will use
+	// — a provider that only works through its proxy must not test green
+	// on a direct connection, and one whose proxy is broken must not test
+	// green by quietly bypassing it.
+	ctx = gateway.WithUpstreamProxyStance(ctx, gateway.UpstreamProxyStance{Mode: provider.ProxyMode, URL: provider.ProxyURL})
 	targets := providerproto.VerificationTargets(provider.ProviderType, provider.ProtocolEndpoints, provider.BaseURL)
 	return s.verifyTargets(ctx, targets, plaintext, testModel)
 }

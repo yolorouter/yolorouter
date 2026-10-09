@@ -1224,3 +1224,149 @@ func TestAdminAuditRetentionHandlerReadBypassesCache(t *testing.T) {
 		t.Fatalf("handler read: want 30/v1, got %+v v%d err=%v", s, ver, err)
 	}
 }
+
+// --- Outbound proxy -----------------------------------------------------------
+
+// newSvcTestDBWithProxy returns a test DB with the outbound-proxy pair
+// seeded at the migration default: mode off, empty URL, both rows at v1.
+func newSvcTestDBWithProxy(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := newSvcTestDB(t)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('proxy_mode','off'),('proxy_url','')`)
+	return db
+}
+
+// The gateway read path serves the shipped off default both when the rows
+// are absent (a pre-migration database) and on a cold-cache refresh
+// failure — fail-open to DIRECT, never to a guessed proxy.
+func TestOutboundProxyReadFailsOpenToOffDefault(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDB(t)) // no proxy rows seeded
+	s, ver, err := svc.GetOutboundProxy(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if s.Mode != "off" || s.URL != "" || ver != 0 {
+		t.Fatalf("want off/empty default, got %+v v%d", s, ver)
+	}
+}
+
+func TestOutboundProxyUpdatePublishesImmediately(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithProxy(t))
+	s, ver, err := svc.UpdateOutboundProxy(context.Background(), 1, "custom", "socks5://192.168.1.5:1080")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if s.Mode != "custom" || s.URL != "socks5://192.168.1.5:1080" || ver != 2 {
+		t.Fatalf("want custom/v2, got %+v v%d", s, ver)
+	}
+	// The gateway read sees the committed snapshot without any invalidate.
+	got, _, err := svc.GetOutboundProxy(context.Background())
+	if err != nil || got.Mode != "custom" || got.URL != "socks5://192.168.1.5:1080" {
+		t.Fatalf("read after update mismatch: %+v err=%v", got, err)
+	}
+}
+
+// All four transport-supported schemes are accepted at save time; socks5h
+// rides through as the alias of socks5 (Go resolves DNS on the proxy side
+// for both).
+func TestOutboundProxyUpdateAcceptsFourSchemes(t *testing.T) {
+	for _, raw := range []string{
+		"http://127.0.0.1:7890",
+		"https://127.0.0.1:7890",
+		"socks5://127.0.0.1:1080",
+		"socks5h://127.0.0.1:1080",
+	} {
+		svc := NewSystemSettingsService(newSvcTestDBWithProxy(t))
+		if _, _, err := svc.UpdateOutboundProxy(context.Background(), 1, "custom", raw); err != nil {
+			t.Errorf("UpdateOutboundProxy(custom, %q) = %v, want accepted", raw, err)
+		}
+	}
+}
+
+// The three illegal shapes from the acceptance matrix — an unsupported
+// scheme, a schemeless string, and an empty URL under custom mode — are
+// all refused, and the refusal leaves the previously committed value in
+// place (old value retained, version untouched).
+func TestOutboundProxyUpdateRejectsIllegalValuesAndKeepsOld(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithProxy(t))
+	// Commit a legal custom proxy first.
+	if _, ver, err := svc.UpdateOutboundProxy(context.Background(), 1, "custom", "http://127.0.0.1:7890"); err != nil || ver != 2 {
+		t.Fatalf("seed update: %+v v%d err=%v", nil, ver, err)
+	}
+	for _, raw := range []string{"ftp://proxy.example.com:21", "proxy.example.com:7890", ""} {
+		if _, _, err := svc.UpdateOutboundProxy(context.Background(), 2, "custom", raw); err == nil {
+			t.Errorf("UpdateOutboundProxy(custom, %q) = nil, want refused", raw)
+		}
+	}
+	// The committed value survived every refusal, in the cache and in the DB.
+	got, ver, err := svc.GetOutboundProxy(context.Background())
+	if err != nil || got.Mode != "custom" || got.URL != "http://127.0.0.1:7890" || ver != 2 {
+		t.Fatalf("refused saves must retain the old value, got %+v v%d err=%v", got, ver, err)
+	}
+	authoritative, _, err := svc.GetOutboundProxyForHandler(context.Background())
+	if err != nil || authoritative != got {
+		t.Fatalf("authoritative read after refusals: %+v err=%v", authoritative, err)
+	}
+}
+
+// A URL parked behind a non-custom mode must still be storable-shape: a
+// garbage URL cannot hide behind off/system and become active unvalidated
+// when the mode later flips to custom.
+func TestOutboundProxyUpdateRejectsBadURLEvenUnderOffMode(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithProxy(t))
+	if _, _, err := svc.UpdateOutboundProxy(context.Background(), 1, "off", "ftp://proxy.example.com:21"); err == nil {
+		t.Fatal("non-empty proxy_url must validate regardless of mode, got nil")
+	}
+	// An empty URL under off/system stays legal (the shipped state).
+	if _, _, err := svc.UpdateOutboundProxy(context.Background(), 1, "off", ""); err != nil {
+		t.Fatalf("off + empty URL must be accepted: %v", err)
+	}
+}
+
+// A proxy URL whose address sits in an always-denied reserved range is
+// refused; private and loopback addresses are accepted (save-time leg —
+// the transport enforces the same ranges on every dial).
+func TestOutboundProxyUpdateRejectsReservedRangeAddresses(t *testing.T) {
+	for _, raw := range []string{
+		"http://224.0.0.1:7890",  // multicast
+		"http://240.0.0.1:7890",  // reserved
+		"http://0.0.0.0:7890",    // unspecified
+		"http://198.18.0.1:7890", // benchmark
+	} {
+		svc := NewSystemSettingsService(newSvcTestDBWithProxy(t))
+		if _, _, err := svc.UpdateOutboundProxy(context.Background(), 1, "custom", raw); err == nil {
+			t.Errorf("UpdateOutboundProxy(custom, %q) = nil, want refused", raw)
+		}
+	}
+	for _, raw := range []string{"socks5://10.1.2.3:1080", "http://127.0.0.1:7890", "http://192.168.1.5:7890"} {
+		svc := NewSystemSettingsService(newSvcTestDBWithProxy(t))
+		if _, _, err := svc.UpdateOutboundProxy(context.Background(), 1, "custom", raw); err != nil {
+			t.Errorf("UpdateOutboundProxy(custom, %q) = %v, want accepted", raw, err)
+		}
+	}
+}
+
+// Unknown modes never reach the DB: the write path validates the
+// off/system/custom vocabulary first.
+func TestOutboundProxyUpdateRejectsUnknownMode(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithProxy(t))
+	if _, _, err := svc.UpdateOutboundProxy(context.Background(), 1, "sometimes", ""); err == nil {
+		t.Fatal("unknown mode must be refused")
+	}
+	got, _, err := svc.GetOutboundProxy(context.Background())
+	if err != nil || got.Mode != "off" {
+		t.Fatalf("refused mode must leave the stored off default, got %+v err=%v", got, err)
+	}
+}
+
+// CAS miss on the proxy pair surfaces as the setting family's own conflict
+// sentinel, same contract as the other settings pairs.
+func TestOutboundProxyUpdateCASConflict(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithProxy(t))
+	if _, _, err := svc.UpdateOutboundProxy(context.Background(), 1, "system", ""); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	if _, _, err := svc.UpdateOutboundProxy(context.Background(), 1, "custom", "http://127.0.0.1:7890"); !errors.Is(err, errcode.ErrOutboundProxyConflict) {
+		t.Fatalf("want ErrOutboundProxyConflict, got %v", err)
+	}
+}

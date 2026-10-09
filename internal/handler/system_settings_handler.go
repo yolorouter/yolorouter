@@ -463,3 +463,88 @@ func PutAdminAuditRetention(svc *systemsettings.SystemSettingsService) gin.Handl
 		response.Success(c, adminAuditRetentionResponse{RetentionDays: s.Days, Version: ver})
 	}
 }
+
+// --- Outbound proxy ---------------------------------------------------------
+
+// outboundProxyResponse is the handler-facing response DTO with explicit
+// json tags (mode/url/version), same wrapper pattern as the settings
+// families above. The URL is returned verbatim — it is admin-declared
+// configuration the console re-displays, not a credential; embedded basic
+// auth (if any) was typed by the same admin who is reading it back.
+type outboundProxyResponse struct {
+	Mode    string `json:"mode"`
+	URL     string `json:"url"`
+	Version int64  `json:"version"`
+}
+
+// putOutboundProxyRequest: pointers make absent fields distinguishable
+// from zero values, so a partial body cannot silently flip the mode or
+// clear the URL.
+type putOutboundProxyRequest struct {
+	Mode    *string `json:"mode"`
+	URL     *string `json:"url"`
+	Version *int64  `json:"version"`
+}
+
+// GetOutboundProxy returns the authoritative global state (DB read,
+// bypassing the cache) so the admin always sees the committed value.
+func GetOutboundProxy(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		s, ver, err := svc.GetOutboundProxyForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		response.Success(c, outboundProxyResponse{Mode: s.Mode, URL: s.URL, Version: ver})
+	}
+}
+
+// PutOutboundProxy validates + CAS-updates the pair. version is required
+// (optimistic lock); mode and url must both be present (pointers). An
+// invalid mode or proxy URL is refused with the setting's own 400-class
+// business code and the stored rows keep their previous values; a CAS miss
+// returns 409 the same way the other settings families do.
+//
+// Audit: same merge shape as the settings families above — the committed
+// change parks a field-level diff (mode, proxy_url) on the automatic
+// layer's single row. proxy_url is an exact-name redaction field: its diff
+// entry collapses to the placeholder, recording THAT the URL changed
+// without ever recording the address (authenticated proxies embed
+// user:pass@ inside the URL, so the whole value is treated as a
+// credential).
+func PutOutboundProxy(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req putOutboundProxyRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.ParamError(c, err.Error())
+			return
+		}
+		if req.Mode == nil || req.URL == nil || req.Version == nil || *req.Version < 1 {
+			response.ParamError(c, "mode, url and version (>=1) are all required")
+			return
+		}
+		before, _, err := svc.GetOutboundProxyForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		s, ver, err := svc.UpdateOutboundProxy(c.Request.Context(), *req.Version, *req.Mode, *req.URL)
+		if err != nil {
+			switch {
+			case errors.Is(err, errcode.ErrOutboundProxyConflict):
+				// 409 is not produced by httpStatusForCode's range mapping; set it explicitly.
+				response.ErrorStatus(c, http.StatusConflict, errcode.OutboundProxyConflict, errcode.GetMessage(errcode.OutboundProxyConflict))
+			case errors.Is(err, errcode.ErrOutboundProxyURLInvalid):
+				response.Error(c, errcode.OutboundProxyURLInvalid, errcode.GetMessage(errcode.OutboundProxyURLInvalid))
+			default:
+				response.InternalError(c, err.Error())
+			}
+			return
+		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{"mode": before.Mode, "proxy_url": before.URL},
+			map[string]any{"mode": s.Mode, "proxy_url": s.URL},
+		))
+		response.Success(c, outboundProxyResponse{Mode: s.Mode, URL: s.URL, Version: ver})
+	}
+}

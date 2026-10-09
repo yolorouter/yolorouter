@@ -150,3 +150,31 @@ export function updateAdminAuditRetention(payload: {
     body: JSON.stringify(payload),
   })
 }
+
+// Outbound proxy: the global default for how upstream traffic leaves this
+// instance — off (direct, the seeded default), system (read the process
+// environment's HTTP_PROXY/HTTPS_PROXY/NO_PROXY), or custom (proxy through
+// the stored URL). Per-provider overrides live on the provider rows and
+// resolve against this global at request time. Same authoritative-read +
+// CAS contract as the settings above; a concurrent edit surfaces as errcode
+// 11025 (HTTP 409).
+export interface OutboundProxySetting {
+  mode: 'off' | 'system' | 'custom'
+  url: string
+  version: number
+}
+
+export function getOutboundProxy(): Promise<OutboundProxySetting> {
+  return apiFetch('/api/admin/system-settings/outbound-proxy')
+}
+
+export function updateOutboundProxy(payload: {
+  mode: string
+  url: string
+  version: number
+}): Promise<OutboundProxySetting> {
+  return apiFetch('/api/admin/system-settings/outbound-proxy', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}

@@ -131,6 +131,23 @@ func UpdateProviderProtocol(db *gorm.DB, id uint, providerType, protocolEndpoint
 	return result.DestinationVersion, nil
 }
 
+// UpdateProviderProxy writes one provider's outbound-proxy override pair.
+// A proxy change reroutes HOW traffic reaches the upstream, not WHERE — the
+// destination identity (base_url/protocol) is untouched — so this write
+// deliberately does NOT bump destination_version: existing keys keep their
+// authorization, and switching a provider onto or off a proxy must not
+// strand credentials into "needs re-entry" for what is a transport-layer
+// choice. Returns applied=false (no error) if the provider row doesn't
+// exist.
+func UpdateProviderProxy(db *gorm.DB, id uint, mode, proxyURL string, now time.Time) (bool, error) {
+	result := db.Model(&model.Provider{}).Where("id = ?", id).
+		Updates(map[string]interface{}{"proxy_mode": mode, "proxy_url": proxyURL, "updated_at": now})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
 // UpdateProviderManagementStatus enables/disables a provider.
 // UpdateProviderManagementStatus returns applied=false (no error) if id
 // doesn't exist: the service layer

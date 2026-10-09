@@ -153,6 +153,11 @@ type Service struct {
 	secondaryFetchOnce sync.Once
 	secondaryFetch     *http.Client
 
+	// proxies carries the deployment's outbound proxy resolvers (see
+	// ProxyResolvers). The zero value is all-direct: a deployment that wires
+	// no resolvers keeps the shipped never-proxy behavior byte for byte.
+	proxies ProxyResolvers
+
 	// upstreamErrorObservers are wired in by the assembly layer. They see
 	// non-2xx upstream responses and report what they recognise; they never
 	// decide what happens next. Order is irrelevant by construction — reported
@@ -205,7 +210,9 @@ type Service struct {
 // the upstream transport's TCP dial bound and its HeaderTimeout seeds the
 // ResponseHeaderTimeout, while the remaining fields are read by the
 // per-attempt timeout orchestration.
-func NewService(store Store, video VideoTasks, secrets crypto.SecretBox, allowPrivate bool, sp SettingsProvider, gatewayCfg config.GatewayConfig) *Service {
+// proxies is the deployment's outbound proxy policy pair; the zero value
+// keeps every outbound dial direct (the shipped behavior).
+func NewService(store Store, video VideoTasks, secrets crypto.SecretBox, allowPrivate bool, sp SettingsProvider, gatewayCfg config.GatewayConfig, proxies ProxyResolvers) *Service {
 	// Normalise the count budgets here rather than at every read: a config
 	// assembled without them (unit tests, older config files) means the
 	// defaults, not a request that stops before its first dispatch.
@@ -230,9 +237,10 @@ func NewService(store Store, video VideoTasks, secrets crypto.SecretBox, allowPr
 	svc := &Service{
 		store:            store,
 		secrets:          secrets,
-		client:           NewUpstreamClient(allowPrivate, gatewayCfg.HeaderTimeout, gatewayCfg.ConnectTimeout, gatewayCfg.TLSHandshakeTimeout),
+		client:           NewUpstreamClient(allowPrivate, gatewayCfg.HeaderTimeout, gatewayCfg.ConnectTimeout, gatewayCfg.TLSHandshakeTimeout, proxies.Upstream),
 		settingsProvider: sp,
 		gateway:          gatewayCfg,
+		proxies:          proxies,
 		breaker: circuit.New(circuit.Config{
 			FailureThreshold: gatewayCfg.CircuitFailureThreshold,
 			SuccessThreshold: gatewayCfg.CircuitSuccessThreshold,
@@ -1635,6 +1643,14 @@ func (s *Service) attemptOne(c *gin.Context, rc *Exchange, adm admitted, plainte
 	// cutting the upstream request even mid-stream.
 	ctx, cancel := context.WithTimeout(rc.requestCtx, attemptBudget)
 	defer cancel()
+	// Stamp the dispatching provider's proxy stance onto the attempt
+	// context so the transport's Proxy callback resolves this attempt the
+	// way THIS provider is configured — a failover chain may walk
+	// providers with opposite stances within one request. A nil provider
+	// stamps nothing and the resolver falls back to global-only.
+	if provider != nil {
+		ctx = WithUpstreamProxyStance(ctx, UpstreamProxyStance{Mode: provider.ProxyMode, URL: provider.ProxyURL})
+	}
 
 	// Record the rewritten (provider_model_name) request
 	// actually sent upstream, verbatim. Overwritten on every attempt — the

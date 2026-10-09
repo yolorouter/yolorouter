@@ -506,3 +506,87 @@ func UpdateAdminAuditRetention(db *gorm.DB, expectedVersion int64, days int) (se
 	}
 	return settings.AdminAuditRetentionSetting{Days: days}, expectedVersion + 1, nil
 }
+
+// The outbound proxy settings pair is seeded by migration 00055 and shares
+// one version, same contract as the custom-system-prompt pair.
+const (
+	proxyModeKey = "proxy_mode"
+	proxyURLKey  = "proxy_url"
+)
+
+// GetOutboundProxy reads both outbound-proxy rows as one snapshot. Missing
+// rows (a database migrated before 00055, where seeding has not run yet)
+// degrade to the shipped off default rather than erroring — the gateway
+// read path must never fail-closed on configuration, and failing open here
+// means failing open to DIRECT, never to a guessed proxy. A lone row of the
+// pair or a version mismatch is corrupt data and surfaces as an error; a
+// mode outside the off/system/custom vocabulary is likewise corrupt (the
+// write path validates before storing), while the URL is free-form text so
+// any string is storable as far as this reader is concerned.
+func GetOutboundProxy(db *gorm.DB) (settings.OutboundProxySetting, int64, error) {
+	var rows []struct {
+		Key     string
+		Value   string
+		Version int64
+	}
+	if err := db.Table("system_settings").
+		Select("key, value, version").
+		Where("key IN ?", []string{proxyModeKey, proxyURLKey}).
+		Find(&rows).Error; err != nil {
+		return settings.OutboundProxySetting{}, 0, err
+	}
+	if len(rows) == 0 {
+		return settings.DefaultOutboundProxySetting(), 0, nil
+	}
+	if len(rows) != 2 {
+		return settings.OutboundProxySetting{}, 0, fmt.Errorf("system_settings: expected 2 outbound proxy rows, got %d", len(rows))
+	}
+	var s settings.OutboundProxySetting
+	ver := rows[0].Version
+	for _, r := range rows {
+		if r.Version != ver {
+			return settings.OutboundProxySetting{}, 0, errors.New("system_settings: version mismatch between outbound proxy rows")
+		}
+		switch r.Key {
+		case proxyModeKey:
+			switch r.Value {
+			case "off", "system", "custom":
+				s.Mode = r.Value
+			default:
+				return settings.OutboundProxySetting{}, 0, fmt.Errorf("system_settings: corrupt %s value %q", proxyModeKey, r.Value)
+			}
+		case proxyURLKey:
+			s.URL = r.Value
+		}
+	}
+	return s, ver, nil
+}
+
+// UpdateOutboundProxy CAS-updates both rows in one statement, same
+// CASE-driven shape as UpdateCustomSystemPrompt: RowsAffected == 2 is the
+// CAS witness (both rows share the version, enforced by the read path).
+// Returns the committed snapshot + new version so the handler can hand the
+// fresh version back to the caller.
+func UpdateOutboundProxy(db *gorm.DB, expectedVersion int64, mode, proxyURL string) (settings.OutboundProxySetting, int64, error) {
+	var newVersion int64
+	err := db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Table("system_settings").
+			Where("key IN ? AND version = ?", []string{proxyModeKey, proxyURLKey}, expectedVersion).
+			Updates(map[string]interface{}{
+				"value":   gorm.Expr("CASE key WHEN ? THEN ? WHEN ? THEN ? END", proxyModeKey, mode, proxyURLKey, proxyURL),
+				"version": gorm.Expr("version + 1"),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 2 {
+			return errcode.ErrOutboundProxyConflict
+		}
+		newVersion = expectedVersion + 1
+		return nil
+	})
+	if err != nil {
+		return settings.OutboundProxySetting{}, 0, err
+	}
+	return settings.OutboundProxySetting{Mode: mode, URL: proxyURL}, newVersion, nil
+}

@@ -53,6 +53,10 @@ export interface Provider {
   name: string
   provider_type: string
   base_url: string
+  // Outbound-proxy override: '' inherits the global setting, 'off' forces
+  // direct, 'custom' proxies through proxy_url.
+  proxy_mode: string
+  proxy_url: string
   note: string
   management_status: number
   running_status: 'not_configured' | 'pending_test' | 'available' | 'partial' | 'unavailable'
@@ -96,6 +100,10 @@ export interface UpdateProviderInput {
   note?: string
   provider_type?: string
   protocol_endpoints?: string
+  // Proxy override pair — present values are authoritative ('' mode = back
+  // to inherit), absent fields leave the stored stance untouched.
+  proxy_mode?: string
+  proxy_url?: string
 }
 
 export interface CreateKeyInput {

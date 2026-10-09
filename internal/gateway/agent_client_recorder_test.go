@@ -38,7 +38,7 @@ func fireAgentProbeExchange(t *testing.T, userAgent, sessionHeader, sessionID st
 	defer upstream.Close()
 
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, stubSettingsProvider{}, testGatewayConfig())
+	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, stubSettingsProvider{}, testGatewayConfig(), ProxyResolvers{})
 	svc.client.httpClient.Transport = &http.Transport{}
 	RegisterRecorder(svc, requestlog.New(db), func(e *Exchange) requestlog.View { return e })
 
@@ -136,7 +136,7 @@ func TestTheAuditRowSnapshotKeepsTheToolSessionReadable(t *testing.T) {
 	defer upstream.Close()
 
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
-	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, stubSettingsProvider{}, testGatewayConfig())
+	svc := NewService(testStoreFrom(db), stubVideoTasks{}, ycrypto.NewSecretBox(masterKey), false, stubSettingsProvider{}, testGatewayConfig(), ProxyResolvers{})
 	svc.client.httpClient.Transport = &http.Transport{}
 	RegisterRecorder(svc, requestlog.New(db), func(e *Exchange) requestlog.View { return e })
 

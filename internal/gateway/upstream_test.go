@@ -23,7 +23,7 @@ func testGatewayConfig() config.GatewayConfig {
 // "thinking" phase) independently of the per-attempt context that later bounds
 // the body.
 func TestNewUpstreamClient_SetsResponseHeaderTimeout(t *testing.T) {
-	c := NewUpstreamClient(false, 600*time.Second, 5*time.Second, 10*time.Second)
+	c := NewUpstreamClient(false, 600*time.Second, 5*time.Second, 10*time.Second, nil)
 	tr, ok := c.httpClient.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport is %T, want *http.Transport", c.httpClient.Transport)
@@ -37,7 +37,7 @@ func TestNewUpstreamClient_SetsResponseHeaderTimeout(t *testing.T) {
 // a caller passing 0 must produce a transport whose ResponseHeaderTimeout is
 // also 0 (no header-phase bound), rather than silently substituting a default.
 func TestNewUpstreamClient_ZeroHeaderTimeout(t *testing.T) {
-	c := NewUpstreamClient(false, 0, 5*time.Second, 10*time.Second)
+	c := NewUpstreamClient(false, 0, 5*time.Second, 10*time.Second, nil)
 	tr, ok := c.httpClient.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport is %T, want *http.Transport", c.httpClient.Transport)
@@ -51,7 +51,7 @@ func TestNewUpstreamClient_ZeroHeaderTimeout(t *testing.T) {
 // argument lands on the SSRF-safe transport's TLSHandshakeTimeout, bounding
 // the TLS handshake independently of the TCP dial and per-attempt context.
 func TestNewUpstreamClient_SetsTLSHandshakeTimeout(t *testing.T) {
-	c := NewUpstreamClient(false, 0, 5*time.Second, 10*time.Second)
+	c := NewUpstreamClient(false, 0, 5*time.Second, 10*time.Second, nil)
 	tr, ok := c.httpClient.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport is %T, want *http.Transport", c.httpClient.Transport)
@@ -72,7 +72,7 @@ func TestNewUpstreamClient_SetsTLSHandshakeTimeout(t *testing.T) {
 // retransmit timeout. Environments that immediately reject the route are
 // skipped rather than false-failing.
 func TestNewUpstreamClient_ForwardsConnectTimeout(t *testing.T) {
-	c := NewUpstreamClient(false, 0, 150*time.Millisecond, 10*time.Second)
+	c := NewUpstreamClient(false, 0, 150*time.Millisecond, 10*time.Second, nil)
 	tr, ok := c.httpClient.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport is %T, want *http.Transport", c.httpClient.Transport)

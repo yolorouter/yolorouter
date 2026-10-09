@@ -59,6 +59,8 @@ const (
 	RequestLogRetentionDaysInvalid = 11022 // request log retention_days is not a whole number of days within [0, 3650]
 	AdminAuditRetentionConflict    = 11023 // optimistic-lock CAS miss on the admin_audit_retention_days PUT (another writer committed first)
 	AdminAuditRetentionDaysInvalid = 11024 // admin audit retention_days is not a whole number of days within [0, 3650]
+	OutboundProxyConflict          = 11025 // optimistic-lock CAS miss on the outbound proxy settings pair PUT (another writer committed first)
+	OutboundProxyURLInvalid        = 11026 // proxy_url is not a storable proxy URL: unparseable, missing host, scheme outside {http,https,socks5,socks5h}, or address in a reserved range
 
 	// === Provider errors (12xxx) ===
 	ProviderNotFound   = 12001
@@ -78,6 +80,7 @@ const (
 	ProviderKeyTooShort      = 12013 // Key plaintext is shorter than minKeyPlaintextLength (normally already blocked by Gin binding; this is a defensive fallback)
 	ProviderKeyTestNotSaved  = 12014 // the test network call finished but the Key was modified concurrently while writing back the result (config_version changed), so the CAS missed and the result was not persisted; retry needed
 	ProviderProtocolInvalid  = 12015 // provider_type or protocol_endpoints failed validation (unsupported protocol name, malformed JSON, or a non-absolute-http(s) endpoint URL)
+	ProviderProxyInvalid     = 12016 // provider proxy_mode is not one of ''/off/custom, or a custom-mode provider proxy_url is not a storable proxy URL
 
 	ModelNotFound               = 12101 // the public model name does not exist
 	ModelNameTaken              = 12102 // the public model name is already taken (globally unique)
@@ -198,6 +201,8 @@ var ErrorMessages = map[int]string{
 	RequestLogRetentionDaysInvalid: "request log retention must be a whole number of days between 0 and 3650 (0 keeps logs forever)",
 	AdminAuditRetentionConflict:    "admin audit retention setting was modified concurrently, please refresh and retry",
 	AdminAuditRetentionDaysInvalid: "admin audit retention must be a whole number of days between 0 and 3650 (0 keeps audit logs forever)",
+	OutboundProxyConflict:          "outbound proxy setting was modified concurrently, please refresh and retry",
+	OutboundProxyURLInvalid:        "proxy URL must be a parseable http, https, socks5, or socks5h URL whose address is not in a reserved range",
 
 	ProviderNotFound:         "provider not found",
 	ProviderNameTaken:        "provider name already taken",
@@ -212,6 +217,7 @@ var ErrorMessages = map[int]string{
 	ProviderKeyTooShort:      "key plaintext is too short",
 	ProviderKeyTestNotSaved:  "test result not saved because the key was modified concurrently, please retry",
 	ProviderProtocolInvalid:  "invalid provider_type or protocol_endpoints",
+	ProviderProxyInvalid:     "invalid provider proxy configuration: proxy_mode must be inherit, off, or custom, and a custom proxy needs a valid proxy URL",
 
 	ModelNotFound:               "model not found",
 	ModelNameTaken:              "model name already taken",
@@ -297,6 +303,8 @@ var (
 	ErrRequestLogRetentionDaysInvalid = errors.New(ErrorMessages[RequestLogRetentionDaysInvalid])
 	ErrAdminAuditRetentionConflict    = errors.New(ErrorMessages[AdminAuditRetentionConflict])
 	ErrAdminAuditRetentionDaysInvalid = errors.New(ErrorMessages[AdminAuditRetentionDaysInvalid])
+	ErrOutboundProxyConflict          = errors.New(ErrorMessages[OutboundProxyConflict])
+	ErrOutboundProxyURLInvalid        = errors.New(ErrorMessages[OutboundProxyURLInvalid])
 
 	ErrProviderNotFound         = errors.New(ErrorMessages[ProviderNotFound])
 	ErrProviderNameTaken        = errors.New(ErrorMessages[ProviderNameTaken])
@@ -311,6 +319,7 @@ var (
 	ErrProviderKeyTooShort      = errors.New(ErrorMessages[ProviderKeyTooShort])
 	ErrProviderKeyTestNotSaved  = errors.New(ErrorMessages[ProviderKeyTestNotSaved])
 	ErrProviderProtocolInvalid  = errors.New(ErrorMessages[ProviderProtocolInvalid])
+	ErrProviderProxyInvalid     = errors.New(ErrorMessages[ProviderProxyInvalid])
 
 	ErrModelNotFound               = errors.New(ErrorMessages[ModelNotFound])
 	ErrModelNameTaken              = errors.New(ErrorMessages[ModelNameTaken])

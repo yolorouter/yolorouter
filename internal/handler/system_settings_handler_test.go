@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -921,5 +922,202 @@ func TestPutAdminAuditRetentionConflictEmits11023(t *testing.T) {
 	}
 	if resp.Code != 11023 {
 		t.Fatalf("errcode = %d, want 11023 (AdminAuditRetentionConflict)", resp.Code)
+	}
+}
+
+// --- Outbound proxy ----------------------------------------------------------
+
+// setupOutboundProxyRouter seeds the proxy pair at the migration default
+// (mode off, empty URL). The gorm handle comes back too: the fail-open test
+// needs to delete the rows out from under the service.
+func setupOutboundProxyRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.Exec(`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('proxy_mode','off'),('proxy_url','')`)
+	svc := systemsettings.NewSystemSettingsService(db)
+	r := gin.New()
+	r.GET("/api/admin/system-settings/outbound-proxy", GetOutboundProxy(svc))
+	r.PUT("/api/admin/system-settings/outbound-proxy", PutOutboundProxy(svc))
+	return r, db
+}
+
+// getOutboundProxySetting is the shared GET-and-extract helper for the
+// outbound proxy tests: status must be 200 and the payload's mode / url /
+// version come back for the caller to assert on.
+func getOutboundProxySetting(t *testing.T, r *gin.Engine) (mode, url string, ver int64) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/admin/system-settings/outbound-proxy", nil))
+	if w.Code != 200 {
+		t.Fatalf("GET: status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Mode    string `json:"mode"`
+			URL     string `json:"url"`
+			Version int64  `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	return resp.Data.Mode, resp.Data.URL, resp.Data.Version
+}
+
+// putOutboundProxyRaw issues a PUT with an exact raw JSON body so the
+// invalid-value matrix controls the wire form byte for byte.
+func putOutboundProxyRaw(t *testing.T, r *gin.Engine, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("PUT", "/api/admin/system-settings/outbound-proxy", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestGetOutboundProxyReturnsSeededDefault pins the seeded read: the
+// migration-planted pair reads back as off with an empty URL at its seed
+// version — upgrading changes no behavior.
+func TestGetOutboundProxyReturnsSeededDefault(t *testing.T) {
+	r, _ := setupOutboundProxyRouter(t)
+	mode, url, ver := getOutboundProxySetting(t, r)
+	if mode != "off" || url != "" || ver != 1 {
+		t.Fatalf("want off/''/v1 seeded, got %q/%q/v%d", mode, url, ver)
+	}
+}
+
+// TestGetOutboundProxyMissingRowsFailOpenToOff pins the fail-open read on a
+// database that predates the seeding migration: the absent pair must read
+// as the shipped off/direct default (version 0), never as an error — the
+// console and the transport resolution path degrade to the same direct
+// default a freshly seeded deployment ships with.
+func TestGetOutboundProxyMissingRowsFailOpenToOff(t *testing.T) {
+	r, db := setupOutboundProxyRouter(t)
+	if res := db.Exec(`DELETE FROM system_settings WHERE key IN ('proxy_mode','proxy_url')`); res.Error != nil {
+		t.Fatalf("drop the seeded rows: %v", res.Error)
+	}
+	mode, url, ver := getOutboundProxySetting(t, r)
+	if mode != "off" || url != "" || ver != 0 {
+		t.Fatalf("want off/''/v0 (shipped default on missing rows), got %q/%q/v%d", mode, url, ver)
+	}
+}
+
+// TestPutOutboundProxySuccessAndReadBack pins the write half: a PUT moving
+// the pair to custom commits (new version handed back) and the
+// authoritative GET reads the same mode and URL.
+func TestPutOutboundProxySuccessAndReadBack(t *testing.T) {
+	r, _ := setupOutboundProxyRouter(t)
+	w := putOutboundProxyRaw(t, r, `{"mode":"custom","url":"socks5://127.0.0.1:1080","version":1}`)
+	if w.Code != 200 {
+		t.Fatalf("PUT custom: status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Mode    string `json:"mode"`
+			URL     string `json:"url"`
+			Version int64  `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Data.Mode != "custom" || resp.Data.URL != "socks5://127.0.0.1:1080" || resp.Data.Version != 2 {
+		t.Fatalf("want custom/socks5://127.0.0.1:1080/v2, got %q/%q/v%d", resp.Data.Mode, resp.Data.URL, resp.Data.Version)
+	}
+	if mode, url, ver := getOutboundProxySetting(t, r); mode != "custom" || url != "socks5://127.0.0.1:1080" || ver != 2 {
+		t.Fatalf("read after PUT: want custom/socks5://127.0.0.1:1080/v2, got %q/%q/v%d", mode, url, ver)
+	}
+}
+
+// TestPutOutboundProxyMissingFields400 and the zero-version form pin the
+// request shape: mode, url and version are all required (pointers — a
+// partial body must not silently flip the mode or clear the URL), and a
+// version of 0 (what a missing-row read reports) is refused so the pair
+// can only ever be created by the seeding migration.
+func TestPutOutboundProxyMissingFields400(t *testing.T) {
+	r, _ := setupOutboundProxyRouter(t)
+	for _, body := range []string{`{}`, `{"mode":"off"}`, `{"url":""}`, `{"version":1}`, `{"mode":"off","url":""}`} {
+		w := putOutboundProxyRaw(t, r, body)
+		if w.Code != 400 {
+			t.Fatalf("body %s: status = %d, want 400", body, w.Code)
+		}
+		var resp struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("body %s: unmarshal: %v", body, err)
+		}
+		if !strings.Contains(resp.Message, "mode, url and version (>=1) are all required") {
+			t.Fatalf("body %s: message = %q, want the required-fields message", body, resp.Message)
+		}
+	}
+}
+
+func TestPutOutboundProxyZeroVersion400(t *testing.T) {
+	r, _ := setupOutboundProxyRouter(t)
+	w := putOutboundProxyRaw(t, r, `{"mode":"off","url":"","version":0}`)
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+// TestPutOutboundProxyInvalidValuesRejectedEmits11026 pins the validation
+// half of the contract: an unknown mode, custom without a URL, an
+// unstorable URL, and a bad URL parked behind off all answer 400 carrying
+// the setting's own business code (11026) and leave the stored pair
+// untouched — a refused value never partially commits.
+func TestPutOutboundProxyInvalidValuesRejectedEmits11026(t *testing.T) {
+	r, _ := setupOutboundProxyRouter(t)
+	for _, body := range []string{
+		`{"mode":"sometimes","url":"","version":1}`,                        // unknown mode
+		`{"mode":"custom","url":"","version":1}`,                           // custom requires a URL
+		`{"mode":"custom","url":"ftp://proxy.example.com:21","version":1}`, // scheme outside the supported four
+		`{"mode":"off","url":"not a storable url","version":1}`,            // parked URL must still be storable
+	} {
+		w := putOutboundProxyRaw(t, r, body)
+		if w.Code != 400 {
+			t.Fatalf("body %s: status = %d, want 400, body: %s", body, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Code int `json:"code"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("body %s: unmarshal: %v", body, err)
+		}
+		if resp.Code != 11026 {
+			t.Fatalf("body %s: errcode = %d, want 11026 (OutboundProxyURLInvalid)", body, resp.Code)
+		}
+		if mode, url, ver := getOutboundProxySetting(t, r); mode != "off" || url != "" || ver != 1 {
+			t.Fatalf("body %s: setting changed to %q/%q/v%d, want off/''/v1 unchanged", body, mode, url, ver)
+		}
+	}
+}
+
+// TestPutOutboundProxyConflictEmits11025 verifies the 409 response carries
+// errcode 11025 (OutboundProxyConflict), distinct from the other settings'
+// conflict codes so the frontend can route the retry to the right control.
+// The 409 is set explicitly by the handler — httpStatusForCode's range
+// mapping would answer 400 for a 11xxx code — so this test pins both the
+// status and the code.
+func TestPutOutboundProxyConflictEmits11025(t *testing.T) {
+	r, _ := setupOutboundProxyRouter(t)
+	w := putOutboundProxyRaw(t, r, `{"mode":"custom","url":"socks5://127.0.0.1:1080","version":99}`)
+	if w.Code != 409 {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	var resp struct {
+		Code int `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Code != 11025 {
+		t.Fatalf("errcode = %d, want 11025 (OutboundProxyConflict)", resp.Code)
 	}
 }
