@@ -26,7 +26,9 @@
 //   - TC-20: labels are localized and follow a live locale switch
 //   - TC-29: the empty canvas renders the four-step guide (key → models →
 //     prompt → run) through the shared EmptyState's #detail slot, inside
-//     the two-pane shell (bench beside canvas)
+//     the two-pane shell (bench beside canvas); the guide stays a real
+//     ordered list — its counter chips number it in bench
+//     order (TC-38's DOM half)
 //   - TC-30: the settled figures ride IN the done column's head container
 //     (cost · latency · usage under the model name) and the old
 //     column-bottom .pg-metrics block is gone — information moved, not
@@ -1531,6 +1533,16 @@ describe('PlaygroundPage workbench shell', () => {
         copy[locale].emptyStepPrompt,
         copy[locale].emptyStepRun,
       ])
+
+      // CSS counter chips number the steps, which removes the native
+      // markers — the chips' 1-4 only stay in bench order because the
+      // guide is a real ordered list. Pin that
+      // structure: an ol.pg-empty-steps of exactly four li (the DOM half
+      // of the guide's look; the centering itself is style, e2e/visual
+      // territory).
+      const guide = detail!.querySelector('ol.pg-empty-steps')
+      expect(guide, 'guide stays an ordered list the counter chips number').not.toBeNull()
+      expect([...guide!.children].map((li) => li.tagName)).toEqual(['LI', 'LI', 'LI', 'LI'])
     },
   )
 

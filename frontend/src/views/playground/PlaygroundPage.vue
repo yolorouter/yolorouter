@@ -921,6 +921,19 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
 
 .pg-modality-tabs {
   margin-bottom: var(--space-2);
+
+  // The selected segment carries its state in weight as well as the
+  // block fill — the fill alone reads faint beside the filled inputs.
+  // Two Naive mechanisms block the obvious overrides: the runtime sheet
+  // styles the rail's active tab at (0,5,0) — injected after this file's
+  // <link>, so a tab-level :deep() font-weight loses the cascade — and
+  // the winner consumes --n-font-weight-strong, which Naive pins as an
+  // INLINE style on the tabs root (a class-level var override can never
+  // win). Target the label node instead: Naive sets weight on the tab
+  // and lets the label inherit, so any direct rule on the label wins.
+  :deep(.n-tabs-tab--active .n-tabs-tab__label) {
+    font-weight: 600;
+  }
 }
 
 .pg-key-select {
@@ -934,8 +947,11 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   width: 100%;
 }
 
+// Basis 0 (not auto) so the select stretches to the row's full remaining
+// width however wide its rendered content is — the row's right edge then
+// aligns with every other field in the bench.
 .pg-models-select {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
 }
 
@@ -1267,15 +1283,54 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   white-space: nowrap;
 }
 
-/* The empty canvas's four-step guide: the shared EmptyState's #detail
-   block owns the alignment; this only keeps the steps visually compact
-   (native ordered numbering, one line per step). */
+/* The empty canvas's four-step guide: numbered chips instead of native
+   numbering — a guide reads as a walkthrough when the step carries its
+   own marker. The list is a centered block (the EmptyState column centers
+   its items); the text inside stays left-aligned so four steps of unequal
+   length still line up. */
+.pg-canvas .empty-state {
+  // The shared block's own floor is 220px; the pane it sits in is far
+  // taller. Lifting the floor here centers the guide in the space the
+  // run's columns will occupy, instead of parking it at the pane's top.
+  // ~60vh at every common height; the 600px cap keeps very tall
+  // viewports from stretching the empty pane past a screenful.
+  min-height: min(600px, 60vh);
+}
+
 .pg-empty-steps {
   margin: 0;
-  padding-left: var(--space-5);
+  padding: 0;
+  list-style: none;
+  counter-reset: pg-step;
   color: var(--color-text-muted);
   font-size: var(--text-sm);
-  line-height: 1.8;
+  text-align: left;
+}
+
+.pg-empty-steps li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+
+  &::before {
+    counter-increment: pg-step;
+    content: counter(pg-step);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    border-radius: var(--radius-full);
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+
+  & + & {
+    margin-top: var(--space-2);
+  }
 }
 
 @media (max-width: @mobile-breakpoint) {
