@@ -2649,7 +2649,7 @@ func TestCreateProviderKeyHitsRealAnthropicProtocolEndpointHost(t *testing.T) {
 	}))
 	defer anthropicSrv.Close()
 
-	realClient := providerclient.NewHTTPProviderClient(true)
+	realClient := providerclient.NewHTTPProviderClient(true, nil)
 	// allowPrivate=true: safehttp's SSRF-safe transport denies loopback
 	// dials by default, which is exactly where httptest servers listen; the
 	// allow-private mode is the production-supported way to permit them.

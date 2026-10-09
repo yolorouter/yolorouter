@@ -96,6 +96,7 @@ func (s *testStore) ListModelCandidatesByModelID(ctx context.Context, modelID ui
 				ID: c.Provider.ID, Name: c.Provider.Name, ProviderType: c.Provider.ProviderType,
 				BaseURL: c.Provider.BaseURL, ProtocolEndpoints: c.Provider.ProtocolEndpoints,
 				ManagementStatus: c.Provider.ManagementStatus, DestinationVersion: c.Provider.DestinationVersion,
+				ProxyMode: c.Provider.ProxyMode, ProxyURL: c.Provider.ProxyURL,
 				CreatedAt: c.Provider.CreatedAt, UpdatedAt: c.Provider.UpdatedAt,
 			}
 		}
@@ -139,7 +140,8 @@ func (s *testStore) FindProviderByID(ctx context.Context, id uint) (*Provider, e
 	return &Provider{
 		ID: p.ID, Name: p.Name, ProviderType: p.ProviderType, BaseURL: p.BaseURL,
 		ProtocolEndpoints: p.ProtocolEndpoints, ManagementStatus: p.ManagementStatus,
-		DestinationVersion: p.DestinationVersion, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+		DestinationVersion: p.DestinationVersion, ProxyMode: p.ProxyMode, ProxyURL: p.ProxyURL,
+		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 	}, nil
 }
 

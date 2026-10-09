@@ -16,6 +16,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/gateway"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/pricecatalog"
 	"github.com/yolorouter/yolorouter/internal/protocols"
@@ -963,6 +964,10 @@ func (s *ModelService) probeCandidateMapping(ctx context.Context, modelID, provi
 			shape = probeShapeAudio
 		}
 	}
+	// Same rule as the provider service's key verification: a mapping probe
+	// rides the provider's proxy stance so what it measures is the channel
+	// routed traffic through this candidate will actually use.
+	ctx = gateway.WithUpstreamProxyStance(ctx, gateway.UpstreamProxyStance{Mode: provider.ProxyMode, URL: provider.ProxyURL})
 	return s.runCandidateProbes(ctx, providerproto.TypeOf(provider.ProviderType), provider.BaseURL, plaintext, providerModelName, shape)
 }
 

@@ -18,7 +18,7 @@ import (
 
 func newTestClient(handler http.HandlerFunc) (*HTTPProviderClient, *httptest.Server) {
 	srv := httptest.NewServer(handler)
-	c := NewHTTPProviderClient(false)
+	c := NewHTTPProviderClient(false, nil)
 	// Swap in a transport that dials the real httptest server directly
 	// (bypassing safehttp's loopback denial, which would otherwise block
 	// every test here) — production code always uses safehttp.NewTransport();
@@ -308,7 +308,7 @@ func TestTestChatCompletion500IsUpstreamError(t *testing.T) {
 }
 
 func TestTestChatCompletionConnectionRefusedIsUnreachable(t *testing.T) {
-	c := NewHTTPProviderClient(false)
+	c := NewHTTPProviderClient(false, nil)
 	c.httpClient = &http.Client{Transport: http.DefaultTransport, Timeout: 2 * time.Second}
 	result, err := c.TestChatCompletion(context.Background(), protocols.ProtocolOpenAI, "http://127.0.0.1:1", "sk-test", "gpt-4o-mini")
 	if err != nil {
@@ -361,7 +361,7 @@ func (hangingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 func TestTestChatCompletionBudgetExpiryWithoutConnectionIsUnreachable(t *testing.T) {
-	c := NewHTTPProviderClient(false)
+	c := NewHTTPProviderClient(false, nil)
 	c.httpClient = &http.Client{Transport: hangingRoundTripper{}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -427,7 +427,7 @@ func TestListModelsStallIsTimeoutNotUnreachable(t *testing.T) {
 }
 
 func TestListModelsBudgetExpiryWithoutConnectionIsUnreachable(t *testing.T) {
-	c := NewHTTPProviderClient(false)
+	c := NewHTTPProviderClient(false, nil)
 	c.httpClient = &http.Client{Transport: hangingRoundTripper{}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -447,7 +447,7 @@ func TestListModelsBudgetExpiryWithoutConnectionIsUnreachable(t *testing.T) {
 // "can't reach it" — it must stay TestUnreachable rather than being swept up
 // by the new timeout branch.
 func TestTestChatCompletionDialFailureStaysUnreachableWithLiveBudget(t *testing.T) {
-	c := NewHTTPProviderClient(false)
+	c := NewHTTPProviderClient(false, nil)
 	c.httpClient = &http.Client{Transport: http.DefaultTransport, Timeout: 2 * time.Second}
 
 	ctx, cancel := context.WithTimeout(context.Background(), providerClientTimeout)
@@ -485,7 +485,7 @@ func TestTestChatCompletionOversizedBodyIsUpstreamError(t *testing.T) {
 // logic.
 
 func TestTestChatCompletionErrorsOnMalformedURL(t *testing.T) {
-	c := NewHTTPProviderClient(false)
+	c := NewHTTPProviderClient(false, nil)
 	// A raw control character in the URL makes net/url.Parse (called inside
 	// http.NewRequestWithContext) fail — the one realistic way to force
 	// TestChatCompletion's own request-building error branch, as opposed to

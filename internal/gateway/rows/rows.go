@@ -26,8 +26,15 @@ type Provider struct {
 	ProtocolEndpoints  string
 	ManagementStatus   int
 	DestinationVersion int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// ProxyMode / ProxyURL are the provider's outbound-proxy stance in the
+	// stored spellings ("" inherit, "off", "custom"; URL used by "custom").
+	// The kernel reads them for one purpose: stamping the dispatch's request
+	// context (WithUpstreamProxyStance) so the deployment's proxy resolver
+	// can send this provider's traffic through this provider's proxy.
+	ProxyMode string
+	ProxyURL  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // ProviderKey is one dispatchable credential as the walk sees it. The

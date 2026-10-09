@@ -12,6 +12,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/gateway"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/outboundproxy"
 	"github.com/yolorouter/yolorouter/internal/providerproto"
@@ -762,6 +763,12 @@ func verificationSeverity(r providerclient.TestResult) int {
 // same way, so what a preview probes is exactly what creating the provider
 // will verify.
 func (s *ProviderService) verifyKeyAllDestinations(ctx context.Context, provider *model.Provider, plaintext, testModel string) (providerclient.TestResult, []KeyTestTargetResult, error) {
+	// Stamp the provider's proxy stance onto the call context so the probe
+	// client's transport resolves the SAME channel routed traffic will use
+	// — a provider that only works through its proxy must not test green
+	// on a direct connection, and one whose proxy is broken must not test
+	// green by quietly bypassing it.
+	ctx = gateway.WithUpstreamProxyStance(ctx, gateway.UpstreamProxyStance{Mode: provider.ProxyMode, URL: provider.ProxyURL})
 	targets := providerproto.VerificationTargets(provider.ProviderType, provider.ProtocolEndpoints, provider.BaseURL)
 	return s.verifyTargets(ctx, targets, plaintext, testModel)
 }
