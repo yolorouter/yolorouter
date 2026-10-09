@@ -5,20 +5,14 @@
      newest first by default in BOTH layouts (the mobile card path renders
      the passed array as-is — no table sorter there — so the default order
      lives in the data, not the desktop sort state); the time column is
-     sortable back to chronological for reading the conversation flow. The
-     waterfall axis is order-agnostic (absolute timestamps), so sorting only
-     changes row order.
+     sortable back to chronological for reading the conversation flow.
 
      The page reads as the session's map:
-       - a top summary card recomputed from the requests array itself (same
-         semantics as the list SQL), so deep links and refreshes land on a
-         full summary without the list endpoint;
-       - a timeline table whose every row carries a waterfall bar aligned on
-         the session's real time axis (gaps = think time, bar length =
-         duration), hovering for the precise start and duration;
-       - clicking a row navigates to that request's message page
-         (/request-messages/:requestId — key facts and the translated
-         conversation bubbles as a full page with its own URL). -->
+       - a session identity strip (attribution, verbatim session id, and
+         the request count the table below holds);
+       - a read-only request table (time, model, status, tokens, duration)
+         over the whole session, so deep links and refreshes land on the
+         full picture without the list endpoint. -->
 <template>
   <div class="common-page">
     <PageHeader :eyebrow="t('agentSessions.detailEyebrow')" :title="t('agentSessions.detailTitle')" :description="t('agentSessions.detailDescription')">
@@ -38,24 +32,21 @@
     <template v-else-if="detail">
       <!-- Session identity strip: attribution (the earliest row's
            agent_client), the verbatim session id, and how many requests the
-           timeline below holds. -->
+           table below holds. -->
       <div class="session-meta">
         <NTag size="small" round :bordered="false" type="info">{{ toolName }}</NTag>
         <span class="session-meta__id">{{ detail.agent_session_id }}</span>
         <span class="session-meta__count">{{ detail.requests.length }} {{ t('agentSessions.detailRequestsUnit') }}</span>
       </div>
 
-      <!-- Aggregate figures recomputed from the same requests the timeline
-           renders (deep-link safe — no dependency on the list endpoint). -->
-      <SessionSummaryCard :requests="detail.requests" />
-
+      <!-- The whole session's requests in one table (deep-link safe — the
+           detail fetch alone carries everything shown). -->
       <div class="data-table-wrapper">
         <ResponsiveDataTable
           :columns="columns"
           :data="tableRows"
           :loading="loading"
           :row-key="(row: RequestLogRow) => row.request_id"
-          :row-props="rowProps"
           :pagination="false"
         />
       </div>
@@ -78,8 +69,6 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import StatusClassTag from '../../components/request-logs/StatusClassTag.vue'
-import SessionSummaryCard from '../../components/agent-sessions/SessionSummaryCard.vue'
-import SessionWaterfallBar from '../../components/agent-sessions/SessionWaterfallBar.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -129,50 +118,12 @@ function onBack() {
   router.push('/agent-sessions')
 }
 
-// Clicking a row navigates to that request's message page — a full page
-// with its own URL (shareable, refreshable), not an overlay. Modifier
-// clicks keep their browser default (the row text stays selectable,
-// cmd-click etc. untouched).
-function rowProps(row: RequestLogRow): Record<string, unknown> {
-  return {
-    style: 'cursor: pointer;',
-    onClick: (e: MouseEvent) => {
-      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-      void router.push(`/request-messages/${encodeURIComponent(row.request_id)}`)
-    },
-  }
-}
-
 // Tool display name via the shared enum mirror; a client outside the enum
 // (newer gateway) falls back to the raw value — still the truth.
 const toolName = computed(() => {
   const client = detail.value?.agent_client ?? ''
   const key = agentClientLabelKey(client)
   return key ? t(key) : client || '-'
-})
-
-// ---------- Waterfall axis (shared by every row's bar) ----------
-
-// The session's time axis: from the earliest created_at to the latest
-// (created_at + duration). Every bar maps onto THIS span, so relative
-// positions are real time. Malformed timestamps parse to NaN and are
-// treated as 0 — one bad row must not blank the whole column; span<=0
-// (single instant request) collapses to a full-width bar at the left edge
-// inside the bar component.
-const timeline = computed(() => {
-  const rows = detail.value?.requests ?? []
-  const starts = rows.map((r) => {
-    const ms = Date.parse(r.created_at)
-    return Number.isNaN(ms) ? 0 : ms
-  })
-  const ends = rows.map((r, i) => {
-    const dur = Number.isFinite(r.duration_ms) && r.duration_ms > 0 ? r.duration_ms : 0
-    return starts[i] + dur
-  })
-  if (starts.length === 0) return { startMs: 0, spanMs: 0 }
-  const startMs = Math.min(...starts)
-  const spanMs = Math.max(...ends) - startMs
-  return { startMs, spanMs }
 })
 
 // ---------- Render helpers ----------
@@ -182,9 +133,8 @@ const timeline = computed(() => {
 // array as-is (no NDataTable sorter on that path), so the default order
 // must live here to hold in BOTH layouts. The wire order stays
 // chronological (the backend contract), so a local sort by parsed time
-// desc; malformed timestamps parse to NaN and count as 0 (the timeline's
-// convention). The desktop time column keeps its sorter for flipping back
-// to chronological interactively.
+// desc; malformed timestamps parse to NaN and count as 0. The desktop time
+// column keeps its sorter for flipping back to chronological interactively.
 const tableRows = computed<RequestLogRow[]>(() =>
   [...(detail.value?.requests ?? [])].sort((a, b) => {
     const ta = Date.parse(a.created_at)
@@ -218,7 +168,7 @@ const columns = computed<DataTableColumns<RequestLogRow>>(() => [
     width: 150,
     // Newest first by default (the log tables' convention); clicking flips
     // to chronological for reading the conversation top-down. Malformed
-    // timestamps parse to NaN and count as 0 — the timeline's convention.
+    // timestamps parse to NaN and count as 0.
     sorter: (a, b) => {
       const ta = Date.parse(a.created_at)
       const tb = Date.parse(b.created_at)
@@ -255,22 +205,11 @@ const columns = computed<DataTableColumns<RequestLogRow>>(() => [
     align: 'right',
     render: (row) => h('span', { style: 'font-variant-numeric: tabular-nums;' }, formatDuration(row.duration_ms)),
   },
-  {
-    title: columnTitle(t('agentSessions.col_waterfall'), t('agentSessions.col_waterfall_tip')),
-    key: 'waterfall',
-    minWidth: 200,
-    render: (row) =>
-      h(SessionWaterfallBar, {
-        row,
-        startMs: timeline.value.startMs,
-        spanMs: timeline.value.spanMs,
-      }),
-  },
 ])
 </script>
 
 <style scoped>
-/* Identity strip above the timeline: attribution tag, verbatim session id
+/* Identity strip above the table: attribution tag, verbatim session id
    (monospace, wraps rather than clipping — it is the page's subject), and
    the request count. */
 .session-meta {

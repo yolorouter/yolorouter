@@ -11,8 +11,13 @@
 // check is memoized module-side after the first navigation, so all arms
 // share one it() in a fixed order: boot anonymous, then patch the store
 // into a member session, then an admin one.
+//
+// The retired request-messages address gets its own describe below: it
+// must be absent from the route table and fall through the global
+// catch-all to the home page — no dedicated redirect, no 404 page.
 import { describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import type { RouteRecordRaw } from 'vue-router'
 
 import { getAuthState, getMe } from '../api/auth'
 import { APIError } from '../api/client'
@@ -70,5 +75,41 @@ describe('router guard: /playground reachability (TC-24)', () => {
     auth.$patch({ role: 'admin' })
     await router.push('/playground')
     expect(router.currentRoute.value.path, 'admin session reaches /playground').toBe('/playground')
+  })
+})
+
+describe('router: the retired request-messages address', () => {
+  it('is absent from the route table', () => {
+    // Full recursive walk (root records + layout children) — a stray
+    // registration at either level must not survive the removal.
+    const paths: string[] = []
+    const collect = (routes: readonly RouteRecordRaw[]) => {
+      for (const route of routes) {
+        paths.push(route.path)
+        if (route.children) collect(route.children)
+      }
+    }
+    collect(router.options.routes)
+    expect(paths.filter((p) => p.includes('request-messages')), 'no request-messages route registered anywhere').toEqual([])
+  })
+
+  it('falls through the global catch-all to the home page for an authenticated session', async () => {
+    // Self-contained state setup: the auth API mocks matter if this arm
+    // ever runs before the guard's memoized state check has fired, and the
+    // $patch covers the (normal) case where it already has — either way
+    // the store reads as an initialized admin session.
+    stateMock.mockResolvedValue({ initialized: true })
+    meMock.mockResolvedValue({ username: 'admin', role: 'admin', is_local: true, is_bootstrap: false })
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore()
+    auth.$patch({ initialized: true, username: 'admin', role: 'admin', isLocal: true, isBootstrap: false })
+
+    // The retired address behaves like every other unknown path: the
+    // catch-all redirect lands on '/', the home page renders — no
+    // dedicated trampoline, no message page.
+    await router.push('/request-messages/req-42')
+    expect(router.currentRoute.value.path, 'retired address lands on the home page via the catch-all').toBe('/')
   })
 })

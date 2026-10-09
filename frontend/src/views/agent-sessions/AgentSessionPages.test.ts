@@ -12,14 +12,10 @@
 //   - tool filter interaction: the dropdown offers exactly the recognizer
 //     client enum (utils/agentClient.ts mirror), sends agent_client with
 //     exactly the selected enum value, and drops it on clear
-//   - detail row navigation (message-page TC-05): clicking a timeline row
-//     navigates the whole page to that request's message page
-//     (/request-messages/:requestId) — the interaction the earlier
-//     "row click opens the in-place drawer" case covered, rewritten back
-//     for the full-page message view that replaced the drawer
-//   - detail column headers: each of the six data columns carries its
-//     "?" help glyph (columnTitle/HelpLabel) with the column's own tip
-//     as the glyph's aria-label
+//   - detail rendering: the request table renders the five-class status
+//     tags and one "?" help glyph (columnTitle/HelpLabel) per data column
+//     with the column's own tip as the glyph's aria-label; rows carry no
+//     navigation — the retired single-request message page entry is gone
 //   - page-top copy: the support-scope note names the three supported
 //     tools and states the two session-ID routes (live header capture
 //     plus the startup backfill), and points tools with no session
@@ -112,8 +108,6 @@ async function makeRouter(startPath: string) {
       // DefaultLayout test keeps for its shell links).
       { path: '/request-logs', component: { template: '<div />' } },
       { path: '/request-logs/:requestId', component: { template: '<div />' } },
-      // The message page a timeline row click navigates to.
-      { path: '/request-messages/:requestId', component: { template: '<div />' } },
     ],
   })
   await router.push(startPath)
@@ -381,7 +375,7 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionListPage page-top copy (%s)'
   })
 })
 
-describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage timeline and row navigation (%s)', (locale) => {
+describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage request table (%s)', (locale) => {
   it('renders the timeline newest-first by default (time column sorts descending)', async () => {
     await mountHost(DetailHost, locale, `/agent-sessions/${SESSION_A}`)
     await vi.waitFor(() => expect(detailMock).toHaveBeenCalledTimes(1))
@@ -427,66 +421,43 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage timeline and row 
     expect(cards[1]).toContain('model-one')
   })
 
-  it('message-page TC-05: row click navigates the whole page to /request-messages/:requestId and no drawer remains', async () => {
+  it('renders status tags and per-column help glyphs, and a row click navigates nowhere', async () => {
     await mountHost(DetailHost, locale, `/agent-sessions/${SESSION_A}`)
     await vi.waitFor(() => expect(detailMock).toHaveBeenCalledTimes(1))
     await nextTick()
 
     const text = document.body.textContent ?? ''
-    // The timeline carries both requests in fixture (chronological) order,
-    // with their five-class status tags rendered, plus the summary card's
-    // aggregates (both locales render every new piece's copy — parity).
+    // The table carries both requests in fixture (chronological) order,
+    // with their five-class status tags rendered (both locales render
+    // every new piece's copy — parity).
     expect(text).toContain('model-one')
     expect(text).toContain('model-two')
     expect(text, 'success row renders its five-class status tag').toContain(
       locale === 'zh-CN' ? zhCN.requestLogs.status_success : en.requestLogs.status_success,
     )
     expect(text, 'failed row renders its five-class status tag').toContain(locale === 'zh-CN' ? zhCN.requestLogs.status_failed : en.requestLogs.status_failed)
-    expect(text, 'summary card renders its success sub-line').toContain(copy[locale].successCountLine.replace('{n}', '1'))
 
-    // Every timeline column header carries its "?" help glyph, and the
-    // glyph's aria-label is that column's own tip — the six columns now
-    // include the waterfall (the glyph is located by role/aria-label
-    // because NIcon renders it as a plain <i>, and its a11y attributes are
-    // the only machine-readable trace of the tip).
+    // Every column header carries its "?" help glyph, and the glyph's
+    // aria-label is that column's own tip (the glyph is located by
+    // role/aria-label because NIcon renders it as a plain <i>, and its
+    // a11y attributes are the only machine-readable trace of the tip).
     const helpTips = [...document.body.querySelectorAll('th [role="img"]')].map((el) => el.getAttribute('aria-label'))
-    expect(helpTips, 'six column headers, six help glyphs, each with its own tip').toEqual([
+    expect(helpTips, 'five column headers, five help glyphs, each with its own tip').toEqual([
       copy[locale].col_created_tip,
       copy[locale].col_model_tip,
       copy[locale].col_status_tip,
       copy[locale].detail_col_tokens_tip,
       copy[locale].col_duration_tip,
-      copy[locale].col_waterfall_tip,
     ])
 
-    // Click the second row (located by its model name; a MouseEvent so the
-    // row's left-button guard reads a real button=0 like a browser click):
-    // the SPA navigates to that row's message page — a whole-page route,
-    // no overlay involved.
+    // Rows are informational only: the single-request message page this
+    // table's row click used to open is retired, so a plain left click
+    // (a MouseEvent so it reads like a browser click) must leave the
+    // route exactly where it was.
     const rowTwo = [...document.body.querySelectorAll('tr')].find((tr) => (tr.textContent ?? '').includes('model-two'))
-    expect(rowTwo, 'the model-two timeline row rendered').toBeTruthy()
+    expect(rowTwo, 'the model-two request row rendered').toBeTruthy()
     rowTwo!.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }))
-    await vi.waitFor(() =>
-      expect(currentRouter!.currentRoute.value.path, 'row click opens the request message page for that row').toBe(
-        `/request-messages/${REQUEST_2}`,
-      ),
-    )
-
-    // The drawer is gone for good: no naive-ui drawer shell mounts at any
-    // point during the interaction (the timeline stays the only surface).
-    expect(document.body.querySelector('.n-drawer'), 'no drawer mounts for a row click').toBeNull()
-    expect(document.body.querySelector('.n-drawer-mask'), 'no drawer mask mounts either').toBeNull()
-
-    // Clicking the FIRST row carries ITS own request id into the route (the
-    // page component itself stays mounted — the assertion reads the router,
-    // so only the navigation target matters).
-    const rowOne = [...document.body.querySelectorAll('tr')].find((tr) => (tr.textContent ?? '').includes('model-one'))
-    expect(rowOne, 'the model-one timeline row rendered').toBeTruthy()
-    rowOne!.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }))
-    await vi.waitFor(() =>
-      expect(currentRouter!.currentRoute.value.path, 'the other row opens its own message page').toBe(
-        `/request-messages/${REQUEST_1}`,
-      ),
-    )
+    await nextTick()
+    expect(currentRouter!.currentRoute.value.path, 'a row click stays on the session page').toBe(`/agent-sessions/${SESSION_A}`)
   })
 })

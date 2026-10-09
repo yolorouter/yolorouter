@@ -31,7 +31,7 @@ export default {
   // Detail page
   detailEyebrow: '统计分析',
   detailTitle: '会话详情',
-  detailDescription: '该会话的全部请求按时间先后排列；点击任一行整页打开该请求的消息页，查看捕获的完整对话。',
+  detailDescription: '该会话的全部请求按时间先后排列，逐条给出模型、状态与消耗。',
   backToList: '返回列表',
   notFound: '会话不存在或请求日志已被清理',
   detailRequestsUnit: '条请求',
@@ -60,11 +60,15 @@ export default {
   summaryDuration: '会话时长',
   summaryDuration_tip: '会话内最晚一次请求与最早一次请求的时间差',
 
-  // (The request drawer's copy moved to the requestMessages namespace when
-  // the drawer was replaced by the full-page request message view.)
-
-  // Message flow (bubble view of the captured bodies)
+  // Message flow (bubble view of the captured bodies). The disclosure-row
+  // and stream-merge keys below migrated here from the retired request
+  // message page's own namespace when that page was removed — the bubble
+  // renderer outlived it.
   flowTruncated: '内容过长已截断',
   flowFallbackTitle: '原始正文',
   partImage: '图片',
+  expandFull: '展开全部',
+  collapse: '收起',
+  partCharsNote: '{n} 字符',
+  streamMergedNote: '流式响应，已按发送片段合并',
 }

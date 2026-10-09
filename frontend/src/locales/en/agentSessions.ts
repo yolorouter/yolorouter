@@ -31,7 +31,7 @@ export default {
   // Detail page
   detailEyebrow: 'Analytics',
   detailTitle: 'Session Detail',
-  detailDescription: 'Every request of this session in chronological order; click any row to open that request\'s message page with the captured conversation.',
+  detailDescription: 'Every request of this session in chronological order, with each request\'s model, status, and usage figures.',
   backToList: 'Back to List',
   notFound: 'Session not found or its request logs have been cleaned up',
   detailRequestsUnit: 'requests',
@@ -60,11 +60,15 @@ export default {
   summaryDuration: 'Session Duration',
   summaryDuration_tip: 'Time between the session\'s earliest and latest requests',
 
-  // (The request drawer's copy moved to the requestMessages namespace when
-  // the drawer was replaced by the full-page request message view.)
-
-  // Message flow (bubble view of the captured bodies)
+  // Message flow (bubble view of the captured bodies). The disclosure-row
+  // and stream-merge keys below migrated here from the retired request
+  // message page's own namespace when that page was removed — the bubble
+  // renderer outlived it.
   flowTruncated: 'Content too long, truncated',
   flowFallbackTitle: 'Raw body',
   partImage: 'Image',
+  expandFull: 'Show all',
+  collapse: 'Collapse',
+  partCharsNote: '{n} characters',
+  streamMergedNote: 'streamed reply, merged from the sent chunks',
 }
