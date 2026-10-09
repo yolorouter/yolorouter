@@ -6,9 +6,14 @@
      operator's own API key, the model multi-select, the prompt, the shared
      parameter area, the speech run's per-column voices) with the run
      button pinned to the bench's foot; the canvas (right, the remaining
-     width) renders one column per selected model — output, cost, latency,
-     usage, or the column's native error shape — and, before any run, the
-     four-step guide. Narrow viewports stack the panes (bench above
+     width) renders one column per selected model — the head carries the
+     model, its state and, once the column settles, the metrics strip
+     (cost · latency · usage, tabular-nums, so a four-wide comparison
+     reads its numbers side by side without scrolling) — then the output,
+     or the column's native error shape — and, before any run, the
+     four-step guide. The canvas grid divides into exactly as many equal
+     parts as the run selected (capped at four), so every column of a run
+     stays on one row. Narrow viewports stack the panes (bench above
      canvas) rather than floating anything.
 
      Single-round semantics: the page keeps no run history. A re-run
@@ -231,14 +236,64 @@
       <section class="pg-canvas">
         <!-- The grid's :key is the run counter, so a re-run remounts the
              column set instead of patching the old one — old results are
-             replaced, never merged into the new run. -->
-        <section v-if="columns.length > 0" :key="runId" class="pg-grid" data-testid="pg-columns">
+             replaced, never merged into the new run. The count class is
+             the division contract: the canvas splits into exactly as many
+             equal parts as the run selected (the picker's four-model cap
+             bounds it), so a four-model comparison keeps all four columns
+             on ONE row — the numbers-first reading the page exists for.
+             Narrow viewports fall back to the readability stack (see the
+             breakpoint block below). -->
+        <section
+          v-if="columns.length > 0"
+          :key="runId"
+          class="pg-grid"
+          :class="`pg-grid--${columns.length}`"
+          data-testid="pg-columns"
+        >
           <article v-for="(col, i) in columns" :key="i" class="pg-column" :class="`pg-column--${col.state}`">
             <header class="pg-column__head">
-              <span class="pg-column__model">{{ col.model }}</span>
-              <NTag size="small" :type="col.state === 'done' ? 'success' : col.state === 'error' ? 'error' : col.state === 'cancelled' || col.state === 'stopped' ? 'warning' : 'info'">
-                {{ stateLabel(col.state) }}
-              </NTag>
+              <div class="pg-column__title">
+                <span class="pg-column__model">{{ col.model }}</span>
+                <NTag size="small" :type="col.state === 'done' ? 'success' : col.state === 'error' ? 'error' : col.state === 'cancelled' || col.state === 'stopped' ? 'warning' : 'info'">
+                  {{ stateLabel(col.state) }}
+                </NTag>
+              </div>
+              <!-- The metrics strip rides IN the head, under the model name:
+                   cost · latency · usage on one compact tabular-nums line,
+                   so a four-wide comparison reads its numbers side by side
+                   without scrolling for the column foot. It renders ONLY on
+                   a done column, and appears whole when the column settles —
+                   a running or streaming column's cost is decided at
+                   completion, so no figure is promised mid-flight. -->
+              <dl v-if="col.state === 'done'" class="pg-column__metrics">
+                <div class="pg-column__metric">
+                  <dt>{{ t('playground.costLabel') }}</dt>
+                  <dd>
+                    {{ col.costKnown ? `${formatMicros(col.costMicros)} ${t('playground.currencyUnit')}` : t('playground.costUnknown') }}
+                  </dd>
+                </div>
+                <div class="pg-column__metric">
+                  <dt>{{ t('playground.latencyLabel') }}</dt>
+                  <dd>{{ formatDuration(col.durationMs) }}</dd>
+                </div>
+                <div class="pg-column__metric">
+                  <dt>{{ t('playground.usageLabel') }}</dt>
+                  <dd>
+                    <template v-if="(col.usage?.seconds ?? 0) > 0">
+                      {{ t('playground.usageSeconds', { count: col.usage?.seconds ?? 0 }) }}
+                    </template>
+                    <template v-else-if="(col.usage?.characters ?? 0) > 0">
+                      {{ t('playground.usageCharacters', { count: col.usage?.characters ?? 0 }) }}
+                    </template>
+                    <template v-else-if="(col.usage?.images ?? 0) > 0">
+                      {{ t('playground.usageImages', { count: col.usage?.images ?? 0 }) }}
+                    </template>
+                    <template v-else>
+                      {{ t('playground.usageTokens', { input: col.usage?.input_tokens ?? 0, output: col.usage?.output_tokens ?? 0 }) }}
+                    </template>
+                  </dd>
+                </div>
+              </dl>
             </header>
 
             <!-- A finished column shows what its modality delivered: streamed
@@ -281,35 +336,9 @@
                 <pre class="pg-column__truncated-body">{{ col.response }}</pre>
               </div>
               <pre v-else class="pg-column__output" data-testid="pg-column-output">{{ col.output }}</pre>
-              <dl v-if="col.state === 'done'" class="pg-metrics">
-                <div class="pg-metric">
-                  <dt>{{ t('playground.costLabel') }}</dt>
-                  <dd>
-                    {{ col.costKnown ? `${formatMicros(col.costMicros)} ${t('playground.currencyUnit')}` : t('playground.costUnknown') }}
-                  </dd>
-                </div>
-                <div class="pg-metric">
-                  <dt>{{ t('playground.latencyLabel') }}</dt>
-                  <dd>{{ formatDuration(col.durationMs) }}</dd>
-                </div>
-                <div class="pg-metric">
-                  <dt>{{ t('playground.usageLabel') }}</dt>
-                  <dd>
-                    <template v-if="(col.usage?.seconds ?? 0) > 0">
-                      {{ t('playground.usageSeconds', { count: col.usage?.seconds ?? 0 }) }}
-                    </template>
-                    <template v-else-if="(col.usage?.characters ?? 0) > 0">
-                      {{ t('playground.usageCharacters', { count: col.usage?.characters ?? 0 }) }}
-                    </template>
-                    <template v-else-if="(col.usage?.images ?? 0) > 0">
-                      {{ t('playground.usageImages', { count: col.usage?.images ?? 0 }) }}
-                    </template>
-                    <template v-else>
-                      {{ t('playground.usageTokens', { input: col.usage?.input_tokens ?? 0, output: col.usage?.output_tokens ?? 0 }) }}
-                    </template>
-                  </dd>
-                </div>
-              </dl>
+              <!-- The settled figures live in the head's metrics strip
+                   (above): the information moved up, it is not rendered
+                   twice. -->
             </template>
 
             <!-- A running VIDEO column shows the elapsed render clock (the
@@ -1018,14 +1047,34 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   min-width: 0;
 }
 
-/* Comparison columns: a responsive grid that settles at four abreast —
-   one column per comparison slot — and reflows to fewer on narrower
-   viewports, where the columns stay readable by stacking. */
+/* Comparison columns: the canvas divides into exactly as many equal
+   parts as the run selected (the picker's four-model cap bounds the
+   count class) — a four-model comparison keeps all four columns on one
+   row even at 1440 wide (≈190px a column beside the 360px bench), the
+   numbers-first reading the page exists for. The old auto-fit
+   minmax(260px) folded four into a 2×2 once the bench took its share;
+   the readability floor survives only in the narrow-viewport block at
+   the bottom. */
 .pg-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: var(--space-4);
   align-items: start;
+}
+
+.pg-grid--1 {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pg-grid--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.pg-grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.pg-grid--4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .pg-column {
@@ -1050,11 +1099,50 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   margin-left: var(--space-2);
 }
 
+/* The column head: the title row (model name beside the state badge)
+   with the metrics strip riding directly under it inside the same
+   container — the head is the strip's addressable home, so a comparison
+   reads every column's figures at the same height. */
 .pg-column__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.pg-column__title {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+}
+
+/* The metrics strip: cost · latency · usage on one compact line,
+   tabular-nums so the figures column up across a multi-column run. The
+   items wrap rather than truncate — a four-wide run at 1440 has ~190px
+   per column and the numbers own the space. */
+.pg-column__metrics {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.pg-column__metric {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.pg-column__metric dt {
+  color: var(--color-text-muted);
+}
+
+.pg-column__metric dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .pg-column__model {
@@ -1147,29 +1235,6 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
   word-break: break-all;
 }
 
-.pg-metrics {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin: 0;
-  font-size: var(--text-sm);
-}
-
-.pg-metric {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.pg-metric dt {
-  color: var(--color-text-muted);
-}
-
-.pg-metric dd {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-}
-
 .pg-column__error {
   display: flex;
   flex-direction: column;
@@ -1230,6 +1295,14 @@ function applyEvent(ev: Parameters<typeof foldEvent>[1]) {
 
   .pg-bench__body {
     overflow: visible;
+  }
+
+  /* And the columns go back to the readability stack: whatever the run's
+     division, a phone-width canvas cannot honour four equal parts, so the
+     260px floor reflows them. This block sits after the .pg-grid--N rules
+     on purpose — same specificity, later source wins. */
+  .pg-grid {
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   }
 }
 </style>

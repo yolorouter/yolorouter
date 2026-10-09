@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 //
 // Mounted-DOM coverage for the Playground page (acceptance cases
-// TC-04/05/06/12/13/15/18/19/20/23/29/34, frontend arms), in BOTH locales
-// where copy is the thing under test:
+// TC-04/05/06/12/13/15/18/19/20/23/29/30/31/34, frontend arms), in BOTH
+// locales where copy is the thing under test:
 //
 //   - TC-04: two columns typewriter their text as chunks arrive — the
 //     first column to answer shows text while the other still runs — and
@@ -27,6 +27,12 @@
 //   - TC-29: the empty canvas renders the four-step guide (key → models →
 //     prompt → run) through the shared EmptyState's #detail slot, inside
 //     the two-pane shell (bench beside canvas)
+//   - TC-30: the settled figures ride IN the done column's head container
+//     (cost · latency · usage under the model name) and the old
+//     column-bottom .pg-metrics block is gone — information moved, not
+//     duplicated; the canvas grid divides by the run's column count
+//   - TC-31: running and streaming columns promise no cost figures — the
+//     strip appears whole exactly when a column settles
 //   - TC-34: the speech run's per-column voice controls render inside the
 //     bench, stacked after the shared parameter area
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1556,5 +1562,157 @@ describe('PlaygroundPage workbench shell', () => {
       params!.compareDocumentPosition(voices!) & Node.DOCUMENT_POSITION_FOLLOWING,
       'voices render after the parameter area',
     ).toBeTruthy()
+  })
+})
+
+describe('PlaygroundPage canvas columns', () => {
+  // Drives a text run whose stream answers immediately (both columns
+  // settle before the assertions read the DOM).
+  async function driveSettledRun(frames: string[]) {
+    const stream = controlledEventStream()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(stream.response())),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['text-only-model', 'text-and-image-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('settle the comparison')
+    await sendButton('en').trigger('click')
+    await nextTick()
+    for (const frame of frames) stream.emit(frame)
+    stream.close()
+    return stream
+  }
+
+  it('TC-30: the done column carries its figures inside the head container and the old column-bottom metrics block is gone', async () => {
+    await driveSettledRun([doneFrame(0, 'text-only-model'), errorFrame(1, 'text-and-image-model')])
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain(copy.en.columnStateDone))
+
+    // The canvas grid divides by the RUN's column count — two selected
+    // models, two equal parts (the DOM half of the same-row reading; the
+    // 1440×900 boundingBox half is the batch e2e's).
+    const grid = document.querySelector('[data-testid="pg-columns"]') as HTMLElement
+    expect(grid.classList.contains('pg-grid--2'), 'grid divides into two equal parts').toBe(true)
+
+    // The done column's HEAD container carries the whole strip — model
+    // name, then cost · latency · usage with their labels and figures,
+    // all inside the one addressable head node.
+    const doneCol = document.querySelectorAll('.pg-column')[0]
+    const head = doneCol.querySelector('.pg-column__head')
+    expect(head, 'column head container rendered').not.toBeNull()
+    const headText = head!.textContent ?? ''
+    expect(headText).toContain('text-only-model')
+    expect(headText).toContain(copy.en.costLabel)
+    expect(headText).toContain('0.000011')
+    expect(headText).toContain(copy.en.currencyUnit)
+    expect(headText).toContain(copy.en.latencyLabel)
+    expect(headText).toContain('1.23s')
+    expect(headText).toContain(copy.en.usageLabel)
+    expect(headText).toContain(copy.en.usageTokens.replace('{input}', '5').replace('{output}', '3'))
+
+    // Information MOVED up, it was not duplicated: the old column-bottom
+    // metrics block is gone from the whole document.
+    expect(document.querySelector('.pg-metrics'), 'old column-bottom metrics block removed').toBeNull()
+
+    // And a failed column keeps its native error shape with no strip —
+    // figures are a settled column's privilege (TC-35's anchor reads the
+    // same in its own arm).
+    const failedCol = document.querySelectorAll('.pg-column')[1]
+    expect(failedCol.querySelector('.pg-column__metrics')).toBeNull()
+    expect((failedCol.textContent ?? '')).toContain('HTTP 429')
+  })
+
+  it('TC-30 arm: an unknown cost settles as the unknown-cost copy, never an invented figure', async () => {
+    await driveSettledRun([doneFrame(0, 'text-only-model', { cost_known: false })])
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain(copy.en.columnStateDone))
+
+    const head = document.querySelector('.pg-column__head')!
+    expect((head.textContent ?? '')).toContain(copy.en.costUnknown)
+    expect((head.textContent ?? '')).not.toContain(copy.en.currencyUnit)
+    expect(document.querySelector('.pg-metrics')).toBeNull()
+  })
+
+  it('TC-30 arm: the grid divides into four equal parts for a four-model run', async () => {
+    const stream = controlledEventStream()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(stream.response())),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+    keySelect().vm.$emit('update:value', 7)
+    // Four models ride one run (the picker's own cap): the canvas owes
+    // each of them an equal share of the one row.
+    modelsSelect().vm.$emit('update:value', ['text-only-model', 'text-and-image-model', 'm3', 'm4'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('four wide')
+    await sendButton('en').trigger('click')
+    await nextTick()
+
+    const grid = document.querySelector('[data-testid="pg-columns"]') as HTMLElement
+    expect(grid.classList.contains('pg-grid--4'), 'four selected models divide the canvas into four parts').toBe(true)
+    expect(grid.querySelectorAll('.pg-column')).toHaveLength(4)
+    stream.close()
+  })
+
+  it('TC-31: running and streaming columns promise no cost figures; the strip appears whole exactly at completion', async () => {
+    const stream = controlledEventStream()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(stream.response())),
+    )
+    await mountPage('en')
+    await vi.waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(1))
+    keySelect().vm.$emit('update:value', 7)
+    modelsSelect().vm.$emit('update:value', ['text-only-model', 'text-and-image-model'])
+    await nextTick()
+    const promptBox = wrapper!.findAll('textarea')[0]
+    await promptBox.setValue('no mid-flight cost')
+    await sendButton('en').trigger('click')
+    await nextTick()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="pg-columns"]')).not.toBeNull())
+
+    const cols = () => document.querySelectorAll('.pg-column')
+
+    // Window one: the fast column is STREAMING (its chunks land) while the
+    // slow one sits in the running placeholder — neither may carry a cost
+    // figure anywhere on the page.
+    stream.emit(chunkFrame(0, 'text-only-model', 'answering'))
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="pg-column-output"]')).not.toBeNull())
+    expect((cols()[0].textContent ?? '')).toContain('answering')
+    expect(document.body.textContent ?? '').not.toContain('0.000011')
+    expect(document.body.textContent ?? '').not.toContain(copy.en.currencyUnit)
+    expect(cols()[0].querySelector('.pg-column__metrics')).toBeNull()
+    expect(cols()[1].querySelector('.pg-column__metrics')).toBeNull()
+
+    // Window two: the fast column settles — the strip appears WHOLE (cost,
+    // latency and usage in one shot) — while the still-running neighbour
+    // keeps promising nothing.
+    stream.emit(doneFrame(0, 'text-only-model'))
+    await vi.waitFor(() => expect(cols()[0].querySelector('.pg-column__metrics')).not.toBeNull())
+    const doneText = cols()[0].textContent ?? ''
+    expect(doneText).toContain('0.000011')
+    expect(doneText).toContain(copy.en.currencyUnit)
+    expect(doneText).toContain('1.23s')
+    const runningText = cols()[1].textContent ?? ''
+    expect(runningText, 'running column carries no cost figure').not.toContain('0.000011')
+    expect(runningText).not.toContain(copy.en.currencyUnit)
+    expect(cols()[1].querySelector('.pg-column__metrics')).toBeNull()
+
+    // Window three: the slow column starts STREAMING — chunks are content,
+    // not settlement; still no cost promise.
+    stream.emit(chunkFrame(1, 'text-and-image-model', 'late answer'))
+    await vi.waitFor(() => expect(document.querySelectorAll('[data-testid="pg-column-output"]')).toHaveLength(2))
+    expect((cols()[1].textContent ?? '')).toContain('late answer')
+    expect((cols()[1].textContent ?? '')).not.toContain('0.000011')
+    expect((cols()[1].textContent ?? '')).not.toContain(copy.en.currencyUnit)
+    expect(cols()[1].querySelector('.pg-column__metrics')).toBeNull()
+
+    stream.close()
   })
 })
