@@ -40,6 +40,7 @@ const (
 	visionFallbackCacheKey      = "vision_fallback"
 	keyAutoRecoveryCacheKey     = "key_auto_recovery"
 	requestLogRetentionCacheKey = "request_log_retention"
+	adminAuditRetentionCacheKey = "admin_audit_retention"
 )
 
 // Bounds for the key-auto-recovery probe interval, in whole minutes. One
@@ -60,6 +61,12 @@ const (
 const (
 	MaxRequestLogRetentionDays = 3650
 )
+
+// MaxAdminAuditRetentionDays bounds the admin-audit retention to the same
+// 0..3650 whole-day domain as the request-log retention — one audit-domain
+// ceiling, so neither retention setting can outlive the other by an order
+// of magnitude through a typo.
+const MaxAdminAuditRetentionDays = 3650
 
 // settingEntry holds the cached state for one setting key. The cache is shared
 // across all settings (CSP today, input compression switch added on top) so
@@ -125,6 +132,7 @@ func NewSystemSettingsService(db *gorm.DB) *SystemSettingsService {
 			visionFallbackCacheKey:      {},
 			keyAutoRecoveryCacheKey:     {},
 			requestLogRetentionCacheKey: {},
+			adminAuditRetentionCacheKey: {},
 		},
 	}
 }
@@ -152,6 +160,11 @@ func (s *SystemSettingsService) keyAutoRecoveryEntry() *settingEntry {
 // requestLogRetentionEntry returns the request-log-retention cache slot.
 func (s *SystemSettingsService) requestLogRetentionEntry() *settingEntry {
 	return s.entries[requestLogRetentionCacheKey]
+}
+
+// adminAuditRetentionEntry returns the admin-audit-retention cache slot.
+func (s *SystemSettingsService) adminAuditRetentionEntry() *settingEntry {
+	return s.entries[adminAuditRetentionCacheKey]
 }
 
 // readCached is the shared hot-path read for any registered setting. It serves
@@ -486,5 +499,48 @@ func (s *SystemSettingsService) UpdateRequestLogRetention(ctx context.Context, e
 		return settings.RequestLogRetentionSetting{}, 0, err
 	}
 	s.publishIfNewer(s.requestLogRetentionEntry(), got, ver)
+	return got, ver, nil
+}
+
+// --- Admin audit retention --------------------------------------------------
+
+// GetAdminAuditRetention returns the cached snapshot (non-blocking,
+// fail-open to the shipped 180-day default) — the audit retention loop's
+// read. On cold cache or stale snapshot it triggers a singleflight refresh
+// with a strict short timeout; on failure it returns last-known-good +
+// error.
+func (s *SystemSettingsService) GetAdminAuditRetention(ctx context.Context) (settings.AdminAuditRetentionSetting, int64, error) {
+	v, ver, err := s.readCached(ctx, adminAuditRetentionCacheKey, s.adminAuditRetentionEntry(),
+		func(ctx context.Context) (any, int64, error) {
+			snap, v, e := repository.GetAdminAuditRetention(s.db.WithContext(ctx))
+			return snap, v, e
+		},
+		settings.DefaultAdminAuditRetentionSetting())
+	if err != nil {
+		return v.(settings.AdminAuditRetentionSetting), ver, err
+	}
+	return v.(settings.AdminAuditRetentionSetting), ver, nil
+}
+
+// GetAdminAuditRetentionForHandler is the authoritative read for the handler
+// GET: straight from the DB, bound to the request ctx so a client disconnect
+// cancels the in-flight DB call.
+func (s *SystemSettingsService) GetAdminAuditRetentionForHandler(ctx context.Context) (settings.AdminAuditRetentionSetting, int64, error) {
+	return repository.GetAdminAuditRetention(s.db.WithContext(ctx))
+}
+
+// UpdateAdminAuditRetention validates the days domain (whole days, 0..3650,
+// 0 = keep forever), CAS-updates the row, and publishes the committed
+// snapshot to the cache so the audit retention loop sees the change within
+// one heartbeat + cache TTL, without a restart.
+func (s *SystemSettingsService) UpdateAdminAuditRetention(ctx context.Context, expectedVersion int64, days int) (settings.AdminAuditRetentionSetting, int64, error) {
+	if days < 0 || days > MaxAdminAuditRetentionDays {
+		return settings.AdminAuditRetentionSetting{}, 0, errcode.ErrAdminAuditRetentionDaysInvalid
+	}
+	got, ver, err := repository.UpdateAdminAuditRetention(s.db.WithContext(ctx), expectedVersion, days)
+	if err != nil {
+		return settings.AdminAuditRetentionSetting{}, 0, err
+	}
+	s.publishIfNewer(s.adminAuditRetentionEntry(), got, ver)
 	return got, ver, nil
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/service/apikey"
 	"github.com/yolorouter/yolorouter/pkg/response"
@@ -218,6 +219,15 @@ func GetAPIKey(svc *apikey.APIKeyService) gin.HandlerFunc {
 // button. The plaintext_key field name matches PostAPIKey's create response so
 // the frontend reuses one code path. Returns 11016 when the key predates the
 // encrypted_key column and cannot be recovered.
+//
+// Audit: the reveal is the console's one enumerated sensitive read — a
+// GET the automatic layer's method filter would silently skip — so a
+// successful reveal parks an api_key.reveal event naming the exact key
+// exposed. The read path's exit check turns that parked event into the
+// row the security audit needs (who pulled which key's plaintext, when,
+// from where). A refused or failed reveal parks nothing: no plaintext
+// changed hands, so there is nothing to remember — and the plaintext
+// itself never rides the row; the event names the key by id only.
 func GetAPIKeyPlaintext(svc *apikey.APIKeyService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUintParam(c, "id")
@@ -229,6 +239,7 @@ func GetAPIKeyPlaintext(svc *apikey.APIKeyService) gin.HandlerFunc {
 			writeServiceError(c, err)
 			return
 		}
+		audit.Event(c, audit.ActionAPIKeyReveal, strconv.FormatUint(uint64(id), 10), "")
 		denyStorage(c)
 		response.Success(c, gin.H{"plaintext_key": plaintext})
 	}
@@ -280,6 +291,7 @@ func PatchAPIKey(svc *apikey.APIKeyService) gin.HandlerFunc {
 // text comes from memberFieldRuleMsg. Adding a restricted knob means one
 // rule edit here plus one condition in each reading — the route-level
 // member tests hold the behavior to this rule.
+
 const memberFieldRuleMsg = "members may only set remark and expires_at"
 
 // memberCreateAllowed is the create-side reading of the member field

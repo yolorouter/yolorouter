@@ -2,8 +2,8 @@
 
      The General settings page (/settings/general, admin-only like /about):
      the System Settings group's persistent-form home for instance-wide
-     settings. Three items live here — request log retention, language, and
-     key auto recovery.
+     settings. Four items live here — request log retention, admin audit
+     retention, language, and key auto recovery.
 
      The two server-backed items are cards with their own load + version-CAS
      save lifecycle, lifted from the settings modals (OptimizationSettingsModal
@@ -61,6 +61,49 @@
             :loading="retentionSaving"
             :disabled="retentionLoad !== 'ready'"
             @click="saveRetention"
+          >
+            {{ t('common.save') }}
+          </NButton>
+        </div>
+      </NForm>
+    </section>
+
+    <!-- Admin audit retention: the console change trail's own retention,
+        independent of request-log retention above (separate setting row,
+        separate background loop). Same card lifecycle; changing it is
+        itself audited server-side. -->
+    <section class="settings-card">
+      <h2 class="settings-card__title">{{ t('generalSettings.auditRetention.title') }}</h2>
+      <p class="settings-card__desc">{{ t('generalSettings.auditRetention.desc') }}</p>
+      <div v-if="auditRetentionLoad === 'loading'" class="settings-card__state">{{ t('common.loading') }}</div>
+      <div v-else-if="auditRetentionLoad === 'error'" class="settings-card__state settings-card__state--err">
+        <span>{{ t('generalSettings.auditRetention.loadFailed') }}</span>
+        <NButton size="small" @click="loadAuditRetention">{{ t('generalSettings.auditRetention.retry') }}</NButton>
+      </div>
+      <NForm
+        v-else
+        ref="auditRetentionFormRef"
+        :model="auditRetentionForm"
+        :rules="auditRetentionRules"
+        require-mark-placement="left"
+      >
+        <NFormItem path="days">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.auditRetention.daysTip')">{{
+              t('generalSettings.auditRetention.days')
+            }}</HelpLabel>
+          </template>
+          <!-- Same no-silent-clamp contract as the request-log retention
+               input above: the rule rejects with an explicit message. -->
+          <NInputNumber v-model:value="auditRetentionForm.days" class="gs-audit-retention__days" />
+        </NFormItem>
+        <div class="settings-card__actions">
+          <NButton
+            type="primary"
+            class="gs-audit-retention__save"
+            :loading="auditRetentionSaving"
+            :disabled="auditRetentionLoad !== 'ready'"
+            @click="saveAuditRetention"
           >
             {{ t('common.save') }}
           </NButton>
@@ -154,12 +197,18 @@ import { useLocaleStore } from '../../store/locale'
 import { LOCALES } from '../../i18n'
 import { APIError, displayMessage } from '../../api/client'
 import {
+  getAdminAuditRetention,
   getKeyAutoRecovery,
   getRequestLogRetention,
+  updateAdminAuditRetention,
   updateKeyAutoRecovery,
   updateRequestLogRetention,
 } from '../../api/systemSettings'
-import { KEY_AUTO_RECOVERY_CONFLICT, REQUEST_LOG_RETENTION_CONFLICT } from '../../api/errcodes'
+import {
+  ADMIN_AUDIT_RETENTION_CONFLICT,
+  KEY_AUTO_RECOVERY_CONFLICT,
+  REQUEST_LOG_RETENTION_CONFLICT,
+} from '../../api/errcodes'
 import {
   checkRetentionDays,
   retentionFormFromSetting,
@@ -167,6 +216,13 @@ import {
   retentionSavePlan,
   type RetentionForm,
 } from '../../utils/requestLogRetention'
+import {
+  auditRetentionFormFromSetting,
+  auditRetentionIssueMessageKey,
+  auditRetentionSavePlan,
+  checkAuditRetentionDays,
+  type AuditRetentionForm,
+} from '../../utils/auditRetention'
 import {
   checkIntervalMinutes,
   intervalIssueMessageKey,
@@ -280,6 +336,79 @@ async function saveRetention() {
   }
 }
 
+// --- Admin audit retention --------------------------------------------------
+
+// Identical lifecycle to the request-log retention item above; only the
+// setting family (API endpoints, conflict code, message keys, bounds owner
+// in utils/auditRetention) differs. Kept as its own block rather than a
+// parameterized generic over the two retention items — two explicit blocks
+// read clearer than one abstraction with four injected knobs.
+const auditRetentionLoad = ref<'loading' | 'error' | 'ready'>('loading')
+const auditRetentionSaving = ref(false)
+const auditRetentionVersion = ref(0)
+const auditRetentionFormRef = ref<FormInst | null>(null)
+const auditRetentionForm = reactive<AuditRetentionForm>({ days: null })
+
+const auditRetentionRules = computed<FormRules>(() => ({
+  days: [
+    {
+      required: true,
+      validator: (_rule, value: number | null) => checkAuditRetentionDays(value).ok,
+      message: auditRetentionValidationMessage(),
+      trigger: ['blur'],
+    },
+  ],
+}))
+
+function auditRetentionValidationMessage(): string {
+  const check = checkAuditRetentionDays(auditRetentionForm.days)
+  return check.ok ? '' : t(auditRetentionIssueMessageKey(check.issue))
+}
+
+async function loadAuditRetention() {
+  auditRetentionLoad.value = 'loading'
+  try {
+    const s = await getAdminAuditRetention()
+    const next = auditRetentionFormFromSetting(s)
+    auditRetentionForm.days = next.days
+    auditRetentionVersion.value = s.version
+    auditRetentionFormRef.value?.restoreValidation()
+    auditRetentionLoad.value = 'ready'
+  } catch (err) {
+    auditRetentionLoad.value = 'error'
+    if (!(err instanceof APIError)) message.error(displayMessage(err, t))
+  }
+}
+
+async function saveAuditRetention() {
+  if (auditRetentionLoad.value !== 'ready' || auditRetentionSaving.value) return
+  try {
+    await auditRetentionFormRef.value?.validate()
+  } catch {
+    return
+  }
+  const plan = auditRetentionSavePlan({ days: auditRetentionForm.days }, auditRetentionVersion.value)
+  if (!plan.ok) {
+    message.error(t(auditRetentionIssueMessageKey(plan.issue)))
+    return
+  }
+  auditRetentionSaving.value = true
+  try {
+    await updateAdminAuditRetention(plan.payload)
+    message.success(t('generalSettings.auditRetention.saved'))
+    await loadAuditRetention()
+  } catch (err) {
+    if (err instanceof APIError && err.code === ADMIN_AUDIT_RETENTION_CONFLICT) {
+      message.error(t('generalSettings.auditRetention.conflict'))
+      void loadAuditRetention()
+    } else {
+      message.error(displayMessage(err, t))
+    }
+  } finally {
+    auditRetentionSaving.value = false
+  }
+}
+
 // --- Key auto recovery ----------------------------------------------------
 
 // Identical lifecycle to the retention item above; only the setting family
@@ -360,6 +489,7 @@ async function saveRecovery() {
 // both settings load once on mount. Saves re-read through the same loaders.
 onMounted(() => {
   void loadRetention()
+  void loadAuditRetention()
   void loadRecovery()
 })
 </script>

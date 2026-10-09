@@ -9,6 +9,7 @@ export default {
   // the real gateway.
   playground: 'Playground',
   logAudit: 'Log Audit',
+  adminAudit: 'Admin Audit',
   agentSessions: 'Tool Sessions',
   costStats: 'Cost Statistics',
   groupModels: 'Model Management',

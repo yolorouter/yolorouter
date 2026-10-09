@@ -26,6 +26,12 @@ export interface ProviderKey {
   id: number
   label: string
   key_prefix: string
+  // Last 4 plaintext chars of the stored key, derived at write time — the
+  // display pair that tells near-identical keys apart (prefix names the
+  // family, suffix the individual). '' on legacy rows the startup backfill
+  // has not derived yet; the console renders prefix-only for those, never
+  // a blank cell.
+  key_suffix: string
   sort_order: number
   test_model: string
   management_status: number

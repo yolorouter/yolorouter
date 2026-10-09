@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/service/systemsettings"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
@@ -62,6 +63,12 @@ func GetCustomSystemPrompt(svc *systemsettings.SystemSettingsService) gin.Handle
 // PutCustomSystemPrompt validates + CAS-updates the global state. version is
 // required (optimistic lock); enabled/text must both be present (pointers) so
 // a partial body can't silently clear the prompt. A CAS miss returns 409.
+//
+// Audit: the committed change is parked as a field-level before/after diff
+// for the automatic layer's row — one PUT stays exactly one record, its
+// detail carrying what actually changed (see audit.DiffDetail). Only a
+// successful write parks: a refused or conflicting PUT changed nothing and
+// its row says so with an empty detail.
 func PutCustomSystemPrompt(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req putCustomSystemPromptRequest
@@ -71,6 +78,11 @@ func PutCustomSystemPrompt(svc *systemsettings.SystemSettingsService) gin.Handle
 		}
 		if req.Enabled == nil || req.Text == nil || req.Version == nil || *req.Version < 1 {
 			response.ParamError(c, "enabled, text and version (>=1) are all required")
+			return
+		}
+		before, _, err := svc.GetCustomSystemPrompt(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
 			return
 		}
 		s, ver, err := svc.UpdateCustomSystemPrompt(c.Request.Context(), *req.Version, *req.Enabled, *req.Text)
@@ -88,6 +100,10 @@ func PutCustomSystemPrompt(svc *systemsettings.SystemSettingsService) gin.Handle
 			}
 			return
 		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{"enabled": before.Enabled, "text": before.Text},
+			map[string]any{"enabled": s.Enabled, "text": s.Text},
+		))
 		response.Success(c, customSystemPromptResponse{Enabled: s.Enabled, Text: s.Text, Version: ver})
 	}
 }
@@ -107,9 +123,12 @@ func GetInputCompression(svc *systemsettings.SystemSettingsService) gin.HandlerF
 
 // PutInputCompression validates + CAS-updates the global switch. version is
 // required (optimistic lock); enabled must be present (pointer) so a partial
-// body can't silently flip the switch. A CAS miss returns 409 with the
+// body can't silently flip the switch off. A CAS miss returns 409 with the
 // InputCompressionConflict code (11014), distinct from the CSP conflict code
 // (11012) so the frontend can route retries to the right setting.
+//
+// Audit: same merge shape as PutCustomSystemPrompt — the committed change
+// parks a field-level diff on the automatic layer's single row.
 func PutInputCompression(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req putInputCompressionRequest
@@ -119,6 +138,11 @@ func PutInputCompression(svc *systemsettings.SystemSettingsService) gin.HandlerF
 		}
 		if req.Enabled == nil || req.Version == nil || *req.Version < 1 {
 			response.ParamError(c, "enabled and version (>=1) are both required")
+			return
+		}
+		before, _, err := svc.GetInputCompressionForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
 			return
 		}
 		enabled, ver, err := svc.UpdateInputCompression(c.Request.Context(), *req.Version, *req.Enabled)
@@ -131,6 +155,10 @@ func PutInputCompression(svc *systemsettings.SystemSettingsService) gin.HandlerF
 			response.InternalError(c, err.Error())
 			return
 		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{"enabled": before},
+			map[string]any{"enabled": enabled},
+		))
 		response.Success(c, inputCompressionResponse{Enabled: enabled, Version: ver})
 	}
 }
@@ -167,6 +195,9 @@ func GetVisionFallback(svc *systemsettings.SystemSettingsService) gin.HandlerFun
 // (optimistic lock); model and prompt must both be present (pointers). A CAS
 // miss returns 409 with its own code so the frontend can route retries; an
 // unknown model name is a 400-class validation error.
+//
+// Audit: same merge shape as PutCustomSystemPrompt — the committed change
+// parks a field-level diff on the automatic layer's single row.
 func PutVisionFallback(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req putVisionFallbackRequest
@@ -176,6 +207,11 @@ func PutVisionFallback(svc *systemsettings.SystemSettingsService) gin.HandlerFun
 		}
 		if req.Model == nil || req.Prompt == nil || req.Version == nil || *req.Version < 1 {
 			response.ParamError(c, "model, prompt and version (>=1) are all required")
+			return
+		}
+		before, _, err := svc.GetVisionFallbackForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
 			return
 		}
 		s, ver, err := svc.UpdateVisionFallback(c.Request.Context(), *req.Version, strings.TrimSpace(*req.Model), *req.Prompt)
@@ -191,6 +227,10 @@ func PutVisionFallback(svc *systemsettings.SystemSettingsService) gin.HandlerFun
 			}
 			return
 		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{"model": before.Model, "prompt": before.Prompt},
+			map[string]any{"model": s.Model, "prompt": s.Prompt},
+		))
 		response.Success(c, visionFallbackResponse{Model: s.Model, Prompt: s.Prompt, Version: ver})
 	}
 }
@@ -231,6 +271,9 @@ func GetKeyAutoRecovery(svc *systemsettings.SystemSettingsService) gin.HandlerFu
 // (pointers). A non-integer or out-of-bounds interval and a CAS miss return
 // the settings family's existing 400/409 forms, with this setting's own
 // business codes so the frontend can route retries to the right control.
+//
+// Audit: same merge shape as PutCustomSystemPrompt — the committed change
+// parks a field-level diff on the automatic layer's single row.
 func PutKeyAutoRecovery(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req putKeyAutoRecoveryRequest
@@ -240,6 +283,11 @@ func PutKeyAutoRecovery(svc *systemsettings.SystemSettingsService) gin.HandlerFu
 		}
 		if req.Enabled == nil || req.IntervalMinutes == nil || req.Version == nil || *req.Version < 1 {
 			response.ParamError(c, "enabled, interval_minutes and version (>=1) are all required")
+			return
+		}
+		before, _, err := svc.GetKeyAutoRecoveryForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
 			return
 		}
 		s, ver, err := svc.UpdateKeyAutoRecovery(c.Request.Context(), *req.Version, *req.Enabled, *req.IntervalMinutes)
@@ -255,6 +303,10 @@ func PutKeyAutoRecovery(svc *systemsettings.SystemSettingsService) gin.HandlerFu
 			}
 			return
 		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{"enabled": before.Enabled, "interval_minutes": before.IntervalMinutes},
+			map[string]any{"enabled": s.Enabled, "interval_minutes": s.IntervalMinutes},
+		))
 		response.Success(c, keyAutoRecoveryResponse{Enabled: s.Enabled, IntervalMinutes: s.IntervalMinutes, Version: ver})
 	}
 }
@@ -293,6 +345,9 @@ func GetRequestLogRetention(svc *systemsettings.SystemSettingsService) gin.Handl
 // is a legal value). A non-integer or out-of-domain value and a CAS miss
 // return the settings family's existing 400/409 forms, with this setting's
 // own business codes so the frontend can route retries to the right control.
+//
+// Audit: same merge shape as PutCustomSystemPrompt — the committed change
+// parks a field-level diff on the automatic layer's single row.
 func PutRequestLogRetention(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req putRequestLogRetentionRequest
@@ -302,6 +357,11 @@ func PutRequestLogRetention(svc *systemsettings.SystemSettingsService) gin.Handl
 		}
 		if req.RetentionDays == nil || req.Version == nil || *req.Version < 1 {
 			response.ParamError(c, "retention_days and version (>=1) are both required")
+			return
+		}
+		before, _, err := svc.GetRequestLogRetentionForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
 			return
 		}
 		s, ver, err := svc.UpdateRequestLogRetention(c.Request.Context(), *req.Version, *req.RetentionDays)
@@ -317,6 +377,89 @@ func PutRequestLogRetention(svc *systemsettings.SystemSettingsService) gin.Handl
 			}
 			return
 		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{"retention_days": before.Days},
+			map[string]any{"retention_days": s.Days},
+		))
 		response.Success(c, requestLogRetentionResponse{RetentionDays: s.Days, Version: ver})
+	}
+}
+
+// --- Admin audit retention --------------------------------------------------
+
+// adminAuditRetentionResponse is the handler-facing response DTO with
+// explicit json tags (retention_days/version), same wrapper pattern as the
+// settings families above.
+type adminAuditRetentionResponse struct {
+	RetentionDays int   `json:"retention_days"`
+	Version       int64 `json:"version"`
+}
+
+// putAdminAuditRetentionRequest: the pointer keeps an absent field
+// distinguishable from the legal zero (keep forever), so a partial body
+// cannot silently reset the audit retention to "never delete".
+type putAdminAuditRetentionRequest struct {
+	RetentionDays *int   `json:"retention_days"`
+	Version       *int64 `json:"version"`
+}
+
+// GetAdminAuditRetention returns the authoritative global state (DB read,
+// bypassing the cache) so the admin always sees the committed value.
+func GetAdminAuditRetention(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		s, ver, err := svc.GetAdminAuditRetentionForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		response.Success(c, adminAuditRetentionResponse{RetentionDays: s.Days, Version: ver})
+	}
+}
+
+// PutAdminAuditRetention validates + CAS-updates the row. version is
+// required (optimistic lock); retention_days must be present (pointer, zero
+// is a legal value meaning keep forever). A non-integer or out-of-domain
+// value and a CAS miss return the settings family's existing 400/409 forms,
+// with this setting's own business codes so the frontend can route retries
+// to the right control.
+//
+// Audit: same merge shape as PutRequestLogRetention — the committed change
+// parks a field-level diff on the automatic layer's single row. An audit
+// row about changing the audit retention is exactly the kind of meta-change
+// the trail itself should remember.
+func PutAdminAuditRetention(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req putAdminAuditRetentionRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.ParamError(c, err.Error())
+			return
+		}
+		if req.RetentionDays == nil || req.Version == nil || *req.Version < 1 {
+			response.ParamError(c, "retention_days and version (>=1) are both required")
+			return
+		}
+		before, _, err := svc.GetAdminAuditRetentionForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		s, ver, err := svc.UpdateAdminAuditRetention(c.Request.Context(), *req.Version, *req.RetentionDays)
+		if err != nil {
+			switch {
+			case errors.Is(err, errcode.ErrAdminAuditRetentionConflict):
+				// 409 is not produced by httpStatusForCode's range mapping; set it explicitly.
+				response.ErrorStatus(c, http.StatusConflict, errcode.AdminAuditRetentionConflict, errcode.GetMessage(errcode.AdminAuditRetentionConflict))
+			case errors.Is(err, errcode.ErrAdminAuditRetentionDaysInvalid):
+				response.Error(c, errcode.AdminAuditRetentionDaysInvalid, errcode.GetMessage(errcode.AdminAuditRetentionDaysInvalid))
+			default:
+				response.InternalError(c, err.Error())
+			}
+			return
+		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{"retention_days": before.Days},
+			map[string]any{"retention_days": s.Days},
+		))
+		response.Success(c, adminAuditRetentionResponse{RetentionDays: s.Days, Version: ver})
 	}
 }

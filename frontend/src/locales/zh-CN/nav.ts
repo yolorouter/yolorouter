@@ -9,6 +9,7 @@ export default {
   // the real gateway.
   playground: '模型对比',
   logAudit: '日志审计',
+  adminAudit: '管理审计',
   agentSessions: '工具会话',
   costStats: '费用统计',
   groupModels: '模型管理',

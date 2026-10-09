@@ -15,8 +15,11 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/yolorouter/yolorouter/internal/agentbackfill"
+	"github.com/yolorouter/yolorouter/internal/audit"
+	"github.com/yolorouter/yolorouter/internal/auditretention"
 	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
 	"github.com/yolorouter/yolorouter/internal/keyrecovery"
+	"github.com/yolorouter/yolorouter/internal/keysuffixbackfill"
 	"github.com/yolorouter/yolorouter/internal/pricecatalog"
 	"github.com/yolorouter/yolorouter/internal/protocols"
 	"github.com/yolorouter/yolorouter/internal/retention"
@@ -123,6 +126,21 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("create bodies dir: %w", err)
 	}
 
+	// Admin audit pipeline: the capture middleware mounted at the /api/admin
+	// group root hands records to this worker, which batch-persists them off
+	// the request path. Constructed here because router.New requires the
+	// handle; started right away because the goroutine itself is inert until
+	// a record arrives — no traffic exists before the listener binds below,
+	// so it cannot flush against a not-yet-migrated schema. The deferred
+	// stop drains everything still queued, so console writes captured in
+	// the process's last moments still land. No Logger is passed: the
+	// worker's nil fallback forwards its loss-reporting warnings (queue
+	// full, flush failed) to the process-global pkg/logger — the same
+	// surface every other background loop here logs to.
+	auditWorker := audit.NewWorker(audit.Config{DB: app.DB})
+	auditStop := auditWorker.Start(ctx)
+	defer auditStop()
+
 	// Background probe queue: bulk import stores mappings disabled+untested
 	// and hands them here; each probe that passes auto-enables its mapping.
 	// The queue gets its own ModelService (services are stateless; the router
@@ -192,6 +210,7 @@ func runServe(ctx context.Context, args []string) error {
 		ProbeQueue:            probeQueue,
 		ProviderSvc:           providerSvc,
 		UpdatePreflight:       updatePreflight,
+		Audit:                 auditWorker,
 	})
 	if err != nil {
 		return fmt.Errorf("build router: %w", err)
@@ -406,6 +425,30 @@ func runServe(ctx context.Context, args []string) error {
 		stopRetention()
 	}()
 
+	// The admin-audit retention loop: the audit trail's own expiry schedule.
+	// Every heartbeat it re-reads the admin_audit_retention_days setting
+	// (0 = keep forever; the shipped default is a bounded 180 days) and,
+	// when a positive window is configured, drives one bounded sweep that
+	// removes the oldest expired admin_audit_logs rows. Same shape and same
+	// reasoning as the request-log retention loop above, one loop per
+	// retention domain: started here, after the migration has seeded the
+	// setting, holding its own settings-service instance so the loop's
+	// cached snapshot reads stay off the request-path instance; a saved
+	// change reaches the loop within one cache TTL plus one heartbeat. Runs
+	// on a context derived from serve's own ctx and is awaited by a
+	// deferred cancel + stop so the goroutine exits before the process
+	// does.
+	auditRetentionLoop := auditretention.NewLoop(auditretention.Config{
+		DB:       app.DB,
+		Settings: systemsettings.NewSystemSettingsService(app.DB),
+	})
+	auditRetentionCtx, auditRetentionCancel := context.WithCancel(ctx)
+	stopAuditRetention := auditRetentionLoop.Start(auditRetentionCtx)
+	defer func() {
+		auditRetentionCancel()
+		stopAuditRetention()
+	}()
+
 	// The agent-attribution backfill: one idempotent background pass over
 	// the request_logs history, started at boot and self-exiting when done.
 	// Rows written before the agent_client column existed still carry the
@@ -432,6 +475,35 @@ func runServe(ctx context.Context, args []string) error {
 	defer func() {
 		backfillCancel()
 		stopBackfill()
+	}()
+
+	// The provider key-suffix backfill: one idempotent background pass over
+	// the provider_keys history, started at boot and self-exiting when
+	// done. Rows stored before the key_suffix column existed still carry
+	// the empty not-yet-derived marker, and the pass decrypts each one
+	// in-process and fills the plaintext's last four characters — derived
+	// by the exact rule the insert path uses, so backfilled and fresh
+	// columns can never disagree. The plaintext's whole journey is
+	// ciphertext -> memory -> four display characters: it never reaches a
+	// log line or any other persistence. Rounds are small with a pause
+	// between them (each row is an AES-GCM decryption); whatever the pass
+	// cannot derive stays empty, and the next startup's pass rescans
+	// exactly that residue. Started here, after the migration added the
+	// column and the master-key fingerprint check validated the key, for
+	// the same reason the loops above wait: a pass against an unmigrated
+	// schema or a wrong master key would only fail its first query or
+	// derive nothing. Runs on a context derived from serve's own ctx and is
+	// awaited by a deferred cancel + stop so the goroutine exits before the
+	// process does.
+	keySuffixBackfill := keysuffixbackfill.NewTask(keysuffixbackfill.Config{
+		DB:      app.DB,
+		Secrets: crypto.NewSecretBox(masterKey),
+	})
+	keySuffixCtx, keySuffixCancel := context.WithCancel(ctx)
+	stopKeySuffixBackfill := keySuffixBackfill.Start(keySuffixCtx)
+	defer func() {
+		keySuffixCancel()
+		stopKeySuffixBackfill()
 	}()
 
 	serveErrCh := make(chan error, 1)

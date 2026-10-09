@@ -89,6 +89,15 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/yolorouter_test?sslmode=disable
         run: go test ./pkg/database/...
+      # The admin-audit repository arm: the same DSN gates a second package
+      # whose audit INSERT/filter/keyset/retention and key-suffix backfill
+      # tests compare Postgres behavior against the SQLite suite's. Without
+      # this step those tests would only ever run on a developer machine
+      # that exports the DSN by hand.
+      - name: go test (repository)
+        env:
+          TEST_POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/yolorouter_test?sslmode=disable
+        run: go test ./internal/repository/...
 
   lint:
     name: Lint (Go)

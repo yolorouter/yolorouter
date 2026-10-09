@@ -373,7 +373,7 @@ func TestSwapProviderKeyPlaintextAtomicallyWritesEverythingAndSnapshotsVersion(t
 	now := time.Now().UTC().Truncate(time.Second)
 
 	configVersion, testGeneration, snapshot, err := SwapProviderKeyPlaintext(db, key.ID,
-		"renamed", "gpt-4o", "new-ciphertext", "sk-new", model.ProviderKeyStatusDisabled, now)
+		"renamed", "gpt-4o", "new-ciphertext", "sk-new", "new1", model.ProviderKeyStatusDisabled, now)
 	if err != nil {
 		t.Fatalf("SwapProviderKeyPlaintext failed: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestCommitProviderKeyPlaintextTestResultAppliesWhenCASMatches(t *testing.T)
 	now := time.Now().UTC().Truncate(time.Second)
 
 	configVersion, testGeneration, snapshot, err := SwapProviderKeyPlaintext(db, key.ID,
-		key.Label, key.TestModel, "ciphertext-v2", "sk-v2", model.ProviderKeyStatusDisabled, now)
+		key.Label, key.TestModel, "ciphertext-v2", "sk-v2", "v2xy", model.ProviderKeyStatusDisabled, now)
 	if err != nil {
 		t.Fatalf("SwapProviderKeyPlaintext failed: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestCommitProviderKeyPlaintextTestResultDiscardsWhenAddressChangedMidTest(t
 	now := time.Now().UTC().Truncate(time.Second)
 
 	configVersion, testGeneration, snapshot, err := SwapProviderKeyPlaintext(db, key.ID,
-		key.Label, key.TestModel, "ciphertext-v2", "sk-v2", model.ProviderKeyStatusDisabled, now)
+		key.Label, key.TestModel, "ciphertext-v2", "sk-v2", "v2xy", model.ProviderKeyStatusDisabled, now)
 	if err != nil {
 		t.Fatalf("SwapProviderKeyPlaintext failed: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestCommitProviderKeyPlaintextTestResultPreservesVerificationWhenNotOverwri
 	now := time.Now().UTC().Truncate(time.Second)
 
 	configVersion, testGeneration, snapshot, err := SwapProviderKeyPlaintext(db, key.ID,
-		key.Label, key.TestModel, "ciphertext-v2", "sk-v2", model.ProviderKeyStatusDisabled, now)
+		key.Label, key.TestModel, "ciphertext-v2", "sk-v2", "v2xy", model.ProviderKeyStatusDisabled, now)
 	if err != nil {
 		t.Fatalf("SwapProviderKeyPlaintext failed: %v", err)
 	}
@@ -1038,7 +1038,7 @@ func TestSwapProviderKeyPlaintextFailsWhenKeyMissing(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
-	_, _, _, err := SwapProviderKeyPlaintext(db, 9999, "label", "gpt-4o", "ct", "sk-x", model.ProviderKeyStatusDisabled, now)
+	_, _, _, err := SwapProviderKeyPlaintext(db, 9999, "label", "gpt-4o", "ct", "sk-x", "xxxx", model.ProviderKeyStatusDisabled, now)
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("expected gorm.ErrRecordNotFound when the key doesn't exist, got %v", err)
 	}
@@ -1062,7 +1062,7 @@ func TestSwapProviderKeyPlaintextFailsWhenProviderMissing(t *testing.T) {
 		t.Fatalf("orphan the key by deleting its parent provider: %v", err)
 	}
 
-	_, _, _, err := SwapProviderKeyPlaintext(db, key.ID, "label", "gpt-4o", "ct", "sk-x", model.ProviderKeyStatusDisabled, now)
+	_, _, _, err := SwapProviderKeyPlaintext(db, key.ID, "label", "gpt-4o", "ct", "sk-x", "xxxx", model.ProviderKeyStatusDisabled, now)
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("expected gorm.ErrRecordNotFound when the parent provider row is missing, got %v", err)
 	}
@@ -1085,7 +1085,7 @@ func TestSwapProviderKeyPlaintextFailsOnLabelUniqueConstraint(t *testing.T) {
 		t.Fatalf("CreateProviderKeyPendingTest failed: %v", err)
 	}
 
-	_, _, _, err := SwapProviderKeyPlaintext(db, first.ID, "secondary", "gpt-4o", "ct-new", "sk-new", model.ProviderKeyStatusDisabled, now)
+	_, _, _, err := SwapProviderKeyPlaintext(db, first.ID, "secondary", "gpt-4o", "ct-new", "sk-new", "wxyz", model.ProviderKeyStatusDisabled, now)
 	if err == nil {
 		t.Fatalf("expected a UNIQUE(provider_id, label) constraint error")
 	}

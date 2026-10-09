@@ -1084,3 +1084,143 @@ func TestRequestLogRetentionHandlerReadBypassesCache(t *testing.T) {
 		t.Fatalf("handler read: want 30/v1, got %+v v%d err=%v", s, ver, err)
 	}
 }
+
+// --- Admin audit retention --------------------------------------------------
+
+// newSvcTestDBWithAuditRetention returns a test DB with the
+// admin_audit_retention_days row seeded at the migration default (180).
+func newSvcTestDBWithAuditRetention(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := newSvcTestDB(t)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES ('admin_audit_retention_days','180')`)
+	return db
+}
+
+// TestAdminAuditRetentionReadReturnsSeededDefault verifies the cold-cache
+// read path primes from the seeded 180-day row.
+func TestAdminAuditRetentionReadReturnsSeededDefault(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithAuditRetention(t))
+	s, ver, err := svc.GetAdminAuditRetention(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if s.Days != 180 || ver != 1 {
+		t.Fatalf("want 180/v1, got %+v v%d", s, ver)
+	}
+}
+
+// TestAdminAuditRetentionMissingRowsReturnDefault verifies that a
+// not-yet-migrated database (row absent) reads as the shipped 180-day
+// default with version 0 — the fallback path only; the PUT handler still
+// refuses version < 1, so the row can only ever be created by the seeding
+// migration.
+func TestAdminAuditRetentionMissingRowsReturnDefault(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDB(t)) // no audit retention row seeded
+	s, ver, err := svc.GetAdminAuditRetention(context.Background())
+	if err != nil {
+		t.Fatalf("read on missing row: want nil err, got %v", err)
+	}
+	if s.Days != 180 || ver != 0 {
+		t.Fatalf("want 180/v0 (shipped default), got %+v v%d", s, ver)
+	}
+}
+
+// TestAdminAuditRetentionCorruptRowFailOpensToDefault pins the fail-open
+// contract on a failing read: a corrupt stored value surfaces as a
+// repository error, and the cached read answers with the shipped default
+// instead of propagating a value that could be mistaken for a configured
+// one or blocking the caller — the loop keeps beating on the last known
+// sane window, never on garbage.
+func TestAdminAuditRetentionCorruptRowFailOpensToDefault(t *testing.T) {
+	db := newSvcTestDBWithAuditRetention(t)
+	db.Exec(`UPDATE system_settings SET value = 'not-a-number' WHERE key = 'admin_audit_retention_days'`)
+	svc := NewSystemSettingsService(db)
+	s, _, err := svc.GetAdminAuditRetention(context.Background())
+	if err == nil {
+		t.Fatal("want the underlying read error surfaced alongside the fail-open value")
+	}
+	if s.Days != 180 {
+		t.Fatalf("fail-open value = %+v, want the shipped default (180)", s)
+	}
+}
+
+// TestAdminAuditRetentionUpdatePublishesImmediately verifies that a CAS
+// update publishes the new snapshot to the cache so the audit retention
+// loop's next read sees it without an invalidate round-trip.
+func TestAdminAuditRetentionUpdatePublishesImmediately(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithAuditRetention(t))
+	got, ver, err := svc.UpdateAdminAuditRetention(context.Background(), 1, 30)
+	if err != nil || got.Days != 30 || ver != 2 {
+		t.Fatalf("update: got %+v v%d err=%v", got, ver, err)
+	}
+	// Cached read sees the new value immediately.
+	s, _, err := svc.GetAdminAuditRetention(context.Background())
+	if err != nil || s.Days != 30 {
+		t.Fatalf("read after update: want 30, got %+v err=%v", s, err)
+	}
+}
+
+// TestAdminAuditRetentionUpdateConflict verifies the CAS conflict path: a
+// second save with the stale version must return
+// ErrAdminAuditRetentionConflict.
+func TestAdminAuditRetentionUpdateConflict(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithAuditRetention(t))
+	if _, _, err := svc.UpdateAdminAuditRetention(context.Background(), 1, 30); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	_, _, err := svc.UpdateAdminAuditRetention(context.Background(), 1, 7)
+	if !errors.Is(err, errcode.ErrAdminAuditRetentionConflict) {
+		t.Fatalf("want ErrAdminAuditRetentionConflict, got %v", err)
+	}
+}
+
+// TestAdminAuditRetentionRejectsDaysOutOfBounds verifies the days domain
+// (whole days, 0..3650) at the edges: the inclusive endpoints pass, and
+// negative / 3651 are rejected with the setting's own validation error —
+// and the rejection leaves the stored value untouched.
+func TestAdminAuditRetentionRejectsDaysOutOfBounds(t *testing.T) {
+	for _, bad := range []int{-1, 3651} {
+		svc := NewSystemSettingsService(newSvcTestDBWithAuditRetention(t))
+		_, _, err := svc.UpdateAdminAuditRetention(context.Background(), 1, bad)
+		if !errors.Is(err, errcode.ErrAdminAuditRetentionDaysInvalid) {
+			t.Fatalf("days %d: want ErrAdminAuditRetentionDaysInvalid, got %v", bad, err)
+		}
+		s, _, rerr := svc.GetAdminAuditRetentionForHandler(context.Background())
+		if rerr != nil || s.Days != 180 {
+			t.Fatalf("days %d: stored value after rejection = %+v err=%v, want 180 unchanged", bad, s, rerr)
+		}
+	}
+	// The inclusive endpoints pass; each accepted update advances the
+	// version, so the second save carries the first one's new version.
+	svc := NewSystemSettingsService(newSvcTestDBWithAuditRetention(t))
+	if _, ver, err := svc.UpdateAdminAuditRetention(context.Background(), 1, 0); err != nil || ver != 2 {
+		t.Fatalf("days 0: want accepted at v2, got ver=%d err=%v", ver, err)
+	}
+	if _, ver, err := svc.UpdateAdminAuditRetention(context.Background(), 2, 3650); err != nil || ver != 3 {
+		t.Fatalf("days 3650: want accepted at v3, got ver=%d err=%v", ver, err)
+	}
+}
+
+// TestAdminAuditRetentionHandlerReadBypassesCache verifies that
+// GetAdminAuditRetentionForHandler reads straight from the DB (ignoring
+// the cache) so the admin always sees authoritative state.
+func TestAdminAuditRetentionHandlerReadBypassesCache(t *testing.T) {
+	db := newSvcTestDBWithAuditRetention(t)
+	svc := NewSystemSettingsService(db)
+
+	// Prime the cache with the seeded 180/v1.
+	if s, _, err := svc.GetAdminAuditRetention(context.Background()); err != nil || s.Days != 180 {
+		t.Fatalf("prime read: %+v err=%v", s, err)
+	}
+
+	// Mutate the DB OUT FROM UNDER the cache.
+	if res := db.Exec(`UPDATE system_settings SET value='30' WHERE key='admin_audit_retention_days'`); res.Error != nil {
+		t.Fatalf("raw update: %v", res.Error)
+	}
+
+	// The handler read must see 30 even though the cache still holds 180.
+	s, ver, err := svc.GetAdminAuditRetentionForHandler(context.Background())
+	if err != nil || s.Days != 30 || ver != 1 {
+		t.Fatalf("handler read: want 30/v1, got %+v v%d err=%v", s, ver, err)
+	}
+}

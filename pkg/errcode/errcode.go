@@ -57,6 +57,8 @@ const (
 	KeyAutoRecoveryIntervalInvalid = 11020 // key_auto_recovery interval_minutes is not a whole number of minutes within [1, 1440]
 	RequestLogRetentionConflict    = 11021 // optimistic-lock CAS miss on the request_log_retention_days PUT (another writer committed first)
 	RequestLogRetentionDaysInvalid = 11022 // request log retention_days is not a whole number of days within [0, 3650]
+	AdminAuditRetentionConflict    = 11023 // optimistic-lock CAS miss on the admin_audit_retention_days PUT (another writer committed first)
+	AdminAuditRetentionDaysInvalid = 11024 // admin audit retention_days is not a whole number of days within [0, 3650]
 
 	// === Provider errors (12xxx) ===
 	ProviderNotFound   = 12001
@@ -194,6 +196,8 @@ var ErrorMessages = map[int]string{
 	KeyAutoRecoveryIntervalInvalid: "key auto recovery interval must be a whole number of minutes between 1 and 1440",
 	RequestLogRetentionConflict:    "request log retention setting was modified concurrently, please refresh and retry",
 	RequestLogRetentionDaysInvalid: "request log retention must be a whole number of days between 0 and 3650 (0 keeps logs forever)",
+	AdminAuditRetentionConflict:    "admin audit retention setting was modified concurrently, please refresh and retry",
+	AdminAuditRetentionDaysInvalid: "admin audit retention must be a whole number of days between 0 and 3650 (0 keeps audit logs forever)",
 
 	ProviderNotFound:         "provider not found",
 	ProviderNameTaken:        "provider name already taken",
@@ -291,6 +295,8 @@ var (
 	ErrKeyAutoRecoveryIntervalInvalid = errors.New(ErrorMessages[KeyAutoRecoveryIntervalInvalid])
 	ErrRequestLogRetentionConflict    = errors.New(ErrorMessages[RequestLogRetentionConflict])
 	ErrRequestLogRetentionDaysInvalid = errors.New(ErrorMessages[RequestLogRetentionDaysInvalid])
+	ErrAdminAuditRetentionConflict    = errors.New(ErrorMessages[AdminAuditRetentionConflict])
+	ErrAdminAuditRetentionDaysInvalid = errors.New(ErrorMessages[AdminAuditRetentionDaysInvalid])
 
 	ErrProviderNotFound         = errors.New(ErrorMessages[ProviderNotFound])
 	ErrProviderNameTaken        = errors.New(ErrorMessages[ProviderNameTaken])

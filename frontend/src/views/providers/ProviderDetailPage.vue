@@ -943,7 +943,16 @@ const keyColumns = computed<DataTableColumns<ProviderKey>>(() => [
     title: columnTitle(t('providers.keyPlaintext'), t('providers.keyPlaintext_tip')),
     key: 'key_prefix',
     minWidth: 140,
-    render: (row) => h('span', { class: 'key-prefix-cell' }, `${row.key_prefix}***`),
+    // Prefix + last-4 suffix is the display pair that tells near-identical
+    // keys apart. Rows created before the suffix column existed (and not
+    // yet derived by the startup backfill) carry '' — those degrade to the
+    // prefix-only form rather than showing a blank or a dangling separator.
+    render: (row) =>
+      h(
+        'span',
+        { class: 'key-prefix-cell' },
+        row.key_suffix ? `${row.key_prefix}***${row.key_suffix}` : `${row.key_prefix}***`,
+      ),
   },
   {
     title: columnTitle(t('providers.testModel'), t('providers.testModel_tip')),

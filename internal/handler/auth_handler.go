@@ -12,6 +12,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/service/auth"
@@ -151,11 +152,35 @@ func PostSetup(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
+// loginAttemptDetail builds the fine-grained login events' detail: the
+// attempted username only. The password never enters the document in any
+// form, and nothing distinguishes an unknown username from a wrong
+// password — the audit trail gets the same anti-enumeration discipline the
+// login response itself enforces (one identical error for both).
+func loginAttemptDetail(username string) string {
+	detail, err := audit.RedactDetail(map[string]any{"username": username})
+	if err != nil {
+		// A map of one string cannot fail to marshal; an error here means
+		// the pipeline refused the document, and a login event without
+		// detail beats no login event at all.
+		return ""
+	}
+	return detail
+}
+
 // PostLogin verifies username+password and, on success, issues a session.
 // limiter caps the number of in-flight bcrypt comparisons (see
 // middleware.Semaphore's doc comment) — acquired only around the
 // auth.Login call, after bindJSON has already fully read the request
 // body, so a slow/stalled request body can't hold a slot hostage.
+//
+// Audit-wise the three outcomes encode differently: success stays the
+// automatic layer's "auth.login" row, while credentials failures and
+// lockouts park an explicit event that renames the row's action to
+// auth.login_denied / auth.login_locked with the status pinned to denied —
+// the outcome, not the route, is the fact a security audit is after
+// (brute-force attempts against a public endpoint a route name alone
+// cannot tell apart).
 func PostLogin(db *gorm.DB, limiter *middleware.Semaphore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req loginRequest
@@ -173,12 +198,22 @@ func PostLogin(db *gorm.DB, limiter *middleware.Semaphore) gin.HandlerFunc {
 		var lockedErr *auth.LockedError
 		switch {
 		case errors.As(err, &lockedErr):
+			audit.SetExplicitEvent(c, audit.ExplicitEvent{
+				Action: audit.ActionLoginLocked,
+				Status: model.AuditStatusDenied,
+				Detail: loginAttemptDetail(req.Username),
+			})
 			// AccountLoginLocked is the one error response that carries an
 			// extra "locked_until" field.
 			middleware.WriteAdminErrorWithData(c, http.StatusForbidden, errcode.AccountLoginLocked,
 				gin.H{"locked_until": lockedErr.LockedUntil.Unix()})
 			return
 		case errors.Is(err, errcode.ErrAccountInvalidCredentials):
+			audit.SetExplicitEvent(c, audit.ExplicitEvent{
+				Action: audit.ActionLoginDenied,
+				Status: model.AuditStatusDenied,
+				Detail: loginAttemptDetail(req.Username),
+			})
 			middleware.WriteAdminError(c, http.StatusUnauthorized, errcode.AccountInvalidCredentials)
 			return
 		case errors.Is(err, errcode.ErrAccountDisabled):

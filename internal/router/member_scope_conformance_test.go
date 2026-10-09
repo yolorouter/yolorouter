@@ -38,6 +38,13 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 
 	// Routes a member must be turned away from entirely.
 	adminOnly := []string{
+		// The admin audit trail: who configured what, across every account
+		// — a member has no reading of it, same classification as the user
+		// directory below. Reads only; the immutability sweep in
+		// admin_audit_sweep_test.go pins that no non-GET route may ever
+		// appear here.
+		"/api/admin/audit-logs",
+		"/api/admin/audit-logs/export",
 		// Tool-session aggregate view over request_logs: cross-account
 		// callers' traffic by construction, same classification as the
 		// request-log audit it derives from.
@@ -66,6 +73,7 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/system-settings/vision-fallback",
 		"/api/admin/system-settings/key-auto-recovery",
 		"/api/admin/system-settings/request-log-retention",
+		"/api/admin/system-settings/admin-audit-retention",
 		"/api/admin/system/version",
 		"/api/admin/analytics/compress-stats",
 		"/api/admin/analytics/cache-stats",

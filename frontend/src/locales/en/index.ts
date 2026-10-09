@@ -13,6 +13,7 @@ import costs from './costs'
 import costOptimization from './costOptimization'
 import keyAutoRecovery from './keyAutoRecovery'
 import requestLogs from './requestLogs'
+import auditLogs from './auditLogs'
 import agentSessions from './agentSessions'
 import requestMessages from './requestMessages'
 import system from './system'
@@ -37,6 +38,7 @@ export default {
   costOptimization,
   keyAutoRecovery,
   requestLogs,
+  auditLogs,
   agentSessions,
   requestMessages,
   system,

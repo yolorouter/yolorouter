@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/service/auth"
 	"github.com/yolorouter/yolorouter/internal/service/oauth"
@@ -236,6 +237,66 @@ func GetOAuthProviders(svc *oauth.OAuthProviderService, externalURL string) gin.
 	}
 }
 
+// oauthCreateDetail parks the create event's detail: the new provider's
+// slug plus the client_secret AS SUBMITTED — the redaction pipeline is
+// what turns the document safe to store, so the row honestly records that
+// a secret was set (field name and placeholder) without ever holding its
+// value. Parking happens before the service call, so a refused create
+// (slug taken, invalid endpoint) still audits what was attempted.
+func oauthCreateDetail(c *gin.Context, req oauthProviderRequest) {
+	detail, err := audit.RedactDetail(map[string]any{
+		"slug":          req.Slug,
+		"client_secret": req.ClientSecret,
+	})
+	if err == nil {
+		audit.SetDetail(c, detail)
+	}
+}
+
+// oauthPatchDetail parks the update event's detail: exactly the fields the
+// PATCH carried — a sparse request IS the change set, nil meaning "leave
+// alone", so the document holds changed fields only, never the whole
+// config re-read. client_secret appears (redacted) precisely when the
+// request rotated it.
+func oauthPatchDetail(c *gin.Context, req oauthProviderPatchRequest) {
+	changed := map[string]any{}
+	set := func(col string, v *string) {
+		if v != nil {
+			changed[col] = *v
+		}
+	}
+	set("name", req.Name)
+	set("icon", req.Icon)
+	if req.Enabled != nil {
+		changed["enabled"] = *req.Enabled
+	}
+	set("client_id", req.ClientID)
+	set("client_secret", req.ClientSecret)
+	set("authorization_endpoint", req.AuthorizationEndpoint)
+	set("token_endpoint", req.TokenEndpoint)
+	set("userinfo_endpoint", req.UserinfoEndpoint)
+	set("scopes", req.Scopes)
+	set("user_id_field", req.UserIDField)
+	set("username_field", req.UsernameField)
+	set("display_name_field", req.DisplayNameField)
+	set("email_field", req.EmailField)
+	set("auth_style", req.AuthStyle)
+	set("token_request_style", req.TokenRequestStyle)
+	set("token_field_style", req.TokenFieldStyle)
+	set("userinfo_token_header", req.UserinfoTokenHeader)
+	if req.PkceEnabled != nil {
+		changed["pkce_enabled"] = *req.PkceEnabled
+	}
+	set("extra_authorize_params", req.ExtraAuthorizeParams)
+	if len(changed) == 0 {
+		return
+	}
+	detail, err := audit.RedactDetail(changed)
+	if err == nil {
+		audit.SetDetail(c, detail)
+	}
+}
+
 // PostOAuthProvider handles POST /api/admin/oauth-providers.
 func PostOAuthProvider(svc *oauth.OAuthProviderService) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -243,6 +304,7 @@ func PostOAuthProvider(svc *oauth.OAuthProviderService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
+		oauthCreateDetail(c, req)
 		view, err := svc.CreateProvider(oauth.CreateOAuthProviderInput{
 			Slug: req.Slug, Name: req.Name, Icon: req.Icon, Enabled: req.Enabled,
 			ClientID: req.ClientID, ClientSecret: req.ClientSecret,
@@ -310,6 +372,7 @@ func PatchOAuthProvider(svc *oauth.OAuthProviderService) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
+		oauthPatchDetail(c, req)
 		view, err := svc.UpdateProvider(id, oauth.UpdateOAuthProviderInput{
 			Name: req.Name, Icon: req.Icon, Enabled: req.Enabled,
 			ClientID: req.ClientID, ClientSecret: req.ClientSecret,

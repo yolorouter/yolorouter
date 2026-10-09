@@ -451,3 +451,58 @@ func UpdateRequestLogRetention(db *gorm.DB, expectedVersion int64, days int) (se
 	}
 	return settings.RequestLogRetentionSetting{Days: days}, expectedVersion + 1, nil
 }
+
+// adminAuditRetentionDaysKey is the admin-audit retention setting: a single
+// system_settings row seeded by migration 00054, same single-row contract as
+// request_log_retention_days above.
+const adminAuditRetentionDaysKey = "admin_audit_retention_days"
+
+// GetAdminAuditRetention reads the single admin_audit_retention_days row,
+// mirroring GetRequestLogRetention's corruption rules: a missing row (a
+// database migrated before 00054) degrades to the shipped 180-day default
+// rather than erroring — the audit retention loop's read path must never
+// fail-closed — and a non-integer or negative value is corrupt data and
+// surfaces as an error. No upper bound here for the same reason as the
+// request-log twin: the 0..3650 domain is the write path's rule, and a
+// hand-edited oversized value is honored as "retain everything for now".
+func GetAdminAuditRetention(db *gorm.DB) (settings.AdminAuditRetentionSetting, int64, error) {
+	var row struct {
+		Value   string
+		Version int64
+	}
+	if err := db.Table("system_settings").
+		Select("value, version").
+		Where("key = ?", adminAuditRetentionDaysKey).
+		Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return settings.DefaultAdminAuditRetentionSetting(), 0, nil
+		}
+		return settings.DefaultAdminAuditRetentionSetting(), 0, err
+	}
+	n, err := strconv.Atoi(row.Value)
+	if err != nil || n < 0 {
+		return settings.DefaultAdminAuditRetentionSetting(), 0, fmt.Errorf("system_settings: corrupt %s value %q", adminAuditRetentionDaysKey, row.Value)
+	}
+	return settings.AdminAuditRetentionSetting{Days: n}, row.Version, nil
+}
+
+// UpdateAdminAuditRetention CAS-updates the single admin_audit_retention_days
+// row, same statement shape as UpdateRequestLogRetention: RowsAffected == 1
+// means the CAS held; anything else means another writer committed first =>
+// conflict. Returns the committed value + new version so the handler can
+// hand the fresh version back to the caller.
+func UpdateAdminAuditRetention(db *gorm.DB, expectedVersion int64, days int) (settings.AdminAuditRetentionSetting, int64, error) {
+	res := db.Table("system_settings").
+		Where("key = ? AND version = ?", adminAuditRetentionDaysKey, expectedVersion).
+		Updates(map[string]interface{}{
+			"value":   strconv.Itoa(days),
+			"version": gorm.Expr("version + 1"),
+		})
+	if res.Error != nil {
+		return settings.AdminAuditRetentionSetting{}, 0, res.Error
+	}
+	if res.RowsAffected != 1 {
+		return settings.AdminAuditRetentionSetting{}, 0, errcode.ErrAdminAuditRetentionConflict
+	}
+	return settings.AdminAuditRetentionSetting{Days: days}, expectedVersion + 1, nil
+}
