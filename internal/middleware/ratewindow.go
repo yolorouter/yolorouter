@@ -46,13 +46,23 @@ func (r *RateWindow) Allow(now time.Time) bool {
 	return true
 }
 
-// PerClientRateWindow is RateWindow keyed by client identity (an IP, as
-// resolved by gin's ClientIP). It exists so one caller burning through
+// PerClientRateWindow is RateWindow keyed by a caller identity: gin's
+// ClientIP on anonymous endpoints, or the authenticated account id on
+// routes behind auth middleware. It exists so one caller burning through
 // its own budget cannot exhaust a shared global one and lock everyone
-// else out — the global window stays as the absolute ceiling, this adds
-// fairness under it. Client identity is spoofable behind a
-// misconfigured proxy, which is why this is a fairness layer, never the
-// only cap.
+// else out.
+//
+// Whether it may be an endpoint's ONLY cap is a property of the key, not
+// of the type. A client IP is spoofable behind a misconfigured proxy, so
+// an IP-keyed window is a fairness layer that must sit under a global
+// RateWindow ceiling — never the sole limit. An account id is assigned
+// by auth middleware and can be neither forged nor cheaply rotated, so
+// an account-keyed window is a sound sole cap (the provider-key reveal
+// endpoint relies on this). Don't carry either shape to the other key:
+// adding a global window over per-account budgets reintroduces the
+// one-caller lockout this type exists to prevent, and a sole IP-keyed
+// window on an anonymous endpoint caps per-spoofed-IP — i.e. nothing an
+// attacker rotating identities can't dodge.
 type PerClientRateWindow struct {
 	mu      sync.Mutex
 	limit   int

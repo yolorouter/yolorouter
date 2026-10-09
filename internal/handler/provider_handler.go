@@ -8,6 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/yolorouter/yolorouter/internal/audit"
+	"github.com/yolorouter/yolorouter/internal/middleware"
 	"github.com/yolorouter/yolorouter/internal/service/provider"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
@@ -481,6 +483,64 @@ func PostProviderKeysTestAll(svc *provider.ProviderService) gin.HandlerFunc {
 			return
 		}
 		response.Success(c, gin.H{"results": results})
+	}
+}
+
+// revealDetail builds the successful reveal's audit detail: the key's
+// display suffix (the same last-four characters key_suffix shows in the
+// list), and nothing else. The plaintext never enters the document in any
+// form — the row must identify WHICH key was exposed without quoting it.
+func revealDetail(plaintext string) string {
+	detail, err := audit.RedactDetail(map[string]any{"key_suffix": provider.KeySuffixFor(plaintext)})
+	if err != nil {
+		// A map of one string cannot fail to marshal; an error here means
+		// the redaction pipeline refused the document, and a reveal row
+		// without detail beats a reveal without its trace.
+		return ""
+	}
+	return detail
+}
+
+// PostProviderKeyReveal handles POST /providers/:id/keys/:keyId/reveal —
+// the one-time return of a stored upstream key's full plaintext for the
+// console's copy-to-clipboard button. The response carries the plaintext
+// exactly once and is marked no-store (see denyStorage); the frontend is
+// expected to hold it in a local variable only, never component or store
+// state.
+//
+// Rate shape: `rate` is a per-caller window over ALL reveal calls — one
+// aggregated budget per admin account, not per key. Enumeration (one
+// request per DIFFERENT keyId) is exactly the access pattern a per-key
+// counter cannot see, so only the aggregation stops it. The window key is
+// the acting admin's account id, never the client IP: this route sits
+// behind authenticated admin middleware, and behind a reverse proxy every
+// admin can share one egress IP, so an IP-keyed window would let one
+// admin's budget lock out all the others. A refused budget answers 429
+// before any database work.
+//
+// Audit: the POST reaches the automatic layer, so success, denial, and
+// failure alike land under the dictionary's provider_key.reveal name;
+// this handler parks the explicit event that gives the SUCCESS row its
+// detail (key id + display suffix, see revealDetail).
+func PostProviderKeyReveal(svc *provider.ProviderService, rate *middleware.PerClientRateWindow) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		providerID, keyID, ok := parseProviderAndKeyIDs(c)
+		if !ok {
+			return
+		}
+		adminKey := strconv.FormatUint(uint64(c.MustGet(middleware.UserIDKey).(uint)), 10)
+		if !rate.Allow(adminKey, timeNow()) {
+			middleware.WriteAdminError(c, http.StatusTooManyRequests, errcode.ServiceUnavailable)
+			return
+		}
+		plaintext, err := svc.RevealProviderKey(providerID, keyID)
+		if err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		audit.Event(c, audit.ActionProviderKeyReveal, strconv.FormatUint(uint64(keyID), 10), revealDetail(plaintext))
+		denyStorage(c)
+		response.Success(c, gin.H{"plaintext_key": plaintext})
 	}
 }
 

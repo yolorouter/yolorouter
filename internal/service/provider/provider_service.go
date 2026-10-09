@@ -1024,6 +1024,25 @@ func (s *ProviderService) findKeyForProvider(providerID, keyID uint) (*model.Pro
 	return key, nil
 }
 
+// RevealProviderKey returns one stored upstream key's full plaintext (POST
+// .../keys/:keyId/reveal — the console's copy-to-clipboard path). The
+// ownership check is findKeyForProvider's: a keyId that exists under a
+// different provider is indistinguishable from a missing one, so the
+// endpoint cannot be used to probe which provider a key id belongs to. A
+// decryption failure surfaces as a generic error — the caller maps it to
+// the unified 500 envelope, never the wrapped crypto text.
+func (s *ProviderService) RevealProviderKey(providerID, keyID uint) (string, error) {
+	key, err := s.findKeyForProvider(providerID, keyID)
+	if err != nil {
+		return "", err
+	}
+	plaintext, err := s.secrets.Decrypt(key.EncryptedKey)
+	if err != nil {
+		return "", fmt.Errorf("decrypt key: %w", err)
+	}
+	return plaintext, nil
+}
+
 // UpdateProviderKey handles both the label/status-only path (no plaintext
 // change — "retest" CAS if a retest is also requested) and the new-plaintext
 // path (PATCH .../keys/:keyId).

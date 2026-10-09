@@ -71,6 +71,14 @@ var actionByRoute = map[string]string{
 	"DELETE /api/admin/providers/:id/keys/:keyId":       "provider_key.delete",
 	"POST /api/admin/providers/:id/keys/:keyId/test":    "provider_key.test",
 	"POST /api/admin/providers/:id/keys/test-all":       "provider_key.test_all",
+	// The reveal is a POST, so the automatic layer captures it on its own;
+	// the dictionary entry exists because the fallback derivation would
+	// otherwise name it "providers.create" (first path segment + POST),
+	// a near-collision with the genuine provider.create that would blur
+	// denied and throttled reveal attempts into what reads like provider
+	// creation. The handler's explicit event only adds the success row's
+	// detail; the name itself comes from here.
+	"POST /api/admin/providers/:id/keys/:keyId/reveal": ActionProviderKeyReveal,
 
 	// Learned upstream rate-limit evidence.
 	"DELETE /api/admin/rate-limits/:id": "rate_limit.delete",
@@ -145,6 +153,13 @@ const (
 	// admin's unscoped reach into any key is exactly the access the audit
 	// trail exists to remember.
 	ActionAPIKeyReveal = "api_key.reveal"
+	// ActionProviderKeyReveal names the upstream-key reveal POST. Unlike
+	// the caller-key reveal above it IS a write method, so the automatic
+	// layer records every outcome under this name via the dictionary; the
+	// explicit event the handler parks on success contributes only the
+	// detail (the key's display suffix). A denied or throttled attempt
+	// never reaches the handler and still lands this action.
+	ActionProviderKeyReveal = "provider_key.reveal"
 )
 
 // actionKey builds the dictionary key for a matched route.

@@ -401,6 +401,13 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.DELETE("/providers/:id", handler.DeleteProvider(providerSvc))
 	protected.POST("/providers/:id/keys/:keyId/test", handler.PostProviderKeyTest(providerSvc))
 	protected.POST("/providers/:id/keys/test-all", handler.PostProviderKeysTestAll(providerSvc))
+	// The upstream-key reveal: one aggregated budget per admin account per
+	// minute, generous for a human copying a couple of keys (the console's
+	// only consumer) and still tight enough that scripted enumeration of
+	// key ids cannot average more than a handful of probes per second.
+	// Keyed by account id, not client IP — see PostProviderKeyReveal.
+	protected.POST("/providers/:id/keys/:keyId/reveal", handler.PostProviderKeyReveal(providerSvc,
+		middleware.NewPerClientRateWindow(10, time.Minute)))
 
 	// Observed rate limits: what upstreams' 429s have said about each key's
 	// own limits. Admin-only alongside the rest of the provider dimension;

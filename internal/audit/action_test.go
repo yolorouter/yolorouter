@@ -57,6 +57,14 @@ func TestDeriveFallbackAction(t *testing.T) {
 		// Nested routes still key off the first segment: the fallback is
 		// deliberately coarse — naming precision is the dictionary's job.
 		{http.MethodPost, "/api/admin/widgets/:id/parts", "widgets.create"},
+		// The upstream-key reveal's fallback trap, pinned: without its
+		// dictionary entry a denied or throttled reveal attempt would be
+		// recorded as "providers.create" (first segment under /api/admin is
+		// "providers", POST maps to create) — one character away from the
+		// genuine provider.create that names provider-row creation. The
+		// value is asserted so a derivation change that re-points this
+		// trap is a visible test failure, not a silent audit rename.
+		{http.MethodPost, "/api/admin/providers/:id/keys/:keyId/reveal", "providers.create"},
 		// A read that reaches the derivation (an explicit event on a GET
 		// with no action of its own) degrades honestly to ".read", never
 		// to a write verb.
@@ -88,6 +96,12 @@ func TestResolveActionResourceIDs(t *testing.T) {
 			method: http.MethodPatch, pattern: "/api/admin/providers/:id/keys/:keyId",
 			params:     gin.Params{{Key: "id", Value: "3"}, {Key: "keyId", Value: "9"}},
 			wantAction: "provider_key.update", wantRID: "9", wantDictionary: true,
+		},
+		{
+			name:   "the reveal route resolves through the dictionary, not the providers.create fallback",
+			method: http.MethodPost, pattern: "/api/admin/providers/:id/keys/:keyId/reveal",
+			params:     gin.Params{{Key: "id", Value: "3"}, {Key: "keyId", Value: "9"}},
+			wantAction: ActionProviderKeyReveal, wantRID: "9", wantDictionary: true,
 		},
 		{
 			name:   "candidate routes name the candidate",
