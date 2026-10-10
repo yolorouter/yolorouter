@@ -1022,6 +1022,27 @@ func (s *ModelService) TestAndCreateCandidate(ctx context.Context, modelID uint,
 
 	requestedEnable := input.ManagementStatus == model.ModelCandidateStatusEnabled
 
+	// The consistency rules are asserted BEFORE the probe runs: a save the
+	// rules would refuse regardless of the probe's outcome must not spend
+	// upstream requests learning it. requestedEnable is the premise — a save
+	// asking for an enabled row is judged against the enabled rules even
+	// though a failing probe would have left nothing stored. Resolving the
+	// billing declaration here also surfaces its own rejections before the
+	// probe rather than after it.
+	billingMode, tiersJSON, _, _, err := resolveBillingDeclaration(input.BillingMode, input.ImagePricingTiers, input.VideoPricingTiers, input.AudioUnitPrice)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateCandidateSaveConsistency(modelID, 0, candidateDeclaration{
+		providerID:     input.ProviderID,
+		enabled:        requestedEnable,
+		billingMode:    billingMode,
+		imageTiersJSON: tiersJSON,
+		maxOutput:      input.MaxOutput,
+	}); err != nil {
+		return nil, err
+	}
+
 	report, err := s.probeCandidateMapping(ctx, modelID, input.ProviderID, providerModelName)
 	if err != nil {
 		// The probe could not run at all — no verified key on the provider yet, or
@@ -1209,6 +1230,19 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 	}
 	billingMode, tiersJSON, videoTiersJSON, audioPrice, err := resolveBillingDeclaration(input.BillingMode, input.ImagePricingTiers, input.VideoPricingTiers, input.AudioUnitPrice)
 	if err != nil {
+		return nil, err
+	}
+	// The row inserts disabled, but the save's requested target is what the
+	// consistency rules judge it by: an enable request whose row would violate
+	// the pair's invariants is refused outright rather than stored and left
+	// for the probe to (possibly) enable into a contradiction.
+	if err := s.validateCandidateSaveConsistency(modelID, 0, candidateDeclaration{
+		providerID:     input.ProviderID,
+		enabled:        input.ManagementStatus == model.ModelCandidateStatusEnabled,
+		billingMode:    billingMode,
+		imageTiersJSON: tiersJSON,
+		maxOutput:      input.MaxOutput,
+	}); err != nil {
 		return nil, err
 	}
 	candidate := &model.ModelCandidate{
@@ -1705,6 +1739,21 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 		billingMode, imageTiersJSON, videoTiersJSON, audioPrice = resolvedMode, resolvedTiers, resolvedVideoTiers, resolvedAudioPrice
 	}
 
+	// The consistency rules span both sides of the model/candidate pair, so a
+	// candidate save re-reads the model and the siblings and re-asserts them
+	// against THIS candidate's effective post-save state — before anything is
+	// written and before a probe is spent on a save that would be refused
+	// regardless of the probe's outcome.
+	if err := s.validateCandidateSaveConsistency(candidate.ModelID, id, candidateDeclaration{
+		providerID:     candidate.ProviderID,
+		enabled:        targetEnabled,
+		billingMode:    billingMode,
+		imageTiersJSON: imageTiersJSON,
+		maxOutput:      maxOutput,
+	}); err != nil {
+		return nil, err
+	}
+
 	// One transaction for the status instruction and the field update, so a
 	// failure on either write rolls back both — the caller's error response
 	// then describes the whole edit, not a half-applied one where the disable
@@ -2110,6 +2159,12 @@ func (s *ModelService) UpdateModel(id uint, in UpdateModelInput, now time.Time) 
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return errcode.ErrModelNotFound
 			}
+			return err
+		}
+		// The consistency rules run before the write, inside the same
+		// transaction, against the candidate set this very transaction is
+		// about to leave behind — a rejected PATCH persists nothing.
+		if err := s.validateModelSaveConsistency(tx, *m, in, outputModalities); err != nil {
 			return err
 		}
 		update := repository.ModelUpdate{

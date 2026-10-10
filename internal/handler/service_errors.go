@@ -77,6 +77,12 @@ var serviceErrorTable = []serviceErrorEntry{
 	{sentinel: errcode.ErrModelOutputModalityInvalid, code: errcode.ModelOutputModalityInvalid},
 	{sentinel: errcode.ErrModelBillingInvalid, code: errcode.ModelBillingInvalid},
 	{sentinel: errcode.ErrModelInputModalityInvalid, code: errcode.ModelInputModalityInvalid},
+	// The consistency rejections carry the offending numbers in their wrapped
+	// text (which candidate, which bound), so the client sees the pair that
+	// contradicts itself rather than a bare code.
+	{sentinel: errcode.ErrModelImageBillingMismatch, code: errcode.ModelImageBillingMismatch, verbatim: true},
+	{sentinel: errcode.ErrModelMaxOutputExceedsContext, code: errcode.ModelMaxOutputExceedsContext, verbatim: true},
+	{sentinel: errcode.ErrModelTemperatureInvalid, code: errcode.ModelTemperatureInvalid, verbatim: true},
 
 	// The analytics sentinels live outside pkg/errcode; their wrapped text
 	// names the offending query parameter, so it is returned verbatim.
