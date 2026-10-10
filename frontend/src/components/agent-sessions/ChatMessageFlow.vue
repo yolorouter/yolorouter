@@ -197,12 +197,14 @@ function highlightDetail(part: { detail?: string; detailLang?: 'json' }): string
 
 /* Bubbles read as containers: white surface with a hairline border, the
    assistant side alone carries the accent tint — one accent moment per
-   page, everything else stays quiet. */
+   page, everything else stays quiet. Both sides share ONE fixed width so
+   the two columns read as aligned rails instead of content-width rags
+   (owner 2026-10-10: 参差宽度丑). */
 .msg-flow__bubble {
-  max-width: 85%;
+  width: 85%;
   /* Flex items default to min-width: auto, so an unbreakable child (a wide
      table cell, a long token the inherited word-break cannot split) would
-     push the bubble past max-width and rip the row open — clamp it. */
+     push the bubble past its width and rip the row open — clamp it. */
   min-width: 0;
   padding: var(--space-3, 12px) var(--space-4, 16px);
   border: 1px solid var(--color-border, #e0e0e6);
