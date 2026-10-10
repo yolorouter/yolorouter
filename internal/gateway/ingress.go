@@ -11,8 +11,9 @@ import (
 
 // ingressMeta is the gateway's one-pass view of a caller request, extracted
 // by peekIngress before any candidate is chosen: just enough to route
-// (Model, Stream) and to filter/validate (WantsStreamUsage, HasTools).
-// validate closes over whatever protocol-specific bookkeeping each peek*
+// (Model, Stream) and to filter/validate (WantsStreamUsage, HasTools), and
+// to answer the capability strict questions (HasReasoning). validate
+// closes over whatever protocol-specific bookkeeping each peek*
 // function's local parse produced, so the structural invariant check below
 // runs without a second body parse and without a protocol switch here.
 type ingressMeta struct {
@@ -20,6 +21,12 @@ type ingressMeta struct {
 	Stream           bool
 	WantsStreamUsage bool
 	HasTools         bool
+	// HasReasoning reports whether the body carries the protocol's
+	// reasoning parameter, judged by field presence rather than value
+	// validity: a same-protocol landing forwards the field whatever shape
+	// it has, so both the strict entry refusal and the egress clear police
+	// presence, not well-formedness.
+	HasReasoning bool
 
 	// validate checks the structural invariants the gateway cares about
 	// before picking a candidate: messages must be non-empty for every
@@ -78,8 +85,21 @@ func peekOpenAIIngress(body []byte) (*ingressMeta, error) {
 		Stream:           p.Stream,
 		WantsStreamUsage: p.WantsStreamUsage,
 		HasTools:         p.hasTools(),
+		HasReasoning:     p.HasReasoning,
 		validate:         p.validate,
 	}, nil
+}
+
+// rawReasoningPresent answers the OpenAI family's two spellings of a
+// reasoning parameter: the reasoning_effort string (an explicitly empty
+// string reads as removed, same as an absent field) and the reasoning
+// object. Raw values, not typed ones, so a value with an unexpected JSON
+// type still counts as present — it is forwarded the same way.
+func rawReasoningPresent(effort, object json.RawMessage) bool {
+	if len(effort) > 0 && string(effort) != "null" && string(effort) != `""` {
+		return true
+	}
+	return len(object) > 0 && string(object) != "null"
 }
 
 // claudeIngressWire is the top-level shape peekIngress reads from a Claude
@@ -92,6 +112,7 @@ type claudeIngressWire struct {
 	Stream    bool            `json:"stream"`
 	Messages  json.RawMessage `json:"messages"`
 	Tools     json.RawMessage `json:"tools"`
+	Thinking  json.RawMessage `json:"thinking"`
 	MaxTokens *int            `json:"max_tokens"`
 }
 
@@ -113,6 +134,7 @@ func peekClaudeIngress(body []byte) (*ingressMeta, error) {
 	hasTools := toolCount > 0
 
 	maxTokens := raw.MaxTokens
+	hasReasoning := len(raw.Thinking) > 0 && string(raw.Thinking) != "null"
 	return &ingressMeta{
 		Model:  raw.Model,
 		Stream: raw.Stream,
@@ -121,6 +143,7 @@ func peekClaudeIngress(body []byte) (*ingressMeta, error) {
 		// stream_options.include_usage, so this is unconditionally true.
 		WantsStreamUsage: true,
 		HasTools:         hasTools,
+		HasReasoning:     hasReasoning,
 		validate: func() error {
 			if msgCount == 0 {
 				return fmt.Errorf("messages must be a non-empty array")
@@ -142,8 +165,9 @@ func peekClaudeIngress(body []byte) (*ingressMeta, error) {
 // the body -- both are encoded in the URL path (see parseGeminiPath) -- so
 // this only needs the fields the path can't supply.
 type geminiIngressWire struct {
-	Contents json.RawMessage `json:"contents"`
-	Tools    json.RawMessage `json:"tools"`
+	Contents         json.RawMessage `json:"contents"`
+	Tools            json.RawMessage `json:"tools"`
+	GenerationConfig json.RawMessage `json:"generationConfig"`
 }
 
 // peekGeminiIngress parses the top-level shape of a Gemini request body.
@@ -167,6 +191,20 @@ func peekGeminiIngress(body []byte, pathModel string, pathStream bool) (*ingress
 	}
 	hasTools := toolCount > 0
 
+	// Gemini's reasoning parameter nests one level down, inside
+	// generationConfig.thinkingConfig; both levels must be present and
+	// non-null. A malformed generationConfig reads as absent — the full
+	// structural decode below still gets to refuse the shape.
+	hasReasoning := false
+	if len(raw.GenerationConfig) > 0 && string(raw.GenerationConfig) != "null" {
+		var gc struct {
+			ThinkingConfig json.RawMessage `json:"thinkingConfig"`
+		}
+		if json.Unmarshal(raw.GenerationConfig, &gc) == nil {
+			hasReasoning = len(gc.ThinkingConfig) > 0 && string(gc.ThinkingConfig) != "null"
+		}
+	}
+
 	return &ingressMeta{
 		Model:  pathModel,
 		Stream: pathStream,
@@ -178,6 +216,7 @@ func peekGeminiIngress(body []byte, pathModel string, pathStream bool) (*ingress
 		// own IRStreamConfig.IncludeUsage:true.
 		WantsStreamUsage: true,
 		HasTools:         hasTools,
+		HasReasoning:     hasReasoning,
 		validate: func() error {
 			if contentCount == 0 {
 				return fmt.Errorf("contents must be a non-empty array")
@@ -192,10 +231,11 @@ func peekGeminiIngress(body []byte, pathModel string, pathStream bool) (*ingress
 // carries model and stream in the body itself, same as OpenAI Chat and
 // Claude.
 type responsesIngressWire struct {
-	Model  string          `json:"model"`
-	Stream bool            `json:"stream"`
-	Input  json.RawMessage `json:"input"`
-	Tools  json.RawMessage `json:"tools"`
+	Model     string          `json:"model"`
+	Stream    bool            `json:"stream"`
+	Input     json.RawMessage `json:"input"`
+	Tools     json.RawMessage `json:"tools"`
+	Reasoning json.RawMessage `json:"reasoning"`
 }
 
 // peekResponsesIngress parses the top-level shape of a Responses API
@@ -213,6 +253,7 @@ func peekResponsesIngress(body []byte) (*ingressMeta, error) {
 	hasTools := toolCount > 0
 
 	hasInput := len(raw.Input) > 0 && string(raw.Input) != "null"
+	hasReasoning := len(raw.Reasoning) > 0 && string(raw.Reasoning) != "null"
 	return &ingressMeta{
 		Model:  raw.Model,
 		Stream: raw.Stream,
@@ -220,10 +261,11 @@ func peekResponsesIngress(body []byte) (*ingressMeta, error) {
 		// unconditionally attaches usage to the response.completed event via
 		// its own accumulated e.usage -- there is no caller opt-in request
 		// field (no Responses equivalent of OpenAI Chat's
-		// stream_options.include_usage) gating it, so this is
-		// unconditionally true, same as Claude and Gemini.
+		// stream_options.include_usage) gating it, so this is unconditionally
+		// true, same as Claude and Gemini.
 		WantsStreamUsage: true,
 		HasTools:         hasTools,
+		HasReasoning:     hasReasoning,
 		validate: func() error {
 			if !hasInput {
 				return fmt.Errorf("input is required")

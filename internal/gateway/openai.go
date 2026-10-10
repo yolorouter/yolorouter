@@ -22,6 +22,12 @@ type parsedRequest struct {
 	// routed verbatim by path on egress, so its structural validity is the
 	// upstream's judgement, not the chat decoder's.
 	LegacyPrompt bool
+	// HasReasoning reports whether the body carries a reasoning parameter —
+	// the reasoning_effort string or the reasoning object — in any shape a
+	// same-protocol landing would forward. Value validity is deliberately
+	// not judged here: the capability strict questions police presence, and
+	// a malformed value reaches an upstream exactly like a well-formed one.
+	HasReasoning bool
 }
 
 type parsedTool struct {
@@ -58,17 +64,19 @@ func (p *parsedRequest) validate() error {
 // step.
 func parseRequest(body []byte) (*parsedRequest, error) {
 	var raw struct {
-		Model         string          `json:"model"`
-		Stream        bool            `json:"stream"`
-		Messages      json.RawMessage `json:"messages"`
-		Prompt        json.RawMessage `json:"prompt"`
-		Tools         json.RawMessage `json:"tools"`
-		StreamOptions json.RawMessage `json:"stream_options"`
+		Model           string          `json:"model"`
+		Stream          bool            `json:"stream"`
+		Messages        json.RawMessage `json:"messages"`
+		Prompt          json.RawMessage `json:"prompt"`
+		Tools           json.RawMessage `json:"tools"`
+		StreamOptions   json.RawMessage `json:"stream_options"`
+		ReasoningEffort json.RawMessage `json:"reasoning_effort"`
+		Reasoning       json.RawMessage `json:"reasoning"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("parse request body: %w", err)
 	}
-	p := &parsedRequest{Model: raw.Model, Stream: raw.Stream}
+	p := &parsedRequest{Model: raw.Model, Stream: raw.Stream, HasReasoning: rawReasoningPresent(raw.ReasoningEffort, raw.Reasoning)}
 	if len(raw.Messages) > 0 && string(raw.Messages) != "null" {
 		if err := json.Unmarshal(raw.Messages, &p.Messages); err != nil {
 			return nil, fmt.Errorf("messages must be an array: %w", err)

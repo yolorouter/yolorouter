@@ -85,11 +85,16 @@ type Model struct {
 	// be called with tools (nil = undeclared, never "no"). Model-level and
 	// admin-declared, so it is deliberately distinct from the candidate-level
 	// SupportsFunctionCalling, which only records what a probe confirmed on
-	// one mapping. Informational at this stage.
+	// one mapping. It participates in forwarding only when the site's tools
+	// strict switch is on: a request carrying tools aimed at a model
+	// declared false is then refused with a 400 naming this declaration.
 	SupportsTools *bool `gorm:"column:supports_tools" json:"supports_tools"`
 	// SupportsReasoning is the admin's tri-state declaration that the model
-	// produces reasoning output (nil = undeclared, never "no"). Informational
-	// at this stage.
+	// produces reasoning output (nil = undeclared, never "no"). It
+	// participates in forwarding when either reasoning switch is on: the
+	// strict switch refuses a reasoning request aimed at a model declared
+	// false, and the egress-clear switch strips the reasoning configuration
+	// from the body bound for a landing declared false.
 	SupportsReasoning *bool `gorm:"column:supports_reasoning" json:"supports_reasoning"`
 	// Temperature is the admin's declared recommended default temperature for
 	// calls to this model. Nil means undeclared. It is model metadata — the

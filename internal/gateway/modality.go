@@ -210,6 +210,16 @@ type Candidate struct {
 	// policy is its only reader; undeclared never injects.
 	DeclaredTemperature *float64
 
+	// DeclaredReasoning is the addressed model's tri-state reasoning
+	// declaration (nil = undeclared), riding the Candidate for the same
+	// reason DeclaredTemperature does: the model row is a kernel fact a
+	// payload meets only per candidate, and the egress reasoning clear is
+	// its only reader. Every candidate of a request carries the addressed
+	// model's value today; the field is the seam a per-candidate
+	// declaration would fill without moving the clear's evaluation point.
+	// Undeclared never strips.
+	DeclaredReasoning *bool
+
 	// Identity fields: which model, candidate, and provider destination
 	// this option is. Deliberately after the request-scoped knobs: a
 	// payload whose effects outlive the request — a task a caller polls

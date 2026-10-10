@@ -609,6 +609,14 @@ func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 	// context-limit precheck takes for an undeclared window.
 	rc.declaredTemperature = m.Temperature
 
+	// The addressed model's reasoning declaration, captured beside the
+	// declared temperature for the same reason: the candidate walk below
+	// stamps it onto every offer, and the egress reasoning clear asks it —
+	// per landing, at PrepareUpstream time — whether the request's
+	// reasoning configuration must be stripped. Nil rides through as
+	// undeclared and the clear stands down.
+	rc.declaredReasoning = m.SupportsReasoning
+
 	// The model must declare the output modality this endpoint serves. The
 	// vocabulary is the modality's own id, so the gate stays generic: a new
 	// modality registers an id, model rows declare it, and nothing here
@@ -705,6 +713,19 @@ func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 	// CAN answer is the reason to settle whether this question is per-request
 	// or per-candidate.
 	_ = adm.payload.EstimateCost(rc.pricingBasis)
+
+	// The strict capability entry refusals ride the same phase as the
+	// context-limit gate below — after the addressed model is known and
+	// before anything is dialled — and answer first when both would fire:
+	// their refusal names a parameter the caller can remove outright, which
+	// is cheaper to act on than a body they would have to shrink and still
+	// see refused. Evaluation is once, against the addressed model's
+	// declaration; a failover landing is the egress clear's question, not
+	// this one.
+	if rej := s.precheckCapabilityStrict(rc, m, adm.payload); rej != nil {
+		s.rejectRequest(c, rc, rej.Status, rej.ErrorType, rej.Message, rej.FailReason, rej.Fault, start)
+		return
+	}
 
 	// The capability context-limit pre-gate rides the pricing admission's
 	// phase — after every ingress rewriter has had the body (the estimate
@@ -1053,6 +1074,10 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 			// value on every candidate of the walk — model-row fact, captured
 			// once in Handle.
 			DeclaredTemperature: rc.declaredTemperature,
+			// The addressed model's reasoning declaration, stamped the same
+			// way: a model-row fact every offer carries, which the egress
+			// reasoning clear reads per landing.
+			DeclaredReasoning: rc.declaredReasoning,
 		}
 		if v := adm.payload.Supports(offer); !v.OK {
 			skipCandidate(cand, provider, AttemptBadStatus, v.Reason)

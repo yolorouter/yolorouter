@@ -113,10 +113,20 @@ type Model struct {
 	// nil = undeclared. The model-capability temperature policy is its only
 	// reader; undeclared never injects. Despite the name it is model
 	// metadata, distinct from the per-request temperature callers send.
-	Temperature      *float64
-	OutputModalities string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	Temperature *float64
+	// SupportsTools is the admin's tri-state declaration that the model can
+	// be called with tools, nil = undeclared. The strict entry refusal is
+	// its only reader; undeclared and true never refuse.
+	SupportsTools *bool
+	// SupportsReasoning is the admin's tri-state declaration that the model
+	// produces reasoning output, nil = undeclared. The strict entry refusal
+	// reads it once against the addressed model, and the egress reasoning
+	// clear reads the value stamped on each landing candidate; undeclared
+	// never refuses and never strips.
+	SupportsReasoning *bool
+	OutputModalities  string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // APIKey is the caller credential's face: quota switches, budget axes,

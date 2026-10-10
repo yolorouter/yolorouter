@@ -127,6 +127,19 @@ func (p *textPayload) Routing() RoutingIntent {
 	return RoutingIntent{Model: p.meta.Model, Stream: p.meta.Stream}
 }
 
+// CarriesTools answers the strict entry refusals' tools question for this
+// payload: does the caller's body carry a non-empty tools array. It reads
+// the admission-time one-pass view, so the judgement sees the body that
+// reached routing, not bytes an ingress rewriter may have reshaped.
+func (p *textPayload) CarriesTools() bool { return p.meta.HasTools }
+
+// CarriesReasoning is the same answer for the reasoning parameter family:
+// whether the body carries any of the protocol's reasoning fields. Presence
+// is the criterion, not value validity — a same-protocol landing forwards
+// the field whatever shape it has, so the strict refusal must not depend
+// on which landing would have won.
+func (p *textPayload) CarriesReasoning() bool { return p.meta.HasReasoning }
+
 // EstimateCost says it cannot tell, which for text is the truth rather than a
 // gap. How long the answer runs is the upstream's decision, and even the size
 // of the question is not settled until the upstream reports how it counted the
@@ -167,6 +180,17 @@ func (p *textPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 		if err != nil {
 			return nil, fmt.Errorf("rewrite model field: %w", err)
 		}
+		// The reasoning egress clear runs on the forwarded bytes before the
+		// temperature policy, and first of the two on purpose: a landing
+		// declared not to reason loses the thinking constraint that made
+		// the temperature policy stand down, so the body is settled into
+		// its non-reasoning shape before any other policy reads it.
+		if reasoningClearDue(cand, p.capability) {
+			rewritten, err = stripPassthroughReasoning(rewritten, cand.EgressProtocol)
+			if err != nil {
+				return nil, fmt.Errorf("clear reasoning config: %w", err)
+			}
+		}
 		// The temperature policy runs on the forwarded bytes on this path:
 		// no IR exists here by design, and the decision is the same one
 		// the IR branch below applies between decode and encode.
@@ -179,6 +203,15 @@ func (p *textPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 			json.RawMessage(p.body), cand.ProviderModelName, p.meta.Stream)
 		if err != nil {
 			return nil, fmt.Errorf("decode ingress request (%s): %w", p.ingress, err)
+		}
+		// The reasoning egress clear sits in the same slot as the
+		// temperature policy — between the ingress decode and the egress
+		// encode — and runs first so the encoders see a body with no
+		// reasoning config to emit, whatever their dialect: Claude's
+		// thinking injection, Gemini's thinkingConfig, OpenAI's
+		// reasoning_effort all key off the IR config this zeroes.
+		if reasoningClearDue(cand, p.capability) {
+			clearIRReasoning(ir)
 		}
 		// The temperature policy sits here deliberately: after the decode
 		// (the caller's temperature has landed on the IR) and before the

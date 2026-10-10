@@ -105,10 +105,15 @@ func Model(m *model.Model) rows.Model {
 		ContextLength: m.ContextLength,
 		// Declared default temperature; nil rides through as undeclared
 		// and the temperature policy stands down.
-		Temperature:      m.Temperature,
-		OutputModalities: m.OutputModalities,
-		CreatedAt:        m.CreatedAt,
-		UpdatedAt:        m.UpdatedAt,
+		Temperature: m.Temperature,
+		// Declared tools/reasoning tri-states; nil rides through as
+		// undeclared, and neither the strict entry refusals nor the egress
+		// reasoning clear act on an undeclaration.
+		SupportsTools:     m.SupportsTools,
+		SupportsReasoning: m.SupportsReasoning,
+		OutputModalities:  m.OutputModalities,
+		CreatedAt:         m.CreatedAt,
+		UpdatedAt:         m.UpdatedAt,
 	}
 }
 

@@ -53,6 +53,14 @@ type Exchange struct {
 	// reason pricingBasis does: it is request-scoped kernel state a
 	// deep call needs without every signature in between growing a field.
 	declaredTemperature *float64
+	// declaredReasoning is the addressed model's tri-state reasoning
+	// declaration, captured beside the declared temperature for the same
+	// reason: the candidate walk stamps it onto every offer, and the egress
+	// reasoning clear asks it — per landing, at PrepareUpstream time —
+	// whether the request's reasoning configuration must be stripped. Nil =
+	// undeclared, and the clear stands down, the same leniency the entry
+	// refusals take for an undeclared capability.
+	declaredReasoning *bool
 	// settings is every settings-dependent value this request uses — the
 	// compression switch, the custom system prompt, the vision-fallback
 	// configuration — two-level-resolved once at entry: a per-key override

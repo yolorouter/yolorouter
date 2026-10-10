@@ -38,9 +38,11 @@ func (s *testStore) FindModelByName(ctx context.Context, name string) (*Model, e
 		//nolint:staticcheck // SA1019: the gateway row still carries the
 		// deprecated column by design during the input_modalities transition.
 		SchedulingMode: SchedulingMode(m.SchedulingMode), SupportsImageInput: m.SupportsImageInput,
-		ContextLength:    m.ContextLength,
-		Temperature:      m.Temperature,
-		OutputModalities: m.OutputModalities, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
+		ContextLength:     m.ContextLength,
+		Temperature:       m.Temperature,
+		SupportsTools:     m.SupportsTools,
+		SupportsReasoning: m.SupportsReasoning,
+		OutputModalities:  m.OutputModalities, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}, nil
 }
 

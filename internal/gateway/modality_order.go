@@ -177,6 +177,40 @@ func (p *orderedPayload) refuseAfterDelivered(method string) {
 	}
 }
 
+// CarriesTools forwards the strict entry refusals' tools question to the
+// wrapped payload. It is a pure read of admission-time state — the meta the
+// modality built when it admitted the body, which nothing mutates afterwards —
+// so it takes no stage requirement: it is not part of the state coupling the
+// Supports→PrepareUpstream contract exists for, and only the overlap guard
+// applies. A payload that offers no view answers false, which the refusals
+// read as nothing to police.
+func (p *orderedPayload) CarriesTools() bool {
+	release, ok := p.enter("CarriesTools")
+	defer release()
+	if !ok {
+		return false
+	}
+	v, ok := p.inner.(strictPayloadView)
+	if !ok {
+		return false
+	}
+	return v.CarriesTools()
+}
+
+// CarriesReasoning is CarriesTools for the reasoning parameter family.
+func (p *orderedPayload) CarriesReasoning() bool {
+	release, ok := p.enter("CarriesReasoning")
+	defer release()
+	if !ok {
+		return false
+	}
+	v, ok := p.inner.(strictPayloadView)
+	if !ok {
+		return false
+	}
+	return v.CarriesReasoning()
+}
+
 func (p *orderedPayload) Routing() RoutingIntent {
 	release, ok := p.enter("Routing")
 	defer release()
