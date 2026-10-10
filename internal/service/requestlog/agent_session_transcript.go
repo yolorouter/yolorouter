@@ -10,7 +10,9 @@
 // returns the aggregate + system METADATA + one cursor-paginated page of
 // blocks (sliced by agent_session_transcript_page.go), and the
 // /transcript/system endpoint returns the system timeline's raw text on
-// demand.
+// demand. The assembly itself runs behind the shared LRU cache in
+// agent_session_transcript_cache.go — both endpoints hit it, so walking a
+// session's pages reads the session once.
 package requestlog
 
 import (
@@ -80,7 +82,9 @@ type AgentSessionTranscriptSystem struct {
 // cursor semantics and SliceAgentSessionTranscriptBlocks for the page caps).
 // The session aggregate and system timeline metadata are derived from the
 // whole session on every call — pagination slices only the blocks, so the
-// header numbers never depend on how much is loaded.
+// header numbers never depend on how much is loaded. The assembly itself
+// comes from the shared LRU cache (agent_session_transcript_cache.go): the
+// first page of a session pays the full read, later pages probe + slice.
 //
 // The session aggregate is derived in memory from the SAME ordered rows the
 // blocks are built from, mirroring the list endpoint's per-session GROUP BY
@@ -102,14 +106,14 @@ type AgentSessionTranscriptSystem struct {
 // endpoint treats a missing body row — blocks keep their metadata and read
 // as "not recorded" — rather than failing the whole transcript.
 func (s *RequestLogService) GetAgentSessionTranscript(sessionID string, page AgentSessionTranscriptPage) (*AgentSessionTranscript, error) {
-	summary, blocks, system, err := s.assembleAgentSessionReplay(sessionID)
+	assembled, err := s.assemblyCache.get(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	sliced := SliceAgentSessionTranscriptBlocks(blocks, page)
+	sliced := SliceAgentSessionTranscriptBlocks(assembled.blocks, page)
 	return &AgentSessionTranscript{
-		Session:       summary,
-		System:        systemTimelineMetadata(system),
+		Session:       assembled.summary,
+		System:        systemTimelineMetadata(assembled.system),
 		Blocks:        sliced.Blocks,
 		HasMoreBefore: sliced.HasMoreBefore,
 		NextBefore:    sliced.NextBefore,
@@ -121,36 +125,39 @@ func (s *RequestLogService) GetAgentSessionTranscript(sessionID string, page Age
 // GetAgentSessionTranscriptSystem returns the full deduplicated system-prompt
 // timeline with its raw values (the expansion fetch behind the collapsed
 // system group). The whole replay is assembled exactly as the transcript
-// endpoint assembles it — compute everything, slice only the output — and
-// the block half is simply not returned.
+// endpoint assembles it — from the SAME cache, so an expand after a replay
+// walk pays only the fingerprint probe — and the block half is simply not
+// returned.
 func (s *RequestLogService) GetAgentSessionTranscriptSystem(sessionID string) (*AgentSessionTranscriptSystem, error) {
-	_, _, system, err := s.assembleAgentSessionReplay(sessionID)
+	assembled, err := s.assemblyCache.get(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return &AgentSessionTranscriptSystem{System: system}, nil
+	return &AgentSessionTranscriptSystem{System: assembled.system}, nil
 }
 
-// assembleAgentSessionReplay is the shared load-and-assemble seam behind the
-// transcript and system endpoints: the session's rows and captured bodies in,
-// the full aggregate + block sequence + system timeline out. See
-// GetAgentSessionTranscript for the read-path conventions this seam holds.
-func (s *RequestLogService) assembleAgentSessionReplay(sessionID string) (AgentSessionListItem, []AgentSessionReplayBlock, []AgentSessionReplaySystem, error) {
+// loadAgentSessionReplay is the load-and-assemble compute behind the
+// transcript cache: the session's rows and captured bodies in, the full
+// aggregate + block sequence + system timeline out, under the fingerprint of
+// the rows actually read (see agent_session_transcript_cache.go for why the
+// fingerprint follows the read, not the probe). See GetAgentSessionTranscript
+// for the read-path conventions this seam holds.
+func (s *RequestLogService) loadAgentSessionReplay(sessionID string) (*assembledAgentSessionReplay, repository.AgentSessionAssemblyFingerprint, error) {
 	if sessionID == "" {
-		return AgentSessionListItem{}, nil, nil, errcode.ErrAgentSessionNotFound
+		return nil, repository.AgentSessionAssemblyFingerprint{}, errcode.ErrAgentSessionNotFound
 	}
 	rows, err := repository.ListRequestLogsByAgentSession(s.db, sessionID)
 	if err != nil {
-		return AgentSessionListItem{}, nil, nil, err
+		return nil, repository.AgentSessionAssemblyFingerprint{}, err
 	}
 	if len(rows) == 0 {
-		return AgentSessionListItem{}, nil, nil, errcode.ErrAgentSessionNotFound
+		return nil, repository.AgentSessionAssemblyFingerprint{}, errcode.ErrAgentSessionNotFound
 	}
 
 	providerNames, err := repository.FindProviderNamesByIDs(s.db,
 		repository.CollectPtrIDs(rows, func(r *model.RequestLog) *uint { return r.ProviderID }))
 	if err != nil {
-		return AgentSessionListItem{}, nil, nil, err
+		return nil, repository.AgentSessionAssemblyFingerprint{}, err
 	}
 
 	requestIDs := make([]string, len(rows))
@@ -219,7 +226,11 @@ func (s *RequestLogService) assembleAgentSessionReplay(sessionID string) (AgentS
 	}
 
 	blocks, system := AssembleAgentSessionReplay(inputs)
-	return summary, blocks, system, nil
+	return &assembledAgentSessionReplay{summary: summary, blocks: blocks, system: system},
+		repository.AgentSessionAssemblyFingerprint{
+			RequestCount:  int64(len(rows)),
+			LastRequestID: rows[len(rows)-1].RequestID,
+		}, nil
 }
 
 // systemTimelineMetadata maps the assembled system timeline onto its

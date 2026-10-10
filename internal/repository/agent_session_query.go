@@ -276,3 +276,51 @@ func ListRequestLogsByAgentSession(db *gorm.DB, sessionID string) ([]model.Reque
 		Find(&rows).Error
 	return rows, err
 }
+
+// AgentSessionAssemblyFingerprint is the cheap change-detection probe for one
+// tool session's replay assembly: how many rows the session holds and the
+// request id of its chronologically LAST row. Sessions are append-only and
+// the rolling retention cleanup only ever deletes rows, so any change to the
+// session's row set — a new request appended (moves both halves) or old rows
+// reaped (moves the count) — moves the fingerprint, while nothing that leaves
+// the row set unchanged can. Two half queries instead of one fancy SQL: both
+// read one scalar and never touch the wide body columns, so the probe stays
+// microscopic next to the full-row + bodies + stream-capture read it guards.
+type AgentSessionAssemblyFingerprint struct {
+	RequestCount  int64
+	LastRequestID string
+}
+
+// ProbeAgentSessionAssemblyFingerprint returns the session's assembly
+// fingerprint (see the type). A session with no rows reports a zero
+// RequestCount and empty LastRequestID — the caller maps that to its
+// not-found error, the same convention ListRequestLogsByAgentSession's empty
+// slice gets. An unknown session and a real-but-empty one are the same thing
+// here: neither has anything to assemble.
+func ProbeAgentSessionAssemblyFingerprint(db *gorm.DB, sessionID string) (AgentSessionAssemblyFingerprint, error) {
+	var count int64
+	if err := db.Model(&model.RequestLog{}).
+		Where("agent_session_id = ?", sessionID).
+		Count(&count).Error; err != nil {
+		return AgentSessionAssemblyFingerprint{}, err
+	}
+	if count == 0 {
+		return AgentSessionAssemblyFingerprint{}, nil
+	}
+	// The last row by the same (created_at, id) order the full read uses, so
+	// the probe and the assembly always agree on which row is "last".
+	var lastIDs []string
+	if err := db.Model(&model.RequestLog{}).
+		Where("agent_session_id = ?", sessionID).
+		Order("created_at DESC, id DESC").
+		Limit(1).
+		Pluck("request_id", &lastIDs).Error; err != nil {
+		return AgentSessionAssemblyFingerprint{}, err
+	}
+	if len(lastIDs) != 1 {
+		// Unreachable while count > 0 under a stable connection; treat it as
+		// an error rather than serving a fingerprint that describes nothing.
+		return AgentSessionAssemblyFingerprint{}, fmt.Errorf("agent session %s: %d rows counted but last request id unreadable", sessionID, len(lastIDs))
+	}
+	return AgentSessionAssemblyFingerprint{RequestCount: count, LastRequestID: lastIDs[0]}, nil
+}

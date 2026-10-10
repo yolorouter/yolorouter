@@ -29,10 +29,13 @@ import (
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
 
-// RequestLogService is the stateless composition layer over
-// request_log_query.go. It has no caching, masking, or permission post-
-// processing — those concerns will hang off this struct in later milestones
-// (per-role masking is a likely add).
+// RequestLogService is the composition layer over request_log_query.go.
+// Beyond the stateless mappings it owns exactly one piece of state: the
+// transcript assembly cache (agent_session_transcript_cache.go), a bounded
+// LRU that stops every replay page from re-reading and re-parsing the whole
+// session. No masking or permission post-processing — those concerns will
+// hang off this struct in later milestones (per-role masking is a likely
+// add).
 type RequestLogService struct {
 	db *gorm.DB
 	// bodiesDir is the absolute data/bodies/ directory the gateway's stream
@@ -41,6 +44,11 @@ type RequestLogService struct {
 	// bodiesDir disables that inlining (stream_body always "") — the list /
 	// agent-session paths and any caller that never reads captures.
 	bodiesDir string
+	// assemblyCache memoizes the transcript endpoint's whole-session
+	// load-and-assemble under an append-aware fingerprint. Shared by the
+	// transcript and /transcript/system endpoints; see its file for the
+	// invalidation and single-flight contracts.
+	assemblyCache agentSessionAssemblyCache
 }
 
 // NewRequestLogService returns a RequestLogService bound to db and bodiesDir.
@@ -48,7 +56,16 @@ type RequestLogService struct {
 // stops being used (same lifecycle convention as every other service in
 // internal/).
 func NewRequestLogService(db *gorm.DB, bodiesDir string) *RequestLogService {
-	return &RequestLogService{db: db, bodiesDir: bodiesDir}
+	s := &RequestLogService{db: db, bodiesDir: bodiesDir}
+	s.assemblyCache = newAgentSessionAssemblyCache(
+		func(sessionID string) (repository.AgentSessionAssemblyFingerprint, error) {
+			return repository.ProbeAgentSessionAssemblyFingerprint(db, sessionID)
+		},
+		func(sessionID string) (*assembledAgentSessionReplay, repository.AgentSessionAssemblyFingerprint, error) {
+			return s.loadAgentSessionReplay(sessionID)
+		},
+	)
+	return s
 }
 
 // RequestLogListItem is the list-row DTO. It carries no
