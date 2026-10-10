@@ -25,11 +25,20 @@
 //   TC-15  a failed older page turns the boundary into the retry row;
 //          retrying prepends and paging continues
 //   TC-16  the same session rendered as one full page vs assembled from
-//          two pages produces identical block DOM and info bar
+//          two pages produces identical block DOM and info bar — the
+//          GRADED segment classes included (result cards, injected runs,
+//          thinking replies): a paged assembly whose result cards start
+//          degraded (caller outside the window) must end identical to the
+//          whole-page leg once the calling page joins the window and the
+//          cross-turn tool names backfill
 //   TC-17  the info bar keeps showing the whole-session aggregate however
 //          many older pages load
 //   TC-18  the system group fetches its raw text exactly on first expand
 //          (zero requests while collapsed, none again on re-expand)
+//   cross- a result card whose calling turn sits outside the loaded
+//   turn    window degrades to the raw wire label (.toolcard__name--raw),
+//   names   and the upscroll that loads the calling turn backfills the
+//          real tool name on the SAME card reactively
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -509,6 +518,84 @@ describe('AgentSessionDetailPage lazy loading — failure and retry (TC-15)', ()
 // ---------------------------------------------------------------------------
 
 describe('AgentSessionDetailPage lazy loading — render parity (TC-16)', () => {
+  // ---------- Graded miniature: every segment class the conversation
+  // model renders, split so the paged leg must degrade then backfill ----------
+  //
+  // The caller turn THINKS and CALLS (a stream capture reassembled from
+  // thinking fragments and input_json_delta pieces — the all-machine-product
+  // shape the rework targets); the follow-up turn carries the tool's RESULT
+  // plus two machine injections before the human's actual question.
+  const GRADED_TOOL_CAPTURE = [
+    'event: message_start',
+    'data: {"type":"message_start","message":{"role":"assistant","content":[]}}',
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check the listing first."}}',
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_g1","name":"Bash","input":{}}}',
+    'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"comm"}}',
+    'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"and\\": \\"ls -la\\"}"}}',
+    'data: {"type":"content_block_stop","index":0}',
+    'data: {"type":"content_block_stop","index":1}',
+    'data: {"type":"message_stop"}',
+    '',
+  ].join('\n')
+
+  function gradedCallerTurn(): AgentSessionReplayBlock {
+    return {
+      request_id: 'g01',
+      created_at: '2026-10-10T10:00:00Z',
+      model_name: 'model-x',
+      status_class: 'success',
+      is_stream: true,
+      input_tokens: 1,
+      output_tokens: 2,
+      duration_ms: 10,
+      provider_name: 'demo-provider',
+      added: [{ role: 'user', content: '列一下目录' }],
+      assistant: { source: 'stream', truncated: false, raw: GRADED_TOOL_CAPTURE },
+      added_truncated: false,
+    }
+  }
+
+  function gradedFollowUpTurn(): AgentSessionReplayBlock {
+    return {
+      request_id: 'g02',
+      created_at: '2026-10-10T10:05:00Z',
+      model_name: 'model-x',
+      status_class: 'success',
+      is_stream: false,
+      input_tokens: 1,
+      output_tokens: 2,
+      duration_ms: 10,
+      provider_name: 'demo-provider',
+      added: [
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_g1', content: [{ type: 'text', text: 'total 0\nexit 0' }] }] },
+        { role: 'user', content: '<system-reminder>\nCalled the Bash tool with the listing above.' },
+        { role: 'user', content: '<command-name>/compact</command-name>' },
+        { role: 'user', content: '人类追问：下一步呢' },
+      ],
+      assistant: {
+        source: 'inline',
+        truncated: false,
+        raw: JSON.stringify({ content: [{ type: 'text', text: '下一步是这样' }] }),
+      },
+      added_truncated: false,
+    }
+  }
+
+  function gradedPage(blocks: AgentSessionReplayBlock[], hasMoreBefore: boolean, nextBefore: string, hasMoreAfter = false, nextAfter = ''): AgentSessionTranscript {
+    return {
+      session: aggregate(),
+      system: [],
+      blocks,
+      has_more_before: hasMoreBefore,
+      next_before: nextBefore,
+      has_more_after: hasMoreAfter,
+      next_after: nextAfter,
+    }
+  }
+
   it('the same session assembled from two pages renders the same block DOM and info bar as a one-page whole', async () => {
     const capture = () => ({
       blocks: [...document.body.querySelectorAll('.replay-block')].map((el) => el.innerHTML),
@@ -544,6 +631,73 @@ describe('AgentSessionDetailPage lazy loading — render parity (TC-16)', () => 
     expect(paged.blocks, 'every turn renders identically after paged assembly').toEqual(whole.blocks)
     expect(paged.meta, 'the info bar is unchanged').toBe(whole.meta)
   })
+
+  // The graded extension (06 ticket's conversation-model rework): the two
+  // legs above proved parity for plain text turns; this leg proves it for
+  // every GRADED segment class — the result cards, the injected collapse
+  // runs, the thinking disclosure + call card inside the streamed reply —
+  // and for the tail the window growth leaves behind: a result card that
+  // opened DEGRADED (its calling turn outside the loaded window, raw wire
+  // label in place of the name) must end up byte-identical to the
+  // whole-page leg once the upscroll loads the caller and the cross-turn
+  // name backfills.
+  it('graded segments reach the same DOM through paged assembly: result cards (name backfilled after the window grows), injected runs, and thinking replies all match the one-page whole', async () => {
+    const capture = () => ({
+      blocks: [...document.body.querySelectorAll('.replay-block')].map((el) => el.innerHTML),
+      meta: (document.body.querySelector('.replay-meta')?.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    })
+
+    // Leg 1: the whole graded session in one page — caller and follow-up
+    // load together, so the cross-turn tool name resolves at first render.
+    transcriptMock.mockResolvedValue(gradedPage([gradedCallerTurn(), gradedFollowUpTurn()], false, ''))
+    await mountDetail()
+    await vi.waitFor(() => expect(blockIdsInOrder()).toEqual(['g01', 'g02']))
+
+    // The fixture renders every graded class BEFORE any comparison — the
+    // parity below must be about the graded shapes, not two plain lists.
+    expect(document.body.querySelectorAll('.toolcard--call').length, 'a call card inside the streamed reply').toBe(1)
+    expect(document.body.querySelectorAll('.toolcard--result').length, 'a result card on the follow-up turn').toBe(1)
+    expect(document.body.querySelectorAll('.msg-flow__thinking-toggle').length, 'a thinking disclosure inside the reply').toBe(1)
+    expect(document.body.querySelectorAll('.replay-injected').length, 'the injected run collapsed off the axis').toBe(1)
+    const resolvedName = document.body.querySelector('.toolcard--result .toolcard__name:not(.toolcard__name--raw)')
+    expect(resolvedName?.textContent, 'the one-page leg resolves the cross-turn tool name').toContain('Bash')
+    const whole = capture()
+
+    wrapper!.unmount()
+    document.body.innerHTML = ''
+
+    // Leg 2: the same two turns assembled from pages — the follow-up (the
+    // RESULT side) opens as the latest page while its CALLER sits in the
+    // older page, so the card starts degraded.
+    transcriptMock.mockImplementation(async (_sid: string, params?: { before?: string; after?: string }) => {
+      if (!params || (!params.before && !params.after)) return gradedPage([gradedFollowUpTurn()], true, 'g01')
+      if (params.before === 'g01') return gradedPage([gradedCallerTurn()], false, '', true, 'g02')
+      return pageOf([], false, '', false, '')
+    })
+    await mountDetail()
+    await vi.waitFor(() => expect(blockIdsInOrder()).toEqual(['g02']))
+
+    // The degraded intermediate is observed, not assumed: with the caller
+    // outside the window the result card carries the RAW wire label and
+    // the real tool name appears nowhere on it.
+    const degraded = blockEl('g02')!.querySelector('.toolcard--result')
+    expect(degraded?.querySelector('.toolcard__name--raw'), 'while degraded the card carries the raw wire label').toBeTruthy()
+    expect(degraded?.querySelector('.toolcard__name--raw')?.textContent, 'the raw label is the wire class name').toBe('tool_result')
+    expect(degraded?.textContent ?? '', 'the real tool name is absent while degraded').not.toContain('Bash')
+
+    // The upscroll grows the window over the calling turn; the tail must
+    // converge on the whole leg — name backfilled on the SAME card before
+    // the parity snapshot is taken.
+    fireTop()
+    await vi.waitFor(() => {
+      expect(blockIdsInOrder()).toEqual(['g01', 'g02'])
+      expect(blockEl('g02')!.querySelector('.toolcard--result .toolcard__name:not(.toolcard__name--raw)')?.textContent, 'the backfilled name is in place before capturing').toContain('Bash')
+    })
+    const paged = capture()
+
+    expect(paged.blocks, 'every graded turn renders identically after paged assembly').toEqual(whole.blocks)
+    expect(paged.meta, 'the info bar is unchanged').toBe(whole.meta)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -569,6 +723,100 @@ describe('AgentSessionDetailPage lazy loading — aggregate constancy (TC-17)', 
     fireTop()
     await vi.waitFor(() => expect(blockIdsInOrder()).toEqual(ALL_IDS))
     expect(metaText(), 'after reaching the head the aggregate is unchanged').toBe(opening)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cross-turn tool-name resolution across the paging boundary — the
+// degradation/backfill contract: a result card whose calling turn sits in a
+// page outside the loaded window renders with the RAW wire label
+// (.toolcard__name--raw, never a wrong or missing name), and the SAME card
+// fills in the real tool name reactively once an upscroll loads the calling
+// turn (the page's toolNameById index is computed over the whole window).
+// ---------------------------------------------------------------------------
+
+describe('AgentSessionDetailPage lazy loading — cross-turn tool names (degrade then backfill)', () => {
+  // The latest page's block b20 carries ONLY a tool_result for toolu_01;
+  // the turn that CALLED toolu_01 (block b05, a resent assistant copy with
+  // the tool_use id+name) lives in the older page — not loaded on open.
+  function toolResultLatestPage(): AgentSessionTranscript {
+    const page = pageOf(ALL_IDS.slice(14), true, 'b14', false, '')
+    page.blocks = page.blocks.map((b) =>
+      b.request_id === 'b20'
+        ? {
+            ...b,
+            added: [
+              {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: 'toolu_01', content: [{ type: 'text', text: 'total 0\nexit 0' }] }],
+              },
+            ],
+          }
+        : b,
+    )
+    return page
+  }
+
+  function callingOlderPage(): AgentSessionTranscript {
+    const page = pageOf(ALL_IDS.slice(4, 14), false, '', true, 'b13')
+    page.blocks = page.blocks.map((b) =>
+      b.request_id === 'b05'
+        ? {
+            ...b,
+            added: [{ role: 'user', content: '列一下目录' }],
+            assistant: {
+              source: 'resend',
+              truncated: false,
+              raw: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_01', name: 'Bash', input: { command: 'ls -la' } }] }],
+            },
+          }
+        : b,
+    )
+    return page
+  }
+
+  function resultCard(): Element | null {
+    return blockEl('b20')?.querySelector('.toolcard--result') ?? null
+  }
+
+  it('the card degrades to the raw wire label while the calling turn is outside the window, then backfills the real name reactively once the upscroll loads it', async () => {
+    transcriptMock.mockImplementation(async (_sid: string, params?: { before?: string; after?: string }) => {
+      if (!params || (!params.before && !params.after)) return toolResultLatestPage()
+      if (params.before === 'b14') return callingOlderPage()
+      return pageOf([], false, '', false, '')
+    })
+
+    await mountReplay()
+
+    // Before the upscroll: the degradation form the page documents — the
+    // card exists, its name span is the RAW label ('tool_result', the
+    // wire-side class name the result carries when its caller is unloaded),
+    // the real tool name appears NOWHERE on the card, and the preview is
+    // unaffected (the payload is readable without the name).
+    const cardBefore = resultCard()
+    expect(cardBefore, 'the result card renders on the latest page').toBeTruthy()
+    const rawName = cardBefore!.querySelector('.toolcard__name--raw')
+    expect(rawName, 'the unloaded-caller card degrades to the raw label').toBeTruthy()
+    expect(rawName?.textContent, 'the raw label is the wire class name').toBe('tool_result')
+    expect(cardBefore!.querySelector('.toolcard__name:not(.toolcard__name--raw)'), 'no resolved name span while degraded').toBeNull()
+    expect(cardBefore!.textContent ?? '', 'the real tool name is absent while degraded').not.toContain('Bash')
+    expect(cardBefore!.querySelector('.toolcard__preview')?.textContent, 'the preview does not depend on the name').toContain('total 0')
+
+    // The upscroll: the older page (carrying the calling turn) prepends.
+    fireTop()
+    await vi.waitFor(() => expect(blockIdsInOrder()).toEqual(ALL_IDS.slice(4)))
+    expect(topPager(), 'the head was reached, the sentinel is gone').toBeNull()
+
+    // The SAME card, without any remount or re-navigation, now carries the
+    // cross-turn resolved name — the reactive backfill: the raw-label span
+    // is gone, the resolved name span is present, and the name is the
+    // tool_use's own name from the newly loaded calling turn.
+    const cardAfter = resultCard()
+    expect(cardAfter, 'the result card still renders after the upscroll').toBeTruthy()
+    expect(cardAfter!.querySelector('.toolcard__name--raw'), 'the raw label is gone after backfill').toBeNull()
+    const resolved = cardAfter!.querySelector('.toolcard__name:not(.toolcard__name--raw)')
+    expect(resolved?.textContent, 'the card backfilled the cross-turn tool name').toContain('Bash')
+    expect(cardAfter!.querySelector('.toolcard__preview')?.textContent, 'the preview is unchanged by the backfill').toContain('total 0')
   })
 })
 
@@ -613,8 +861,8 @@ describe('AgentSessionDetailPage lazy loading — system raw on expand (TC-18)',
     expect(transcriptSystemMock.mock.calls[0][0]).toBe(SESSION)
     await vi.waitFor(() => expect(group!.querySelectorAll('.replay-system__entry').length, 'the timeline renders every entry').toBe(2))
     const entryHeaders = [...group!.querySelectorAll('.replay-system__entry .n-collapse-item__header')]
-    expect(entryHeaders[0]?.textContent ?? '', 'first entry annotated').toContain(zhCopy.systemSeenAt.replace('{id}', 'b00'))
-    expect(entryHeaders[1]?.textContent ?? '', 'changed entry annotated').toContain(zhCopy.systemSeenAt.replace('{id}', 'b10'))
+    expect(entryHeaders[0]?.textContent ?? '', 'first entry annotated').toContain(zhCopy.systemEntrySeenAt.replace('{id}', 'b00'))
+    expect(entryHeaders[1]?.textContent ?? '', 'changed entry annotated').toContain(zhCopy.systemEntrySeenAt.replace('{id}', 'b10'))
 
     // Opening one entry reveals its prompt through the shared renderer.
     group!.querySelector('.replay-system__entry .n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))

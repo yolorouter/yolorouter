@@ -29,11 +29,13 @@
          derives both from the same rows) — and whole-session by contract,
          so the numbers never depend on how much is loaded;
        - the deduplicated system-prompt timeline as ONE collapsed group at
-         the top of the replay — a single summary line (first appearance
-         plus the change count; a never-changed prompt drops the count).
-         The group ships METADATA only; expanding it fetches the timeline's
-         raw text once, and each entry then expands into its prompt,
-         annotated with the request that first carried it;
+         the top of the replay — titled simply "System Prompt" and collapsed
+         to that bare title line (real agent traffic rewrites the prompt on
+         nearly every request, so the historical versions stay SECONDARY,
+         living inside the expansion; no first-appearance/change-count
+         summary copy). The group ships METADATA only; expanding it fetches
+         the timeline's raw text once, and each entry then expands into its
+         prompt, annotated with the request that carried it;
        - one replay block per loaded request, in chronological order: the
          caller-side messages that request newly contributed (the backend's
          prefix-dedup pass already stripped everything resent), then the
@@ -111,23 +113,21 @@
         </div>
       </div>
 
-      <!-- The deduplicated system-prompt timeline as ONE collapsed group.
-           Real agent-tool traffic rewrites the system prompt on nearly
-           every request (volatile environment info rides inside it), so
-           the first-appearance-plus-changes timeline can run to dozens of
-           entries — a collapsible block per entry filled the whole first
-           screen above the conversation. The group therefore collapses to
-           a single summary line by default (first appearance plus the
-           change count; a never-changed prompt drops the count). The raw
-           prompt text is NOT part of any transcript page — expanding the
-           group fetches the whole timeline's raw text once
-           (.../transcript/system), and each entry then expands into its
-           own collapsible block, annotated with the request that first
-           carried it and its truncation mark. -->
+      <!-- The deduplicated system-prompt timeline as ONE collapsed group —
+           titled simply "System Prompt". Real agent-tool traffic rewrites
+           the system prompt on nearly every request (volatile environment
+           info rides inside it), so the timeline can run to dozens of
+           entries; they stay SECONDARY — the group collapses to the bare
+           title line, and the historical versions live inside the
+           expansion. The raw prompt text is NOT part of any transcript
+           page: expanding the group fetches the whole timeline's raw text
+           once (.../transcript/system), and each entry then expands into
+           its own collapsible block, annotated with the request that
+           carried it. -->
       <NCollapse v-if="systemMeta.length > 0" v-model:expanded-names="systemExpandedNames" class="replay-system">
         <NCollapseItem name="system">
           <template #header>
-            <span class="replay-system__title">{{ systemSummary }}</span>
+            <span class="replay-system__title">{{ t('agentSessions.systemGroupTitle') }}</span>
           </template>
           <div v-if="systemRawError" class="replay-pager__row replay-pager__row--inside">
             <span class="replay-pager__text replay-pager__text--error">{{ t('agentSessions.systemRawFailed') }}</span>
@@ -139,8 +139,7 @@
           <NCollapse v-for="(entry, i) in systemRaw ?? []" :key="`sys-${i}`" class="replay-system__entry">
             <NCollapseItem name="system">
               <template #header>
-                <span class="replay-system__entry-title">{{ t('agentSessions.systemBlockTitle') }}</span>
-                <span class="replay-system__seen">{{ t('agentSessions.systemSeenAt', { id: entry.seen_at_request }) }}</span>
+                <span class="replay-system__seen">{{ t('agentSessions.systemEntrySeenAt', { id: entry.seen_at_request }) }}</span>
                 <span v-if="entry.truncated" class="replay-system__truncated">{{ t('agentSessions.flowTruncated') }}</span>
               </template>
               <ChatMessageFlow :body="systemFlow(entry)" :raw="systemRawText(entry)" />
@@ -162,13 +161,40 @@
         </template>
       </div>
 
-      <!-- The replay itself: one block per loaded request, chronological. -->
+      <!-- The replay itself: one block per loaded request, chronological.
+           Each block grades its added slice by the turn store's event
+           classes (utils/turnEvents mirrors the backend's write-time
+           classification): only a HUMAN input renders a user bubble on the
+           conversation axis; tool results render as compact result cards;
+           machine-injected context collapses behind one quiet line. The
+           conversation reads as "system prompt + user input + reply", the
+           way a mature chat view renders a session. -->
       <section v-for="block in windowState.blocks" :id="`req-${block.request_id}`" :key="block.request_id" class="replay-block">
-        <!-- The caller-side messages this request newly contributed. A
-             truncated request body degrades to an empty array upstream, so
-             the flow renders only when there is anything to render and the
-             truncation notice line carries the "why" on its own. -->
-        <ChatMessageFlow v-if="block.added.length > 0" :body="addedFlow(block)" :raw="blockRaw(block.added)" />
+        <!-- The caller-side messages this request newly contributed, graded
+             per event class. A truncated request body degrades to an empty
+             array upstream, so the walk renders only when there is anything
+             to render and the truncation notice line carries the "why" on
+             its own. -->
+        <template v-for="(seg, si) in addedSegments(block)" :key="si">
+          <ChatMessageFlow v-if="seg.kind === 'user'" :body="userSegmentBody(seg.message)" :raw="''" />
+          <ToolCard
+            v-else-if="seg.kind === 'tool_result'"
+            kind="result"
+            :name="toolNameById.get(seg.toolUseId)"
+            :label="seg.toolUseId ? 'tool_result' : undefined"
+            :preview="firstPreviewLine(toolResultDetail(seg.content))"
+            :detail="toolResultDetail(seg.content)"
+          />
+          <div v-else class="replay-injected">
+            <button type="button" class="replay-injected__toggle" @click="toggleInjected(block.request_id, si)">
+              <span class="replay-injected__label">{{ t('agentSessions.injectedContext', { n: seg.count }) }}</span>
+              <span class="replay-injected__state">{{ isInjectedOpen(block.request_id, si) ? t('agentSessions.collapse') : t('agentSessions.expand') }}</span>
+            </button>
+            <div v-if="isInjectedOpen(block.request_id, si)" class="replay-injected__body">
+              <pre v-for="(text, ti) in seg.texts" :key="ti" class="replay-injected__text">{{ text }}</pre>
+            </div>
+          </div>
+        </template>
         <p v-if="block.added_truncated" class="replay-block__truncated">{{ t('agentSessions.flowTruncated') }}</p>
 
         <!-- The assistant turn: metadata sign first (model, duration, in/out
@@ -220,11 +246,13 @@ import { APIError, displayMessage } from '../../api/client'
 import { formatDuration, formatShortClock, formatSpan } from '../../utils/format'
 import { formatMicros } from '../../utils/money'
 import { agentClientLabelKey } from '../../utils/agentClient'
-import { translateMessageArray, translateResponseBody, translateStreamBody, type TranslatedBody } from '../../utils/messageTranslator'
+import { translateMessageArray, translateResponseBody, translateStreamBody, type ChatMessage, type TranslatedBody } from '../../utils/messageTranslator'
+import { buildAddedSegments, collectToolNames, firstPreviewLine, toolResultDetail, type AddedSegment } from '../../utils/turnEvents'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import StatusClassTag from '../../components/request-logs/StatusClassTag.vue'
 import ChatMessageFlow from '../../components/agent-sessions/ChatMessageFlow.vue'
+import ToolCard from '../../components/agent-sessions/ToolCard.vue'
 import { anchorRequestId, mergeWindow, prependCompensation, windowFromPage, type TranscriptWindow } from './replayPaging'
 
 const { t } = useI18n()
@@ -533,30 +561,60 @@ const sessionSpan = computed(() => {
   return formatSpan(Date.parse(s.last_seen_at) - Date.parse(s.first_seen_at))
 })
 
-// The collapsed group's one-line summary: the first appearance plus the
-// change count (N = timeline entries - 1; the first entry IS the first
-// appearance). A prompt that never changed degenerates to the plain
-// first-appearance copy with no count. The count comes from the metadata
-// list, so it is whole-session from the first page on.
-const systemSummary = computed(() => {
-  const entries = systemMeta.value
-  return entries.length > 1
-    ? t('agentSessions.systemGroupChanges', { n: entries.length - 1 })
-    : t('agentSessions.systemGroupFirstOnly')
-})
-
 // ---------- Translation (pure functions, applied per render) ----------
 
-function blockRaw(added: unknown[]): string {
-  return JSON.stringify(added, null, 2)
+// Pretty-printed JSON for the fallback views (a system entry's structured
+// raw, a resend copy's message objects).
+function jsonRaw(value: unknown): string {
+  return JSON.stringify(value, null, 2)
 }
 
-// The added slice: a bare message array, already parsed out of the request
-// body by the backend's dedup pass. Translates through the slice entry;
-// an untranslatable slice degrades to the fallback signal the flow
-// component renders.
-function addedFlow(block: AgentSessionReplayBlock): TranslatedBody {
-  return translateMessageArray(block.added)
+// The added slice, graded by the turn store's event classes: user inputs
+// stay on the conversation axis as bubbles, tool results become cards,
+// injected context folds into collapsed runs — the render order is the
+// wire order, so the chronology of a turn is never rearranged.
+function addedSegments(block: AgentSessionReplayBlock): AddedSegment[] {
+  return buildAddedSegments(block.added)
+}
+
+// One user segment's single-message body: the shared bubble renderer with
+// exactly the message that belongs on the axis. kind is always 'messages'
+// by construction (the segment builder only emits translated messages).
+function userSegmentBody(message: ChatMessage): TranslatedBody {
+  return { kind: 'messages', messages: [message], truncated: false }
+}
+
+// The session-wide tool id → name index over the loaded window: every
+// assistant reply's tool calls (inline bodies, stream captures, resent
+// copies — all four sources) contributes its id and name, so a LATER
+// turn's tool-result cards can name the tool that produced them (the wire
+// carries only ids on the result side). Grows reactively as pages load;
+// a result whose calling turn sits outside the window renders with the
+// bare card title until that page arrives.
+const toolNameById = computed(() => {
+  const map = new Map<string, string>()
+  for (const block of windowState.value.blocks) {
+    collectToolNames(assistantFlow(block), map)
+  }
+  return map
+})
+
+// ---------- Injected-context runs ----------
+
+// Which collapsed injected runs are open — keyed by block id + segment
+// index (segment indices are stable per loaded window; a re-anchor rebuilds
+// the window and the keys with it, which simply closes the runs again).
+const openInjectedRuns = ref(new Set<string>())
+const injectedKey = (requestId: string, segIndex: number) => `${requestId}:${segIndex}`
+function isInjectedOpen(requestId: string, segIndex: number): boolean {
+  return openInjectedRuns.value.has(injectedKey(requestId, segIndex))
+}
+function toggleInjected(requestId: string, segIndex: number) {
+  const key = injectedKey(requestId, segIndex)
+  const next = new Set(openInjectedRuns.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  openInjectedRuns.value = next
 }
 
 // One system-timeline entry. Raw is polymorphic by dialect: the Anthropic
@@ -574,7 +632,7 @@ function systemFlow(entry: AgentSessionReplaySystem): TranslatedBody {
 function systemRawText(entry: AgentSessionReplaySystem): string {
   const raw = entry.raw
   if (typeof raw === 'string') return raw
-  return blockRaw(Array.isArray(raw) ? raw : [raw])
+  return jsonRaw(Array.isArray(raw) ? raw : [raw])
 }
 
 // The assistant half of one turn, routed by the backend's source tag:
@@ -603,7 +661,7 @@ function assistantFlow(block: AgentSessionReplayBlock): TranslatedBody {
 function assistantRaw(block: AgentSessionReplayBlock): string {
   const a = block.assistant
   if (a.source === 'inline' || a.source === 'stream') return typeof a.raw === 'string' ? a.raw : ''
-  if (a.source === 'resend') return blockRaw(Array.isArray(a.raw) ? a.raw : [])
+  if (a.source === 'resend') return jsonRaw(Array.isArray(a.raw) ? a.raw : [])
   return ''
 }
 
@@ -693,14 +751,7 @@ function goRequestDetail(requestId: string) {
   border-top: none;
 }
 
-.replay-system__entry-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
-}
-
 .replay-system__seen {
-  margin-left: var(--space-2, 8px);
   font-family: var(--font-mono, monospace);
   font-size: 11px;
   color: var(--color-text-muted);
@@ -710,6 +761,75 @@ function goRequestDetail(requestId: string) {
   margin-left: var(--space-2, 8px);
   font-size: 11px;
   color: var(--color-warning-text, #d48806);
+}
+
+/* Machine-injected context (system reminders, skill listings, command
+   echoes): NEVER on the conversation axis — one quiet dashed line that
+   names how many sections arrived, expandable into their verbatim text.
+   Reads as a footnote to the turn, not a participant in it. */
+.replay-injected {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.replay-injected__toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2, 8px);
+  appearance: none;
+  border: 1px dashed var(--color-border, #e0e0e6);
+  border-radius: var(--radius-full, 999px);
+  background: none;
+  padding: 1px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.replay-injected__toggle:focus-visible {
+  outline: 2px solid var(--color-accent, #6467f2);
+  outline-offset: 2px;
+}
+
+.replay-injected__label {
+  font-weight: 600;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-injected__state {
+  color: var(--color-accent, #6467f2);
+}
+
+.replay-injected__toggle:hover .replay-injected__state {
+  text-decoration: underline;
+}
+
+.replay-injected__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  width: 100%;
+  min-width: 0;
+  margin-top: var(--space-1, 4px);
+}
+
+/* Each injected section verbatim: mono, capped, scrollable — the payloads
+   are XML-ish wrapper walls, shown exactly as captured for inspection. */
+.replay-injected__text {
+  margin: 0;
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border: 1px solid var(--color-border-subtle, #eee);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-bg-soft, #f2f3f5);
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs, 12px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text-secondary);
 }
 
 /* Paging boundaries at the loaded window's edges. Idle they render as a

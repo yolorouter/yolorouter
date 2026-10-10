@@ -39,10 +39,11 @@ export default {
   replayElapsed: '历时 {span}',
   replaySuccessRatio: '成功 {success}/{total}',
   replayRequestLink: '请求详情',
-  systemBlockTitle: '系统提示',
-  systemSeenAt: '首次出现于请求 {id}',
-  systemGroupChanges: '系统提示·首次出现+变化 {n} 次',
-  systemGroupFirstOnly: '系统提示·首次出现',
+  // The system-prompt group: titled plainly — no "first seen + N changes"
+  // phrasing (owner 2026-10-10); the historical versions live inside the
+  // expansion as secondary entries, each annotated with its request id.
+  systemGroupTitle: '系统提示',
+  systemEntrySeenAt: '请求 {id}',
   systemRawFailed: '系统提示原文加载失败',
 
   // Lazy paging of the replay turns: the boundary rows' loading copy, the
@@ -60,7 +61,17 @@ export default {
   flowFallbackTitle: '原始正文',
   partImage: '图片',
   expandFull: '展开全部',
+  expand: '展开',
   collapse: '收起',
   partCharsNote: '{n} 字符',
   streamMergedNote: '流式响应，已按发送片段合并',
+
+  // The conversation model's graded elements (owner 2026-10-10 rework):
+  // the model's reasoning renders as a default-collapsed disclosure inside
+  // the reply; tool calls/results render as compact cards; machine-injected
+  // context collapses behind one quiet line naming its section count.
+  thinkingBlock: '思考过程',
+  toolCall: '工具调用',
+  toolResult: '工具结果',
+  injectedContext: '已注入上下文（{n} 段）',
 }

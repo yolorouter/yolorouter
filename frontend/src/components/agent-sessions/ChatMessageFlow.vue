@@ -10,14 +10,22 @@
                             system prompts both arrive as markdown, so no text
                             bubble is exempt; image parts render as a
                             placeholder block (the payload is deliberately not
-                            carried into the DOM), and non-text parts
-                            (tool_use / tool_calls / ...) show their type
-                            label as a tag
+                            carried into the DOM)
        - kind 'placeholder' a muted "not recorded" note — e.g. a stream
                             request whose response body lives on disk
        - kind 'fallback'    a collapsible formatted-JSON view (the shared
                             BodyViewer), for bodies that cannot be read as
                             chat
+
+     Off-axis machine products inside a body (the conversation-model
+     rework): thinking parts render as a default-collapsed "thinking"
+     disclosure inside the bubble — the model's reasoning stays one toggle
+     away, never a wall between the reader and the answer; tool parts that
+     name their side of the exchange (an assistant tool call, a tool
+     result) render as compact ToolCards with expandable payloads; a whole
+     tool-ROLE message (the OpenAI dialect's tool outputs) renders as a
+     result card instead of a bubble, so machine output never poses as a
+     conversation participant.
 
      Long text parts (agent-tool payloads routinely carry tens of kilobytes
      of system context — enough to paint a five-figure-pixel wall) render
@@ -31,59 +39,81 @@
     <p v-if="body.truncated" class="msg-flow__truncated">{{ t('agentSessions.flowTruncated') }}</p>
 
     <template v-if="body.kind === 'messages'">
-      <div
-        v-for="(message, i) in body.messages"
-        :key="i"
-        class="msg-flow__row"
-        :class="isAssistant(message) ? 'msg-flow__row--right' : 'msg-flow__row--left'"
-      >
-        <div class="msg-flow__bubble" :class="isAssistant(message) ? 'msg-flow__bubble--assistant' : 'msg-flow__bubble--other'">
-          <span class="msg-flow__role" :class="`msg-flow__role--${roleKind(message.role)}`">{{ message.role || '—' }}</span>
-          <template v-for="(part, j) in message.parts" :key="j">
-            <template v-if="part.type === 'text'">
-              <!-- Disclosure row placement: BELOW the preview while clamped
-                   ("there is more"), ABOVE the text once expanded — an
-                   expanded wall can be tens of thousands of pixels tall,
-                   and hunting for the collapse button at its bottom is the
-                   one trap this layout must not have. -->
-              <div v-if="isLong(part.text) && isExpanded(i, j)" class="msg-flow__disclose">
-                <button type="button" class="msg-flow__disclose-btn" @click="togglePart(i, j)">
-                  {{ t('agentSessions.collapse') }}
+      <template v-for="(message, i) in body.messages" :key="i">
+        <!-- A tool-role message is a machine output, not a conversation
+             participant: it renders as ONE result card (its text is the
+             output), never a bubble on the user side. -->
+        <ToolCard
+          v-if="message.role === 'tool' && message.text !== ''"
+          kind="result"
+          :preview="previewOf(message.text)"
+          :detail="message.text"
+        />
+        <div v-else class="msg-flow__row" :class="isAssistant(message) ? 'msg-flow__row--right' : 'msg-flow__row--left'">
+          <div class="msg-flow__bubble" :class="isAssistant(message) ? 'msg-flow__bubble--assistant' : 'msg-flow__bubble--other'">
+            <span class="msg-flow__role" :class="`msg-flow__role--${roleKind(message.role)}`">{{ message.role || '—' }}</span>
+            <template v-for="(part, j) in message.parts" :key="j">
+              <template v-if="part.type === 'text'">
+                <!-- Disclosure row placement: BELOW the preview while clamped
+                     ("there is more"), ABOVE the text once expanded — an
+                     expanded wall can be tens of thousands of pixels tall,
+                     and hunting for the collapse button at its bottom is the
+                     one trap this layout must not have. -->
+                <div v-if="isLong(part.text) && isExpanded(i, j)" class="msg-flow__disclose">
+                  <button type="button" class="msg-flow__disclose-btn" @click="togglePart(i, j)">
+                    {{ t('agentSessions.collapse') }}
+                  </button>
+                  <span class="msg-flow__disclose-meta">{{ t('agentSessions.partCharsNote', { n: part.text.length.toLocaleString() }) }}</span>
+                </div>
+                <!-- v-html is safe here by construction: renderMarkdown returns
+                     DOMPurify-sanitized HTML and nothing else is concatenated
+                     in. Plain text renders as exactly one <p> wrap. -->
+                <div
+                  class="msg-flow__text"
+                  :class="{ 'msg-flow__text--clamped': isLong(part.text) && !isExpanded(i, j) }"
+                  v-html="renderMarkdown(part.text)"
+                ></div>
+                <div v-if="isLong(part.text) && !isExpanded(i, j)" class="msg-flow__disclose">
+                  <button type="button" class="msg-flow__disclose-btn" @click="togglePart(i, j)">
+                    {{ t('agentSessions.expandFull') }}
+                  </button>
+                  <span class="msg-flow__disclose-meta">{{ t('agentSessions.partCharsNote', { n: part.text.length.toLocaleString() }) }}</span>
+                </div>
+              </template>
+              <!-- The model's reasoning: one quiet toggle, collapsed by
+                   default; expanded, the text sits in a capped scrollable
+                   block — reasoning walls stay one opt-in away. -->
+              <div v-else-if="part.type === 'thinking' && part.text !== ''" class="msg-flow__thinking">
+                <button type="button" class="msg-flow__thinking-toggle" @click="togglePart(i, j)">
+                  <span class="msg-flow__thinking-label">{{ t('agentSessions.thinkingBlock') }}</span>
+                  <span class="msg-flow__thinking-state">{{ isExpanded(i, j) ? t('agentSessions.collapse') : t('agentSessions.expand') }}</span>
                 </button>
-                <span class="msg-flow__disclose-meta">{{ t('agentSessions.partCharsNote', { n: part.text.length.toLocaleString() }) }}</span>
+                <pre v-if="isExpanded(i, j)" class="msg-flow__thinking-body">{{ part.text }}</pre>
               </div>
-              <!-- v-html is safe here by construction: renderMarkdown returns
-                   DOMPurify-sanitized HTML and nothing else is concatenated
-                   in. Plain text renders as exactly one <p> wrap. -->
-              <div
-                class="msg-flow__text"
-                :class="{ 'msg-flow__text--clamped': isLong(part.text) && !isExpanded(i, j) }"
-                v-html="renderMarkdown(part.text)"
-              ></div>
-              <div v-if="isLong(part.text) && !isExpanded(i, j)" class="msg-flow__disclose">
-                <button type="button" class="msg-flow__disclose-btn" @click="togglePart(i, j)">
-                  {{ t('agentSessions.expandFull') }}
-                </button>
-                <span class="msg-flow__disclose-meta">{{ t('agentSessions.partCharsNote', { n: part.text.length.toLocaleString() }) }}</span>
+              <div v-else-if="part.type === 'image'" class="msg-flow__image">
+                <ImageIcon :size="14" />
+                <span>{{ t('agentSessions.partImage') }}</span>
               </div>
+              <!-- A tool part that names its side of the exchange renders as
+                   a compact card (name + expandable payload); the variant-less
+                   remainder (unknown block types) keeps the honest type-pill. -->
+              <ToolCard
+                v-else-if="part.type === 'tool' && part.variant"
+                :kind="part.variant"
+                :name="part.name"
+                :label="part.label"
+                :preview="part.variant === 'result' && part.detail ? previewOf(part.detail) : undefined"
+                :detail="part.detail"
+                :detail-lang="part.detailLang"
+              />
+              <template v-else-if="part.type === 'tool'">
+                <span class="msg-flow__tool">{{ part.label }}</span>
+                <pre v-if="part.detail" class="msg-flow__tooldetail"><code v-if="part.detailLang" class="msg-flow__tooldetail-code" v-html="highlightDetail(part)"></code><template v-else>{{ part.detail }}</template></pre>
+              </template>
             </template>
-            <div v-else-if="part.type === 'image'" class="msg-flow__image">
-              <ImageIcon :size="14" />
-              <span>{{ t('agentSessions.partImage') }}</span>
-            </div>
-            <template v-else>
-              <span class="msg-flow__tool">{{ part.label }}</span>
-              <!-- The translator lifts readable payloads here — a tool
-                   call's arguments, a tool result's output text — shown as
-                   a scrollable mono block under the pill. JSON arguments
-                   render through highlight.js (the app's shared core
-                   instance, same token palette as fenced code blocks);
-                   arbitrary output text stays plain. -->
-              <pre v-if="part.detail" class="msg-flow__tooldetail"><code v-if="part.detailLang" class="msg-flow__tooldetail-code" v-html="highlightDetail(part)"></code><template v-else>{{ part.detail }}</template></pre>
-            </template>
-          </template>
+          </div>
         </div>
-      </div>
+      </template>
     </template>
 
     <div v-else-if="body.kind === 'placeholder'" class="msg-flow__note">
@@ -107,6 +137,7 @@ import type { TranslatedBody } from '../../utils/messageTranslator'
 import { renderMarkdown } from '../../utils/markdown'
 import hljs from '../../utils/hljs'
 import BodyViewer from '../request-logs/BodyViewer.vue'
+import ToolCard from './ToolCard.vue'
 
 defineProps<{
   body: TranslatedBody
@@ -117,7 +148,8 @@ defineProps<{
 const { t } = useI18n()
 
 // Only the assistant side reads as "the model talking back" — user prompts,
-// system prompts, and tool-role messages all belong on the left.
+// system prompts, and tool-role messages all belong on the left (the
+// tool-role ones never get here; see the template).
 function isAssistant(message: { role: string }): boolean {
   return message.role === 'assistant'
 }
@@ -129,12 +161,23 @@ function roleKind(role: string): 'user' | 'assistant' | 'system' | 'tool' {
   return 'tool'
 }
 
+// First non-empty line of a payload, capped — a card header's preview.
+function previewOf(text: string, cap = 100): string {
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed !== '') return trimmed.length > cap ? trimmed.slice(0, cap) + '…' : trimmed
+  }
+  return ''
+}
+
 // ---------- Long-part disclosure ----------
 // A text part past this many source characters renders clamped to a preview
 // with a fade, plus the toggle row. The threshold is measured on the raw
 // text (before markdown rendering) so it is deterministic and cheap; 3500
 // characters is comfortably past a normal reply and well short of the
-// five-figure walls agent tools send.
+// five-figure walls agent tools send. The same toggle state serves the
+// thinking disclosures — keys are per (message, part), so the two uses
+// cannot collide.
 const COLLAPSE_OVER_CHARS = 3500
 const expandedParts = ref(new Set<string>())
 const partKey = (i: number, j: number) => `${i}:${j}`
@@ -476,6 +519,62 @@ function highlightDetail(part: { detail?: string; detailLang?: 'json' }): string
   border-radius: var(--radius-sm, 6px);
   color: var(--color-text-secondary);
   font-size: var(--text-xs, 12px);
+}
+
+/* The thinking disclosure: a hairline-quiet toggle riding at the top of
+   the bubble, collapsed by default — the reasoning is one opt-in away,
+   never a wall between the reader and the answer. Expanded, the text
+   sits in a capped scrollable block (walls stay scrollable, the page
+   stays a transcript). */
+.msg-flow__thinking {
+  margin: 0 0 var(--space-2, 8px);
+}
+
+.msg-flow__thinking-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2, 8px);
+  appearance: none;
+  border: 1px dashed var(--color-border, #e0e0e6);
+  border-radius: var(--radius-full, 999px);
+  background: var(--color-bg-soft, #f2f3f5);
+  padding: 1px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.msg-flow__thinking-toggle:focus-visible {
+  outline: 2px solid var(--color-accent, #6467f2);
+  outline-offset: 2px;
+}
+
+.msg-flow__thinking-label {
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.msg-flow__thinking-state {
+  color: var(--color-accent, #6467f2);
+}
+
+.msg-flow__thinking-toggle:hover .msg-flow__thinking-state {
+  text-decoration: underline;
+}
+
+.msg-flow__thinking-body {
+  margin: var(--space-2, 8px) 0 0;
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border: 1px solid var(--color-border-subtle, #eee);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-bg-soft, #f2f3f5);
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs, 12px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text-secondary);
 }
 
 .msg-flow__tool {

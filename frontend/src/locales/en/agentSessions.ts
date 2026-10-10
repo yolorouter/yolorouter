@@ -39,10 +39,11 @@ export default {
   replayElapsed: '{span} elapsed',
   replaySuccessRatio: '{success}/{total} succeeded',
   replayRequestLink: 'Request Details',
-  systemBlockTitle: 'System Prompt',
-  systemSeenAt: 'first seen on request {id}',
-  systemGroupChanges: 'System Prompt · first seen + {n} changes',
-  systemGroupFirstOnly: 'System Prompt · first seen',
+  // The system-prompt group: titled plainly — no "first seen + N changes"
+  // phrasing (owner 2026-10-10); the historical versions live inside the
+  // expansion as secondary entries, each annotated with its request id.
+  systemGroupTitle: 'System Prompt',
+  systemEntrySeenAt: 'request {id}',
   systemRawFailed: 'Failed to load the system-prompt text',
 
   // Lazy paging of the replay turns: the boundary rows' loading copy, the
@@ -60,7 +61,17 @@ export default {
   flowFallbackTitle: 'Raw body',
   partImage: 'Image',
   expandFull: 'Show all',
+  expand: 'Expand',
   collapse: 'Collapse',
   partCharsNote: '{n} characters',
   streamMergedNote: 'streamed reply, merged from the sent chunks',
+
+  // The conversation model's graded elements (owner 2026-10-10 rework):
+  // the model's reasoning renders as a default-collapsed disclosure inside
+  // the reply; tool calls/results render as compact cards; machine-injected
+  // context collapses behind one quiet line naming its section count.
+  thinkingBlock: 'Thinking',
+  toolCall: 'Tool Call',
+  toolResult: 'Tool Result',
+  injectedContext: 'Injected context ({n})',
 }

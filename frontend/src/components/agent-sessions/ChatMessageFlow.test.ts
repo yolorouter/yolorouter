@@ -2,11 +2,11 @@
 //
 // Mounted-DOM coverage for the conversation-bubble renderer (zh-CN
 // locale; both-locale parity of every key used here is exercised by the
-// locale parity gate). The six bubble-rendering arms:
+// locale parity gate). The bubble-rendering arms:
 //
 //   role sides       assistant bubbles sit right, every other role left
 //   image part       placeholder block (the payload never enters the DOM)
-//   tool part        the type label pill (+ highlighted payload block)
+//   tool pill        a variant-less tool part keeps its type label pill
 //   JSON fallback    collapsible formatted-JSON view for bodies that
 //                    cannot be read as chat
 //   truncation hint  the inline-cut marker line
@@ -14,6 +14,13 @@
 //                    renders as ONE readable assistant bubble
 //   long-part clamp  a wall-of-text part renders clamped behind a
 //                    disclosure row that expands/collapses on click
+//   thinking         the model's reasoning renders as a default-collapsed
+//                    disclosure INSIDE the bubble; expanding reveals the
+//                    text in a capped block
+//   tool cards       a call/result variant part renders as a compact card
+//                    (kind + tool name, payload behind the toggle); a
+//                    whole tool-ROLE message renders as a result card,
+//                    never a user-side bubble
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
@@ -163,5 +170,87 @@ describe('ChatMessageFlow', () => {
     const body: TranslatedBody = { kind: 'placeholder', messages: [], truncated: false }
     await mountFlow({ body, raw: '' })
     expect(document.body.querySelector('.msg-flow__note')?.textContent, 'placeholder note').toContain(zhCN.requestLogs.bodyNotRecorded)
+  })
+
+  it('renders thinking parts as a default-collapsed disclosure inside the bubble, expanding on click', async () => {
+    const body: TranslatedBody = {
+      kind: 'messages',
+      truncated: false,
+      messages: [
+        {
+          role: 'assistant',
+          text: 'The answer.',
+          parts: [{ type: 'thinking', text: '先想清楚再回答。' }, { type: 'text', text: 'The answer.' }],
+        },
+      ],
+    }
+    await mountFlow({ body, raw: '' })
+    const bubble = document.body.querySelector('.msg-flow__row--right .msg-flow__bubble')!
+    // Collapsed by default: the label row exists, the reasoning text does not.
+    expect(bubble.querySelector('.msg-flow__thinking-label')?.textContent, 'thinking label').toContain(zhCN.agentSessions.thinkingBlock)
+    expect(bubble.querySelector('.msg-flow__thinking-body'), 'thinking text hidden while collapsed').toBeNull()
+    expect(bubble.textContent ?? '', 'answer text always visible').toContain('The answer.')
+    // Expand: the reasoning appears inside its capped block.
+    bubble.querySelector('.msg-flow__thinking-toggle')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() =>
+      expect(bubble.querySelector('.msg-flow__thinking-body')?.textContent, 'expanded thinking text').toContain('先想清楚再回答。'),
+    )
+    expect(bubble.querySelector('.msg-flow__thinking-state')?.textContent, 'toggle flips to collapse').toContain(zhCN.agentSessions.collapse)
+  })
+
+  it('renders a call-variant tool part as a compact card: kind + tool name on the header, payload behind the toggle', async () => {
+    const body: TranslatedBody = {
+      kind: 'messages',
+      truncated: false,
+      messages: [
+        {
+          role: 'assistant',
+          text: '',
+          parts: [
+            {
+              type: 'tool',
+              label: 'tool_use: Bash',
+              name: 'Bash',
+              variant: 'call',
+              id: 'tu_1',
+              detail: '{\n  "command": "ls"\n}',
+              detailLang: 'json',
+            },
+          ],
+        },
+      ],
+    }
+    await mountFlow({ body, raw: '' })
+    const card = document.body.querySelector('.toolcard')
+    expect(card, 'call card rendered').toBeTruthy()
+    expect(card?.querySelector('.toolcard__kind')?.textContent, 'kind label').toContain(zhCN.agentSessions.toolCall)
+    expect(card?.querySelector('.toolcard__name')?.textContent, 'tool name on the header').toContain('Bash')
+    expect(card?.querySelector('.toolcard__detail'), 'payload collapsed by default').toBeNull()
+    card?.querySelector('.toolcard__head')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => {
+      const detail = card?.querySelector('.toolcard__detail')
+      expect(detail?.textContent, 'expanded payload').toContain('"command"')
+      expect(detail?.querySelector('code.toolcard__detail-code')?.innerHTML, 'json payload highlighted').toContain('hljs-attr')
+    })
+  })
+
+  it('renders a tool-ROLE message as a result card, never a user-side bubble', async () => {
+    const body: TranslatedBody = {
+      kind: 'messages',
+      truncated: false,
+      messages: [
+        { role: 'user', text: '人类的问题', parts: [{ type: 'text', text: '人类的问题' }] },
+        { role: 'tool', text: 'total 0\nexit 0', parts: [{ type: 'text', text: 'total 0\nexit 0' }] },
+      ],
+    }
+    await mountFlow({ body, raw: '' })
+    // Exactly one chat row (the human's), on the left — the tool output
+    // took the card form instead of a second left bubble.
+    const rows = [...document.body.querySelectorAll('.msg-flow__row')]
+    expect(rows.length, 'the tool message renders no bubble').toBe(1)
+    expect(rows[0].classList.contains('msg-flow__row--left'), 'the human bubble stays left').toBe(true)
+    const card = document.body.querySelector('.toolcard')
+    expect(card?.querySelector('.toolcard__kind')?.textContent, 'result card kind label').toContain(zhCN.agentSessions.toolResult)
+    expect(card?.querySelector('.toolcard__preview')?.textContent, 'first-line preview').toContain('total 0')
   })
 })

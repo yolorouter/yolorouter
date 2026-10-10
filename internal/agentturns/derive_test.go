@@ -24,7 +24,10 @@ func parseJSON(t *testing.T, raw string) any {
 
 // TestClassifyAddedMessage pins the taxonomy's split: tool results by both
 // dialects' shapes, machine injections by the marker table, and the
-// user_input catch-all that keeps the classification total.
+// user_input catch-all that keeps the classification total. The READ-SIDE
+// MIRROR of this table lives in frontend/src/utils/turnEvents.test.ts —
+// the two tables pin the SAME arm set one-to-one; if either grows, both
+// do, so a classification change here fails the frontend mirror too.
 func TestClassifyAddedMessage(t *testing.T) {
 	cases := []struct {
 		name string
@@ -32,15 +35,18 @@ func TestClassifyAddedMessage(t *testing.T) {
 		want string
 	}{
 		{"plain user text", `{"role":"user","content":"fix the bug"}`, EventUserInput},
+		{"human text in content blocks", `{"role":"user","content":[{"type":"text","text":"看看这个仓库"}]}`, EventUserInput},
 		{"user null content", `{"role":"user","content":null}`, EventUserInput},
 		{"non-object element", `"a bare string message"`, EventUserInput},
 		{"no role", `{"content":"anonymous"}`, EventUserInput},
+		{"unrecognized role", `{"role":"developer","content":"house rules"}`, EventUserInput},
 		{"openai tool role", `{"role":"tool","tool_call_id":"c1","content":"42"}`, EventToolResult},
 		{"anthropic tool_result block", `{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}`, EventToolResult},
 		{"tool_result among text blocks", `{"role":"user","content":[{"type":"text","text":"and"},{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}`, EventToolResult},
 		{"system-reminder wrapper", `{"role":"user","content":[{"type":"text","text":"<system-reminder>todo list</system-reminder>"}]}`, EventInjected},
 		{"system-reminder string content", `{"role":"user","content":"<system-reminder>you have 2 tasks</system-reminder>"}`, EventInjected},
 		{"command-name wrapper", `{"role":"user","content":"<command-name>/clear</command-name>"}`, EventInjected},
+		{"command-message wrapper", `{"role":"user","content":"<command-message>compact</command-message>"}`, EventInjected},
 		{"caveat prefix", `{"role":"user","content":"Caveat: The messages below were generated..."}`, EventInjected},
 		{"marker mid-text is not injection", `{"role":"user","content":"the docs say <system-reminder> is a wrapper"}`, EventUserInput},
 		{"leading whitespace before marker", `{"role":"user","content":"\n  <system-reminder>reminder</system-reminder>"}`, EventInjected},
