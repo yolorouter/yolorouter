@@ -1,11 +1,13 @@
 // Table-driven tests for the replay assembly pure function
-// (agent_session_replay.go): prefix dedup, the added-role filter, the
-// four-way assistant source priority, the deduplicated system timeline
-// across both dialects, and the degradation rules (pure retry, unparseable
-// body, capped body). No storage is involved — every case is an input
-// slice plus expected output, so the assembly is pinned at its exact
-// input/output contract.
-package requestlog
+// (replay.go): prefix dedup, the added-role filter, the four-way assistant
+// source priority, the deduplicated system timeline across both dialects,
+// and the degradation rules (pure retry, unparseable body, capped body).
+// No storage is involved — every case is an input slice plus expected
+// output, so the assembly is pinned at its exact input/output contract.
+// These tests are the write-time derivation's specification: the parity
+// tests in this package and the transcript read-path tests in
+// internal/service/requestlog both diff against this pass's output.
+package agentturns
 
 import (
 	"encoding/json"

@@ -153,6 +153,18 @@ func TestSweepExpiredRequestLogsClearsWholeTripleInOneRound(t *testing.T) {
 	f.seedTriple(t, fresh1, f.now.Add(-24*time.Hour), false)
 	f.seedTriple(t, fresh2, f.now, false)
 
+	// Turn rows ride every request (the replay store's half): the sweep
+	// must take the expired requests' turns with the rest of the record,
+	// and keep the fresh ones'.
+	for _, id := range []string{expiredWithFile, expiredMissingFile, fresh1, fresh2} {
+		if err := f.db.Create(&model.AgentSessionTurn{
+			AgentSessionID: "ret-sess", RequestID: id, RequestCreatedAt: f.now, Seq: 0,
+			EventType: "assistant_reply", Content: `{"source":"none"}`,
+		}).Error; err != nil {
+			t.Fatalf("seed turn row %s: %v", id, err)
+		}
+	}
+
 	deleted, err := SweepExpiredRequestLogs(f.db, f.bodiesDir, f.now, days, 0)
 	if err != nil {
 		t.Fatalf("sweep round: %v", err)
@@ -171,6 +183,9 @@ func TestSweepExpiredRequestLogsClearsWholeTripleInOneRound(t *testing.T) {
 		if f.streamFileExists(t, id) {
 			t.Errorf("expired row %s: stream file still on disk, want removed", id)
 		}
+		if n := f.countRows(t, "agent_session_turns", id); n != 0 {
+			t.Errorf("expired row %s: agent_session_turns still has %d rows, want 0 (the turn half leaves with the record)", id, n)
+		}
 	}
 	for _, id := range []string{fresh1, fresh2} {
 		if n := f.countRows(t, "request_logs", id); n != 1 {
@@ -181,6 +196,9 @@ func TestSweepExpiredRequestLogsClearsWholeTripleInOneRound(t *testing.T) {
 		}
 		if !f.streamFileExists(t, id) {
 			t.Errorf("fresh row %s: stream file missing, want kept", id)
+		}
+		if n := f.countRows(t, "agent_session_turns", id); n != 1 {
+			t.Errorf("fresh row %s: agent_session_turns has %d rows, want 1 kept", id, n)
 		}
 	}
 }

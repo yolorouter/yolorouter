@@ -8,6 +8,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,12 +22,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/agentturns"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/service/requestlog"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
+
+// backfillAgentTurns stands in for the startup turns pass over the seeded
+// history: the fixtures write the audit rows the gateway wrote, and this
+// derives the turn store half exactly as a deployed instance would at boot.
+func backfillAgentTurns(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if _, err := agentturns.BackfillAll(context.Background(), db); err != nil {
+		t.Fatalf("backfill agent turns: %v", err)
+	}
+}
 
 // newAgentSessionTestRouter wires the two tool-session routes over a fresh
 // migrated SQLite DB with a real RequestLogService.
@@ -402,6 +414,7 @@ func TestGetAgentSessionTranscriptReturnsReplay(t *testing.T) {
 	// t5 — 499 cancelled, no body row at all (capture failure), SAME
 	// created_at as t4: pins the id ASC tie-break of the block order.
 	seed("req-t5", base.Add(3*time.Minute), nil, "claude-3-7", 499, 1, 1, 0, false, 2, true)
+	backfillAgentTurns(t, db)
 
 	w, p := fetchTranscript(t, r, "hs-t", "")
 	if w.Code != http.StatusOK {
@@ -594,6 +607,7 @@ func TestGetAgentSessionTranscriptDegradesWithoutBodiesDir(t *testing.T) {
 	seedBody("req-e3",
 		`{"messages":[{"role":"user","content":"q1"},{"role":"assistant","content":"r1"},{"role":"user","content":"q2"},{"role":"assistant","content":"r2"},{"role":"user","content":"q3"}]}`,
 		"")
+	backfillAgentTurns(t, db)
 
 	w, p := fetchTranscript(t, r, "hs-e", "")
 	if w.Code != http.StatusOK {
@@ -700,6 +714,7 @@ func TestGetAgentSessionTranscriptMarksTruncation(t *testing.T) {
 		t.Fatalf("write capture file: %v", err)
 	}
 	seedBody("req-x4", `{"messages":[{"role":"user","content":"q4"}]}`, "", "req-x4.stream", true)
+	backfillAgentTurns(t, db)
 
 	// Two of these blocks (x2's capped inline copy, x3's capped capture)
 	// each serialize to ~1 MiB, so the shipped 1.5 MiB page budget pages the
@@ -747,7 +762,9 @@ func TestGetAgentSessionTranscriptMarksTruncation(t *testing.T) {
 	}
 	assertCutCopy(t, "x2 inline response", resp2, bigResp)
 
-	// x3: read-side cap on the capture file — the OR's streamCapped half.
+	// x3: read-side cap on the capture file — the capped-read half of the
+	// readStreamBodyInlineCapped OR (the body row's write-side flag is
+	// false here; the read alone raises the marker).
 	x3 := blocks[2]
 	if x3.Assistant.Source != "stream" || !x3.Assistant.Truncated {
 		t.Fatalf("x3 assistant = (%s, truncated=%v), want (stream, true) from the read-side cap alone", x3.Assistant.Source, x3.Assistant.Truncated)
@@ -809,6 +826,7 @@ func seedTranscriptPageSession(t *testing.T, db *gorm.DB) {
 			t.Fatalf("upsert body %s: %v", id, err)
 		}
 	}
+	backfillAgentTurns(t, db)
 }
 
 // transcriptBlockIDs collects a payload's block ids in order.
@@ -925,6 +943,7 @@ func TestGetAgentSessionTranscriptSystemAlignment(t *testing.T) {
 			t.Fatalf("upsert body %s: %v", id, err)
 		}
 	}
+	backfillAgentTurns(t, db)
 
 	_, p := fetchTranscript(t, r, sess, "")
 	if len(p.System) != 2 {

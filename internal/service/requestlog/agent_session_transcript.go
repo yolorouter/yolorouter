@@ -1,18 +1,21 @@
-// Transcript composition for tool sessions: the read endpoints that turn one
-// session's rows + captured bodies into the replay payloads the frontend
-// renders. This file is the assembly seam between the read paths the detail
-// endpoint already owns (repository rows, batched body rows, 1 MiB inline
-// caps, bodiesDir stream inlining) and the pure dedup pass in
-// agent_session_replay.go — everything storage-shaped happens here, so the
-// pass itself stays table-testable (its table tests sit in
-// agent_session_replay_test.go) and this layer stays a fat-free mapping.
-// The output splits in two over the same assembly: the transcript endpoint
+// Transcript composition for tool sessions: the read endpoints that page
+// one session's PERSISTED turn store (agent_session_turns, written by the
+// request-log write path via internal/agentturns) into the replay payloads
+// the frontend renders. This is the storage-rework read path: no
+// whole-session assembly happens at view time — the session's request rows
+// give the block index and the aggregate, the turn rows give each block's
+// added messages and reply attribution, and the reply ORIGINALS (inline
+// response bodies, stream captures) are fetched per page by reference from
+// request_log_bodies and the capture files, under the same inline caps the
+// detail endpoint holds. The whole-session pass in internal/agentturns
+// remains as the specification the write path is parity-tested against;
+// nothing here calls it.
+//
+// The output splits in two over the same store: the transcript endpoint
 // returns the aggregate + system METADATA + one cursor-paginated page of
-// blocks (sliced by agent_session_transcript_page.go), and the
-// /transcript/system endpoint returns the system timeline's raw text on
-// demand. The assembly itself runs behind the shared LRU cache in
-// agent_session_transcript_cache.go — both endpoints hit it, so walking a
-// session's pages reads the session once.
+// blocks (sliced by agent_session_transcript_page.go over the lazy
+// per-request materializer in this file), and the /transcript/system
+// endpoint returns the system timeline's raw text on demand.
 package requestlog
 
 import (
@@ -20,11 +23,38 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/yolorouter/yolorouter/internal/agentturns"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
+
+// Type aliases over the replay vocabulary internal/agentturns now owns
+// (moved there when the write path and the read path started sharing it).
+// They keep this package's historical names compiling — the wire DTOs, the
+// handler layer, and the tests all speak them — while the single
+// definition lives with the assembly semantics.
+type (
+	AgentSessionReplayInput     = agentturns.AgentSessionReplayInput
+	AgentSessionReplayAssistant = agentturns.AgentSessionReplayAssistant
+	AgentSessionReplayBlock     = agentturns.AgentSessionReplayBlock
+	AgentSessionReplaySystem    = agentturns.AgentSessionReplaySystem
+)
+
+// Replay-source tags, aliased for the same reason as the types above.
+const (
+	ReplaySourceInline = agentturns.ReplaySourceInline
+	ReplaySourceStream = agentturns.ReplaySourceStream
+	ReplaySourceResend = agentturns.ReplaySourceResend
+	ReplaySourceNone   = agentturns.ReplaySourceNone
+)
+
+// AssembleAgentSessionReplay is the whole-session pass, aliased for the
+// same reason as the types above. The read path never calls it; it stays
+// reachable from here as the parity oracle the storage rework's tests (and
+// any future one) diff the turns-backed read against.
+var AssembleAgentSessionReplay = agentturns.AssembleAgentSessionReplay
 
 // AgentSessionReplaySystemMeta is the metadata-only half of one system
 // timeline entry, what the transcript response ships so the first screen
@@ -32,9 +62,8 @@ import (
 // kilobytes × N of it). RawLength is the raw value's JSON serialization size
 // in UTF-8 bytes — exactly the bytes the entry adds to the
 // /transcript/system response — so the frontend can budget the on-expand
-// fetch. Truncated system entries always measure the value actually emitted
-// (a capped request body parses to no system record at all, so there is no
-// "pre-truncation length" to over-report).
+// fetch. It is served from the system_prompt turn row's content_bytes
+// sidecar, measured at write time by the same rule.
 type AgentSessionReplaySystemMeta struct {
 	SeenAtRequest string `json:"seen_at_request"`
 	Truncated     bool   `json:"truncated"`
@@ -72,22 +101,25 @@ type AgentSessionTranscript struct {
 // AgentSessionTranscriptSystem is the /transcript/system payload: the full
 // deduplicated system-prompt timeline with its raw values, fetched when the
 // collapsed system group is expanded. Index-aligned with the transcript's
-// System metadata list by construction — both come from the same assembly.
+// System metadata list by construction — both walk the session's
+// system_prompt turn rows in the same order.
 type AgentSessionTranscriptSystem struct {
 	System []AgentSessionReplaySystem `json:"system"`
 }
 
 // GetAgentSessionTranscript returns one cursor-paginated page of the replay
 // transcript for a tool session (see AgentSessionTranscriptPage for the
-// cursor semantics and SliceAgentSessionTranscriptBlocks for the page caps).
-// The session aggregate and system timeline metadata are derived from the
-// whole session on every call — pagination slices only the blocks, so the
-// header numbers never depend on how much is loaded. The assembly itself
-// comes from the shared LRU cache (agent_session_transcript_cache.go): the
-// first page of a session pays the full read, later pages probe + slice.
+// cursor semantics and sliceTranscriptBlocks for the page caps). The block
+// sequence is one block per request row — the request rows are read whole
+// (narrow columns, the same read the session detail does) so the block
+// index, the session aggregate, and the direction-wise has_more flags are
+// session-wide on every page, while each block's ADDED messages and reply
+// attribution materialize from the turn rows only for the blocks the walk
+// actually takes, and the reply originals (inline bodies, stream captures)
+// are fetched per page by reference.
 //
-// The session aggregate is derived in memory from the SAME ordered rows the
-// blocks are built from, mirroring the list endpoint's per-session GROUP BY
+// The session aggregate is derived in memory from the same ordered rows,
+// mirroring the list endpoint's per-session GROUP BY
 // (repository.agentSessionSelectSQL): success_count is the five-class
 // taxonomy's success bucket via DeriveStatusClass, known_cost_micros sums
 // cost_micros over cost_known=true rows only, unknown_cost_count counts the
@@ -97,23 +129,31 @@ type AgentSessionTranscriptSystem struct {
 // buckets change, this derivation changes with them.
 //
 // Read-path conventions are the detail endpoint's: bodies come from the 1:1
-// request_log_bodies rows (batched — one IN query for the whole session)
-// under the shared inline cap with their truncation flags, and the stream
-// capture is inlined from bodiesDir with the same containment and
-// missing-file degradation (empty bodiesDir means stream is always empty —
-// the replay then attributes those turns via inline/resend/none instead of
-// erroring). A body-batch lookup failure degrades the same way the detail
-// endpoint treats a missing body row — blocks keep their metadata and read
-// as "not recorded" — rather than failing the whole transcript.
+// request_log_bodies rows under the shared inline cap with their truncation
+// flags, and the stream capture is inlined from bodiesDir with the same
+// containment and missing-file degradation (empty bodiesDir means stream is
+// always empty — the replay then attributes those turns via inline/resend/
+// none instead of erroring). A body-batch or turn lookup failure degrades
+// the same way the detail endpoint treats a missing body row — blocks keep
+// their metadata and read as "not recorded" — rather than failing the whole
+// transcript.
 func (s *RequestLogService) GetAgentSessionTranscript(sessionID string, page AgentSessionTranscriptPage) (*AgentSessionTranscript, error) {
-	assembled, err := s.assemblyCache.get(sessionID)
+	rows, err := s.loadSessionRows(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	sliced := SliceAgentSessionTranscriptBlocks(assembled.blocks, page)
+	systemMeta, err := s.loadSystemMeta(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	seq, err := s.turnBlockSequence(sessionID, rows)
+	if err != nil {
+		return nil, err
+	}
+	sliced := sliceTranscriptBlocks(seq, page)
 	return &AgentSessionTranscript{
-		Session:       assembled.summary,
-		System:        systemTimelineMetadata(assembled.system),
+		Session:       agentSessionSummaryFromRows(sessionID, rows),
+		System:        systemMeta,
 		Blocks:        sliced.Blocks,
 		HasMoreBefore: sliced.HasMoreBefore,
 		NextBefore:    sliced.NextBefore,
@@ -124,63 +164,84 @@ func (s *RequestLogService) GetAgentSessionTranscript(sessionID string, page Age
 
 // GetAgentSessionTranscriptSystem returns the full deduplicated system-prompt
 // timeline with its raw values (the expansion fetch behind the collapsed
-// system group). The whole replay is assembled exactly as the transcript
-// endpoint assembles it — from the SAME cache, so an expand after a replay
-// walk pays only the fingerprint probe — and the block half is simply not
-// returned.
+// system group), read whole from the session's system_prompt turn rows. An
+// unknown session id answers the domain not-found error, the same convention
+// the transcript endpoint holds.
 func (s *RequestLogService) GetAgentSessionTranscriptSystem(sessionID string) (*AgentSessionTranscriptSystem, error) {
-	assembled, err := s.assemblyCache.get(sessionID)
+	// The session-rows read is the not-found guard (the same convention the
+	// transcript endpoint holds); the values themselves come from the
+	// session's system_prompt turn rows.
+	if _, err := s.loadSessionRows(sessionID); err != nil {
+		return nil, err
+	}
+	entries, err := agentturns.ListSystemTurnEntries(s.db, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return &AgentSessionTranscriptSystem{System: assembled.system}, nil
+	system := make([]AgentSessionReplaySystem, 0, len(entries))
+	for i := range entries {
+		system = append(system, AgentSessionReplaySystem{
+			SeenAtRequest: entries[i].SeenAtRequest,
+			Truncated:     false, // a capped body parses to no system row at all — a recorded value was never cut
+			Raw:           entries[i].Raw,
+		})
+	}
+	return &AgentSessionTranscriptSystem{System: system}, nil
 }
 
-// loadAgentSessionReplay is the load-and-assemble compute behind the
-// transcript cache: the session's rows and captured bodies in, the full
-// aggregate + block sequence + system timeline out, under the fingerprint of
-// the rows actually read (see agent_session_transcript_cache.go for why the
-// fingerprint follows the read, not the probe). See GetAgentSessionTranscript
-// for the read-path conventions this seam holds.
-func (s *RequestLogService) loadAgentSessionReplay(sessionID string) (*assembledAgentSessionReplay, repository.AgentSessionAssemblyFingerprint, error) {
+// loadSessionRows reads the session's request rows chronologically and maps
+// the empty result to the domain not-found error (the same convention the
+// detail endpoint holds).
+func (s *RequestLogService) loadSessionRows(sessionID string) ([]model.RequestLog, error) {
 	if sessionID == "" {
-		return nil, repository.AgentSessionAssemblyFingerprint{}, errcode.ErrAgentSessionNotFound
+		return nil, errcode.ErrAgentSessionNotFound
 	}
 	rows, err := repository.ListRequestLogsByAgentSession(s.db, sessionID)
 	if err != nil {
-		return nil, repository.AgentSessionAssemblyFingerprint{}, err
+		return nil, err
 	}
 	if len(rows) == 0 {
-		return nil, repository.AgentSessionAssemblyFingerprint{}, errcode.ErrAgentSessionNotFound
+		return nil, errcode.ErrAgentSessionNotFound
 	}
+	return rows, nil
+}
 
-	providerNames, err := repository.FindProviderNamesByIDs(s.db,
-		repository.CollectPtrIDs(rows, func(r *model.RequestLog) *uint { return r.ProviderID }))
+// loadSystemMeta maps the session's system_prompt turn rows onto the
+// metadata-only wire shape: seen_at_request and the write-time-measured
+// raw_length, with no raw text. Truncated is false by construction — a
+// capped request body parses to no system row at all, so a recorded value
+// was never cut (the field exists for shape compatibility with the raw
+// entries). A turn-store read failure degrades to the empty timeline
+// rather than failing the transcript — the same never-fail-the-whole
+// contract the per-block lookups hold.
+func (s *RequestLogService) loadSystemMeta(sessionID string) ([]AgentSessionReplaySystemMeta, error) {
+	meta, err := agentturns.ListSystemTurnMeta(s.db, sessionID)
 	if err != nil {
-		return nil, repository.AgentSessionAssemblyFingerprint{}, err
-	}
-
-	requestIDs := make([]string, len(rows))
-	for i := range rows {
-		requestIDs[i] = rows[i].RequestID
-	}
-	bodyRows, err := repository.GetRequestLogBodiesByRequestIDs(s.db, requestIDs)
-	if err != nil {
-		logger.Warn("agent session transcript: fetch bodies failed",
+		logger.Warn("agent session transcript: fetch system timeline failed",
 			zap.String("agent_session_id", sessionID), zap.Error(err))
-		bodyRows = map[string]*model.RequestLogBody{}
+		return []AgentSessionReplaySystemMeta{}, nil
 	}
+	out := make([]AgentSessionReplaySystemMeta, 0, len(meta))
+	for i := range meta {
+		out = append(out, AgentSessionReplaySystemMeta{
+			SeenAtRequest: meta[i].SeenAtRequest,
+			RawLength:     int(meta[i].ContentBytes),
+		})
+	}
+	return out, nil
+}
 
-	inputs := make([]AgentSessionReplayInput, 0, len(rows))
+// agentSessionSummaryFromRows folds the session's ordered rows into the
+// header-bar aggregate. Attribution is the FIRST row's agent_client — rows
+// are (created_at, id) ASC, the same "earliest row names the session" rule
+// the list endpoint's first_row CTE applies.
+func agentSessionSummaryFromRows(sessionID string, rows []model.RequestLog) AgentSessionListItem {
 	summary := AgentSessionListItem{
 		AgentSessionID: sessionID,
-		// Attribution is the FIRST row's agent_client — rows are (created_at,
-		// id) ASC, the same "earliest row names the session" rule the list
-		// endpoint's first_row CTE applies.
-		AgentClient:  derefString(rows[0].AgentClient),
-		RequestCount: int64(len(rows)),
-		FirstSeenAt:  rows[0].CreatedAt,
-		LastSeenAt:   rows[len(rows)-1].CreatedAt,
+		AgentClient:    derefString(rows[0].AgentClient),
+		RequestCount:   int64(len(rows)),
+		FirstSeenAt:    rows[0].CreatedAt,
+		LastSeenAt:     rows[len(rows)-1].CreatedAt,
 	}
 	for i := range rows {
 		r := &rows[i]
@@ -194,69 +255,169 @@ func (s *RequestLogService) loadAgentSessionReplay(sessionID string) (*assembled
 		if DeriveStatusClass(r.StatusCode, r.FailReason) == repository.StatusSuccess {
 			summary.SuccessCount++
 		}
-
-		in := AgentSessionReplayInput{
-			RequestID:    r.RequestID,
-			CreatedAt:    r.CreatedAt,
-			ModelName:    r.ModelName,
-			StatusClass:  DeriveStatusClass(r.StatusCode, r.FailReason),
-			IsStream:     r.IsStream,
-			InputTokens:  r.InputTokens,
-			OutputTokens: r.OutputTokens,
-			DurationMs:   r.DurationMs,
-			ProviderName: lookupName(r.ProviderID, providerNames),
-		}
-		if b := bodyRows[r.RequestID]; b != nil {
-			// Same inline-cap contract as the detail endpoint: the stored
-			// column is the full text, the flag says the inline copy was cut
-			// (len over the cap is exactly truncateInlineBody's cut
-			// condition, so text and flag cannot disagree).
-			in.RequestBody = truncateInlineBody(b.RequestBody)
-			in.RequestBodyTruncated = len(b.RequestBody) > maxInlineBodyBytes
-			in.ResponseBody = truncateInlineBody(b.ResponseBody)
-			in.ResponseBodyTruncated = len(b.ResponseBody) > maxInlineBodyBytes
-			stream, streamCapped := readStreamBodyInlineCapped(s.bodiesDir, b.StreamBodyPath)
-			in.StreamBody = stream
-			// Either cut — the read-side inline cap here, or the write-side
-			// disk backstop the body row recorded — means the capture shown
-			// is not the full original.
-			in.StreamBodyTruncated = streamCapped || b.StreamBodyTruncated
-		}
-		inputs = append(inputs, in)
 	}
-
-	blocks, system := AssembleAgentSessionReplay(inputs)
-	return &assembledAgentSessionReplay{summary: summary, blocks: blocks, system: system},
-		repository.AgentSessionAssemblyFingerprint{
-			RequestCount:  int64(len(rows)),
-			LastRequestID: rows[len(rows)-1].RequestID,
-		}, nil
+	return summary
 }
 
-// systemTimelineMetadata maps the assembled system timeline onto its
-// metadata-only shape (index-preserving — entry i of the metadata list
-// describes entry i of the raw list).
-func systemTimelineMetadata(system []AgentSessionReplaySystem) []AgentSessionReplaySystemMeta {
-	meta := make([]AgentSessionReplaySystemMeta, 0, len(system))
-	for i := range system {
-		meta = append(meta, AgentSessionReplaySystemMeta{
-			SeenAtRequest: system[i].SeenAtRequest,
-			Truncated:     system[i].Truncated,
-			RawLength:     systemRawLength(system[i].Raw),
-		})
-	}
-	return meta
-}
-
-// systemRawLength measures one system value's JSON serialization in bytes.
-// encoding/json sorts map keys, so the length is deterministic and equals
-// the bytes the entry contributes to the /transcript/system response the
-// frontend will fetch.
-func systemRawLength(raw any) int {
-	data, err := json.Marshal(raw)
+// turnBlockSequence builds the lazy block sequence over one session's
+// request rows: block i materializes request i's turns + body row on first
+// touch and memoizes, so the slicer's walk pays for exactly the blocks it
+// takes and the cursor lookups cost one id comparison each. Provider names
+// resolve once for the whole session (a bounded distinct set), the same
+// batched read the list endpoints use.
+func (s *RequestLogService) turnBlockSequence(sessionID string, rows []model.RequestLog) (transcriptBlockSequence, error) {
+	providerNames, err := repository.FindProviderNamesByIDs(s.db,
+		repository.CollectPtrIDs(rows, func(r *model.RequestLog) *uint { return r.ProviderID }))
 	if err != nil {
-		// Unreachable for parsed-JSON values; zero would only under-report.
-		return 0
+		return transcriptBlockSequence{}, err
 	}
-	return len(data)
+	src := &turnsBlockSource{svc: s, providerNames: providerNames, cache: make([]*AgentSessionReplayBlock, len(rows))}
+	return transcriptBlockSequence{
+		length:  len(rows),
+		idAt:    func(i int) string { return rows[i].RequestID },
+		blockAt: func(i int) AgentSessionReplayBlock { return src.block(&rows[i], i) },
+	}, nil
+}
+
+// turnsBlockSource is the per-request materializer behind the lazy
+// sequence. Each block fetches its request's turn rows and body row once
+// (two indexed point reads), so a page of N blocks costs ~2N microscopic
+// queries plus the bytes of the page itself — bounded by the page, not by
+// the session.
+type turnsBlockSource struct {
+	svc           *RequestLogService
+	providerNames map[uint]string
+	cache         []*AgentSessionReplayBlock // one slot per row; nil = not materialized
+}
+
+// block materializes row i's replay block. Every lookup failure degrades
+// to the same "not recorded" shape the whole-session assembly produced for
+// a missing body row — the block keeps its row metadata and never fails
+// the transcript.
+func (src *turnsBlockSource) block(row *model.RequestLog, i int) AgentSessionReplayBlock {
+	if b := src.cache[i]; b != nil {
+		return *b
+	}
+	b := src.materialize(row)
+	src.cache[i] = &b
+	return b
+}
+
+// materialize builds one block from the request row, its turn rows, and its
+// body row.
+func (src *turnsBlockSource) materialize(row *model.RequestLog) AgentSessionReplayBlock {
+	turns, turnsErr := agentturns.ListTurnsByRequestIDs(src.svc.db, []string{row.RequestID})
+	if turnsErr != nil {
+		logger.Warn("agent session transcript: fetch turns failed",
+			zap.String("agent_session_id", derefString(row.AgentSessionID)), zap.String("request_id", row.RequestID), zap.Error(turnsErr))
+		turns = map[string][]model.AgentSessionTurn{}
+	}
+	bodyRows, bodiesErr := repository.GetRequestLogBodiesByRequestIDs(src.svc.db, []string{row.RequestID})
+	if bodiesErr != nil {
+		logger.Warn("agent session transcript: fetch bodies failed",
+			zap.String("agent_session_id", derefString(row.AgentSessionID)), zap.String("request_id", row.RequestID), zap.Error(bodiesErr))
+		bodyRows = map[string]*model.RequestLogBody{}
+	}
+
+	block := AgentSessionReplayBlock{
+		RequestID:    row.RequestID,
+		CreatedAt:    row.CreatedAt,
+		ModelName:    row.ModelName,
+		StatusClass:  DeriveStatusClass(row.StatusCode, row.FailReason),
+		IsStream:     row.IsStream,
+		InputTokens:  row.InputTokens,
+		OutputTokens: row.OutputTokens,
+		DurationMs:   row.DurationMs,
+		ProviderName: lookupName(row.ProviderID, src.providerNames),
+		Added:        []any{},
+	}
+
+	var body *model.RequestLogBody
+	if b := bodyRows[row.RequestID]; b != nil {
+		body = b
+		// Same inline-cap contract as the detail endpoint: the stored
+		// column is the full text, the flag says the inline copy was cut
+		// (len over the cap is exactly truncateInlineBody's cut
+		// condition, so text and flag cannot disagree).
+		block.AddedTruncated = len(b.RequestBody) > maxInlineBodyBytes
+	}
+
+	// Added: this request's new caller-side messages, in event order — the
+	// write-time classification of exactly the messages the whole-session
+	// pass kept in added (user_input + tool_result + injected concatenate
+	// back to it). Pending and assistant rows are not input messages.
+	for _, t := range turns[row.RequestID] {
+		switch t.EventType {
+		case agentturns.EventUserInput, agentturns.EventToolResult, agentturns.EventInjected:
+			var m any
+			if err := json.Unmarshal([]byte(t.Content), &m); err != nil {
+				// A content blob that no longer parses is a corrupt row, not
+				// a lost message the reader can reconstruct — skip it; the
+				// block keeps its other halves.
+				continue
+			}
+			block.Added = append(block.Added, m)
+		}
+	}
+
+	// Assistant: the reply attribution, re-derived live from the body row
+	// under the pass's priority inline > stream > resend > none. Inline and
+	// stream read the captured ORIGINALS by reference (never copied into
+	// the turn store); resend lifts the copies the successor's supplement
+	// row carries; none is the explicit "not recorded" placeholder.
+	block.Assistant = src.assistantFor(row.RequestID, turns[row.RequestID], body)
+	return block
+}
+
+// assistantFor attributes one block's reply from its turn rows and body
+// row. The live derivation of the inline/stream arms is what keeps the
+// store self-healing: a capture that landed after the turn batch (a
+// retried finalize) or a stream file that no longer reads both resolve to
+// what the captured bytes actually say, exactly as the whole-session
+// assembly resolved them by re-reading everything.
+func (src *turnsBlockSource) assistantFor(requestID string, turns []model.AgentSessionTurn, body *model.RequestLogBody) AgentSessionReplayAssistant {
+	var responseBody, streamPath string
+	var streamWriteTruncated bool
+	if body != nil {
+		responseBody = body.ResponseBody
+		streamPath = body.StreamBodyPath
+		streamWriteTruncated = body.StreamBodyTruncated
+	}
+	if responseBody != "" {
+		return AgentSessionReplayAssistant{
+			Source:    ReplaySourceInline,
+			Truncated: len(responseBody) > maxInlineBodyBytes,
+			Raw:       truncateInlineBody(responseBody),
+		}
+	}
+	if streamPath != "" {
+		stream, readCapped := readStreamBodyInlineCapped(src.svc.bodiesDir, streamPath)
+		if stream != "" {
+			return AgentSessionReplayAssistant{
+				Source: ReplaySourceStream,
+				// Either cut — the read-side inline cap here, or the
+				// write-side disk backstop the body row recorded — means the
+				// capture shown is not the full original.
+				Truncated: readCapped || streamWriteTruncated,
+				Raw:       stream,
+			}
+		}
+		// A recorded path whose file reads empty falls through to the
+		// resend supplement below — the assembly's degradation for an
+		// unreadable capture, kept verbatim.
+	}
+	for _, t := range turns {
+		if t.EventType != agentturns.EventAssistantReply || t.Seq < agentturns.SupplementSeqBase {
+			continue
+		}
+		var envelope struct {
+			Source string `json:"source"`
+			Raw    []any  `json:"raw"`
+		}
+		if err := json.Unmarshal([]byte(t.Content), &envelope); err != nil || envelope.Source != ReplaySourceResend {
+			continue
+		}
+		return AgentSessionReplayAssistant{Source: ReplaySourceResend, Raw: envelope.Raw}
+	}
+	return AgentSessionReplayAssistant{Source: ReplaySourceNone}
 }

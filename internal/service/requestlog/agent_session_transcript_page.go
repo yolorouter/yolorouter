@@ -1,13 +1,19 @@
 // Cursor pagination for the tool-session transcript — the output-layer
-// slicer over the replay pass. The seam is deliberate: the replay pass
-// (agent_session_replay.go) still computes the WHOLE session (dedup, resend
-// fallback, system timeline) and hands back every block; this file then slices
-// that finished sequence for transfer ("compute everything, slice only the
-// output"). Because every block is already assembled, a page-tail block always
+// slicer over the replay sequence. The seam is deliberate: the replay
+// semantics live in internal/agentturns (whole-session pass as the
+// specification, the persisted turn store as the production source), and
+// this file slices ONE finished sequence for transfer. Its input is the
+// transcriptBlockSequence abstraction — a length, an id lookup, and a
+// materialize-on-demand block accessor — so the slice-backed call (the
+// table tests) and the turns-backed reader (fetching only the window the
+// walk touches) run the SAME walk: because every taken block is fully
+// materialized before the page is returned, a page-tail block always
 // carries its resend attribution — there is no cross-page state to lose.
 package requestlog
 
 import "encoding/json"
+
+import "github.com/yolorouter/yolorouter/internal/agentturns"
 
 // Transcript pagination constants. The count defaults mirror the
 // page/page_size convention every other paginated admin endpoint holds
@@ -45,16 +51,44 @@ type AgentSessionTranscriptPage struct {
 // has_more flag is false, so "no more in that direction" and "no cursor to
 // continue with" can never disagree.
 type AgentSessionTranscriptPageResult struct {
-	Blocks        []AgentSessionReplayBlock
+	Blocks        []agentturns.AgentSessionReplayBlock
 	HasMoreBefore bool
 	NextBefore    string
 	HasMoreAfter  bool
 	NextAfter     string
 }
 
+// transcriptBlockSequence is the slicer's view of one session's block
+// sequence: how many blocks exist, the request id of block i, and the
+// block itself. The block accessor may materialize lazily (the turns-backed
+// reader fetches a request's turns and body row only when the walk reaches
+// it); it must be memoizing, because the walk can ask for the same index
+// twice (the take that measured it, then the cursor that names it).
+type transcriptBlockSequence struct {
+	length  int
+	idAt    func(i int) string
+	blockAt func(i int) agentturns.AgentSessionReplayBlock
+}
+
+// sliceBackedSequence wraps an in-memory slice: the table-tested shape.
+func sliceBackedSequence(blocks []agentturns.AgentSessionReplayBlock) transcriptBlockSequence {
+	return transcriptBlockSequence{
+		length:  len(blocks),
+		idAt:    func(i int) string { return blocks[i].RequestID },
+		blockAt: func(i int) agentturns.AgentSessionReplayBlock { return blocks[i] },
+	}
+}
+
 // SliceAgentSessionTranscriptBlocks slices the fully assembled chronological
-// block sequence into one page. Every page is anchored at one end of its
-// window and extends in one direction, capped by whichever comes first:
+// block sequence into one page — the slice-backed form of the walk below,
+// kept as the table tests' entry point.
+func SliceAgentSessionTranscriptBlocks(blocks []agentturns.AgentSessionReplayBlock, page AgentSessionTranscriptPage) AgentSessionTranscriptPageResult {
+	return sliceTranscriptBlocks(sliceBackedSequence(blocks), page)
+}
+
+// sliceTranscriptBlocks walks one block sequence into a page. Every page is
+// anchored at one end of its window and extends in one direction, capped by
+// whichever comes first:
 //
 //   - the block-count limit (normalized here: invalid, non-positive, or
 //     over-200 values fall back to the default 20 — the same silent-fallback
@@ -76,7 +110,12 @@ type AgentSessionTranscriptPageResult struct {
 // limit or the byte budget stopped the walk right at the anchor — next_after
 // names the first block beyond the page instead, so re-anchoring can never
 // return the same single-block page forever.
-func SliceAgentSessionTranscriptBlocks(blocks []AgentSessionReplayBlock, page AgentSessionTranscriptPage) AgentSessionTranscriptPageResult {
+//
+// The walk only ever materializes the blocks it takes (plus, at most, the
+// first block it refuses — never, in fact: a refused block ends the walk
+// before its cursor is needed) and resolves cursors by id alone, so a
+// lazy-backed sequence pays for exactly the page it returns.
+func sliceTranscriptBlocks(seq transcriptBlockSequence, page AgentSessionTranscriptPage) AgentSessionTranscriptPageResult {
 	limit := normalizeTranscriptLimit(page.Limit)
 	budget := page.ByteBudget
 	if budget <= 0 {
@@ -90,20 +129,20 @@ func SliceAgentSessionTranscriptBlocks(blocks []AgentSessionReplayBlock, page Ag
 	towardOlder := true
 	switch {
 	case page.Before != "":
-		idx := transcriptBlockIndex(blocks, page.Before)
+		idx := transcriptBlockIndex(seq, page.Before)
 		if idx < 0 {
 			return emptyTranscriptPage()
 		}
 		ws, we = 0, idx
 	case page.After != "":
-		idx := transcriptBlockIndex(blocks, page.After)
+		idx := transcriptBlockIndex(seq, page.After)
 		if idx < 0 {
 			return emptyTranscriptPage()
 		}
-		ws, we = idx, len(blocks)
+		ws, we = idx, seq.length
 		towardOlder = false
 	default:
-		ws, we = 0, len(blocks)
+		ws, we = 0, seq.length
 	}
 	if ws >= we {
 		// A known cursor whose window is empty (e.g. before=<first block>)
@@ -116,17 +155,18 @@ func SliceAgentSessionTranscriptBlocks(blocks []AgentSessionReplayBlock, page Ag
 	// page keeps the blocks nearest the anchor; an up-walk appends. take
 	// reports whether the block was taken — a refused block ends the walk
 	// (a later smaller one must not sneak in behind it).
-	out := make([]AgentSessionReplayBlock, 0, limit)
+	out := make([]agentturns.AgentSessionReplayBlock, 0, limit)
 	cumBytes := 0
 	take := func(i int) bool {
-		size := marshaledBlockSize(blocks[i])
+		b := seq.blockAt(i)
+		size := marshaledBlockSize(b)
 		if len(out) > 0 && cumBytes+size >= budget {
 			return false // stop BEFORE this block: cumulative would reach the budget
 		}
 		if towardOlder {
-			out = append([]AgentSessionReplayBlock{blocks[i]}, out...)
+			out = append([]agentturns.AgentSessionReplayBlock{b}, out...)
 		} else {
-			out = append(out, blocks[i])
+			out = append(out, b)
 		}
 		cumBytes += size
 		return true
@@ -169,10 +209,10 @@ func SliceAgentSessionTranscriptBlocks(blocks []AgentSessionReplayBlock, page Ag
 	res := AgentSessionTranscriptPageResult{
 		Blocks:        out,
 		HasMoreBefore: s > 0,
-		HasMoreAfter:  e < len(blocks),
+		HasMoreAfter:  e < seq.length,
 	}
 	if res.HasMoreBefore {
-		res.NextBefore = blocks[s].RequestID
+		res.NextBefore = seq.idAt(s)
 	}
 	if res.HasMoreAfter {
 		if !towardOlder && e-1 == ws {
@@ -185,9 +225,9 @@ func SliceAgentSessionTranscriptBlocks(blocks []AgentSessionReplayBlock, page Ag
 			// (the walk refused or never reached it), so the continuation
 			// loses nothing, and the walk still ends on a page whose window
 			// it exhausts.
-			res.NextAfter = blocks[e].RequestID
+			res.NextAfter = seq.idAt(e)
 		} else {
-			res.NextAfter = blocks[e-1].RequestID
+			res.NextAfter = seq.idAt(e - 1)
 		}
 	}
 	return res
@@ -204,9 +244,9 @@ func normalizeTranscriptLimit(limit int) int {
 
 // transcriptBlockIndex finds the cursor block's index by request id, or -1
 // when the cursor names no block of this session (a bad cursor).
-func transcriptBlockIndex(blocks []AgentSessionReplayBlock, requestID string) int {
-	for i := range blocks {
-		if blocks[i].RequestID == requestID {
+func transcriptBlockIndex(seq transcriptBlockSequence, requestID string) int {
+	for i := 0; i < seq.length; i++ {
+		if seq.idAt(i) == requestID {
 			return i
 		}
 	}
@@ -217,14 +257,14 @@ func transcriptBlockIndex(blocks []AgentSessionReplayBlock, requestID string) in
 // flags false, no continuation cursors. It covers both bad cursors (lenient
 // deep links) and legitimate-but-empty windows.
 func emptyTranscriptPage() AgentSessionTranscriptPageResult {
-	return AgentSessionTranscriptPageResult{Blocks: []AgentSessionReplayBlock{}}
+	return AgentSessionTranscriptPageResult{Blocks: []agentturns.AgentSessionReplayBlock{}}
 }
 
 // marshaledBlockSize is the deterministic per-block size the budget
 // accumulates: the byte length of the block's JSON serialization. encoding/
 // json sorts map keys, so the same block always measures the same — the
 // budget never depends on map iteration order.
-func marshaledBlockSize(b AgentSessionReplayBlock) int {
+func marshaledBlockSize(b agentturns.AgentSessionReplayBlock) int {
 	data, err := json.Marshal(b)
 	if err != nil {
 		// Unreachable for this shape (no channels/functions anywhere in it);

@@ -1,14 +1,17 @@
-// Service-layer tests for the transcript composition seam
+// Service-layer tests for the transcript read path
 // (agent_session_transcript.go): the degradation contracts only this layer
-// can inject — a failing batched body lookup must degrade every block to
-// "not recorded" rather than failing the whole transcript — plus the
-// endpoint's paging-semantics contracts (TC-07): the pages a cursor
-// walk produces concatenate back to the whole-session output with the
-// resend fallback, retry-empty added, system metadata and session aggregate
-// all intact on every page.
+// can inject — a failing bodies lookup or a missing turns table must
+// degrade blocks to "not recorded" rather than failing the whole
+// transcript — plus the endpoint's paging-semantics contracts (TC-07) and
+// the parity contract that pins the turns-backed read to the whole-session
+// pass's output (the storage rework's "逐事件等价" acceptance): a session
+// derived at write time, whether by the live path or the backfill, reads
+// back as the exact blocks and system timeline the pure pass computes from
+// the same rows and bodies.
 package requestlog
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,20 +20,65 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
+	"github.com/yolorouter/yolorouter/internal/agentturns"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
 
-// TestGetAgentSessionTranscriptDegradesWhenBodyBatchFails pins the
-// body-batch failure branch: when the batched request_log_bodies lookup
-// errors, the transcript still answers with every block carrying its row
-// metadata, the bodies reading as "not recorded" — never a whole-transcript
-// error. A recorded body row is seeded first (so the failing query is a
-// failing lookup over REAL recordings, not an already-empty world), then the
-// table is dropped to force the lookup error.
-func TestGetAgentSessionTranscriptDegradesWhenBodyBatchFails(t *testing.T) {
+// backfillTurns stands in for the startup pass over seeded history: every
+// request without its turn batch gets one, through the production engine.
+func backfillTurns(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if _, err := agentturns.BackfillAll(context.Background(), db); err != nil {
+		t.Fatalf("backfill turns: %v", err)
+	}
+}
+
+// liveWriteTurns stands in for the gateway recorder's write: each request's
+// turn batch derived and inserted at "record time", oldest first (the order
+// the live path writes in).
+func liveWriteTurns(t *testing.T, db *gorm.DB, rows []model.RequestLog) {
+	t.Helper()
+	bodies := readAllBodies(t, db)
+	for i := range rows {
+		body := bodies[rows[i].RequestID]
+		var reqBody, respBody, streamPath string
+		if body != nil {
+			reqBody, respBody, streamPath = body.RequestBody, body.ResponseBody, body.StreamBodyPath
+		}
+		agentturns.RecordTurnsForRequest(db, agentturns.RequestInput{
+			SessionID:        derefString(rows[i].AgentSessionID),
+			RequestID:        rows[i].RequestID,
+			RequestPK:        rows[i].ID,
+			CreatedAt:        rows[i].CreatedAt,
+			RequestBody:      reqBody,
+			HasInlineReply:   respBody != "",
+			HasStreamCapture: streamPath != "",
+		})
+	}
+}
+
+// readAllBodies is the fixtures' body-row snapshot helper.
+func readAllBodies(t *testing.T, db *gorm.DB) map[string]*model.RequestLogBody {
+	t.Helper()
+	rows, err := repository.GetRequestLogBodiesByRequestIDs(db, allRequestIDs(t, db))
+	if err != nil {
+		t.Fatalf("read bodies: %v", err)
+	}
+	return rows
+}
+
+// TestGetAgentSessionTranscriptDegradesWhenBodiesTableFails pins the
+// bodies-half degradation: when the batched request_log_bodies lookup
+// errors, the transcript still answers with every block present — the
+// added messages (persisted in the turn rows) and row metadata survive,
+// and only the reply halves that live in the body rows degrade to
+// resend/none. Never a whole-transcript error.
+func TestGetAgentSessionTranscriptDegradesWhenBodiesTableFails(t *testing.T) {
 	db := testutil.NewSQLiteDB(t)
 	svc := NewRequestLogService(db, "")
 	base := time.Date(2026, 10, 9, 18, 0, 0, 0, time.UTC)
@@ -44,18 +92,30 @@ func TestGetAgentSessionTranscriptDegradesWhenBodyBatchFails(t *testing.T) {
 			r.StatusCode = 200
 		})
 	}
+	// req-d1's reply was never captured inline — its attribution is the
+	// resend supplement req-d2's write appended, which lives in the TURN
+	// rows and therefore survives the bodies table disappearing.
 	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
-		RequestID:    "req-d1",
-		RequestBody:  `{"messages":[{"role":"user","content":"q"}]}`,
-		ResponseBody: `{"content":[{"type":"text","text":"r"}]}`,
+		RequestID:   "req-d1",
+		RequestBody: `{"messages":[{"role":"user","content":"q"}]}`,
 	}); err != nil {
 		t.Fatalf("upsert body req-d1: %v", err)
 	}
+	// req-d2 resends d1's reply as history; its own body carries one new
+	// user message (whose reply IS captured inline).
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+		RequestID:    "req-d2",
+		RequestBody:  `{"messages":[{"role":"user","content":"q"},{"role":"assistant","content":"r"},{"role":"user","content":"next"}]}`,
+		ResponseBody: `{"content":[{"type":"text","text":"r2"}]}`,
+	}); err != nil {
+		t.Fatalf("upsert body req-d2: %v", err)
+	}
+	backfillTurns(t, db)
 	testutil.DropTable(t, db, "request_log_bodies")
 
 	tr, err := svc.GetAgentSessionTranscript(sess, AgentSessionTranscriptPage{})
 	if err != nil {
-		t.Fatalf("GetAgentSessionTranscript after a body-batch failure: %v, want the degraded transcript (the whole transcript must not fail)", err)
+		t.Fatalf("GetAgentSessionTranscript after a bodies-table failure: %v, want the degraded transcript (the whole transcript must not fail)", err)
 	}
 	if len(tr.Blocks) != 2 {
 		t.Fatalf("blocks = %d, want 2 (every block survives the body failure)", len(tr.Blocks))
@@ -64,20 +124,75 @@ func TestGetAgentSessionTranscriptDegradesWhenBodyBatchFails(t *testing.T) {
 	if b.RequestID != "req-d1" || b.StatusClass != repository.StatusSuccess || b.ModelName != "gpt-4o-mini" {
 		t.Fatalf("d1 metadata = (%s, %s, %q), want (req-d1, success, gpt-4o-mini) — row metadata survives", b.RequestID, b.StatusClass, b.ModelName)
 	}
-	if !b.CreatedAt.Equal(base) {
-		t.Fatalf("d1 created_at = %v, want %v", b.CreatedAt, base)
+	if len(b.Added) != 1 || b.Added[0].(map[string]any)["content"] != "q" {
+		t.Fatalf("d1 added = %+v, want the persisted input message (turn rows are unaffected by the bodies table)", b.Added)
 	}
-	if b.AddedTruncated {
-		t.Fatalf("d1 added_truncated = true, want false (nothing was read, so nothing was cut)")
+	// The reply attribution for the unrecorded turn is the resend copy the
+	// successor's supplement row carries — persisted beside the added
+	// messages, so a bodies-table failure does not touch it.
+	if b.Assistant.Source != ReplaySourceResend {
+		t.Fatalf("d1 assistant = %+v, want resend (the supplement answers from the turn rows)", b.Assistant)
 	}
-	if len(b.Added) != 0 {
-		t.Fatalf("d1 added = %+v, want empty (the body reads as not recorded)", b.Added)
+	copies, ok := b.Assistant.Raw.([]any)
+	if !ok || len(copies) != 1 || copies[0].(map[string]any)["content"] != "r" {
+		t.Fatalf("d1 resend raw = %+v, want the one resent copy", b.Assistant.Raw)
 	}
-	if b.Assistant.Source != ReplaySourceNone || b.Assistant.Raw != nil {
-		t.Fatalf("d1 assistant = %+v, want (none, nil raw)", b.Assistant)
+	// The turn whose reply WAS captured inline degrades to "not recorded"
+	// instead — the supplement arm never applies to an inline-captured turn,
+	// so the body row was its only source.
+	if d2 := tr.Blocks[1]; d2.Assistant.Source != ReplaySourceNone {
+		t.Fatalf("d2 assistant = %+v, want none (its inline text is unreachable and no supplement applies)", d2.Assistant)
 	}
 	if tr.Session.RequestCount != 2 || tr.Session.SuccessCount != 2 {
 		t.Fatalf("session counts = (%d, %d), want (2, 2) — the aggregate survives", tr.Session.RequestCount, tr.Session.SuccessCount)
+	}
+}
+
+// TestGetAgentSessionTranscriptDegradesWithoutTurnsTable pins the
+// turns-half degradation: a session whose turn rows are missing entirely
+// (history the backfill has not reached) still answers — blocks carry row
+// metadata, the reply halves attribute from the body rows where captures
+// exist, and only the added messages read as empty. The whole transcript
+// never fails on a storage half.
+func TestGetAgentSessionTranscriptDegradesWithoutTurnsTable(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewRequestLogService(db, "")
+	base := time.Date(2026, 10, 9, 19, 0, 0, 0, time.UTC)
+	claude := "claude-code"
+	sess := "sess-nt"
+
+	testutil.SeedRequestLog(t, db, "req-n1", base, func(r *model.RequestLog) {
+		r.AgentClient = &claude
+		r.AgentSessionID = &sess
+		r.StatusCode = 200
+	})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+		RequestID:    "req-n1",
+		RequestBody:  `{"messages":[{"role":"user","content":"q"}]}`,
+		ResponseBody: `{"content":[{"type":"text","text":"r"}]}`,
+	}); err != nil {
+		t.Fatalf("upsert body: %v", err)
+	}
+	// No turn rows at all — the table itself is gone, which also forces the
+	// system-meta and per-block turn lookups onto their error arms.
+	testutil.DropTable(t, db, "agent_session_turns")
+
+	tr, err := svc.GetAgentSessionTranscript(sess, AgentSessionTranscriptPage{})
+	if err != nil {
+		t.Fatalf("GetAgentSessionTranscript without turn rows: %v, want the degraded transcript", err)
+	}
+	if len(tr.Blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(tr.Blocks))
+	}
+	b := tr.Blocks[0]
+	if len(b.Added) != 0 {
+		t.Fatalf("added = %+v, want empty (nothing was derived)", b.Added)
+	}
+	if b.Assistant.Source != ReplaySourceInline || b.Assistant.Raw != `{"content":[{"type":"text","text":"r"}]}` {
+		t.Fatalf("assistant = %+v, want (inline, the body row's reply)", b.Assistant)
+	}
+	if len(tr.System) != 0 {
+		t.Fatalf("system meta = %+v, want empty", tr.System)
 	}
 }
 
@@ -143,6 +258,7 @@ func TestGetAgentSessionTranscriptPagingPreservesSemantics(t *testing.T) {
 		}
 		lastBody = reqBody
 	}
+	backfillTurns(t, db)
 
 	// The full reference: one call at the max limit holds all 25 blocks.
 	full, err := svc.GetAgentSessionTranscript(sess, AgentSessionTranscriptPage{Limit: 200})
@@ -175,7 +291,7 @@ func TestGetAgentSessionTranscriptPagingPreservesSemantics(t *testing.T) {
 		walked = append(append([]AgentSessionReplayBlock{}, page.Blocks...), walked...)
 	}
 	if len(walked) != n || !reflect.DeepEqual(walked, full.Blocks) {
-		t.Fatalf("paged walk (len %d) ≠ whole-session blocks (len %d): paging must slice the finished output, never recompute it", len(walked), len(full.Blocks))
+		t.Fatalf("paged walk (len %d) ≠ whole-session blocks (len %d): paging must slice the finished sequence, never recompute it", len(walked), len(full.Blocks))
 	}
 
 	// The page-tail resend: the second page (before=req-16) ends on req-15,
@@ -183,7 +299,7 @@ func TestGetAgentSessionTranscriptPagingPreservesSemantics(t *testing.T) {
 	// resent copy from req-16, exactly as the full output gives it.
 	fullTail := replayBlockByID(t, full, "req-15")
 	if fullTail.Assistant.Source != ReplaySourceResend {
-		t.Fatalf("req-15 assistant source = %q, want resend (the full-pass fallback)", fullTail.Assistant.Source)
+		t.Fatalf("req-15 assistant source = %q, want resend (the write-time fallback)", fullTail.Assistant.Source)
 	}
 	page2, err := svc.GetAgentSessionTranscript(sess, AgentSessionTranscriptPage{Limit: 10, Before: "req-16"})
 	if err != nil {
@@ -216,6 +332,198 @@ func TestGetAgentSessionTranscriptPagingPreservesSemantics(t *testing.T) {
 	if page2.System[0].RawLength != len(`"S-one"`) || page2.System[1].RawLength != len(`"S-two"`) {
 		t.Fatalf("page 2 system raw_length = (%d, %d), want the JSON-serialized sizes (%d, %d)",
 			page2.System[0].RawLength, page2.System[1].RawLength, len(`"S-one"`), len(`"S-two"`))
+	}
+}
+
+// transcriptFixture is the shared 25-request conversation the parity and
+// degradation tests replay: alternating user/assistant turns with resent
+// copies, a system switch, one unrecorded reply, one pure retry, plus the
+// message kinds the write-time classification meets in the wild (an
+// injected system-reminder, a tool result, a tool_use-bearing resent copy).
+type transcriptFixture struct {
+	db   *gorm.DB
+	svc  *RequestLogService
+	sess string
+}
+
+// newTranscriptFixture seeds rows+bodies (NO turn rows — the caller picks
+// which write path derives them) and returns the handle.
+func newTranscriptFixture(t *testing.T, name string) *transcriptFixture {
+	t.Helper()
+	db := testutil.NewSQLiteDB(t)
+	base := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	claude := "claude-code"
+	sess := name
+	const n = 25
+
+	// history(i) = the full resent history request i carries: alternating
+	// pairs [u1,a1,...,u_i], with the variant messages spliced in.
+	history := func(upto int) []string {
+		parts := make([]string, 0, 2*upto+3)
+		for j := 1; j <= upto; j++ {
+			parts = append(parts,
+				fmt.Sprintf(`{"role":"user","content":"q%d"}`, j),
+				fmt.Sprintf(`{"role":"assistant","content":"r%d"}`, j))
+		}
+		return parts
+	}
+	var lastBody string
+	for i := 1; i <= n; i++ {
+		id := fmt.Sprintf("req-%02d", i)
+		sys := `"S-one"`
+		if i >= 13 {
+			sys = `"S-two"`
+		}
+		msgs := history(i)
+		// The variant messages ride specific requests' new suffixes.
+		switch i {
+		case 5:
+			msgs = append(msgs[:len(msgs)-1],
+				`{"role":"user","content":"<system-reminder>you have a reminder</system-reminder>"}`,
+				`{"role":"user","content":"q5"}`)
+		case 7:
+			msgs = append(msgs[:len(msgs)-1],
+				`{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"file contents"}]}`,
+				`{"role":"user","content":"q7"}`)
+		case 17:
+			// The resent copy for req-16's unrecorded reply carries a
+			// tool_use block — the tool_call event shape.
+			msgs[len(msgs)-1] = `{"role":"assistant","content":[{"type":"tool_use","id":"tu-1","name":"Read","input":{"path":"/x"}}]}`
+		}
+		reqBody := fmt.Sprintf(`{"system":%s,"messages":[%s]}`, sys, strings.Join(msgs, ","))
+		if i == 20 {
+			reqBody = lastBody // pure retry of req-19
+		}
+		resp := fmt.Sprintf(`{"content":[{"type":"text","text":"reply-%d"}]}`, i)
+		if i == 15 || i == 16 {
+			resp = "" // unrecorded replies — attribute via the successors' resends
+		}
+		testutil.SeedRequestLog(t, db, id, base.Add(time.Duration(i)*time.Minute), func(r *model.RequestLog) {
+			r.AgentClient = &claude
+			r.AgentSessionID = &sess
+			r.StatusCode = 200
+		})
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+			RequestID:    id,
+			RequestBody:  reqBody,
+			ResponseBody: resp,
+		}); err != nil {
+			t.Fatalf("upsert body %s: %v", id, err)
+		}
+		lastBody = reqBody
+	}
+	return &transcriptFixture{db: db, svc: NewRequestLogService(db, ""), sess: sess}
+}
+
+// rows returns the session's request rows in read order.
+func (f *transcriptFixture) rows(t *testing.T) []model.RequestLog {
+	t.Helper()
+	rows, err := repository.ListRequestLogsByAgentSession(f.db, f.sess)
+	if err != nil {
+		t.Fatalf("list rows: %v", err)
+	}
+	return rows
+}
+
+// wholeSessionPassOracle computes the pre-rework reference: the pure pass
+// over the same rows and bodies the old load-and-assemble read, with the
+// same inline caps it applied. This is the specification output the turns
+// read path must reproduce exactly.
+func (f *transcriptFixture) wholeSessionPassOracle(t *testing.T) (blocks []AgentSessionReplayBlock, system []AgentSessionReplaySystem) {
+	t.Helper()
+	rows := f.rows(t)
+	bodies := readAllBodies(t, f.db)
+	inputs := make([]AgentSessionReplayInput, 0, len(rows))
+	for i := range rows {
+		r := &rows[i]
+		in := AgentSessionReplayInput{
+			RequestID:    r.RequestID,
+			CreatedAt:    r.CreatedAt,
+			ModelName:    r.ModelName,
+			StatusClass:  DeriveStatusClass(r.StatusCode, r.FailReason),
+			IsStream:     r.IsStream,
+			InputTokens:  r.InputTokens,
+			OutputTokens: r.OutputTokens,
+			DurationMs:   r.DurationMs,
+		}
+		if b := bodies[r.RequestID]; b != nil {
+			in.RequestBody = truncateInlineBody(b.RequestBody)
+			in.RequestBodyTruncated = len(b.RequestBody) > maxInlineBodyBytes
+			in.ResponseBody = truncateInlineBody(b.ResponseBody)
+			in.ResponseBodyTruncated = len(b.ResponseBody) > maxInlineBodyBytes
+		}
+		inputs = append(inputs, in)
+	}
+	return AssembleAgentSessionReplay(inputs)
+}
+
+// wipeTurns empties the session's turn rows so another write path can
+// derive them from scratch.
+func (f *transcriptFixture) wipeTurns(t *testing.T) {
+	t.Helper()
+	if err := f.db.Where("agent_session_id = ?", f.sess).Delete(&model.AgentSessionTurn{}).Error; err != nil {
+		t.Fatalf("wipe turns: %v", err)
+	}
+}
+
+// TestGetAgentSessionTranscriptMatchesWholeSessionPass is the storage
+// rework's parity acceptance: for one mixed fixture, the turns-backed read
+// equals the whole-session pass's blocks and system timeline EXACTLY — and
+// it does so whichever write path derived the turns (the live write, one
+// request at a time, or the startup backfill over the stored history).
+func TestGetAgentSessionTranscriptMatchesWholeSessionPass(t *testing.T) {
+	f := newTranscriptFixture(t, "hs-parity")
+
+	readAll := func() (blocks []AgentSessionReplayBlock, system []AgentSessionReplaySystemMeta) {
+		tr, err := f.svc.GetAgentSessionTranscript(f.sess, AgentSessionTranscriptPage{Limit: 200})
+		if err != nil {
+			t.Fatalf("transcript: %v", err)
+		}
+		return tr.Blocks, tr.System
+	}
+
+	oracleBlocks, oracleSystem := f.wholeSessionPassOracle(t)
+
+	// Leg 1: the startup backfill derives the turns.
+	backfillTurns(t, f.db)
+	blocks, systemMeta := readAll()
+	if !reflect.DeepEqual(blocks, oracleBlocks) {
+		for i := range blocks {
+			if i >= len(oracleBlocks) || !reflect.DeepEqual(blocks[i], oracleBlocks[i]) {
+				t.Fatalf("backfill leg: block %d differs\n turns: %+v\n  pass: %+v", i, blocks[i], oracleBlocks[i])
+			}
+		}
+		t.Fatalf("backfill leg: %d blocks ≠ %d oracle blocks", len(blocks), len(oracleBlocks))
+	}
+	assertSystemMetaMatches(t, systemMeta, oracleSystem)
+
+	// Leg 2: the live write path derives the same turns from scratch, one
+	// request at a time — the output must be identical.
+	f.wipeTurns(t)
+	liveWriteTurns(t, f.db, f.rows(t))
+	blocks2, systemMeta2 := readAll()
+	if !reflect.DeepEqual(blocks2, blocks) {
+		t.Fatalf("live-write leg differs from backfill leg:\n live: %+v\n back: %+v", blocks2, blocks)
+	}
+	assertSystemMetaMatches(t, systemMeta2, oracleSystem)
+}
+
+// assertSystemMetaMatches checks the metadata list against the pass's raw
+// timeline: index-aligned seen_at_request and raw_length == the raw value's
+// serialized size.
+func assertSystemMetaMatches(t *testing.T, meta []AgentSessionReplaySystemMeta, system []AgentSessionReplaySystem) {
+	t.Helper()
+	if len(meta) != len(system) {
+		t.Fatalf("system timeline lengths = %d meta / %d pass, want equal", len(meta), len(system))
+	}
+	for i := range system {
+		if meta[i].SeenAtRequest != system[i].SeenAtRequest {
+			t.Fatalf("system[%d] seen_at_request = %q, want %q", i, meta[i].SeenAtRequest, system[i].SeenAtRequest)
+		}
+		serialized, err := json.Marshal(system[i].Raw)
+		if err != nil || meta[i].RawLength != len(serialized) {
+			t.Fatalf("system[%d] raw_length = %d, want %d", i, meta[i].RawLength, len(serialized))
+		}
 	}
 }
 
@@ -259,6 +567,7 @@ func TestGetAgentSessionTranscriptSystemRaw(t *testing.T) {
 			t.Fatalf("upsert body %s: %v", id, err)
 		}
 	}
+	backfillTurns(t, db)
 
 	tr, err := svc.GetAgentSessionTranscript(sess, AgentSessionTranscriptPage{})
 	if err != nil {
@@ -330,8 +639,9 @@ func TestGetAgentSessionTranscriptRealByteBudgetWiring(t *testing.T) {
 		t.Fatalf("fixture: request body %d must stay under the inline cap %d", len(bigReq), maxInlineBodyBytes)
 	}
 	bigResp := `{"content":[{"type":"text","text":"` + strings.Repeat("b", maxInlineBodyBytes+4096) + `"}]}`
-	seed("req-older", 0, `{"messages":[{"role":"user","content":"q"}]}`, `{"content":[{"type":"text","text":"small"}}`)
+	seed("req-older", 0, `{"messages":[{"role":"user","content":"q"}]}`, `{"content":[{"type":"text","text":"small"}}]`)
 	seed("req-big", 1, bigReq, bigResp)
+	backfillTurns(t, db)
 
 	tr, err := svc.GetAgentSessionTranscript(sess, AgentSessionTranscriptPage{})
 	if err != nil {
@@ -350,4 +660,103 @@ func TestGetAgentSessionTranscriptRealByteBudgetWiring(t *testing.T) {
 	if tr.HasMoreAfter {
 		t.Fatalf("has_more_after = true, want false (nothing is newer)")
 	}
+}
+
+// TestGetAgentSessionTranscriptTurnsPathPerformance pins the storage
+// rework's performance acceptance on a realistic 72-request session (the
+// replay batch's real-world shape: growing resent history, per-request
+// input + reply, tool results, one system prompt): the COLD first
+// transcript — no warmup of any kind — answers in <500ms and every
+// before-continuation page in <100ms. The turns path reads only the page's
+// turn rows, body rows, and capture bytes, so the numbers are one to two
+// orders under the ceilings; the assertion exists to catch a regression
+// that drags the whole session back into the read path.
+func TestGetAgentSessionTranscriptTurnsPathPerformance(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewRequestLogService(db, "")
+	base := time.Date(2026, 10, 10, 13, 0, 0, 0, time.UTC)
+	claude := "claude-code"
+	sess := "hs-perf"
+	const n = 72
+
+	var history strings.Builder
+	var lastBody string
+	for i := 1; i <= n; i++ {
+		id := fmt.Sprintf("req-%03d", i)
+		var reqBody string
+		if i == 1 {
+			reqBody = `{"system":"You are a senior engineer. ` + strings.Repeat("grounding ", 1500) + `","messages":[{"role":"user","content":"kick off"}]}`
+		} else {
+			reqBody = lastBody[:len(lastBody)-2] + // reopen the messages array
+				fmt.Sprintf(`,{"role":"user","content":"turn %d. %s"}`, i-1, strings.Repeat("please study the referenced files, cross-check the invariants, and continue with the next step of the plan. ", 48)) +
+				`]}`
+		}
+		resp := `{"content":[{"type":"text","text":"` + strings.Repeat(fmt.Sprintf("reply-%d ", i), 8000) + `"}]}`
+		testutil.SeedRequestLog(t, db, id, base.Add(time.Duration(i)*time.Second), func(r *model.RequestLog) {
+			r.AgentClient = &claude
+			r.AgentSessionID = &sess
+			r.StatusCode = 200
+		})
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+			RequestID:    id,
+			RequestBody:  reqBody,
+			ResponseBody: resp,
+		}); err != nil {
+			t.Fatalf("upsert body %s: %v", id, err)
+		}
+		lastBody = reqBody
+	}
+	_ = history
+	backfillTurns(t, db)
+
+	start := time.Now()
+	tr, err := svc.GetAgentSessionTranscript(sess, AgentSessionTranscriptPage{})
+	cold := time.Since(start)
+	if err != nil {
+		t.Fatalf("cold transcript: %v", err)
+	}
+	if len(tr.Blocks) != 20 || !tr.HasMoreBefore {
+		t.Fatalf("cold page = %d blocks (more=%v), want 20 with more before", len(tr.Blocks), tr.HasMoreBefore)
+	}
+	t.Logf("cold first transcript (72-request session, no warmup): %v", cold)
+	if cold >= 500*time.Millisecond {
+		t.Fatalf("cold first transcript took %v, want <500ms (no warmup)", cold)
+	}
+
+	// Continuation pages: walk to the head; every page — full or the
+	// short tail — must answer in <100ms.
+	pages := 1
+	walked := len(tr.Blocks)
+	for tr.HasMoreBefore {
+		start = time.Now()
+		next, err := svc.GetAgentSessionTranscript(sess, AgentSessionTranscriptPage{Limit: 20, Before: tr.NextBefore})
+		pageDur := time.Since(start)
+		if err != nil {
+			t.Fatalf("before page %d: %v", pages, err)
+		}
+		if len(next.Blocks) == 0 {
+			t.Fatalf("before page %d returned no blocks", pages)
+		}
+		t.Logf("before page %d (20 blocks): %v", pages, pageDur)
+		if pageDur >= 100*time.Millisecond {
+			t.Fatalf("before page %d took %v, want <100ms", pages, pageDur)
+		}
+		walked += len(next.Blocks)
+		pages++
+		tr = next
+	}
+	if walked != n {
+		t.Fatalf("walk covered %d blocks over %d pages, want all %d", walked, pages, n)
+	}
+}
+
+// allRequestIDs lists every request id in the seeded rows (fixtures are
+// small enough that a full-table pluck is the honest shape).
+func allRequestIDs(t *testing.T, db *gorm.DB) []string {
+	t.Helper()
+	var ids []string
+	if err := db.Model(&model.RequestLog{}).Pluck("request_id", &ids).Error; err != nil {
+		t.Fatalf("pluck request ids: %v", err)
+	}
+	return ids
 }

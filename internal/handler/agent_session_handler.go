@@ -11,8 +11,8 @@
 //     tool session, chronological
 //   - GET /api/admin/agent-sessions/:sessionId/transcript
 //     the session's deduplicated replay transcript (aggregate + system
-//     timeline metadata + one cursor-paginated page of blocks), assembled by
-//     the service over the pure replay pass
+//     timeline metadata + one cursor-paginated page of blocks), paged by
+//     the service out of the persisted turn store the write path keeps
 //   - GET /api/admin/agent-sessions/:sessionId/transcript/system
 //     the system timeline's raw values (the on-expand fetch for the
 //     collapsed system group)
