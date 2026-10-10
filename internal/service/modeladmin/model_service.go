@@ -130,8 +130,27 @@ type ModelView struct {
 	RunningStatus  string               `json:"running_status"`
 	// SupportsImageInput mirrors the admin's tri-state declaration (nil =
 	// undeclared): whether this model can read images, driving the vision
-	// fallback and strip behaviors in the gateway.
+	// fallback and strip behaviors in the gateway. Deprecated in favour of
+	// InputModalities, which the save path derives this field from; exposed
+	// until the gateway stops reading the column.
 	SupportsImageInput *bool `json:"supports_image_input"`
+	// ContextLength is the admin's declared context window in tokens; nil
+	// means undeclared. Informational — nothing routes on it in this phase.
+	ContextLength *int `json:"context_length"`
+	// InputModalities is what the model accepts as input, in the modality
+	// vocabulary ("text", "image", "audio", "video"). nil means undeclared —
+	// the tri-state the old image-input boolean carried, now in array form.
+	InputModalities []string `json:"input_modalities"`
+	// SupportsTools / SupportsReasoning are the admin's tri-state capability
+	// declarations (nil = undeclared, never "no"). Distinct from the
+	// candidate-level probe flags: these are model-wide and admin-declared.
+	// Informational in this phase.
+	SupportsTools     *bool `json:"supports_tools"`
+	SupportsReasoning *bool `json:"supports_reasoning"`
+	// Temperature is the admin's declared recommended default temperature;
+	// nil means undeclared. Model metadata only — it never takes part in the
+	// request-passthrough temperature the gateway forwards upstream.
+	Temperature *float64 `json:"temperature"`
 	// OutputModalities is what the model produces, in the gateway's modality
 	// vocabulary ("text", "image"). Drives which endpoints the model answers:
 	// a request whose endpoint serves a modality the row does not declare is
@@ -263,10 +282,18 @@ func buildCandidateView(c model.ModelCandidate, providerName string, blockedBy s
 func (s *ModelService) toModelView(m model.Model, candidates []model.ModelCandidate, keysByProvider map[uint][]model.ProviderKey) ModelView {
 	views := s.buildCandidateViews(candidates, keysByProvider)
 	return ModelView{
+		//nolint:staticcheck // SA1019: the API keeps exposing the deprecated
+		// column through the transition; the console reads it until it moves
+		// to input_modalities.
 		ID: m.ID, Name: m.Name, ManagementStatus: m.ManagementStatus, SupportsImageInput: m.SupportsImageInput,
-		OutputModalities: m.OutputModalityList(),
-		SchedulingMode:   m.SchedulingMode.Normalized(),
-		RunningStatus:    computeModelRunningStatus(m.SchedulingMode, views), Candidates: views, CreatedAt: m.CreatedAt,
+		ContextLength:     m.ContextLength,
+		InputModalities:   m.InputModalityList(),
+		SupportsTools:     m.SupportsTools,
+		SupportsReasoning: m.SupportsReasoning,
+		Temperature:       m.Temperature,
+		OutputModalities:  m.OutputModalityList(),
+		SchedulingMode:    m.SchedulingMode.Normalized(),
+		RunningStatus:     computeModelRunningStatus(m.SchedulingMode, views), Candidates: views, CreatedAt: m.CreatedAt,
 	}
 }
 
@@ -2017,6 +2044,24 @@ type UpdateModelInput struct {
 	// that omits it leaves the stored declaration alone.
 	OutputModalitiesSet bool
 	OutputModalities    []string
+	// The capability-metadata declarations follow the ImageInput convention:
+	// a set-flag paired with a tri-state value, nil with the flag set meaning
+	// "clear back to undeclared".
+	ContextLengthSet     bool
+	ContextLength        *int
+	SupportsToolsSet     bool
+	SupportsTools        *bool
+	SupportsReasoningSet bool
+	SupportsReasoning    *bool
+	TemperatureSet       bool
+	Temperature          *float64
+	// InputModalitiesSet marks the input declaration as submitted. Unlike the
+	// output list, an empty submitted list is legal and means "clear back to
+	// undeclared" — input has a meaningful no-declaration state. A submitted
+	// declaration also supersedes ImageInput in the same request: the array
+	// is authoritative and the deprecated boolean is derived from it.
+	InputModalitiesSet bool
+	InputModalities    []string
 }
 
 // UpdateModel saves the model's name and every submitted optional field in
@@ -2048,6 +2093,17 @@ func (s *ModelService) UpdateModel(id uint, in UpdateModelInput, now time.Time) 
 		}
 		outputModalities = out
 	}
+	// The input list carries a tri-state, so an empty submitted list is the
+	// legal "clear back to undeclared" rather than the rejection it is on
+	// the output side; the canonical form of undeclared is the empty string.
+	inputModalities := ""
+	if in.InputModalitiesSet {
+		out, err := model.CanonicalInputModalities(in.InputModalities)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errcode.ErrModelInputModalityInvalid, err)
+		}
+		inputModalities = out
+	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		m, err := repository.FindModelByID(tx, id)
 		if err != nil {
@@ -2061,6 +2117,16 @@ func (s *ModelService) UpdateModel(id uint, in UpdateModelInput, now time.Time) 
 			ImageInputSet: in.ImageInputSet, ImageInput: in.ImageInput,
 			SchedulingMode:      in.SchedulingMode,
 			OutputModalitiesSet: in.OutputModalitiesSet, OutputModalities: outputModalities,
+			ContextLengthSet:     in.ContextLengthSet,
+			ContextLength:        in.ContextLength,
+			SupportsToolsSet:     in.SupportsToolsSet,
+			SupportsTools:        in.SupportsTools,
+			SupportsReasoningSet: in.SupportsReasoningSet,
+			SupportsReasoning:    in.SupportsReasoning,
+			TemperatureSet:       in.TemperatureSet,
+			Temperature:          in.Temperature,
+			InputModalitiesSet:   in.InputModalitiesSet,
+			InputModalities:      inputModalities,
 		}
 		if err := repository.UpdateModel(tx, id, update, now); err != nil {
 			return err

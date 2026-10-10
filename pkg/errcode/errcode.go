@@ -97,6 +97,7 @@ const (
 	ModelSchedulingModeInvalid = 12107 // scheduling_mode is not one of failover/balanced
 	ModelOutputModalityInvalid = 12108 // output_modalities is not a list of known modality ids
 	ModelBillingInvalid        = 12109 // billing_mode/image_pricing_tiers is not a valid billing declaration
+	ModelInputModalityInvalid  = 12110 // input_modalities is not a list of known modality ids
 
 	// === User group errors (13xxx) — user group serving three roles at once ===
 	UserGroupNotFound       = 13001
@@ -227,6 +228,7 @@ var ErrorMessages = map[int]string{
 	ModelSchedulingModeInvalid:  "scheduling mode must be failover or balanced",
 	ModelOutputModalityInvalid:  "output modalities must be a non-empty list of: text, image",
 	ModelBillingInvalid:         "billing declaration is invalid",
+	ModelInputModalityInvalid:   "input modalities must be a list of: text, image, audio, video",
 
 	UserGroupNotFound:       "user group not found",
 	UserGroupNameTaken:      "user group name already taken",
@@ -329,6 +331,7 @@ var (
 	ErrModelSchedulingModeInvalid  = errors.New(ErrorMessages[ModelSchedulingModeInvalid])
 	ErrModelOutputModalityInvalid  = errors.New(ErrorMessages[ModelOutputModalityInvalid])
 	ErrModelBillingInvalid         = errors.New(ErrorMessages[ModelBillingInvalid])
+	ErrModelInputModalityInvalid   = errors.New(ErrorMessages[ModelInputModalityInvalid])
 
 	ErrUserGroupNotFound       = errors.New(ErrorMessages[UserGroupNotFound])
 	ErrUserGroupNameTaken      = errors.New(ErrorMessages[UserGroupNameTaken])

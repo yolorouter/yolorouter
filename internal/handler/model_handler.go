@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -54,6 +55,56 @@ type updateModelRequest struct {
 	// whole declaration (and an empty present list is rejected by the
 	// service, not read as the text default), absent keeps the stored one.
 	OutputModalities *[]string `json:"output_modalities" binding:"omitempty,max=4,dive,max=32"`
+	// InputModalities likewise replaces the whole declaration when present,
+	// with one difference the tri-state makes necessary: a present EMPTY list
+	// is legal and means "clear back to undeclared" (an input declaration has
+	// a meaningful no-declaration state; an output one does not). Absent
+	// keeps the stored declaration. The service validates the vocabulary.
+	InputModalities *[]string `json:"input_modalities" binding:"omitempty,max=4,dive,max=32"`
+	// SupportsTools / SupportsReasoning are tri-state capability declarations
+	// in the same string-enum form as ImageInput: "yes" / "no" / "unknown",
+	// absent = don't touch.
+	SupportsTools     *string `json:"supports_tools" binding:"omitempty,oneof=yes no unknown"`
+	SupportsReasoning *string `json:"supports_reasoning" binding:"omitempty,oneof=yes no unknown"`
+	// ContextLength / Temperature are tri-state numbers: absent keeps the
+	// stored value, null clears back to undeclared, a number declares it.
+	// The declaredInt / declaredFloat64 wrappers exist because a bare pointer
+	// cannot tell JSON null from an absent key.
+	ContextLength declaredInt     `json:"context_length"`
+	Temperature   declaredFloat64 `json:"temperature"`
+}
+
+// declaredInt is the wire form of a tri-state integer: encoding/json calls
+// UnmarshalJSON only when the key is present, so set=false means the key was
+// absent (leave the stored value alone) while a present null carries
+// set=true with a nil value (clear back to undeclared).
+type declaredInt struct {
+	set   bool
+	value *int
+}
+
+func (d *declaredInt) UnmarshalJSON(b []byte) error {
+	d.set = true
+	if string(b) == "null" {
+		d.value = nil
+		return nil
+	}
+	return json.Unmarshal(b, &d.value)
+}
+
+// declaredFloat64 is declaredInt's float sibling, same tri-state contract.
+type declaredFloat64 struct {
+	set   bool
+	value *float64
+}
+
+func (d *declaredFloat64) UnmarshalJSON(b []byte) error {
+	d.set = true
+	if string(b) == "null" {
+		d.value = nil
+		return nil
+	}
+	return json.Unmarshal(b, &d.value)
 }
 
 type setModelStatusRequest struct {
@@ -262,13 +313,44 @@ func PatchModel(svc *modeladmin.ModelService) gin.HandlerFunc {
 		if req.OutputModalities != nil {
 			outputModalities = *req.OutputModalities
 		}
+		var inputModalities []string
+		if req.InputModalities != nil {
+			inputModalities = *req.InputModalities
+		}
+		triState := func(s *string) (set bool, value *bool) {
+			if s == nil {
+				return false, nil
+			}
+			switch *s {
+			case "yes":
+				t := true
+				return true, &t
+			case "no":
+				f := false
+				return true, &f
+			default: // "unknown" — the only other enum value the binding allows
+				return true, nil
+			}
+		}
+		toolsSet, tools := triState(req.SupportsTools)
+		reasoningSet, reasoning := triState(req.SupportsReasoning)
 		view, err := svc.UpdateModel(id, modeladmin.UpdateModelInput{
-			Name:                req.Name,
-			ImageInputSet:       req.ImageInput != nil,
-			ImageInput:          imageInput,
-			SchedulingMode:      req.SchedulingMode,
-			OutputModalitiesSet: req.OutputModalities != nil,
-			OutputModalities:    outputModalities,
+			Name:                 req.Name,
+			ImageInputSet:        req.ImageInput != nil,
+			ImageInput:           imageInput,
+			SchedulingMode:       req.SchedulingMode,
+			OutputModalitiesSet:  req.OutputModalities != nil,
+			OutputModalities:     outputModalities,
+			InputModalitiesSet:   req.InputModalities != nil,
+			InputModalities:      inputModalities,
+			ContextLengthSet:     req.ContextLength.set,
+			ContextLength:        req.ContextLength.value,
+			SupportsToolsSet:     toolsSet,
+			SupportsTools:        tools,
+			SupportsReasoningSet: reasoningSet,
+			SupportsReasoning:    reasoning,
+			TemperatureSet:       req.Temperature.set,
+			Temperature:          req.Temperature.value,
 		}, timeNow())
 		if err != nil {
 			writeServiceError(c, err)

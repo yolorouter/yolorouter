@@ -56,6 +56,26 @@ type ModelUpdate struct {
 	// and serialized by the service before it reaches here).
 	OutputModalitiesSet bool
 	OutputModalities    string
+	// ContextLength / SupportsTools / SupportsReasoning / Temperature are the
+	// capability-metadata declarations, each with the same set-flag +
+	// tri-state value convention as ImageInput: the flag marks the field as
+	// submitted, and nil with the flag set stores NULL (undeclared).
+	ContextLengthSet     bool
+	ContextLength        *int
+	SupportsToolsSet     bool
+	SupportsTools        *bool
+	SupportsReasoningSet bool
+	SupportsReasoning    *bool
+	TemperatureSet       bool
+	Temperature          *float64
+	// InputModalitiesSet marks the input-modalities declaration as submitted;
+	// the value is the canonical JSON string ("" = undeclared, validated and
+	// serialized by the service before it reaches here). A submitted
+	// declaration is authoritative: UpdateModel derives the deprecated
+	// supports_image_input column from it in the same statement, so the pair
+	// cannot drift and a request that carries both fields has the array win.
+	InputModalitiesSet bool
+	InputModalities    string
 }
 
 // UpdateModel writes every submitted field of u in ONE statement,
@@ -63,7 +83,18 @@ type ModelUpdate struct {
 // caller submitted.
 func UpdateModel(db *gorm.DB, id uint, u ModelUpdate, now time.Time) error {
 	updates := map[string]interface{}{"name": u.Name, "management_status": u.Status, "updated_at": now}
-	if u.ImageInputSet {
+	if u.InputModalitiesSet {
+		// The mirror write rides in the same statement as the declaration it
+		// derives from — two statements would let a reader (and the
+		// vision-fallback hot path reads this column) observe the new array
+		// with the stale boolean, or the reverse after a crash between them.
+		if u.InputModalities == "" {
+			updates["input_modalities"] = nil
+		} else {
+			updates["input_modalities"] = u.InputModalities
+		}
+		updates["supports_image_input"] = model.DeriveImageInputSupport(u.InputModalities)
+	} else if u.ImageInputSet {
 		updates["supports_image_input"] = u.ImageInput
 	}
 	if u.SchedulingMode != nil {
@@ -71,6 +102,18 @@ func UpdateModel(db *gorm.DB, id uint, u ModelUpdate, now time.Time) error {
 	}
 	if u.OutputModalitiesSet {
 		updates["output_modalities"] = u.OutputModalities
+	}
+	if u.ContextLengthSet {
+		updates["context_length"] = u.ContextLength
+	}
+	if u.SupportsToolsSet {
+		updates["supports_tools"] = u.SupportsTools
+	}
+	if u.SupportsReasoningSet {
+		updates["supports_reasoning"] = u.SupportsReasoning
+	}
+	if u.TemperatureSet {
+		updates["temperature"] = u.Temperature
 	}
 	return db.Model(&model.Model{}).Where("id = ?", id).Updates(updates).Error
 }

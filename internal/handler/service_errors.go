@@ -76,6 +76,7 @@ var serviceErrorTable = []serviceErrorEntry{
 	{sentinel: errcode.ErrModelSchedulingModeInvalid, code: errcode.ModelSchedulingModeInvalid},
 	{sentinel: errcode.ErrModelOutputModalityInvalid, code: errcode.ModelOutputModalityInvalid},
 	{sentinel: errcode.ErrModelBillingInvalid, code: errcode.ModelBillingInvalid},
+	{sentinel: errcode.ErrModelInputModalityInvalid, code: errcode.ModelInputModalityInvalid},
 
 	// The analytics sentinels live outside pkg/errcode; their wrapped text
 	// names the offending query parameter, so it is returned verbatim.
