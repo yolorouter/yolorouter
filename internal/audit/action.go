@@ -114,13 +114,14 @@ var actionByRoute = map[string]string{
 	"POST /api/admin/playground/video/stop-wait": "playground.stop_wait",
 
 	// Typed system settings: one PUT per named setting.
-	"PUT /api/admin/system-settings/custom-system-prompt":  "system_settings.update",
-	"PUT /api/admin/system-settings/input-compression":     "system_settings.update",
-	"PUT /api/admin/system-settings/vision-fallback":       "system_settings.update",
-	"PUT /api/admin/system-settings/key-auto-recovery":     "system_settings.update",
-	"PUT /api/admin/system-settings/request-log-retention": "system_settings.update",
-	"PUT /api/admin/system-settings/admin-audit-retention": "system_settings.update",
-	"PUT /api/admin/system-settings/outbound-proxy":        "system_settings.update",
+	"PUT /api/admin/system-settings/custom-system-prompt":   "system_settings.update",
+	"PUT /api/admin/system-settings/input-compression":      "system_settings.update",
+	"PUT /api/admin/system-settings/vision-fallback":        "system_settings.update",
+	"PUT /api/admin/system-settings/key-auto-recovery":      "system_settings.update",
+	"PUT /api/admin/system-settings/request-log-retention":  "system_settings.update",
+	"PUT /api/admin/system-settings/admin-audit-retention":  "system_settings.update",
+	"PUT /api/admin/system-settings/outbound-proxy":         "system_settings.update",
+	"PUT /api/admin/system-settings/capability-enforcement": "system_settings.update",
 
 	// One-click self-update.
 	"POST /api/admin/system/update": "system.update",

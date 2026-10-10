@@ -2,10 +2,11 @@
 
      The General settings page (/settings/general, admin-only like /about):
      the System Settings group's persistent-form home for instance-wide
-     settings. Four items live here — request log retention, admin audit
-     retention, language, and key auto recovery.
+     settings. Six items live here — request log retention, admin audit
+     retention, outbound proxy, capability enforcement, language, and key
+     auto recovery.
 
-     The two server-backed items are cards with their own load + version-CAS
+     The five server-backed items are cards with their own load + version-CAS
      save lifecycle, lifted from the settings modals (OptimizationSettingsModal
      / VisionFallbackModal / the key-recovery modal this page replaced): the GET is
      authoritative, the PUT carries its version, and a 409 means another admin
@@ -174,6 +175,99 @@
       </NForm>
     </section>
 
+    <!-- Capability enforcement: the six forwarding rules driven by each
+         model's declared capability fields, plus the context-limit margin
+         they share. Same card lifecycle as the items above, with one
+         structural difference: the seven rows behind this card share ONE
+         version and save as one snapshot — there is no per-switch PUT, so
+         every save carries all six switches and the margin together. -->
+    <section class="settings-card">
+      <h2 class="settings-card__title">{{ t('generalSettings.capability.title') }}</h2>
+      <p class="settings-card__desc">{{ t('generalSettings.capability.desc') }}</p>
+      <div v-if="capabilityLoad === 'loading'" class="settings-card__state">{{ t('common.loading') }}</div>
+      <div v-else-if="capabilityLoad === 'error'" class="settings-card__state settings-card__state--err">
+        <span>{{ t('generalSettings.capability.loadFailed') }}</span>
+        <NButton size="small" @click="loadCapability">{{ t('generalSettings.capability.retry') }}</NButton>
+      </div>
+      <NForm
+        v-else
+        ref="capabilityFormRef"
+        :model="capabilityForm"
+        :rules="capabilityRules"
+        require-mark-placement="left"
+      >
+        <NFormItem path="contextLimitBlock">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.capability.contextLimitBlockTip')">{{
+              t('generalSettings.capability.contextLimitBlock')
+            }}</HelpLabel>
+          </template>
+          <NSwitch v-model:value="capabilityForm.contextLimitBlock" class="gs-capability__switch-context-limit" />
+        </NFormItem>
+        <NFormItem path="temperatureDefault">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.capability.temperatureDefaultTip')">{{
+              t('generalSettings.capability.temperatureDefault')
+            }}</HelpLabel>
+          </template>
+          <NSwitch v-model:value="capabilityForm.temperatureDefault" class="gs-capability__switch-temperature-default" />
+        </NFormItem>
+        <NFormItem path="temperatureForce">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.capability.temperatureForceTip')">{{
+              t('generalSettings.capability.temperatureForce')
+            }}</HelpLabel>
+          </template>
+          <NSwitch v-model:value="capabilityForm.temperatureForce" class="gs-capability__switch-temperature-force" />
+        </NFormItem>
+        <NFormItem path="toolsStrict">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.capability.toolsStrictTip')">{{
+              t('generalSettings.capability.toolsStrict')
+            }}</HelpLabel>
+          </template>
+          <NSwitch v-model:value="capabilityForm.toolsStrict" class="gs-capability__switch-tools-strict" />
+        </NFormItem>
+        <NFormItem path="reasoningStrict">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.capability.reasoningStrictTip')">{{
+              t('generalSettings.capability.reasoningStrict')
+            }}</HelpLabel>
+          </template>
+          <NSwitch v-model:value="capabilityForm.reasoningStrict" class="gs-capability__switch-reasoning-strict" />
+        </NFormItem>
+        <NFormItem path="reasoningEgressClear">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.capability.reasoningEgressClearTip')">{{
+              t('generalSettings.capability.reasoningEgressClear')
+            }}</HelpLabel>
+          </template>
+          <NSwitch v-model:value="capabilityForm.reasoningEgressClear" class="gs-capability__switch-reasoning-clear" />
+        </NFormItem>
+        <NFormItem path="margin">
+          <template #label>
+            <HelpLabel :tip="t('generalSettings.capability.marginTip')">{{
+              t('generalSettings.capability.margin')
+            }}</HelpLabel>
+          </template>
+          <!-- Same no-silent-clamp contract as the retention inputs above:
+               the rule rejects with an explicit message. -->
+          <NInputNumber v-model:value="capabilityForm.margin" class="gs-capability__margin" />
+        </NFormItem>
+        <div class="settings-card__actions">
+          <NButton
+            type="primary"
+            class="gs-capability__save"
+            :loading="capabilitySaving"
+            :disabled="capabilityLoad !== 'ready'"
+            @click="saveCapability"
+          >
+            {{ t('common.save') }}
+          </NButton>
+        </div>
+      </NForm>
+    </section>
+
     <!-- Language: personal, per-browser — reads/writes the locale store the
          sidebar Language entry also uses (one source of truth), applies on
          pick. No load state (the store reads synchronously) and no save
@@ -263,16 +357,19 @@ import { LOCALES } from '../../i18n'
 import { APIError, displayMessage } from '../../api/client'
 import {
   getAdminAuditRetention,
+  getCapabilityEnforcement,
   getKeyAutoRecovery,
   getOutboundProxy,
   getRequestLogRetention,
   updateAdminAuditRetention,
+  updateCapabilityEnforcement,
   updateKeyAutoRecovery,
   updateOutboundProxy,
   updateRequestLogRetention,
 } from '../../api/systemSettings'
 import {
   ADMIN_AUDIT_RETENTION_CONFLICT,
+  CAPABILITY_ENFORCEMENT_CONFLICT,
   KEY_AUTO_RECOVERY_CONFLICT,
   OUTBOUND_PROXY_CONFLICT,
   REQUEST_LOG_RETENTION_CONFLICT,
@@ -305,6 +402,13 @@ import {
   proxyUrlIssueMessageKey,
   type OutboundProxyForm,
 } from '../../utils/outboundProxy'
+import {
+  capabilityFormFromSetting,
+  capabilitySavePlan,
+  checkMarginPercent,
+  marginIssueMessageKey,
+  type CapabilityEnforcementForm,
+} from '../../utils/capabilityEnforcement'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -579,6 +683,107 @@ async function saveProxy() {
   }
 }
 
+// --- Capability enforcement -------------------------------------------------
+
+// Identical lifecycle to the items above; the setting family is its own
+// endpoint + conflict code (11027). The six switches are booleans straight
+// off NSwitch, so the margin is the only validated field — its bounds stay
+// owned by utils/capabilityEnforcement, the module this card shares with
+// its tests. The seven rows behind the endpoint share one version, so a
+// save always PUTs the whole snapshot (all six switches + margin + the
+// CAS version), never a per-switch patch.
+const capabilityLoad = ref<'loading' | 'error' | 'ready'>('loading')
+const capabilitySaving = ref(false)
+const capabilityVersion = ref(0)
+const capabilityFormRef = ref<FormInst | null>(null)
+const capabilityForm = reactive<CapabilityEnforcementForm>({
+  contextLimitBlock: false,
+  temperatureDefault: false,
+  temperatureForce: false,
+  toolsStrict: false,
+  reasoningStrict: false,
+  reasoningEgressClear: false,
+  margin: null,
+})
+
+const capabilityRules = computed<FormRules>(() => ({
+  margin: [
+    {
+      required: true,
+      validator: (_rule, value: number | null) => checkMarginPercent(value).ok,
+      message: capabilityValidationMessage(),
+      trigger: ['blur'],
+    },
+  ],
+}))
+
+function capabilityValidationMessage(): string {
+  const check = checkMarginPercent(capabilityForm.margin)
+  return check.ok ? '' : t(marginIssueMessageKey(check.issue))
+}
+
+async function loadCapability() {
+  capabilityLoad.value = 'loading'
+  try {
+    const s = await getCapabilityEnforcement()
+    const next = capabilityFormFromSetting(s)
+    capabilityForm.contextLimitBlock = next.contextLimitBlock
+    capabilityForm.temperatureDefault = next.temperatureDefault
+    capabilityForm.temperatureForce = next.temperatureForce
+    capabilityForm.toolsStrict = next.toolsStrict
+    capabilityForm.reasoningStrict = next.reasoningStrict
+    capabilityForm.reasoningEgressClear = next.reasoningEgressClear
+    capabilityForm.margin = next.margin
+    capabilityVersion.value = s.version
+    capabilityFormRef.value?.restoreValidation()
+    capabilityLoad.value = 'ready'
+  } catch (err) {
+    capabilityLoad.value = 'error'
+    if (!(err instanceof APIError)) message.error(displayMessage(err, t))
+  }
+}
+
+async function saveCapability() {
+  if (capabilityLoad.value !== 'ready' || capabilitySaving.value) return
+  try {
+    await capabilityFormRef.value?.validate()
+  } catch {
+    return
+  }
+  const plan = capabilitySavePlan(
+    {
+      contextLimitBlock: capabilityForm.contextLimitBlock,
+      temperatureDefault: capabilityForm.temperatureDefault,
+      temperatureForce: capabilityForm.temperatureForce,
+      toolsStrict: capabilityForm.toolsStrict,
+      reasoningStrict: capabilityForm.reasoningStrict,
+      reasoningEgressClear: capabilityForm.reasoningEgressClear,
+      margin: capabilityForm.margin,
+    },
+    capabilityVersion.value,
+  )
+  if (!plan.ok) {
+    // Defensive double lock, same as the retention item.
+    message.error(t(marginIssueMessageKey(plan.issue)))
+    return
+  }
+  capabilitySaving.value = true
+  try {
+    await updateCapabilityEnforcement(plan.payload)
+    message.success(t('generalSettings.capability.saved'))
+    await loadCapability()
+  } catch (err) {
+    if (err instanceof APIError && err.code === CAPABILITY_ENFORCEMENT_CONFLICT) {
+      message.error(t('generalSettings.capability.conflict'))
+      void loadCapability()
+    } else {
+      message.error(displayMessage(err, t))
+    }
+  } finally {
+    capabilitySaving.value = false
+  }
+}
+
 // --- Key auto recovery ----------------------------------------------------
 
 // Identical lifecycle to the retention item above; only the setting family
@@ -661,6 +866,7 @@ onMounted(() => {
   void loadRetention()
   void loadAuditRetention()
   void loadProxy()
+  void loadCapability()
   void loadRecovery()
 })
 </script>
@@ -713,8 +919,10 @@ onMounted(() => {
 }
 
 /* The switch's form-item row reads cleaner with the toggle pinned right,
-   matching the migrated modal's block-switch treatment. */
-:deep(.gs-recovery__switch) {
+   matching the migrated modal's block-switch treatment — the capability
+   card's six switches take the same stance. */
+:deep(.gs-recovery__switch),
+:deep([class*='gs-capability__switch-']) {
   margin-left: auto;
 }
 

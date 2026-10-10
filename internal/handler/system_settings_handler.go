@@ -9,6 +9,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/service/systemsettings"
+	"github.com/yolorouter/yolorouter/internal/settings"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -546,5 +547,140 @@ func PutOutboundProxy(svc *systemsettings.SystemSettingsService) gin.HandlerFunc
 			map[string]any{"mode": s.Mode, "proxy_url": s.URL},
 		))
 		response.Success(c, outboundProxyResponse{Mode: s.Mode, URL: s.URL, Version: ver})
+	}
+}
+
+// --- Capability enforcement --------------------------------------------------
+
+// capabilityEnforcementResponse is the handler-facing response DTO with
+// explicit json tags, same wrapper pattern as the settings families above.
+// The neutral settings.CapabilityEnforcementSetting DTO intentionally has no
+// json tags; the wire field names are the system_settings keys minus the
+// capability_ prefix.
+type capabilityEnforcementResponse struct {
+	ContextLimitBlock    bool  `json:"context_limit_block"`
+	TemperatureDefault   bool  `json:"temperature_default"`
+	TemperatureForce     bool  `json:"temperature_force"`
+	ToolsStrict          bool  `json:"tools_strict"`
+	ReasoningStrict      bool  `json:"reasoning_strict"`
+	ReasoningEgressClear bool  `json:"reasoning_egress_clear"`
+	ContextMarginPercent int   `json:"context_margin_percent"`
+	Version              int64 `json:"version"`
+}
+
+// putCapabilityEnforcementRequest: pointers make absent fields
+// distinguishable from zero values, so a partial body cannot silently flip
+// a switch off or reset the margin to the shipped 5 percent.
+type putCapabilityEnforcementRequest struct {
+	ContextLimitBlock    *bool  `json:"context_limit_block"`
+	TemperatureDefault   *bool  `json:"temperature_default"`
+	TemperatureForce     *bool  `json:"temperature_force"`
+	ToolsStrict          *bool  `json:"tools_strict"`
+	ReasoningStrict      *bool  `json:"reasoning_strict"`
+	ReasoningEgressClear *bool  `json:"reasoning_egress_clear"`
+	ContextMarginPercent *int   `json:"context_margin_percent"`
+	Version              *int64 `json:"version"`
+}
+
+// GetCapabilityEnforcement returns the authoritative global state (DB read,
+// bypassing the cache) so the admin always sees the committed value.
+func GetCapabilityEnforcement(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		s, ver, err := svc.GetCapabilityEnforcementForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		response.Success(c, capabilityEnforcementResponseFrom(s, ver))
+	}
+}
+
+// PutCapabilityEnforcement validates + CAS-updates the whole snapshot at
+// once — the seven rows share one version, so the card saves as one unit.
+// version is required (optimistic lock); every switch and the margin must be
+// present (pointers) so a partial body can't silently flip anything. A CAS
+// miss returns 409 with the family's own code; an out-of-domain margin
+// returns the family's 400-class code.
+//
+// Audit: same merge shape as the settings families above — the committed
+// change parks a field-level diff over all seven fields on the automatic
+// layer's single row.
+func PutCapabilityEnforcement(svc *systemsettings.SystemSettingsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req putCapabilityEnforcementRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.ParamError(c, err.Error())
+			return
+		}
+		if req.ContextLimitBlock == nil || req.TemperatureDefault == nil || req.TemperatureForce == nil ||
+			req.ToolsStrict == nil || req.ReasoningStrict == nil || req.ReasoningEgressClear == nil ||
+			req.ContextMarginPercent == nil || req.Version == nil || *req.Version < 1 {
+			response.ParamError(c, "all six switches, context_margin_percent and version (>=1) are required")
+			return
+		}
+		before, _, err := svc.GetCapabilityEnforcementForHandler(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		next := settings.CapabilityEnforcementSetting{
+			ContextLimitBlock:    *req.ContextLimitBlock,
+			TemperatureDefault:   *req.TemperatureDefault,
+			TemperatureForce:     *req.TemperatureForce,
+			ToolsStrict:          *req.ToolsStrict,
+			ReasoningStrict:      *req.ReasoningStrict,
+			ReasoningEgressClear: *req.ReasoningEgressClear,
+			ContextMarginPercent: *req.ContextMarginPercent,
+		}
+		s, ver, err := svc.UpdateCapabilityEnforcement(c.Request.Context(), *req.Version, next)
+		if err != nil {
+			switch {
+			case errors.Is(err, errcode.ErrCapabilityEnforcementConflict):
+				// 409 is not produced by httpStatusForCode's range mapping; set it explicitly.
+				response.ErrorStatus(c, http.StatusConflict, errcode.CapabilityEnforcementConflict, errcode.GetMessage(errcode.CapabilityEnforcementConflict))
+			case errors.Is(err, errcode.ErrCapabilityContextMarginInvalid):
+				response.Error(c, errcode.CapabilityContextMarginInvalid, errcode.GetMessage(errcode.CapabilityContextMarginInvalid))
+			default:
+				response.InternalError(c, err.Error())
+			}
+			return
+		}
+		audit.Event(c, "", "", audit.DiffDetail(
+			map[string]any{
+				"context_limit_block":    before.ContextLimitBlock,
+				"temperature_default":    before.TemperatureDefault,
+				"temperature_force":      before.TemperatureForce,
+				"tools_strict":           before.ToolsStrict,
+				"reasoning_strict":       before.ReasoningStrict,
+				"reasoning_egress_clear": before.ReasoningEgressClear,
+				"context_margin_percent": before.ContextMarginPercent,
+			},
+			map[string]any{
+				"context_limit_block":    s.ContextLimitBlock,
+				"temperature_default":    s.TemperatureDefault,
+				"temperature_force":      s.TemperatureForce,
+				"tools_strict":           s.ToolsStrict,
+				"reasoning_strict":       s.ReasoningStrict,
+				"reasoning_egress_clear": s.ReasoningEgressClear,
+				"context_margin_percent": s.ContextMarginPercent,
+			},
+		))
+		response.Success(c, capabilityEnforcementResponseFrom(s, ver))
+	}
+}
+
+// capabilityEnforcementResponseFrom projects the neutral snapshot into the
+// wire DTO — the single place the field pairings live, so the GET and the
+// PUT echo cannot drift apart.
+func capabilityEnforcementResponseFrom(s settings.CapabilityEnforcementSetting, ver int64) capabilityEnforcementResponse {
+	return capabilityEnforcementResponse{
+		ContextLimitBlock:    s.ContextLimitBlock,
+		TemperatureDefault:   s.TemperatureDefault,
+		TemperatureForce:     s.TemperatureForce,
+		ToolsStrict:          s.ToolsStrict,
+		ReasoningStrict:      s.ReasoningStrict,
+		ReasoningEgressClear: s.ReasoningEgressClear,
+		ContextMarginPercent: s.ContextMarginPercent,
+		Version:              ver,
 	}
 }

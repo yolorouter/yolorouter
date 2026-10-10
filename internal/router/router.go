@@ -487,6 +487,8 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	protected.PUT("/system-settings/admin-audit-retention", handler.PutAdminAuditRetention(settingsSvc))
 	protected.GET("/system-settings/outbound-proxy", handler.GetOutboundProxy(settingsSvc))
 	protected.PUT("/system-settings/outbound-proxy", handler.PutOutboundProxy(settingsSvc))
+	protected.GET("/system-settings/capability-enforcement", handler.GetCapabilityEnforcement(settingsSvc))
+	protected.PUT("/system-settings/capability-enforcement", handler.PutCapabilityEnforcement(settingsSvc))
 
 	// The audit trail's own read surface. Reads only — the sweep test pins
 	// that no non-GET route may ever appear under the audit namespace, and

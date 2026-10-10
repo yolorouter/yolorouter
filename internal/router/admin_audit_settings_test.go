@@ -36,9 +36,10 @@ func diffDoc(t *testing.T, field string, oldV, newV any) string {
 //
 // and one leg per remaining family (input-compression, vision-fallback,
 // key-auto-recovery, request-log-retention, admin-audit-retention,
-// outbound-proxy) proves the merge is the settings family's SHARED shape:
-// every one of the seven PUTs parks its diff through the same audit.Event
-// call, and each leg asserts that family's own diff content — remove any
+// outbound-proxy, capability-enforcement) proves the merge is the settings
+// family's SHARED shape: every one of the eight PUTs parks its diff through
+// the same audit.Event call, and each leg asserts that family's own diff
+// content — remove any
 // family's parking call and its leg goes red on the detail assertion. The
 // outbound-proxy legs additionally pin that family's redaction contract:
 // proxy_url's diff entry is the placeholder, never the address. Every row
@@ -176,9 +177,27 @@ func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 	rid12 := put("/api/admin/system-settings/outbound-proxy",
 		`{"mode":"off","url":"","version":1}`, http.StatusConflict)
 
+	// Leg 13: the capability-enforcement family — turn two reasoning
+	// switches on and widen the margin in one save, so the leg asserts the
+	// multi-field diff shape the card's whole-snapshot PUT produces.
+	ceBefore, ceVer, err := repository.GetCapabilityEnforcement(f.db)
+	if err != nil {
+		t.Fatalf("read seeded capability enforcement: %v", err)
+	}
+	ceMargin := ceBefore.ContextMarginPercent + 5
+	rid13 := put("/api/admin/system-settings/capability-enforcement",
+		fmt.Sprintf(`{"context_limit_block":%v,"temperature_default":%v,"temperature_force":%v,"tools_strict":%v,"reasoning_strict":true,"reasoning_egress_clear":true,"context_margin_percent":%d,"version":%d}`,
+			ceBefore.ContextLimitBlock, ceBefore.TemperatureDefault, ceBefore.TemperatureForce,
+			ceBefore.ToolsStrict, ceMargin, ceVer), http.StatusOK)
+
+	// Leg 14: stale version — the seven-row CAS refuses and the row must
+	// carry no diff.
+	rid14 := put("/api/admin/system-settings/capability-enforcement",
+		`{"context_limit_block":false,"temperature_default":false,"temperature_force":false,"tools_strict":false,"reasoning_strict":false,"reasoning_egress_clear":false,"context_margin_percent":5,"version":1}`, http.StatusConflict)
+
 	rows := f.drain(t)
-	if len(rows) != 12 {
-		t.Fatalf("twelve settings PUTs must land exactly twelve rows, got %d", len(rows))
+	if len(rows) != 14 {
+		t.Fatalf("fourteen settings PUTs must land exactly fourteen rows, got %d", len(rows))
 	}
 	for _, row := range rows {
 		rowsByRequest[row.RequestID] = row
@@ -237,6 +256,21 @@ func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 	assertRow(rid11, "", model.AuditStatusSuccess)
 	// Leg 12: the conflict is an error outcome carrying no diff.
 	assertRow(rid12, "", model.AuditStatusError)
+	// Leg 13: the capability-enforcement family's diff — exactly the three
+	// fields the save flipped (two switches on, margin widened), with the
+	// four untouched switches absent from the diff.
+	ceDiff, err := json.Marshal(map[string]any{
+		"reasoning_strict":       map[string]any{"old": ceBefore.ReasoningStrict, "new": true},
+		"reasoning_egress_clear": map[string]any{"old": ceBefore.ReasoningEgressClear, "new": true},
+		"context_margin_percent": map[string]any{"old": ceBefore.ContextMarginPercent, "new": ceMargin},
+	})
+	if err != nil {
+		t.Fatalf("marshal expected capability diff: %v", err)
+	}
+	assertRow(rid13, string(ceDiff), model.AuditStatusSuccess)
+	// Leg 14: the refused whole-snapshot CAS is an error outcome carrying no
+	// diff.
+	assertRow(rid14, "", model.AuditStatusError)
 
 	// resource_id: each settings route identifies its subject by the final
 	// path segment (the stable slug), whichever leg fired.
@@ -254,6 +288,8 @@ func TestAdminAuditSettingsUpdateDiff(t *testing.T) {
 		rid10: "outbound-proxy",
 		rid11: "outbound-proxy",
 		rid12: "outbound-proxy",
+		rid13: "capability-enforcement",
+		rid14: "capability-enforcement",
 	}
 	for rid, slug := range wantSlug {
 		if row := rowsByRequest[rid]; row.ResourceID != slug {

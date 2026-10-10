@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1119,5 +1120,291 @@ func TestPutOutboundProxyConflictEmits11025(t *testing.T) {
 	}
 	if resp.Code != 11025 {
 		t.Fatalf("errcode = %d, want 11025 (OutboundProxyConflict)", resp.Code)
+	}
+}
+
+// --- Capability enforcement --------------------------------------------------
+
+// setupCapabilityEnforcementRouter seeds the seven-row family at the
+// migration default (six switches off, margin 5). The gorm handle comes
+// back too: the fail-open test needs to delete the rows out from under the
+// service.
+func setupCapabilityEnforcementRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.Exec(`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES
+		('capability_context_limit_block','false'),
+		('capability_temperature_default','false'),
+		('capability_temperature_force','false'),
+		('capability_tools_strict','false'),
+		('capability_reasoning_strict','false'),
+		('capability_reasoning_egress_clear','false'),
+		('capability_context_margin_percent','5')`)
+	svc := systemsettings.NewSystemSettingsService(db)
+	r := gin.New()
+	r.GET("/api/admin/system-settings/capability-enforcement", GetCapabilityEnforcement(svc))
+	r.PUT("/api/admin/system-settings/capability-enforcement", PutCapabilityEnforcement(svc))
+	return r, db
+}
+
+// capabilitySnapshot is the test-side projection of the GET payload.
+type capabilitySnapshot struct {
+	ContextLimitBlock    bool
+	TemperatureDefault   bool
+	TemperatureForce     bool
+	ToolsStrict          bool
+	ReasoningStrict      bool
+	ReasoningEgressClear bool
+	Margin               int
+	Version              int64
+}
+
+// getCapabilityEnforcement is the shared GET-and-extract helper: status must
+// be 200 and the whole snapshot comes back for the caller to assert on.
+func getCapabilityEnforcement(t *testing.T, r *gin.Engine) capabilitySnapshot {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/admin/system-settings/capability-enforcement", nil))
+	if w.Code != 200 {
+		t.Fatalf("GET: status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			ContextLimitBlock    bool  `json:"context_limit_block"`
+			TemperatureDefault   bool  `json:"temperature_default"`
+			TemperatureForce     bool  `json:"temperature_force"`
+			ToolsStrict          bool  `json:"tools_strict"`
+			ReasoningStrict      bool  `json:"reasoning_strict"`
+			ReasoningEgressClear bool  `json:"reasoning_egress_clear"`
+			ContextMarginPercent int   `json:"context_margin_percent"`
+			Version              int64 `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	d := resp.Data
+	return capabilitySnapshot{
+		ContextLimitBlock:    d.ContextLimitBlock,
+		TemperatureDefault:   d.TemperatureDefault,
+		TemperatureForce:     d.TemperatureForce,
+		ToolsStrict:          d.ToolsStrict,
+		ReasoningStrict:      d.ReasoningStrict,
+		ReasoningEgressClear: d.ReasoningEgressClear,
+		Margin:               d.ContextMarginPercent,
+		Version:              d.Version,
+	}
+}
+
+// putCapabilityEnforcementRaw issues a PUT with an exact raw JSON body so
+// the shape tests control the wire form byte for byte.
+func putCapabilityEnforcementRaw(t *testing.T, r *gin.Engine, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("PUT", "/api/admin/system-settings/capability-enforcement", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// fullCapabilityBody renders the seven-field body with the given flips.
+func fullCapabilityBody(margin int, ver int64, flips map[string]bool) string {
+	fields := map[string]bool{
+		"context_limit_block":    false,
+		"temperature_default":    false,
+		"temperature_force":      false,
+		"tools_strict":           false,
+		"reasoning_strict":       false,
+		"reasoning_egress_clear": false,
+	}
+	for k, v := range flips {
+		fields[k] = v
+	}
+	body, _ := json.Marshal(map[string]any{
+		"context_limit_block":    fields["context_limit_block"],
+		"temperature_default":    fields["temperature_default"],
+		"temperature_force":      fields["temperature_force"],
+		"tools_strict":           fields["tools_strict"],
+		"reasoning_strict":       fields["reasoning_strict"],
+		"reasoning_egress_clear": fields["reasoning_egress_clear"],
+		"context_margin_percent": margin,
+		"version":                ver,
+	})
+	return string(body)
+}
+
+// TestGetCapabilityEnforcementReturnsSeededDefault pins the seeded read:
+// the migration-planted rows read back as every switch off with the 5
+// percent margin at the seed version — upgrading changes no behavior.
+func TestGetCapabilityEnforcementReturnsSeededDefault(t *testing.T) {
+	r, _ := setupCapabilityEnforcementRouter(t)
+	s := getCapabilityEnforcement(t, r)
+	if s.ContextLimitBlock || s.TemperatureDefault || s.TemperatureForce ||
+		s.ToolsStrict || s.ReasoningStrict || s.ReasoningEgressClear ||
+		s.Margin != 5 || s.Version != 1 {
+		t.Fatalf("want all-off/margin5/v1 seeded, got %+v", s)
+	}
+}
+
+// TestGetCapabilityEnforcementMissingRowsFailOpenToDefault pins the
+// fail-open read on a database that predates the seeding migration: the
+// absent family must read as the shipped all-off default (version 0), never
+// as an error — the console degrades to the same switches a freshly seeded
+// deployment ships with.
+func TestGetCapabilityEnforcementMissingRowsFailOpenToDefault(t *testing.T) {
+	r, db := setupCapabilityEnforcementRouter(t)
+	if res := db.Exec(`DELETE FROM system_settings WHERE key LIKE 'capability_%'`); res.Error != nil {
+		t.Fatalf("drop the seeded rows: %v", res.Error)
+	}
+	s := getCapabilityEnforcement(t, r)
+	if s.ContextLimitBlock || s.TemperatureDefault || s.TemperatureForce ||
+		s.ToolsStrict || s.ReasoningStrict || s.ReasoningEgressClear ||
+		s.Margin != 5 || s.Version != 0 {
+		t.Fatalf("want all-off/margin5/v0 (shipped default on missing rows), got %+v", s)
+	}
+}
+
+// TestPutCapabilityEnforcementSuccessAndReadBack pins the write half: PUT
+// with two switches on and a new margin commits (fresh version handed
+// back) and the authoritative GET reads the same snapshot back.
+func TestPutCapabilityEnforcementSuccessAndReadBack(t *testing.T) {
+	r, _ := setupCapabilityEnforcementRouter(t)
+	body := fullCapabilityBody(10, 1, map[string]bool{"reasoning_strict": true, "reasoning_egress_clear": true})
+	w := putCapabilityEnforcementRaw(t, r, body)
+	if w.Code != 200 {
+		t.Fatalf("PUT: status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			ReasoningStrict      bool  `json:"reasoning_strict"`
+			ReasoningEgressClear bool  `json:"reasoning_egress_clear"`
+			ContextMarginPercent int   `json:"context_margin_percent"`
+			Version              int64 `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !resp.Data.ReasoningStrict || !resp.Data.ReasoningEgressClear ||
+		resp.Data.ContextMarginPercent != 10 || resp.Data.Version != 2 {
+		t.Fatalf("want strict+clear on, margin 10, v2; got %+v", resp.Data)
+	}
+	got := getCapabilityEnforcement(t, r)
+	if !got.ReasoningStrict || !got.ReasoningEgressClear || got.Margin != 10 || got.Version != 2 {
+		t.Fatalf("read after PUT: want strict+clear on, margin 10, v2; got %+v", got)
+	}
+}
+
+// TestPutCapabilityEnforcementMissingFields400 and the zero-version form
+// pin the request shape: all seven fields and the version are required, so
+// a partial body can never silently flip a switch or reset the margin.
+func TestPutCapabilityEnforcementMissingFields400(t *testing.T) {
+	r, _ := setupCapabilityEnforcementRouter(t)
+	// One body per omitted field: drop exactly one member of the full body.
+	full := `{"context_limit_block":true,"temperature_default":true,"temperature_force":true,"tools_strict":true,"reasoning_strict":true,"reasoning_egress_clear":true,"context_margin_percent":5,"version":1}`
+	for _, field := range []string{
+		`"context_limit_block":true,`,
+		`"temperature_default":true,`,
+		`"temperature_force":true,`,
+		`"tools_strict":true,`,
+		`"reasoning_strict":true,`,
+		`"reasoning_egress_clear":true,`,
+		`"context_margin_percent":5,`,
+	} {
+		body := strings.Replace(full, field, "", 1)
+		w := putCapabilityEnforcementRaw(t, r, body)
+		if w.Code != 400 {
+			t.Fatalf("body %s: status = %d, want 400", body, w.Code)
+		}
+	}
+	for _, body := range []string{`{}`, `{"version":1}`, `{"context_limit_block":true}`} {
+		w := putCapabilityEnforcementRaw(t, r, body)
+		if w.Code != 400 {
+			t.Fatalf("body %s: status = %d, want 400", body, w.Code)
+		}
+	}
+}
+
+func TestPutCapabilityEnforcementZeroVersion400(t *testing.T) {
+	r, _ := setupCapabilityEnforcementRouter(t)
+	w := putCapabilityEnforcementRaw(t, r, fullCapabilityBody(5, 0, nil))
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+// TestPutCapabilityEnforcementMarginDomain pins the margin's inclusive
+// domain, mirroring the service's write-side rule: 0 and 1000 commit, -1
+// and 1001 answer 400 carrying the family's own business code (11028) and
+// leave the stored rows untouched.
+func TestPutCapabilityEnforcementMarginDomain(t *testing.T) {
+	r, _ := setupCapabilityEnforcementRouter(t)
+	// The accepted legs advance the shared version, so each carries the
+	// fresh one the previous echo handed back.
+	ver := int64(1)
+	for _, margin := range []int{0, 1000} {
+		w := putCapabilityEnforcementRaw(t, r, fullCapabilityBody(margin, ver, nil))
+		if w.Code != 200 {
+			t.Fatalf("margin %d: status = %d, want 200, body: %s", margin, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Data struct {
+				ContextMarginPercent int   `json:"context_margin_percent"`
+				Version              int64 `json:"version"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("margin %d: unmarshal: %v", margin, err)
+		}
+		if resp.Data.ContextMarginPercent != margin {
+			t.Fatalf("margin %d: echo = %d", margin, resp.Data.ContextMarginPercent)
+		}
+		ver = resp.Data.Version
+	}
+	for _, margin := range []string{"-1", "1001"} {
+		body := `{"context_limit_block":true,"temperature_default":true,"temperature_force":true,"tools_strict":true,"reasoning_strict":true,"reasoning_egress_clear":true,"context_margin_percent":` + margin + `,"version":` + strconv.FormatInt(ver, 10) + `}`
+		w := putCapabilityEnforcementRaw(t, r, body)
+		if w.Code != 400 {
+			t.Fatalf("margin %s: status = %d, want 400, body: %s", margin, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Code int `json:"code"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("margin %s: unmarshal: %v", margin, err)
+		}
+		if resp.Code != 11028 {
+			t.Fatalf("margin %s: errcode = %d, want 11028 (CapabilityContextMarginInvalid)", margin, resp.Code)
+		}
+	}
+	got := getCapabilityEnforcement(t, r)
+	if got.ContextLimitBlock || got.Margin != 1000 || got.Version != ver {
+		t.Fatalf("after rejected margins: want switches untouched at margin 1000/v%d, got %+v", ver, got)
+	}
+}
+
+// TestPutCapabilityEnforcementConflictEmits11027 verifies the 409 response
+// carries errcode 11027 (CapabilityEnforcementConflict), distinct from the
+// other settings' conflict codes so the frontend can route the retry to
+// the right control.
+func TestPutCapabilityEnforcementConflictEmits11027(t *testing.T) {
+	r, _ := setupCapabilityEnforcementRouter(t)
+	w := putCapabilityEnforcementRaw(t, r, fullCapabilityBody(5, 99, nil))
+	if w.Code != 409 {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	var resp struct {
+		Code int `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Code != 11027 {
+		t.Fatalf("errcode = %d, want 11027 (CapabilityEnforcementConflict)", resp.Code)
 	}
 }

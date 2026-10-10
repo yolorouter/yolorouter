@@ -19,6 +19,8 @@ export const REQUEST_LOG_RETENTION_CONFLICT = 11021
 export const ADMIN_AUDIT_RETENTION_CONFLICT = 11023
 // Mirrors backend OutboundProxyConflict (pkg/errcode).
 export const OUTBOUND_PROXY_CONFLICT = 11025
+// Mirrors backend CapabilityEnforcementConflict (pkg/errcode).
+export const CAPABILITY_ENFORCEMENT_CONFLICT = 11027
 export const PROVIDER_NOT_FOUND = 12001
 export const PROVIDER_NAME_TAKEN = 12002
 export const PROVIDER_KEY_NOT_FOUND = 12009

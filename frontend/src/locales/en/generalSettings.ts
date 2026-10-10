@@ -60,4 +60,37 @@ export default {
     labelTip:
       'Saved per browser, only for you. The sidebar Language entry switches the same stored preference — the two always stay in sync.',
   },
+  capability: {
+    title: 'Capability Enforcement',
+    desc: 'Six forwarding rules driven by each model’s declared capability fields, each an independent switch, all off by default. The capability fields (model capability metadata) live on the model edit page; a rule only consults declared fields — an undeclared capability never triggers a refusal. Saves take effect within about 30 seconds, no restart needed.',
+    contextLimitBlock: 'Context overflow block',
+    contextLimitBlockTip:
+      'A request whose estimated input breaks the addressed model’s declared context window (plus the margin) is refused with 413 before any upstream call; models without a declared window are never refused.',
+    temperatureDefault: 'Default temperature',
+    temperatureDefaultTip:
+      'When the caller sends no temperature and the model declares one, the declared default is injected before forwarding; explicit values pass through untouched (unless the override below is also on).',
+    temperatureForce: 'Force temperature override',
+    temperatureForceTip:
+      'When on, even an explicitly sent temperature is overridden by the model’s declared default. Off by default so caller parameters are never rewritten by accident.',
+    toolsStrict: 'Strict tools refusal',
+    toolsStrictTip:
+      'A request carrying tools aimed at a model declared tools-incapable is refused with 400; models with an undeclared capability are never refused.',
+    reasoningStrict: 'Strict reasoning refusal',
+    reasoningStrictTip:
+      'Judged against the addressed model only: a reasoning payload aimed at a model declared reasoning-incapable is refused with 400. A non-reasoning model the routing falls back to is not refused here — the landing clear below handles it.',
+    reasoningEgressClear: 'Reasoning clear at landing',
+    reasoningEgressClearTip:
+      'Before dispatch to a landing candidate declared reasoning-incapable (fallback targets included), the request’s reasoning parameters are stripped so the upstream never sees a parameter it does not understand.',
+    margin: 'Margin (percent)',
+    marginTip:
+      'The overflow threshold is the declared window × (1 + margin%). The band lets boundary requests through under estimation error instead of refusing them; ships at 5, allowed 0–1000.',
+    marginRequired: 'Enter a margin percent',
+    marginWholeNumber: 'The margin must be a whole percent',
+    marginMin: 'The margin cannot be below 0',
+    marginMax: 'The margin must be at most 1000',
+    saved: 'Saved',
+    loadFailed: 'Failed to load the current setting',
+    retry: 'Retry',
+    conflict: 'This setting was changed elsewhere. Reloaded the latest version — review and save again.',
+  },
 }

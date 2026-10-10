@@ -4,9 +4,10 @@
 // BOTH locales (zh-CN and en ship different copy, so each is asserted on the
 // copy itself):
 //
-//   - render: all three persistent-form items appear with the committed
+//   - render: all five persistent-form items appear with the committed
 //     values (retention days input, language picker, key-recovery switch +
-//     interval input) — TC-06
+//     interval input, and the capability card's six switches + margin
+//     input at their seeded off/5 state)
 //   - save: changing retention and saving PUTs the retention endpoint with
 //     the CAS version; toggling the recovery switch and saving PUTs the
 //     key-auto-recovery endpoint — TC-06 (both arms), TC-10
@@ -16,6 +17,12 @@
 //     modal's, whose pure logic lives in utils/keyAutoRecovery.test.ts)
 //   - one representative illegal interval blocks the recovery save the same
 //     way — TC-10's "modal behavior preserved in form shape" arm
+//   - the capability card saves as one whole snapshot (two flipped switches
+//     + the margin PUT all six switches together with the CAS version),
+//     re-projects the committed GET after a save, blocks the illegal
+//     margin matrix without a PUT, and surfaces the 409 conflict by
+//     reloading the committed row — pure logic in
+//     utils/capabilityEnforcement.test.ts
 //   - the language item is dual-entry same-source with the sidebar Language
 //     entry: a switch driven through the nav entry's store action shows up
 //     in the form, and a pick in the form writes the same store (and only
@@ -31,10 +38,12 @@ import { defineComponent, nextTick } from 'vue'
 
 import {
   getAdminAuditRetention,
+  getCapabilityEnforcement,
   getKeyAutoRecovery,
   getOutboundProxy,
   getRequestLogRetention,
   updateAdminAuditRetention,
+  updateCapabilityEnforcement,
   updateKeyAutoRecovery,
   updateOutboundProxy,
   updateRequestLogRetention,
@@ -49,6 +58,8 @@ vi.mock('../../api/systemSettings', () => ({
   updateAdminAuditRetention: vi.fn(),
   getOutboundProxy: vi.fn(),
   updateOutboundProxy: vi.fn(),
+  getCapabilityEnforcement: vi.fn(),
+  updateCapabilityEnforcement: vi.fn(),
 }))
 
 const getRetentionMock = vi.mocked(getRequestLogRetention)
@@ -59,9 +70,11 @@ const getRecoveryMock = vi.mocked(getKeyAutoRecovery)
 const putRecoveryMock = vi.mocked(updateKeyAutoRecovery)
 const getProxyMock = vi.mocked(getOutboundProxy)
 const putProxyMock = vi.mocked(updateOutboundProxy)
+const getCapabilityMock = vi.mocked(getCapabilityEnforcement)
+const putCapabilityMock = vi.mocked(updateCapabilityEnforcement)
 
 import { APIError } from '../../api/client'
-import { OUTBOUND_PROXY_CONFLICT } from '../../api/errcodes'
+import { CAPABILITY_ENFORCEMENT_CONFLICT, OUTBOUND_PROXY_CONFLICT } from '../../api/errcodes'
 
 // Must be imported after the vi.mock factory is registered.
 import GeneralSettingsPage from './GeneralSettingsPage.vue'
@@ -86,10 +99,11 @@ type Locale = 'en' | 'zh-CN'
 const navCopy = { en: en.nav, 'zh-CN': zhCN.nav } as const
 const gsCopy = { en: en.generalSettings, 'zh-CN': zhCN.generalSettings } as const
 const karCopy = { en: en.keyAutoRecovery, 'zh-CN': zhCN.keyAutoRecovery } as const
+const capCopy = { en: en.generalSettings.capability, 'zh-CN': zhCN.generalSettings.capability } as const
 
 let wrapper: VueWrapper | null = null
 
-// The committed rows the two GETs resolve with. Retention starts at the
+// The committed rows the GETs resolve with. Retention starts at the
 // fail-open default 0 (keep forever); recovery starts disabled.
 function primeSettings(retentionDays = 0, retentionVersion = 5) {
   getRetentionMock.mockResolvedValue({ retention_days: retentionDays, version: retentionVersion })
@@ -99,6 +113,19 @@ function primeSettings(retentionDays = 0, retentionVersion = 5) {
   getRecoveryMock.mockResolvedValue({ enabled: false, interval_minutes: 15, version: 9 })
   // Outbound proxy starts at the seeded default: mode off, empty URL.
   getProxyMock.mockResolvedValue({ mode: 'off', url: '', version: 7 })
+  // Capability enforcement starts at the seeded default: every switch off,
+  // margin 5 (the seven rows the seeding migration plants on a fresh
+  // install).
+  getCapabilityMock.mockResolvedValue({
+    context_limit_block: false,
+    temperature_default: false,
+    temperature_force: false,
+    tools_strict: false,
+    reasoning_strict: false,
+    reasoning_egress_clear: false,
+    context_margin_percent: 5,
+    version: 11,
+  })
 }
 
 async function mountPage(locale: Locale) {
@@ -126,7 +153,9 @@ function intervalInput(): HTMLInputElement {
   return input!
 }
 
-function saveButton(section: 'retention' | 'audit-retention' | 'proxy' | 'recovery'): HTMLButtonElement {
+function saveButton(
+  section: 'retention' | 'audit-retention' | 'proxy' | 'capability' | 'recovery',
+): HTMLButtonElement {
   const btn = document.body.querySelector<HTMLButtonElement>(`.gs-${section}__save`)
   expect(btn, `${section} save button rendered`).toBeTruthy()
   return btn!
@@ -170,6 +199,22 @@ function recoverySwitch(): HTMLElement {
   return el!
 }
 
+// One of the capability card's six switches, addressed by its per-switch
+// class so the six stay individually reachable (and individually
+// assertable) regardless of card order.
+function capabilitySwitch(which: 'context-limit' | 'temperature-default' | 'temperature-force' | 'tools-strict' | 'reasoning-strict' | 'reasoning-clear'): HTMLElement {
+  const el = document.body.querySelector<HTMLElement>(`.gs-capability__switch-${which}`)
+  expect(el, `capability switch ${which} rendered`).toBeTruthy()
+  return el!
+}
+
+// The capability card's margin input.
+function capabilityMarginInput(): HTMLInputElement {
+  const input = document.body.querySelector<HTMLInputElement>('.gs-capability__margin input')
+  expect(input, 'capability margin input rendered').toBeTruthy()
+  return input!
+}
+
 // NInputNumber keeps its v-model in sync per keystroke (updateValueOnInput,
 // no min/max/precision props on these fields), so a native input event with
 // the new string drives the form state exactly like typing does.
@@ -183,6 +228,7 @@ beforeEach(() => {
   putRetentionMock.mockReset()
   putAuditRetentionMock.mockReset()
   putProxyMock.mockReset()
+  putCapabilityMock.mockReset()
   putRecoveryMock.mockReset()
 })
 
@@ -194,10 +240,10 @@ afterEach(() => {
 })
 
 describe.each<Locale>(['zh-CN', 'en'])('GeneralSettingsPage render (%s)', (locale) => {
-  it('renders all four persistent-form items with the committed values', async () => {
+  it('renders all five persistent-form items with the committed values', async () => {
     await mountPage(locale)
     const text = document.body.textContent ?? ''
-    // The page header and all four section cards.
+    // The page header and all section cards.
     expect(text).toContain(navCopy[locale].generalSettings)
     expect(text).toContain(gsCopy[locale].retention.title)
     expect(text).toContain(gsCopy[locale].auditRetention.title)
@@ -216,16 +262,40 @@ describe.each<Locale>(['zh-CN', 'en'])('GeneralSettingsPage render (%s)', (local
     expect(text).toContain(gsCopy[locale].language.label)
     expect(text).toContain(karCopy[locale].enabled)
     expect(text).toContain(karCopy[locale].interval)
+    // The capability card: its title, all six switch labels and the margin
+    // label come from the locale's own subtree, so each is asserted on the
+    // copy itself (zh-CN and en ship different text).
+    expect(text).toContain(capCopy[locale].title)
+    expect(text).toContain(capCopy[locale].contextLimitBlock)
+    expect(text).toContain(capCopy[locale].temperatureDefault)
+    expect(text).toContain(capCopy[locale].temperatureForce)
+    expect(text).toContain(capCopy[locale].toolsStrict)
+    expect(text).toContain(capCopy[locale].reasoningStrict)
+    expect(text).toContain(capCopy[locale].reasoningEgressClear)
+    expect(text).toContain(capCopy[locale].margin)
     // Committed values: retention shows the seeded 0, audit retention the
-    // seeded 180, interval 15.
+    // seeded 180, interval 15, capability margin the seeded 5.
     expect(retentionInput().value).toBe('0')
     expect(auditRetentionInput().value).toBe('180')
     expect(intervalInput().value).toBe('15')
+    expect(capabilityMarginInput().value).toBe('5')
     expect(recoverySwitch().getAttribute('aria-checked')).toBe('false')
-    // All three save buttons are present and enabled (all GETs resolved).
+    // Every capability switch renders in its committed off state.
+    for (const which of [
+      'context-limit',
+      'temperature-default',
+      'temperature-force',
+      'tools-strict',
+      'reasoning-strict',
+      'reasoning-clear',
+    ] as const) {
+      expect(capabilitySwitch(which).getAttribute('aria-checked')).toBe('false')
+    }
+    // All the save buttons are present and enabled (all GETs resolved).
     expect(saveButton('retention').disabled).toBe(false)
     expect(saveButton('audit-retention').disabled).toBe(false)
     expect(saveButton('proxy').disabled).toBe(false)
+    expect(saveButton('capability').disabled).toBe(false)
     expect(saveButton('recovery').disabled).toBe(false)
   })
 })
@@ -547,5 +617,121 @@ describe('GeneralSettingsPage outbound proxy interactions (en)', () => {
     await vi.waitFor(() => expect(putProxyMock).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect(getProxyMock).toHaveBeenCalledTimes(2))
     expect(document.body.textContent ?? '').toContain(gsCopy.en.outboundProxy.conflict)
+  })
+})
+
+// --- Capability enforcement card ---------------------------------------------
+
+// The seven rows behind this card share one version, so a save PUTs the
+// whole snapshot: all six switches plus the margin ride along even when
+// only one control moved, and the untouched switches keep their committed
+// values. The payload arms below pin that shape.
+describe('GeneralSettingsPage capability enforcement interactions (en)', () => {
+  it('PUTs the whole snapshot — flipped switches on, untouched ones riding along, margin and CAS version included', async () => {
+    await mountPage('en')
+    // Flip two of the six switches and widen the margin.
+    capabilitySwitch('context-limit').dispatchEvent(new Event('click'))
+    capabilitySwitch('tools-strict').dispatchEvent(new Event('click'))
+    await nextTick()
+    expect(capabilitySwitch('context-limit').getAttribute('aria-checked')).toBe('true')
+    expect(capabilitySwitch('tools-strict').getAttribute('aria-checked')).toBe('true')
+    // The four untouched switches stay off.
+    expect(capabilitySwitch('temperature-default').getAttribute('aria-checked')).toBe('false')
+    expect(capabilitySwitch('temperature-force').getAttribute('aria-checked')).toBe('false')
+    expect(capabilitySwitch('reasoning-strict').getAttribute('aria-checked')).toBe('false')
+    expect(capabilitySwitch('reasoning-clear').getAttribute('aria-checked')).toBe('false')
+    setInputValue(capabilityMarginInput(), '10')
+    await nextTick()
+    saveButton('capability').dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(putCapabilityMock).toHaveBeenCalledTimes(1))
+    // Whole-snapshot payload: the two flips, the four committed-offs, the
+    // new margin, and the loaded version as the CAS token.
+    expect(putCapabilityMock).toHaveBeenCalledWith({
+      context_limit_block: true,
+      temperature_default: false,
+      temperature_force: false,
+      tools_strict: true,
+      reasoning_strict: false,
+      reasoning_egress_clear: false,
+      context_margin_percent: 10,
+      version: 11,
+    })
+    // Save succeeds → the committed row is re-read.
+    await vi.waitFor(() => expect(getCapabilityMock).toHaveBeenCalledTimes(2))
+    expect(document.body.textContent ?? '').toContain(capCopy.en.saved)
+  })
+
+  it('re-projects the committed snapshot after a save (switches follow the GET, not the PUT echo)', async () => {
+    await mountPage('en')
+    capabilitySwitch('reasoning-clear').dispatchEvent(new Event('click'))
+    await nextTick()
+    // The re-read answers with the flip committed.
+    getCapabilityMock.mockResolvedValue({
+      context_limit_block: false,
+      temperature_default: false,
+      temperature_force: false,
+      tools_strict: false,
+      reasoning_strict: false,
+      reasoning_egress_clear: true,
+      context_margin_percent: 5,
+      version: 12,
+    })
+    saveButton('capability').dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(putCapabilityMock).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(getCapabilityMock).toHaveBeenCalledTimes(2))
+    expect(capabilitySwitch('reasoning-clear').getAttribute('aria-checked')).toBe('true')
+    expect(capabilityMarginInput().value).toBe('5')
+  })
+})
+
+describe('GeneralSettingsPage capability margin stays validated in form shape (en)', () => {
+  // Same drafts the pure validator rejects (utils/capabilityEnforcement) —
+  // one per issue, asserted at the form level with the capability card's
+  // own copy.
+  const drafts: { input: string; message: string }[] = [
+    { input: '-1', message: capCopy.en.marginMin },
+    { input: '2.5', message: capCopy.en.marginWholeNumber },
+    { input: '1001', message: capCopy.en.marginMax },
+    // Clearing the field is "empty", not "zero": NInputNumber reports null.
+    { input: '', message: capCopy.en.marginRequired },
+  ]
+
+  it.each(drafts)('input "$input" is rejected with its own message and no PUT', async (draft) => {
+    await mountPage('en')
+    setInputValue(capabilityMarginInput(), draft.input)
+    await nextTick()
+    saveButton('capability').dispatchEvent(new Event('click'))
+    await nextTick()
+    await nextTick()
+    expect(document.body.textContent ?? '', 'the form shows the issue message').toContain(draft.message)
+    expect(putCapabilityMock, 'an illegal margin never reaches the wire').not.toHaveBeenCalled()
+  })
+})
+
+describe('GeneralSettingsPage capability conflict recovery (en)', () => {
+  it('surfaces the 409 conflict and reloads the committed snapshot', async () => {
+    await mountPage('en')
+    capabilitySwitch('context-limit').dispatchEvent(new Event('click'))
+    await nextTick()
+    // The concurrent writer committed first: the re-read answers with a
+    // newer version and the switch already on.
+    getCapabilityMock.mockResolvedValue({
+      context_limit_block: true,
+      temperature_default: false,
+      temperature_force: false,
+      tools_strict: false,
+      reasoning_strict: false,
+      reasoning_egress_clear: false,
+      context_margin_percent: 5,
+      version: 12,
+    })
+    putCapabilityMock.mockRejectedValueOnce(new APIError(CAPABILITY_ENFORCEMENT_CONFLICT))
+    saveButton('capability').dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(putCapabilityMock).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(getCapabilityMock).toHaveBeenCalledTimes(2))
+    expect(document.body.textContent ?? '').toContain(capCopy.en.conflict)
+    // The form now shows the committed row: the switch the other admin
+    // flipped is on, and the version moved for any subsequent save.
+    expect(capabilitySwitch('context-limit').getAttribute('aria-checked')).toBe('true')
   })
 })

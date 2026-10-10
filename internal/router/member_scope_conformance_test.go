@@ -78,6 +78,7 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/system-settings/request-log-retention",
 		"/api/admin/system-settings/admin-audit-retention",
 		"/api/admin/system-settings/outbound-proxy",
+		"/api/admin/system-settings/capability-enforcement",
 		"/api/admin/system/version",
 		"/api/admin/analytics/compress-stats",
 		"/api/admin/analytics/cache-stats",

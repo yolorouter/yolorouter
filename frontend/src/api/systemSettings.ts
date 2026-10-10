@@ -178,3 +178,42 @@ export function updateOutboundProxy(payload: {
     body: JSON.stringify(payload),
   })
 }
+
+// Capability enforcement: the six forwarding rules driven by each model's
+// declared capability fields (context overflow refusal, default
+// temperature, forced temperature override, strict tools refusal, strict
+// reasoning refusal, reasoning clear at a non-reasoning landing) plus the
+// shared context-limit margin. Every switch ships OFF; the whole snapshot
+// saves as one unit (the seven rows share one version). Same
+// authoritative-read + CAS contract as the settings above; a concurrent
+// edit surfaces as errcode 11027 (HTTP 409).
+export interface CapabilityEnforcementSetting {
+  context_limit_block: boolean
+  temperature_default: boolean
+  temperature_force: boolean
+  tools_strict: boolean
+  reasoning_strict: boolean
+  reasoning_egress_clear: boolean
+  context_margin_percent: number
+  version: number
+}
+
+export function getCapabilityEnforcement(): Promise<CapabilityEnforcementSetting> {
+  return apiFetch('/api/admin/system-settings/capability-enforcement')
+}
+
+export function updateCapabilityEnforcement(payload: {
+  context_limit_block: boolean
+  temperature_default: boolean
+  temperature_force: boolean
+  tools_strict: boolean
+  reasoning_strict: boolean
+  reasoning_egress_clear: boolean
+  context_margin_percent: number
+  version: number
+}): Promise<CapabilityEnforcementSetting> {
+  return apiFetch('/api/admin/system-settings/capability-enforcement', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}

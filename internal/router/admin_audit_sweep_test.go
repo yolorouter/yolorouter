@@ -173,13 +173,14 @@ var expectedWriteActions = map[string]string{
 	"POST /api/admin/playground/run":             "playground.run",
 	"POST /api/admin/playground/video/stop-wait": "playground.stop_wait",
 	// Typed system settings.
-	"PUT /api/admin/system-settings/custom-system-prompt":  "system_settings.update",
-	"PUT /api/admin/system-settings/input-compression":     "system_settings.update",
-	"PUT /api/admin/system-settings/vision-fallback":       "system_settings.update",
-	"PUT /api/admin/system-settings/key-auto-recovery":     "system_settings.update",
-	"PUT /api/admin/system-settings/request-log-retention": "system_settings.update",
-	"PUT /api/admin/system-settings/admin-audit-retention": "system_settings.update",
-	"PUT /api/admin/system-settings/outbound-proxy":        "system_settings.update",
+	"PUT /api/admin/system-settings/custom-system-prompt":   "system_settings.update",
+	"PUT /api/admin/system-settings/input-compression":      "system_settings.update",
+	"PUT /api/admin/system-settings/vision-fallback":        "system_settings.update",
+	"PUT /api/admin/system-settings/key-auto-recovery":      "system_settings.update",
+	"PUT /api/admin/system-settings/request-log-retention":  "system_settings.update",
+	"PUT /api/admin/system-settings/admin-audit-retention":  "system_settings.update",
+	"PUT /api/admin/system-settings/outbound-proxy":         "system_settings.update",
+	"PUT /api/admin/system-settings/capability-enforcement": "system_settings.update",
 	// One-click self-update.
 	"POST /api/admin/system/update": "system.update",
 }
@@ -216,8 +217,8 @@ func TestAdminAuditSweepCapturesEveryWriteEndpoint(t *testing.T) {
 			t.Errorf("expectation table names %s, but no such live write route exists — remove the stale entry", key)
 		}
 	}
-	if len(expectedWriteActions) != 56 {
-		t.Errorf("expected the console write surface to hold 56 endpoints, table lists %d", len(expectedWriteActions))
+	if len(expectedWriteActions) != 57 {
+		t.Errorf("expected the console write surface to hold 57 endpoints, table lists %d", len(expectedWriteActions))
 	}
 
 	// Fire one request per live write route. Handlers answer with whatever
