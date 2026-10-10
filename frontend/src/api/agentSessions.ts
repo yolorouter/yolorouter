@@ -1,14 +1,14 @@
 // frontend/src/api/agentSessions.ts
 //
 // API client for the tool-session views: one aggregate row per
-// agent_session_id plus the per-session request timeline. Mirrors the
-// backend DTOs in internal/service/requestlog/agent_session_service.go
-// (AgentSessionListItem / AgentSessionDetail) and the query keys parsed by
-// internal/handler/agent_session_handler.go (page / page_size /
+// agent_session_id plus the whole-session replay transcript. Mirrors the
+// backend DTOs in internal/service/requestlog (AgentSessionListItem,
+// AgentSessionTranscript and its replay halves) and the query keys parsed
+// by internal/handler/agent_session_handler.go (page / page_size /
 // agent_client — the same pagination contract every paginated admin
 // endpoint uses).
 import { apiFetch } from './client'
-import type { RequestLogRow } from './requestLogs'
+import type { StatusClass } from './requestLogs'
 
 // Mirrors service.AgentSessionListItem — the per-session aggregate the
 // repository's GROUP BY computed. Field semantics:
@@ -42,17 +42,57 @@ export interface AgentSessionPage {
   list: AgentSessionRow[]
 }
 
-// Mirrors service.AgentSessionDetail: the session's identity, its
-// attribution (the earliest row's agent_client — one id mixing tools is an
-// anomaly attributed to the first row), and EVERY request of the session in
-// chronological order. requests reuses RequestLogRow verbatim so the
-// timeline renders the same row shape (five-class status_class included)
-// the request-log list already shows, and the :requestId jump target needs
-// no translation.
-export interface AgentSessionDetail {
-  agent_session_id: string
-  agent_client: string
-  requests: RequestLogRow[]
+// Mirrors service.AgentSessionReplayAssistant: where one replay block's
+// reply came from. Exactly one source applies per block, by backend
+// priority: a recorded inline response body (inline), else the sent-SSE
+// capture (stream — raw is the capture text, the frontend merges), else the
+// assistant copies the NEXT request resends as history (resend — raw is the
+// parsed message objects, possibly several), else nothing was recorded
+// (none — raw is null and the replay renders an explicit placeholder).
+export interface AgentSessionReplayAssistant {
+  source: 'inline' | 'stream' | 'resend' | 'none'
+  truncated: boolean
+  raw: unknown
+}
+
+// Mirrors service.AgentSessionReplayBlock: one request's replay turn — the
+// row metadata the turn's labels need, the caller-side messages this
+// request newly contributed (raw wire objects, assistant and system roles
+// already excluded by the backend dedup pass), and the reply attribution.
+export interface AgentSessionReplayBlock {
+  request_id: string
+  created_at: string
+  model_name: string
+  status_class: StatusClass
+  is_stream: boolean
+  input_tokens: number
+  output_tokens: number
+  duration_ms: number
+  provider_name: string
+  added: unknown[]
+  assistant: AgentSessionReplayAssistant
+  added_truncated: boolean
+}
+
+// Mirrors service.AgentSessionReplaySystem: one entry of the deduplicated
+// system-prompt timeline. Raw is polymorphic by dialect — the Anthropic
+// top-level system value (string or block array) or the OpenAI dialect's
+// role=system message objects.
+export interface AgentSessionReplaySystem {
+  seen_at_request: string
+  truncated: boolean
+  raw: unknown
+}
+
+// Mirrors service.AgentSessionTranscript: the whole replay in one payload —
+// the session-level aggregate (AgentSessionListItem verbatim, so the replay
+// header bar and the list row can never drift into two shapes or two
+// numbers), the system-prompt timeline, and one block per request in
+// chronological order. One fetch renders the entire page.
+export interface AgentSessionTranscript {
+  session: AgentSessionRow
+  system: AgentSessionReplaySystem[]
+  blocks: AgentSessionReplayBlock[]
 }
 
 export interface AgentSessionListParams {
@@ -89,6 +129,9 @@ export function listAgentSessions(filter: AgentSessionListParams): Promise<Agent
   return apiFetch(`/api/admin/agent-sessions?${sp.toString()}`)
 }
 
-export function getAgentSessionDetail(sessionId: string): Promise<AgentSessionDetail> {
-  return apiFetch(`/api/admin/agent-sessions/${encodeURIComponent(sessionId)}`)
+// The whole session replay in one request — the aggregate, the system
+// timeline, and every turn's blocks. The page mounts, fetches this exactly
+// once, and renders; there is deliberately no per-request follow-up fetch.
+export function getAgentSessionTranscript(sessionId: string): Promise<AgentSessionTranscript> {
+  return apiFetch(`/api/admin/agent-sessions/${encodeURIComponent(sessionId)}/transcript`)
 }

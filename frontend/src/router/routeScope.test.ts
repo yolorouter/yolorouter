@@ -39,7 +39,6 @@ const MEMBER_ALLOWED_PATHS = new Set([
 const ADMIN_ONLY_PATHS = [
   'request-logs',
   'request-logs/:requestId',
-  'request-messages/:requestId',
   'agent-sessions',
   'agent-sessions/:sessionId',
   'audit-logs',

@@ -247,6 +247,27 @@ func GetRequestLogBodyByRequestID(db *gorm.DB, requestID string) (*model.Request
 	return &row, nil
 }
 
+// GetRequestLogBodiesByRequestIDs batch-loads the 1:1 body rows for every
+// request id, keyed by request_id — the session-replay transcript needs all
+// of one session's bodies at once, and per-id First queries would turn a
+// session of N requests into N round trips. Absent rows simply have no map
+// entry; the caller treats a missing key exactly like GetRequestLogBodyByRequestID's
+// (nil, nil): pre-migration rows or capture failure, never an error.
+func GetRequestLogBodiesByRequestIDs(db *gorm.DB, requestIDs []string) (map[string]*model.RequestLogBody, error) {
+	out := make(map[string]*model.RequestLogBody, len(requestIDs))
+	if len(requestIDs) == 0 {
+		return out, nil
+	}
+	var rows []model.RequestLogBody
+	if err := db.Where("request_id IN ?", requestIDs).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		out[rows[i].RequestID] = &rows[i]
+	}
+	return out, nil
+}
+
 // GetStreamBodyPathByRequestID reads ONLY the stream_body_path column for
 // requestID, instead of loading the whole body row (which carries the large
 // request/response TEXT columns) just to read one short filename — the

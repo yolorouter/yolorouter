@@ -272,26 +272,38 @@ func truncateInlinePrefix(s string, maxBytes, totalSize int) string {
 // path (the same convention GetRequestLogBodyStream applies when serving the
 // raw file).
 func readStreamBodyInline(bodiesDir, streamBodyPath string) string {
+	s, _ := readStreamBodyInlineCapped(bodiesDir, streamBodyPath)
+	return s
+}
+
+// readStreamBodyInlineCapped is the flag-returning core of
+// readStreamBodyInline: the inline copy plus whether the inline READ was
+// capped (the file exceeded maxInlineBodyBytes), so the replay transcript can
+// raise its truncation marker next to the text without re-deriving it from
+// the marker suffix. The write-side backstop flag (the body row's
+// stream_body_truncated column) is a separate cut the caller ORs in — either
+// one alone means the text shown is not the full original.
+func readStreamBodyInlineCapped(bodiesDir, streamBodyPath string) (string, bool) {
 	if bodiesDir == "" || streamBodyPath == "" {
-		return ""
+		return "", false
 	}
 	f, err := os.Open(filepath.Join(bodiesDir, filepath.Base(streamBodyPath)))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxInlineBodyBytes+1))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	if len(data) <= maxInlineBodyBytes {
-		return string(data)
+		return string(data), false
 	}
 	total := len(data)
 	if info, statErr := f.Stat(); statErr == nil && info.Size() > int64(total) {
 		total = int(info.Size())
 	}
-	return truncateInlinePrefix(string(data), maxInlineBodyBytes, total)
+	return truncateInlinePrefix(string(data), maxInlineBodyBytes, total), true
 }
 
 // truncateBodyRuneSafe returns s truncated to at most maxBytes bytes, backing

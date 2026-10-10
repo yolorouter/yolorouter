@@ -1,24 +1,38 @@
 <!-- frontend/src/views/agent-sessions/AgentSessionDetailPage.vue
-     Tool-session detail (handler.GetAgentSessionDetail): the session's
-     attribution plus EVERY request it contains, already chronological from
-     the backend (repository orders by created_at, id ASC). The table shows
-     newest first by default in BOTH layouts (the mobile card path renders
-     the passed array as-is — no table sorter there — so the default order
-     lives in the data, not the desktop sort state); the time column is
-     sortable back to chronological for reading the conversation flow. The
-     waterfall axis is order-agnostic (absolute timestamps), so sorting only
-     changes row order.
+     Tool-session replay (/agent-sessions/:sessionId): the WHOLE session as
+     one continuous conversation, the way the agent tool itself showed it
+     while the work happened — not a table of requests to click through.
 
-     The page reads as the session's map:
-       - a top summary card recomputed from the requests array itself (same
-         semantics as the list SQL), so deep links and refreshes land on a
-         full summary without the list endpoint;
-       - a timeline table whose every row carries a waterfall bar aligned on
-         the session's real time axis (gaps = think time, bar length =
-         duration), hovering for the precise start and duration;
-       - clicking a row navigates to that request's message page
-         (/request-messages/:requestId — key facts and the translated
-         conversation bubbles as a full page with its own URL). -->
+     One fetch (the transcript endpoint) carries everything:
+
+       - a two-line info bar: tool / session id / request count / from-to
+         clock plus elapsed span on the first line; tokens in/out, the
+         known/unknown cost doublet, and the success ratio on the second.
+         Same aggregate semantics as the session list row (the backend
+         derives both from the same rows);
+       - the deduplicated system-prompt timeline as ONE collapsed group at
+         the top of the replay — a single summary line (first appearance
+         plus the change count; a never-changed prompt drops the count)
+         that expands into the per-entry timeline, each entry annotated
+         with the request that first carried it;
+       - one replay block per request, in chronological order: the
+         caller-side messages that request newly contributed (the backend's
+         prefix-dedup pass already stripped everything resent), then the
+         assistant turn with its metadata sign (model, duration, in/out
+         tokens, a status tag when the request did not succeed) and a link
+         to the full request-log detail.
+
+     The assistant reply is attributed by source (the backend's four-way
+     priority): inline bodies and stream captures translate through the
+     whole-body translators (a stream capture additionally carries the
+     "merged from the sent chunks" note), resent copies translate as a bare
+     message array, and a reply nothing recorded renders the explicit
+     "not recorded" placeholder — never a fake empty bubble.
+
+     Every block's root carries id="req-<request_id>", so a #req-<id> URL
+     hash scrolls the turn into view on mount (scrollIntoView on the block
+     itself — the app shell scrolls inside layout containers, the document
+     never overflows). -->
 <template>
   <div class="common-page">
     <PageHeader :eyebrow="t('agentSessions.detailEyebrow')" :title="t('agentSessions.detailTitle')" :description="t('agentSessions.detailDescription')">
@@ -35,60 +49,131 @@
       </template>
     </EmptyState>
 
-    <template v-else-if="detail">
-      <!-- Session identity strip: attribution (the earliest row's
-           agent_client), the verbatim session id, and how many requests the
-           timeline below holds. -->
-      <div class="session-meta">
-        <NTag size="small" round :bordered="false" type="info">{{ toolName }}</NTag>
-        <span class="session-meta__id">{{ detail.agent_session_id }}</span>
-        <span class="session-meta__count">{{ detail.requests.length }} {{ t('agentSessions.detailRequestsUnit') }}</span>
+    <!-- A transport-level failure keeps the page (and its back button) and
+         shows the localized displayMessage copy inline — never the raw
+         technical error string. -->
+    <EmptyState v-else-if="loadError" type="compact" :title="t('agentSessions.loadFailed')" :description="loadError">
+      <template #action>
+        <NButton quaternary size="small" @click="onBack">{{ t('agentSessions.backToList') }}</NButton>
+      </template>
+    </EmptyState>
+
+    <template v-else-if="transcript">
+      <!-- Info bar, line 1: tool attribution, the verbatim session id, the
+           request count, and the from/to clock doublet with the elapsed
+           span between the session's first and last request. -->
+      <div class="replay-meta">
+        <div class="replay-meta__line">
+          <NTag size="small" round :bordered="false" type="info">{{ toolName }}</NTag>
+          <span class="replay-meta__id">{{ transcript.session.agent_session_id }}</span>
+          <span class="replay-meta__item">{{ transcript.session.request_count }} {{ t('agentSessions.detailRequestsUnit') }}</span>
+          <span class="replay-meta__item replay-meta__item--clock">
+            {{ t('agentSessions.firstSeenLabel') }} {{ formatShortClock(transcript.session.first_seen_at) }}
+            → {{ t('agentSessions.lastSeenLabel') }} {{ formatShortClock(transcript.session.last_seen_at) }}
+            · {{ t('agentSessions.replayElapsed', { span: sessionSpan }) }}
+          </span>
+        </div>
+        <!-- Info bar, line 2: token sums, the cost doublet (known sum plus
+             the unknown-rows marker — unknown rows are never folded into
+             the total), and the success ratio. -->
+        <div class="replay-meta__line">
+          <span class="replay-meta__item">
+            {{ t('requestLogs.tokenRowIn') }} {{ transcript.session.input_tokens }} / {{ t('requestLogs.tokenRowOut') }} {{ transcript.session.output_tokens }}
+          </span>
+          <span class="replay-meta__item replay-meta__item--cost">
+            {{ formatMicros(transcript.session.known_cost_micros) }}
+            <NTag v-if="transcript.session.unknown_cost_count > 0" size="tiny" round :bordered="false" type="warning">
+              {{ t('agentSessions.costUnknownNote', { n: transcript.session.unknown_cost_count }) }}
+            </NTag>
+          </span>
+          <span class="replay-meta__item">{{ t('agentSessions.replaySuccessRatio', { success: transcript.session.success_count, total: transcript.session.request_count }) }}</span>
+        </div>
       </div>
 
-      <!-- Aggregate figures recomputed from the same requests the timeline
-           renders (deep-link safe — no dependency on the list endpoint). -->
-      <SessionSummaryCard :requests="detail.requests" />
+      <!-- The deduplicated system-prompt timeline as ONE collapsed group.
+           Real agent-tool traffic rewrites the system prompt on nearly
+           every request (volatile environment info rides inside it), so
+           the first-appearance-plus-changes timeline can run to dozens of
+           entries — a collapsible block per entry filled the whole first
+           screen above the conversation. The group therefore collapses to
+           a single summary line by default (first appearance plus the
+           change count; a never-changed prompt drops the count), and
+           expanding it reveals the original per-entry timeline: each entry
+           still its own collapsible block, annotated with the request that
+           first carried it and its truncation mark. -->
+      <NCollapse v-if="transcript.system.length > 0" class="replay-system">
+        <NCollapseItem name="system">
+          <template #header>
+            <span class="replay-system__title">{{ systemSummary }}</span>
+          </template>
+          <NCollapse v-for="(entry, i) in transcript.system" :key="`sys-${i}`" class="replay-system__entry">
+            <NCollapseItem name="system">
+              <template #header>
+                <span class="replay-system__entry-title">{{ t('agentSessions.systemBlockTitle') }}</span>
+                <span class="replay-system__seen">{{ t('agentSessions.systemSeenAt', { id: entry.seen_at_request }) }}</span>
+                <span v-if="entry.truncated" class="replay-system__truncated">{{ t('agentSessions.flowTruncated') }}</span>
+              </template>
+              <ChatMessageFlow :body="systemFlow(entry)" :raw="systemRaw(entry)" />
+            </NCollapseItem>
+          </NCollapse>
+        </NCollapseItem>
+      </NCollapse>
 
-      <div class="data-table-wrapper">
-        <ResponsiveDataTable
-          :columns="columns"
-          :data="tableRows"
-          :loading="loading"
-          :row-key="(row: RequestLogRow) => row.request_id"
-          :row-props="rowProps"
-          :pagination="false"
-        />
-      </div>
+      <!-- The replay itself: one block per request, chronological. -->
+      <section v-for="block in transcript.blocks" :id="`req-${block.request_id}`" :key="block.request_id" class="replay-block">
+        <!-- The caller-side messages this request newly contributed. A
+             truncated request body degrades to an empty array upstream, so
+             the flow renders only when there is anything to render and the
+             truncation notice line carries the "why" on its own. -->
+        <ChatMessageFlow v-if="block.added.length > 0" :body="addedFlow(block)" :raw="blockRaw(block.added)" />
+        <p v-if="block.added_truncated" class="replay-block__truncated">{{ t('agentSessions.flowTruncated') }}</p>
+
+        <!-- The assistant turn: metadata sign first (model, duration, in/out
+             tokens, a status tag for every non-success request — a failed
+             turn must read as failed, never silently disappear), the
+             "merged from the sent chunks" note for stream captures, then
+             the reply itself through the source-routed translator. -->
+        <div class="replay-block__assistant">
+          <div class="replay-block__meta">
+            <span class="replay-block__model" :title="block.model_name">{{ block.model_name || '—' }}</span>
+            <span class="replay-block__figure">{{ formatDuration(block.duration_ms) }}</span>
+            <span class="replay-block__figure">{{ t('requestLogs.tokenRowIn') }} {{ block.input_tokens }} / {{ t('requestLogs.tokenRowOut') }} {{ block.output_tokens }}</span>
+            <StatusClassTag v-if="block.status_class !== 'success'" :status="block.status_class" />
+            <span v-if="block.assistant.source === 'stream'" class="replay-block__mergednote">{{ t('agentSessions.streamMergedNote') }}</span>
+            <NButton text size="tiny" type="primary" @click="goRequestDetail(block.request_id)">{{ t('agentSessions.replayRequestLink') }}</NButton>
+          </div>
+          <ChatMessageFlow :body="assistantFlow(block)" :raw="assistantRaw(block)" />
+        </div>
+      </section>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { NTag, useMessage, type DataTableColumns } from 'naive-ui'
-import { getAgentSessionDetail, type AgentSessionDetail } from '../../api/agentSessions'
-import type { RequestLogRow } from '../../api/requestLogs'
+import { NButton, NCollapse, NCollapseItem, NTag, useMessage } from 'naive-ui'
+import { getAgentSessionTranscript, type AgentSessionReplayBlock, type AgentSessionReplaySystem, type AgentSessionTranscript } from '../../api/agentSessions'
 import { APIError, displayMessage } from '../../api/client'
-import { formatDuration, formatShortClock } from '../../utils/format'
+import { formatDuration, formatShortClock, formatSpan } from '../../utils/format'
+import { formatMicros } from '../../utils/money'
 import { agentClientLabelKey } from '../../utils/agentClient'
-import { columnTitle } from '../../utils/columnTitle'
+import { translateMessageArray, translateResponseBody, translateStreamBody, type TranslatedBody } from '../../utils/messageTranslator'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
-import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import StatusClassTag from '../../components/request-logs/StatusClassTag.vue'
-import SessionSummaryCard from '../../components/agent-sessions/SessionSummaryCard.vue'
-import SessionWaterfallBar from '../../components/agent-sessions/SessionWaterfallBar.vue'
+import ChatMessageFlow from '../../components/agent-sessions/ChatMessageFlow.vue'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
 
-const detail = ref<AgentSessionDetail | null>(null)
+const transcript = ref<AgentSessionTranscript | null>(null)
 const loading = ref(false)
 const notFound = ref(false)
+const loadError = ref('')
 
 // sessionId comes from the URL, decoded once here. Session ids are opaque
 // tool-side identifiers (uuids for Claude Code, arbitrary strings for
@@ -112,184 +197,297 @@ async function reload() {
   }
   loading.value = true
   notFound.value = false
+  loadError.value = ''
   try {
-    detail.value = await getAgentSessionDetail(sessionId.value)
+    transcript.value = await getAgentSessionTranscript(sessionId.value)
   } catch (err) {
     if (err instanceof APIError && err.code === AGENT_SESSION_NOT_FOUND_CODE) {
       notFound.value = true
       return
     }
-    throw err
+    // The repo-wide convention (api/client.ts displayMessage): an APIError's
+    // already-localized message, or the localized network fallback for
+    // NetworkError/timeout — never a raw technical string in the UI.
+    loadError.value = displayMessage(err, t)
   } finally {
     loading.value = false
   }
 }
 
-function onBack() {
-  router.push('/agent-sessions')
-}
+// ---------- Anchor scrolling ----------
 
-// Clicking a row navigates to that request's message page — a full page
-// with its own URL (shareable, refreshable), not an overlay. Modifier
-// clicks keep their browser default (the row text stays selectable,
-// cmd-click etc. untouched).
-function rowProps(row: RequestLogRow): Record<string, unknown> {
-  return {
-    style: 'cursor: pointer;',
-    onClick: (e: MouseEvent) => {
-      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-      void router.push(`/request-messages/${encodeURIComponent(row.request_id)}`)
-    },
-  }
-}
+// A #req-<requestId> hash deep-links to one replay turn. The scroll runs
+// post-flush (after the transcript's DOM is committed) via scrollIntoView
+// on the block element itself — the app shell scrolls inside naive-ui
+// layout containers and the document never overflows, so window.scrollTo
+// would be a no-op. The optional call guards test DOMs that define no
+// scrollIntoView; real browsers always have it.
+watch(
+  transcript,
+  (tr) => {
+    if (!tr) return
+    const hash = route.hash
+    if (!hash.startsWith('#req-')) return
+    document.getElementById(hash.slice(1))?.scrollIntoView?.({ block: 'start' })
+  },
+  { flush: 'post' },
+)
+
+// ---------- Derived figures ----------
 
 // Tool display name via the shared enum mirror; a client outside the enum
 // (newer gateway) falls back to the raw value — still the truth.
 const toolName = computed(() => {
-  const client = detail.value?.agent_client ?? ''
+  const client = transcript.value?.session.agent_client ?? ''
   const key = agentClientLabelKey(client)
   return key ? t(key) : client || '-'
 })
 
-// ---------- Waterfall axis (shared by every row's bar) ----------
-
-// The session's time axis: from the earliest created_at to the latest
-// (created_at + duration). Every bar maps onto THIS span, so relative
-// positions are real time. Malformed timestamps parse to NaN and are
-// treated as 0 — one bad row must not blank the whole column; span<=0
-// (single instant request) collapses to a full-width bar at the left edge
-// inside the bar component.
-const timeline = computed(() => {
-  const rows = detail.value?.requests ?? []
-  const starts = rows.map((r) => {
-    const ms = Date.parse(r.created_at)
-    return Number.isNaN(ms) ? 0 : ms
-  })
-  const ends = rows.map((r, i) => {
-    const dur = Number.isFinite(r.duration_ms) && r.duration_ms > 0 ? r.duration_ms : 0
-    return starts[i] + dur
-  })
-  if (starts.length === 0) return { startMs: 0, spanMs: 0 }
-  const startMs = Math.min(...starts)
-  const spanMs = Math.max(...ends) - startMs
-  return { startMs, spanMs }
+// Elapsed span between the session's first and last request — formatSpan
+// is the shared session-length formatter (sub-second ms, sub-minute
+// seconds, then h/m/s). Malformed timestamps parse to NaN and render as
+// NaN honesty rather than crashing the page.
+const sessionSpan = computed(() => {
+  const s = transcript.value?.session
+  if (!s) return ''
+  return formatSpan(Date.parse(s.last_seen_at) - Date.parse(s.first_seen_at))
 })
 
-// ---------- Render helpers ----------
+// The collapsed group's one-line summary: the first appearance plus the
+// change count (N = timeline entries - 1; the first entry IS the first
+// appearance). A prompt that never changed degenerates to the plain
+// first-appearance copy with no count.
+const systemSummary = computed(() => {
+  const entries = transcript.value?.system ?? []
+  return entries.length > 1
+    ? t('agentSessions.systemGroupChanges', { n: entries.length - 1 })
+    : t('agentSessions.systemGroupFirstOnly')
+})
 
-// The rows the table renders: newest first BY THE DATA ITSELF, not by the
-// desktop table's sort state — the mobile card layout renders the passed
-// array as-is (no NDataTable sorter on that path), so the default order
-// must live here to hold in BOTH layouts. The wire order stays
-// chronological (the backend contract), so a local sort by parsed time
-// desc; malformed timestamps parse to NaN and count as 0 (the timeline's
-// convention). The desktop time column keeps its sorter for flipping back
-// to chronological interactively.
-const tableRows = computed<RequestLogRow[]>(() =>
-  [...(detail.value?.requests ?? [])].sort((a, b) => {
-    const ta = Date.parse(a.created_at)
-    const tb = Date.parse(b.created_at)
-    return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta)
-  }),
-)
+// ---------- Translation (pure functions, applied per render) ----------
 
-// In / out stacked, the same shape the request-log usage cell uses — the
-// per-request rows here are deliberately a subset of that table.
-function tokensCell(row: RequestLogRow) {
-  const line = (label: string, value: number) =>
-    h('div', { style: 'display:flex; gap:5px;' }, [
-      h('span', { style: 'color:var(--color-text-muted, #909399);' }, label),
-      h('span', { style: 'font-variant-numeric: tabular-nums;' }, String(value)),
-    ])
-  return h(
-    'div',
-    { style: 'display:inline-flex; flex-direction:column; align-items:flex-start; font-size:12px; line-height:1.5;' },
-    [
-      line(t('requestLogs.tokenRowIn'), row.input_tokens),
-      line(t('requestLogs.tokenRowOut'), row.output_tokens),
-    ],
-  )
+function blockRaw(added: unknown[]): string {
+  return JSON.stringify(added, null, 2)
 }
 
-const columns = computed<DataTableColumns<RequestLogRow>>(() => [
-  {
-    title: columnTitle(t('agentSessions.col_created'), t('agentSessions.col_created_tip')),
-    key: 'created_at',
-    width: 150,
-    // Newest first by default (the log tables' convention); clicking flips
-    // to chronological for reading the conversation top-down. Malformed
-    // timestamps parse to NaN and count as 0 — the timeline's convention.
-    sorter: (a, b) => {
-      const ta = Date.parse(a.created_at)
-      const tb = Date.parse(b.created_at)
-      return (Number.isNaN(ta) ? 0 : ta) - (Number.isNaN(tb) ? 0 : tb)
-    },
-    defaultSortOrder: 'descend',
-    render: (row) => h('span', { style: 'font-variant-numeric: tabular-nums; font-size:12px;' }, formatShortClock(row.created_at)),
-  },
-  {
-    title: columnTitle(t('agentSessions.col_model'), t('agentSessions.col_model_tip')),
-    key: 'model_name',
-    minWidth: 180,
-    ellipsis: { tooltip: true },
-    render: (row) =>
-      h('span', { style: 'font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;', title: row.model_name }, row.model_name),
-  },
-  {
-    title: columnTitle(t('agentSessions.col_status'), t('agentSessions.col_status_tip')),
-    key: 'status_class',
-    width: 96,
-    align: 'center',
-    render: (row) => h(StatusClassTag, { status: row.status_class }),
-  },
-  {
-    title: columnTitle(t('agentSessions.detail_col_tokens'), t('agentSessions.detail_col_tokens_tip')),
-    key: 'tokens',
-    width: 130,
-    render: (row) => tokensCell(row),
-  },
-  {
-    title: columnTitle(t('agentSessions.col_duration'), t('agentSessions.col_duration_tip')),
-    key: 'duration_ms',
-    width: 90,
-    align: 'right',
-    render: (row) => h('span', { style: 'font-variant-numeric: tabular-nums;' }, formatDuration(row.duration_ms)),
-  },
-  {
-    title: columnTitle(t('agentSessions.col_waterfall'), t('agentSessions.col_waterfall_tip')),
-    key: 'waterfall',
-    minWidth: 200,
-    render: (row) =>
-      h(SessionWaterfallBar, {
-        row,
-        startMs: timeline.value.startMs,
-        spanMs: timeline.value.spanMs,
-      }),
-  },
-])
+// The added slice: a bare message array, already parsed out of the request
+// body by the backend's dedup pass. Translates through the slice entry;
+// an untranslatable slice degrades to the fallback signal the flow
+// component renders.
+function addedFlow(block: AgentSessionReplayBlock): TranslatedBody {
+  return translateMessageArray(block.added)
+}
+
+// One system-timeline entry. Raw is polymorphic by dialect: the Anthropic
+// top-level system value (string or block array) wraps into a synthetic
+// system message, while the OpenAI dialect's role=system message objects
+// are already a message array and translate directly.
+function systemFlow(entry: AgentSessionReplaySystem): TranslatedBody {
+  const raw = entry.raw
+  if (Array.isArray(raw) && raw.some((el) => typeof el === 'object' && el !== null && 'role' in el)) {
+    return translateMessageArray(raw)
+  }
+  return translateMessageArray([{ role: 'system', content: raw }])
+}
+
+function systemRaw(entry: AgentSessionReplaySystem): string {
+  const raw = entry.raw
+  if (typeof raw === 'string') return raw
+  return blockRaw(Array.isArray(raw) ? raw : [raw])
+}
+
+// The assistant half of one turn, routed by the backend's source tag:
+//   inline — the recorded response body, whole-body response translator;
+//   stream — the sent-SSE capture, merged back into the full reply (the
+//             merged-note in the metadata sign marks this path);
+//   resend — the assistant copies the next request resent as history,
+//             translated as a bare message array;
+//   none   — nothing was recorded: the explicit placeholder, never a fake
+//             empty bubble ("not recorded" must not read as "the model
+//             chose to say nothing").
+// The backend's truncation flag rides alongside whatever the translator
+// itself detected in the text, so the hint shows on either signal.
+function assistantFlow(block: AgentSessionReplayBlock): TranslatedBody {
+  const a = block.assistant
+  let body: TranslatedBody
+  if (a.source === 'inline') body = translateResponseBody(typeof a.raw === 'string' ? a.raw : '')
+  else if (a.source === 'stream') body = translateStreamBody(typeof a.raw === 'string' ? a.raw : '')
+  else if (a.source === 'resend') body = translateMessageArray(a.raw)
+  else body = { kind: 'placeholder', messages: [], truncated: false }
+  return a.truncated && !body.truncated ? { ...body, truncated: true } : body
+}
+
+// The fallback view's raw text: the captured text sources feed their text,
+// the resend copies (message objects) feed their pretty-printed JSON.
+function assistantRaw(block: AgentSessionReplayBlock): string {
+  const a = block.assistant
+  if (a.source === 'inline' || a.source === 'stream') return typeof a.raw === 'string' ? a.raw : ''
+  if (a.source === 'resend') return blockRaw(Array.isArray(a.raw) ? a.raw : [])
+  return ''
+}
+
+// ---------- Navigation ----------
+
+function onBack() {
+  router.push('/agent-sessions')
+}
+
+// The escape hatch to the full request-log detail — everything the replay
+// deliberately does not repeat (attempts, upstream bodies, ...).
+function goRequestDetail(requestId: string) {
+  router.push(`/request-logs/${encodeURIComponent(requestId)}`)
+}
 </script>
 
 <style scoped>
-/* Identity strip above the timeline: attribution tag, verbatim session id
-   (monospace, wraps rather than clipping — it is the page's subject), and
-   the request count. */
-.session-meta {
+/* Info bar: two compact lines above the replay. Both wrap on narrow
+   viewports (each item is an unbreakable-ish chip with gaps between), so
+   the mobile reading is a stacked list rather than a clipped strip. */
+.replay-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  margin-bottom: var(--space-4, 16px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border: 1px solid var(--color-border, #e0e0e6);
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-surface, #fff);
+}
+
+.replay-meta__line {
   display: flex;
   align-items: center;
   gap: var(--space-3, 12px);
   flex-wrap: wrap;
-  margin-bottom: var(--space-4, 16px);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
-.session-meta__id {
+.replay-meta__id {
   font-family: var(--font-mono, monospace);
   font-size: 12px;
   color: var(--color-text-secondary);
   word-break: break-all;
 }
 
-.session-meta__count {
-  font-size: 12px;
+.replay-meta__item {
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-meta__item--clock {
   color: var(--color-text-muted);
+}
+
+.replay-meta__item--cost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font-variant-numeric: tabular-nums;
+}
+
+/* System-prompt timeline: ONE bordered group container, collapsed by
+   default to its single summary line — quieter than the conversation
+   turns, and never taller than that line until the reader opens it. */
+.replay-system {
+  margin-bottom: var(--space-3, 12px);
+  border: 1px dashed var(--color-border, #e0e0e6);
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-bg-soft, #f2f3f5);
+}
+
+.replay-system__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+/* Per-entry blocks inside the expanded group: the original timeline, one
+   collapsible block per distinct value, separated by dashed rules. */
+.replay-system__entry {
+  border-top: 1px dashed var(--color-border, #e0e0e6);
+}
+
+.replay-system__entry:first-child {
+  border-top: none;
+}
+
+.replay-system__entry-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.replay-system__seen {
+  margin-left: var(--space-2, 8px);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.replay-system__truncated {
+  margin-left: var(--space-2, 8px);
+  font-size: 11px;
+  color: var(--color-warning-text, #d48806);
+}
+
+/* One replay turn: the newly-added messages, then the assistant half. The
+   assistant metadata sign rides above the reply, right-aligned so it reads
+   as attached to the assistant side of the conversation. */
+.replay-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  margin-bottom: var(--space-5, 20px);
+  scroll-margin-top: var(--space-4, 16px);
+}
+
+.replay-block__assistant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+
+.replay-block__meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2, 8px);
+  flex-wrap: wrap;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.replay-block__model {
+  max-width: 46ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.replay-block__figure {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.replay-block__mergednote {
+  padding: 1px var(--space-2, 8px);
+  border-radius: var(--radius-full, 999px);
+  background: var(--color-cyan-subtle, #e6f5fa);
+  color: var(--color-cyan, #2080f0);
+  white-space: nowrap;
+}
+
+.replay-block__truncated {
+  margin: 0;
+  padding: var(--space-1, 4px) var(--space-2, 8px);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-warning-subtle, #fdf6ec);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs, 12px);
+  align-self: flex-start;
 }
 </style>

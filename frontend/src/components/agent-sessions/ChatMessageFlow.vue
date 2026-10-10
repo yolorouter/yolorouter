@@ -1,6 +1,6 @@
 <!-- frontend/src/components/agent-sessions/ChatMessageFlow.vue
      Renders one translated body (the messageTranslator's TranslatedBody) as
-     the conversation view of the request message page:
+     a conversation view of the captured bodies:
 
        - kind 'messages'    chat bubbles: assistant on the right, every other
                             role on the left, each bubble carrying a
@@ -48,9 +48,9 @@
                    one trap this layout must not have. -->
               <div v-if="isLong(part.text) && isExpanded(i, j)" class="msg-flow__disclose">
                 <button type="button" class="msg-flow__disclose-btn" @click="togglePart(i, j)">
-                  {{ t('requestMessages.collapse') }}
+                  {{ t('agentSessions.collapse') }}
                 </button>
-                <span class="msg-flow__disclose-meta">{{ t('requestMessages.partCharsNote', { n: part.text.length.toLocaleString() }) }}</span>
+                <span class="msg-flow__disclose-meta">{{ t('agentSessions.partCharsNote', { n: part.text.length.toLocaleString() }) }}</span>
               </div>
               <!-- v-html is safe here by construction: renderMarkdown returns
                    DOMPurify-sanitized HTML and nothing else is concatenated
@@ -62,9 +62,9 @@
               ></div>
               <div v-if="isLong(part.text) && !isExpanded(i, j)" class="msg-flow__disclose">
                 <button type="button" class="msg-flow__disclose-btn" @click="togglePart(i, j)">
-                  {{ t('requestMessages.expandFull') }}
+                  {{ t('agentSessions.expandFull') }}
                 </button>
-                <span class="msg-flow__disclose-meta">{{ t('requestMessages.partCharsNote', { n: part.text.length.toLocaleString() }) }}</span>
+                <span class="msg-flow__disclose-meta">{{ t('agentSessions.partCharsNote', { n: part.text.length.toLocaleString() }) }}</span>
               </div>
             </template>
             <div v-else-if="part.type === 'image'" class="msg-flow__image">

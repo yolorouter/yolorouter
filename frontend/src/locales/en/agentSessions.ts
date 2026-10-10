@@ -28,43 +28,31 @@ export default {
   col_cost_tip: 'Sum of the session\'s known costs (CNY); requests that could not be priced are disclosed separately, never folded into the total',
   costUnknownNote: 'incl. {n} of unknown cost',
 
-  // Detail page
+  // Detail page (the session replay)
   detailEyebrow: 'Analytics',
-  detailTitle: 'Session Detail',
-  detailDescription: 'Every request of this session in chronological order; click any row to open that request\'s message page with the captured conversation.',
+  detailTitle: 'Session Replay',
+  detailDescription: "The whole session as one continuous conversation: each turn's newly-added input and the model's reply in chronological order, deduplicated, with the model, duration, and usage labelled on the turn.",
   backToList: 'Back to List',
   notFound: 'Session not found or its request logs have been cleaned up',
+  loadFailed: 'Failed to load the session replay',
   detailRequestsUnit: 'requests',
-  col_created: 'Time',
-  col_created_tip: 'Request start time, shown in the browser timezone',
-  col_model: 'Model',
-  col_model_tip: 'The public model name the caller asked for',
-  col_status: 'Status',
-  col_status_tip: 'Final status bucket of the request: success, failed, partial, cancelled, rejected',
-  detail_col_tokens: 'Tokens',
-  detail_col_tokens_tip: 'The request\'s input and output token counts',
-  col_duration: 'Duration',
-  col_duration_tip: 'End-to-end duration from request received to response completed',
-  col_waterfall: 'Timeline',
-  col_waterfall_tip: 'Each request\'s duration bar on the session\'s real time axis: position aligns with the start time, length with the duration, colour follows the status bucket; hover for the precise start time and duration',
-  waterfallTip: 'started {time} · took {duration}',
+  replayElapsed: '{span} elapsed',
+  replaySuccessRatio: '{success}/{total} succeeded',
+  replayRequestLink: 'Request Details',
+  systemBlockTitle: 'System Prompt',
+  systemSeenAt: 'first seen on request {id}',
+  systemGroupChanges: 'System Prompt · first seen + {n} changes',
+  systemGroupFirstOnly: 'System Prompt · first seen',
 
-  // Summary card (figures recomputed from the detail's own requests array,
-  // same semantics as the list aggregate)
-  summaryRequests: 'Requests',
-  summaryRequests_tip: 'Total requests in this session and how many of them were successes (the success bucket of the five-class status taxonomy), same semantics as the list page',
-  summaryTokens: 'Total Tokens',
-  summaryTokens_tip: 'Sum of input and output tokens across the session\'s requests',
-  summaryCost: 'Cost',
-  summaryCost_tip: 'Sum of the session\'s known costs (CNY); requests that could not be priced are disclosed separately, never folded into the total',
-  summaryDuration: 'Session Duration',
-  summaryDuration_tip: 'Time between the session\'s earliest and latest requests',
-
-  // (The request drawer's copy moved to the requestMessages namespace when
-  // the drawer was replaced by the full-page request message view.)
-
-  // Message flow (bubble view of the captured bodies)
+  // Message flow (bubble view of the captured bodies). The disclosure-row
+  // and stream-merge keys below migrated here from the retired request
+  // message page's own namespace when that page was removed — the bubble
+  // renderer outlived it.
   flowTruncated: 'Content too long, truncated',
   flowFallbackTitle: 'Raw body',
   partImage: 'Image',
+  expandFull: 'Show all',
+  collapse: 'Collapse',
+  partCharsNote: '{n} characters',
+  streamMergedNote: 'streamed reply, merged from the sent chunks',
 }

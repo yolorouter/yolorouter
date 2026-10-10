@@ -15,7 +15,6 @@ import keyAutoRecovery from './keyAutoRecovery'
 import requestLogs from './requestLogs'
 import auditLogs from './auditLogs'
 import agentSessions from './agentSessions'
-import requestMessages from './requestMessages'
 import system from './system'
 import generalSettings from './generalSettings'
 import users from './users'
@@ -40,7 +39,6 @@ export default {
   requestLogs,
   auditLogs,
   agentSessions,
-  requestMessages,
   system,
   generalSettings,
   users,

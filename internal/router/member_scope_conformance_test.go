@@ -47,9 +47,12 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		"/api/admin/audit-logs/export",
 		// Tool-session aggregate view over request_logs: cross-account
 		// callers' traffic by construction, same classification as the
-		// request-log audit it derives from.
+		// request-log audit it derives from. The transcript subroute carries
+		// the whole deduplicated conversation — the strongest reading of the
+		// same cross-account concern.
 		"/api/admin/agent-sessions",
 		"/api/admin/agent-sessions/:sessionId",
+		"/api/admin/agent-sessions/:sessionId/transcript",
 		"/api/admin/models",
 		"/api/admin/models/:id",
 		"/api/admin/models/:id/impact",
