@@ -54,48 +54,30 @@
           </template>
         </EmptyState>
 
-        <template v-else>
-          <!-- Search + verification-result filter over the model's whole
-               candidate chain (shared shape and composable with the provider
-               detail page's mapping table): an in-memory computed, so it
-               always sees every row, not just the current page's slice. -->
-          <div class="filter-panel candidate-filter">
-            <div class="filter-grid">
-              <div class="filter-item filter-item--search">
-                <n-input
-                  v-model:value="candidateKeyword"
-                  :placeholder="`${t('models.provider')} / ${t('models.providerModelName')}`"
-                  clearable
-                  size="small"
-                >
-                  <template #prefix><Search :size="14" /></template>
-                </n-input>
-              </div>
-              <FilterSelectField
-                v-model:value="candidateBucket"
-                :label="t('models.probeResultTitle')"
-                :options="verificationFilterOptions"
-                :placeholder="t('providers.verificationFilterAll')"
-                size="small"
-              />
-            </div>
-          </div>
-          <div class="data-table-wrapper">
-            <ResponsiveDataTable
-              :columns="candidateColumns"
-              :data="filteredCandidates"
-              :scroll-x="920"
-              :row-key="(row: ModelCandidate) => row.id"
-              :pagination="candidatePagination"
-            >
-              <!-- A filter the whole chain fails to match renders the tab's
-                   own empty state rather than a blank table body. -->
-              <template #empty>
-                <EmptyState :title="t('models.routeChainEmpty')" />
-              </template>
-            </ResponsiveDataTable>
-          </div>
-        </template>
+        <!-- The shared mapping table: filter bar, columns, and row actions all
+             live in CandidateTable; this page injects its row-identity
+             adapter (its rows ARE the candidates of this page's one model),
+             its own column groups, the capability tri-state columns, and the
+             action handlers. -->
+        <CandidateTable
+          v-else
+          :rows="candidateRows"
+          :pagination="candidatePagination"
+          :row-ids="candidateRowIds"
+          :name-fields="candidateNameFields"
+          :search-placeholder="`${t('models.provider')} / ${t('models.providerModelName')}`"
+          :empty-title="t('models.routeChainEmpty')"
+          :scroll-x="920"
+          :leading-columns="candidateLeadingColumns"
+          :price-column="candidatePriceColumn"
+          :trailing-columns="candidateTrailingColumns"
+          show-capability-columns
+          :closing-columns="candidateClosingColumns"
+          :busy-row-id="testingCandidateId"
+          @edit="onEditCandidate"
+          @retest="onCandidateRetest"
+          @delete="onDeleteCandidate"
+        />
       </n-tab-pane>
 
       <n-tab-pane name="impact" :tab="t('models.tabImpact')">
@@ -121,48 +103,30 @@
 import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-// NTooltip is not in main.ts's create() registry, so it must be imported
-// explicitly or Vue renders it as an inert unknown element.
-import { NButton, NSwitch, NTag, NTooltip, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { ChevronDown, ChevronUp, MoreHorizontal, Plus, Search } from '@lucide/vue'
+import { NButton, NSwitch, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
+import { ChevronDown, ChevronUp, Plus } from '@lucide/vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
 import { modelDisableCopy, modelImpactOverview } from '../../utils/impactSummary'
-import { candidateTestResultText, capabilityState, modelHeaderDescription, routableMark } from '../../utils/modelStatusDisplay'
+import { candidateTestResultText, modelHeaderDescription, routableMark } from '../../utils/modelStatusDisplay'
 import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
 import { isBalancedModel } from '../../utils/schedulingMode'
 import { isTestSuccess } from '../../utils/testOutcomeDisplay'
 import { modelCostDetailLocation } from '../../utils/modelCostLocation'
 import { modalityBadge, modalityBadgeLabel } from '../../utils/modalityBadge'
-import { candidatePriceLines } from '../../utils/candidatePriceLines'
-import { getModelImpact, type BillingMode, type Model, type ModelCandidate, type ModelImpact } from '../../api/models'
+import { getModelImpact, type Model, type ModelCandidate, type ModelImpact } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
+import CandidateTable, { type CandidatePriceColumn, type CandidateRowIds } from '../../components/models/CandidateTable.vue'
 import CandidateEditModal from '../../components/models/CandidateEditModal.vue'
 import ModelCapabilityCard from '../../components/models/ModelCapabilityCard.vue'
 import ModelEditModal from '../../components/models/ModelEditModal.vue'
 import DeleteModelModal from '../../components/models/DeleteModelModal.vue'
-import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
-import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
-import FilterSelectField from '../../components/common/FilterSelectField.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { useClientPagination } from '../../composables/useClientPagination'
-import { candidateVerificationFilterOptions, useCandidateTableFilter } from '../../composables/useCandidateTableFilter'
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
 import { useIsMobile } from '../../composables/useIsMobile.ts'
-
-// The mode tag the billing column leads with: label and tag color keyed to
-// the same billing-mode vocabulary, one table instead of two parallel
-// ternary cascades drifting apart. Image and video carry their own tier
-// tables; token reads the per-million slots — colors keep the three
-// distinct at a glance.
-function billingModeTag(mode: BillingMode): { labelKey: string; tagType: 'info' | 'success' | 'default' } {
-  if (mode === 'image') return { labelKey: 'models.billingPerImage', tagType: 'info' }
-  if (mode === 'video') return { labelKey: 'models.billingPerVideo', tagType: 'success' }
-  if (mode === 'audio') return { labelKey: 'models.billingModeAudio', tagType: 'info' }
-  return { labelKey: 'models.billingPerToken', tagType: 'default' }
-}
 
 const { t, te } = useI18n()
 const route = useRoute()
@@ -195,20 +159,28 @@ const {
 } = useClientPagination()
 const editingCandidate = ref<ModelCandidate | null>(null)
 
-// Search + verification-result filter for the route-chain table — the same
-// composable the provider detail page's mapping table uses, so the two
-// tables' filtering behaves identically by construction. The keyword matches
-// the two name columns this table shows; the verification bucket maps
-// straight onto the stored three-value verification_status. Any change
-// restarts the pager at page 1 (a narrowed list can strand the current page
-// past the end).
+// The route-chain rows the shared table filters and pages. Search +
+// verification-result filtering lives inside CandidateTable (it wires the
+// shared composable itself); this page only names the two columns its keyword
+// searches, and resolves row identities for the shared table's actions.
 const candidateRows = computed(() => modelData.value?.candidates ?? [])
-const verificationFilterOptions = computed(() => candidateVerificationFilterOptions(t))
-const {
-  keyword: candidateKeyword,
-  bucket: candidateBucket,
-  filteredRows: filteredCandidates,
-} = useCandidateTableFilter(candidateRows, (row) => [row.provider_name, row.provider_model_name], candidatePagination)
+function candidateNameFields(row: ModelCandidate): string[] {
+  return [row.provider_name, row.provider_model_name]
+}
+
+// The row-identity adapter for the shared table: this page's rows ARE the
+// candidates of the page's one model, so the candidate id is the row's own id
+// and the model id is the page's subject.
+function candidateRowIds(row: ModelCandidate): CandidateRowIds {
+  return { candidateId: row.id, modelId }
+}
+
+// The shared table's retest emit carries (row, ids) — from the '⋯' menu and
+// from an unconfirmed capability tag alike; this page's retest runner speaks
+// the bare candidate id.
+function onCandidateRetest(_row: ModelCandidate, ids: CandidateRowIds) {
+  onRetestCandidate(ids.candidateId)
+}
 // Tracks the single candidate currently running its own capability test so
 // the actions button can show a spinner instead of silently doing nothing
 // until the request resolves (mirrors ProviderDetailPage.vue's testingKeyId).
@@ -368,60 +340,34 @@ function onToggleModelStatus() {
   )
 }
 
-// Capability cells render each state distinctly. An unconfirmed capability is not
-// a failure — routing ignores these flags entirely — it just means no probe has
-// confirmed it yet, so the tag is clickable to retest rather than alarming.
+// The routable mark is this page's own column (the provider page's mapping
+// rows carry no routable flag).
 function renderRoutable(row: ModelCandidate) {
   return routableMark(t, te, row)
 }
 
-function renderCapability(row: ModelCandidate, flag: boolean | null) {
-  const busy = testingCandidateId.value === row.id
-  switch (capabilityState(flag)) {
-    case 'confirmed':
-      return h(NTag, { size: 'small', type: 'success', bordered: false }, { default: () => '✓' })
-    case 'unsupported':
-      return h(NTag, { size: 'small', type: 'error', bordered: false }, { default: () => '✗' })
-    default:
-      return h(
-        NTooltip,
-        { trigger: 'hover' },
-        {
-          trigger: () =>
-            h(
-              NTag,
-              {
-                size: 'small',
-                type: 'warning',
-                bordered: false,
-                style: busy ? 'cursor: progress' : 'cursor: pointer',
-                // Clickable, so button semantics rather than the display-only
-                // hintTag shape: focusable, named by the hint, and operable
-                // from the keyboard.
-                role: 'button',
-                'aria-label': t('models.probeUnconfirmedHint'),
-                tabindex: 0,
-                onClick: () => {
-                  if (!busy) void onRetestCandidate(row.id)
-                },
-                onKeydown: (e: KeyboardEvent) => {
-                  if ((e.key === 'Enter' || e.key === ' ') && !busy) {
-                    e.preventDefault()
-                    void onRetestCandidate(row.id)
-                  }
-                },
-              },
-              { default: () => '?' },
-            ),
-          default: () => t('models.probeUnconfirmedHint'),
-        },
-      )
-  }
-}
+// ---- The route tab's shared-table injections ----
 
-// Actions column collapses into an NDropdown — a convention established
-// after flat buttons pushed the table into horizontal scroll.
-const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => {
+// The price column leads its lines with the billing-mode tag — this table
+// carries no other billing context, so the mode travels with the number it
+// explains.
+const candidatePriceColumn = computed<CandidatePriceColumn>(() => ({
+  title: t('models.billingPriceColumn'),
+  tip: t('models.billingPriceColumn_tip'),
+  minWidth: 150,
+  showBillingModeTag: true,
+}))
+
+// This page's own columns around the shared table's core: the provider name
+// before it, then the management switch / binding gauge / routable mark after
+// the price column (the capability tri-state columns render inside the shared
+// table — these rows carry the capability flags), and the reorder buttons
+// last before the shared actions column.
+const candidateLeadingColumns = computed<DataTableColumns<ModelCandidate>>(() => [
+  { title: columnTitle(t('models.provider'), t('models.provider_tip')), key: 'provider_name', minWidth: 140 },
+])
+
+const candidateTrailingColumns = computed<DataTableColumns<ModelCandidate>>(() => {
   // The binding count is the balanced mode's evenness gauge; a failover
   // model has no bindings, and a zero column there would read as "balanced
   // but nobody bound" — a state failover cannot even be in. Also hidden
@@ -441,22 +387,6 @@ const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => {
     render: (row) => h('span', { style: 'font-variant-numeric: tabular-nums' }, String(row.binding_count)),
   }
   return [
-    { title: columnTitle(t('models.provider'), t('models.provider_tip')), key: 'provider_name', minWidth: 140 },
-    { title: columnTitle(t('models.providerModelName'), t('models.providerModelName_tip')), key: 'provider_model_name', minWidth: 160 },
-    {
-      // Billing + price in one column, same lines as the provider detail
-      // page's price column (the shared candidate price renderer): the
-      // billing mode decides which price slot means anything, so the mode
-      // tag travels with the number it explains.
-      title: columnTitle(t('models.billingPriceColumn'), t('models.billingPriceColumn_tip')),
-      key: 'billing_price',
-      minWidth: 150,
-      render: (row) => {
-        const tag = billingModeTag(row.billing_mode)
-        const modeTag = h(NTag, { size: 'tiny', bordered: false, type: tag.tagType }, { default: () => t(tag.labelKey) })
-        return h('div', { style: 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;' }, [modeTag, ...candidatePriceLines(row, t)])
-      },
-    },
     {
       title: columnTitle(t('models.managementStatusColumn'), t('models.managementStatusColumn_tip')),
       key: 'management_status',
@@ -472,97 +402,47 @@ const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => {
       align: 'center',
       render: (row) => renderRoutable(row),
     },
-    {
-      title: columnTitle(t('models.supportsStreaming'), t('models.supportsStreaming_tip')),
-      key: 'supports_streaming',
-      width: STATUS_COL_WIDTH,
-      align: 'center',
-      render: (row) => renderCapability(row, row.supports_streaming),
-    },
-    {
-      title: columnTitle(t('models.supportsFunctionCalling'), t('models.supportsFunctionCalling_tip')),
-      key: 'supports_function_calling',
-      width: STATUS_COL_WIDTH,
-      align: 'center',
-      render: (row) => renderCapability(row, row.supports_function_calling),
-    },
-    {
-      // The column's meaning follows the model's scheduling mode: under
-      // failover it is the priority list (the head takes all traffic), under
-      // balanced it only fixes the rotation order and the failover path —
-      // the same hint the mode's own tooltip explains, kept here so the
-      // reorder buttons never promise priority they no longer deliver.
-      // Button columns normally take a plain string title; this one
-      // deliberately carries a header tip because its meaning flips with
-      // the mode and the buttons themselves stay generic up/down.
-      title: columnTitle(
-        isBalanced.value ? t('models.reorderColumnBalanced') : t('models.reorderColumn'),
-        isBalanced.value ? t('models.reorderColumnBalanced_tip') : t('models.reorderColumn_tip'),
-      ),
-      key: 'reorder',
-      width: 70,
-      align: 'center',
-      render: (row, index) => {
-        const count = modelData.value?.candidates.length ?? 0
-        const r = reorderAction.activeId.value
-        const reordering = r !== null
-        const upLoading = r === row.id && reorderAction.direction.value === 'up'
-        const downLoading = r === row.id && reorderAction.direction.value === 'down'
-        return h('div', { style: 'display:inline-flex;align-items:center;gap:2px;justify-content:center' }, [
-          h(
-            NButton,
-            { size: 'small', quaternary: true, circle: true, disabled: reordering || index === 0, loading: upLoading, title: t('models.moveUp'), onClick: () => onReorder(row.id, 'up') },
-            { icon: () => h(ChevronUp, { size: 16 }) },
-          ),
-          h(
-            NButton,
-            { size: 'small', quaternary: true, circle: true, disabled: reordering || index >= count - 1, loading: downLoading, title: t('models.moveDown'), onClick: () => onReorder(row.id, 'down') },
-            { icon: () => h(ChevronDown, { size: 16 }) },
-          ),
-        ])
-      },
-    },
-    {
-      title: t('common.actions'),
-      key: 'actions',
-      width: 60,
-      align: 'center',
-      render: (row) =>
-        h(
-          ResponsiveDropdown,
-          {
-            trigger: 'click',
-            placement: 'bottom-end',
-            triggerText: t('common.actions'),
-            disabled: testingCandidateId.value === row.id,
-            loading: testingCandidateId.value === row.id,
-            height: 200,
-            options: [
-              { label: t('models.editCandidate'), key: 'edit' },
-              // Titled so the dropdown says what a retest actually does — it
-              // reruns all three probes and rewrites the stored verdicts.
-              { label: t('models.retest'), key: 'retest', props: { title: t('models.retest_tip') } },
-              { type: 'divider', key: 'd' },
-              { label: t('models.deleteCandidate'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
-            ],
-            onSelect: (key: string) => {
-              if (key === 'edit') onEditCandidate(row)
-              else if (key === 'retest') onRetestCandidate(row.id)
-              else if (key === 'delete') onDeleteCandidate(row)
-            },
-          },
-          {
-            default: () =>
-              h(
-                NButton,
-                { size: 'small', quaternary: true, circle: true, loading: testingCandidateId.value === row.id, disabled: testingCandidateId.value === row.id },
-                { icon: () => h(MoreHorizontal, { size: 16 }) },
-              ),
-          },
-        ),
-    },
   ]
 })
+
+const candidateClosingColumns = computed<DataTableColumns<ModelCandidate>>(() => [
+  {
+    // The column's meaning follows the model's scheduling mode: under
+    // failover it is the priority list (the head takes all traffic), under
+    // balanced it only fixes the rotation order and the failover path —
+    // the same hint the mode's own tooltip explains, kept here so the
+    // reorder buttons never promise priority they no longer deliver.
+    // Button columns normally take a plain string title; this one
+    // deliberately carries a header tip because its meaning flips with
+    // the mode and the buttons themselves stay generic up/down.
+    title: columnTitle(
+      isBalanced.value ? t('models.reorderColumnBalanced') : t('models.reorderColumn'),
+      isBalanced.value ? t('models.reorderColumnBalanced_tip') : t('models.reorderColumn_tip'),
+    ),
+    key: 'reorder',
+    width: 70,
+    align: 'center',
+    render: (row, index) => {
+      const count = modelData.value?.candidates.length ?? 0
+      const r = reorderAction.activeId.value
+      const reordering = r !== null
+      const upLoading = r === row.id && reorderAction.direction.value === 'up'
+      const downLoading = r === row.id && reorderAction.direction.value === 'down'
+      return h('div', { style: 'display:inline-flex;align-items:center;gap:2px;justify-content:center' }, [
+        h(
+          NButton,
+          { size: 'small', quaternary: true, circle: true, disabled: reordering || index === 0, loading: upLoading, title: t('models.moveUp'), onClick: () => onReorder(row.id, 'up') },
+          { icon: () => h(ChevronUp, { size: 16 }) },
+        ),
+        h(
+          NButton,
+          { size: 'small', quaternary: true, circle: true, disabled: reordering || index >= count - 1, loading: downLoading, title: t('models.moveDown'), onClick: () => onReorder(row.id, 'down') },
+          { icon: () => h(ChevronDown, { size: 16 }) },
+        ),
+      ])
+    },
+  },
+])
 </script>
 
 <style scoped>
@@ -574,9 +454,5 @@ const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => {
 
 .model-detail__capability-card {
   margin-bottom: var(--space-6);
-}
-
-.candidate-filter {
-  margin-bottom: var(--space-4);
 }
 </style>

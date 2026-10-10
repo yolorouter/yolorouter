@@ -85,50 +85,32 @@
         </div>
         <EmptyState v-if="candidatesError" :title="t('common.networkError')" />
         <EmptyState v-else-if="!candidatesLoading && candidateRows.length === 0" :title="t('providers.modelsEmpty')" />
-        <template v-else>
-          <!-- Search + verification-result filter over the fully-fetched
-               mapping list (shared shape and composable with the model detail
-               page's route table): an in-memory computed, so it always sees
-               every row, not just the current page's slice. -->
-          <div class="filter-panel candidate-filter">
-            <div class="filter-grid">
-              <div class="filter-item filter-item--search">
-                <n-input
-                  v-model:value="candidateKeyword"
-                  :placeholder="`${t('models.name')} / ${t('models.providerModelName')}`"
-                  clearable
-                  size="small"
-                >
-                  <template #prefix><Search :size="14" /></template>
-                </n-input>
-              </div>
-              <FilterSelectField
-                v-model:value="candidateBucket"
-                :label="t('models.probeResultTitle')"
-                :options="verificationFilterOptions"
-                :placeholder="t('providers.verificationFilterAll')"
-                size="small"
-              />
-            </div>
-          </div>
-          <div class="data-table-wrapper">
-            <ResponsiveDataTable
-              v-model:checked-row-keys="checkedCandidateIds"
-              :columns="modelColumns"
-              :data="filteredCandidates"
-              :loading="candidatesLoading"
-              :scroll-x="972"
-              :row-key="(row: ProviderCandidate) => row.candidate_id"
-              :pagination="modelsPagination"
-            >
-              <!-- A filter the whole list fails to match renders the tab's own
-                   empty state rather than a blank table body. -->
-              <template #empty>
-                <EmptyState :title="t('providers.modelsEmpty')" />
-              </template>
-            </ResponsiveDataTable>
-          </div>
-        </template>
+        <!-- The shared mapping table: filter bar, columns, and row actions all
+             live in CandidateTable; this page injects its row-identity
+             adapter, its own column groups, the probe badge column (its rows
+             carry the probe-queue fields), and the action handlers. -->
+        <CandidateTable
+          v-else
+          v-model:checked-row-keys="checkedCandidateIds"
+          :rows="candidateRows"
+          :loading="candidatesLoading"
+          :pagination="modelsPagination"
+          :row-ids="candidateRowIds"
+          :name-fields="candidateNameFields"
+          :search-placeholder="`${t('models.name')} / ${t('models.providerModelName')}`"
+          :empty-title="t('providers.modelsEmpty')"
+          :scroll-x="972"
+          :price-column="candidatePriceColumn"
+          :leading-columns="candidateLeadingColumns"
+          show-probe-state-column
+          :trailing-columns="candidateTrailingColumns"
+          :busy-row-id="retestAction.activeId.value"
+          :retestable="retestableCandidate"
+          disable-retest-while-busy
+          @edit="onEditCandidate"
+          @retest="onRetestCandidate"
+          @delete="onDeleteCandidate"
+        />
         <n-alert v-if="batchDeleteFailedSummary" type="warning" class="summary">{{ batchDeleteFailedSummary }}</n-alert>
       </n-tab-pane>
     </n-tabs>
@@ -174,14 +156,13 @@ import { computed, h, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpace, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle, Search, Trash2 } from '@lucide/vue'
+import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle, Trash2 } from '@lucide/vue'
 import { useProvidersStore } from '../../store/providers'
 import { listProviderCandidates, retestCandidate, deleteCandidate, getModel, type ImportProviderModelsResult, type ModelCandidate, type ProviderCandidate } from '../../api/models'
 import { candidateIsOwedWork, candidateProgressState, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress } from '../../utils/importProgress'
 import { candidateUnpriced } from '../../utils/imagePriceSummary'
-import { candidatePriceLines } from '../../utils/candidatePriceLines'
 import { BATCH_DELETE_CONCURRENCY, runWithLimit } from '../../utils/runWithLimit'
-import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
+import { renderFailReasonCell } from '../../utils/probeStateTag'
 import { displayMessage } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
@@ -199,7 +180,7 @@ import KeyTestTargetsTag from '../../components/providers/KeyTestTargetsTag.vue'
 import ProviderProxyWarning from '../../components/providers/ProviderProxyWarning.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
-import FilterSelectField from '../../components/common/FilterSelectField.vue'
+import CandidateTable, { type CandidatePriceColumn, type CandidateRowIds } from '../../components/models/CandidateTable.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { candidateTestResultText } from '../../utils/modelStatusDisplay'
 import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
@@ -210,7 +191,6 @@ import { verificationDestinationCount } from '../../utils/providerProtocol'
 import { deleteLeavesProviderUnusable, isLastUsableKey } from '../../utils/providerStatusDisplay'
 import { useSingleRowAction } from '../../composables/useSingleRowAction'
 import { useClientPagination } from '../../composables/useClientPagination'
-import { candidateVerificationFilterOptions, useCandidateTableFilter } from '../../composables/useCandidateTableFilter'
 import { useGlobalProxyMode } from '../../composables/useGlobalProxyMode'
 import { providerProxyEffective } from '../../utils/outboundProxy'
 import { useIsMobile } from '../../composables/useIsMobile'
@@ -431,18 +411,19 @@ const candidatesError = ref(false)
 // overlap, and a slow stale response must not overwrite a newer one.
 let candidatesFetchId = 0
 
-// Search + verification-result filter for the mapping table — the same
-// composable the model detail page's route table uses, so the two tables'
-// filtering behaves identically by construction. The keyword matches the two
-// name columns this table shows; the verification bucket maps straight onto
-// the stored three-value verification_status. Any change restarts the pager
-// at page 1 (a narrowed list can strand the current page past the end).
-const verificationFilterOptions = computed(() => candidateVerificationFilterOptions(t))
-const {
-  keyword: candidateKeyword,
-  bucket: candidateBucket,
-  filteredRows: filteredCandidates,
-} = useCandidateTableFilter(candidateRows, (row) => [row.model_name, row.provider_model_name], modelsPagination)
+// Search + verification-result filtering for the mapping table lives in the
+// shared CandidateTable (it wires the shared composable itself); this page
+// only names the two columns its keyword searches.
+function candidateNameFields(row: ProviderCandidate): string[] {
+  return [row.model_name, row.provider_model_name]
+}
+
+// The row-identity adapter for the shared table: the provider page's mapping
+// rows speak the provider-scoped list endpoint's vocabulary — candidate_id +
+// model_id — so every row action this page receives resolves through these.
+function candidateRowIds(row: ProviderCandidate): CandidateRowIds {
+  return { candidateId: row.candidate_id, modelId: row.model_id }
+}
 
 // silent skips the table's loading spinner and keeps failures quiet —
 // background polls fire every couple of seconds and must neither blink the
@@ -711,7 +692,7 @@ async function onDeleteCandidate(row: ProviderCandidate) {
 // Checked rows of the mapping table, as candidate ids (the table's row-key).
 // Desktop only: the mobile card layout has no checkboxes, so the toolbar
 // button (hidden on mobile) and the selection column (gated by isMobile in
-// modelColumns) travel together.
+// candidateLeadingColumns) travel together.
 const checkedCandidateIds = ref<Array<string | number>>([])
 const batchDeleting = ref(false)
 // The partial-failure summary shown under the table. Empty (no alert) after a
@@ -811,10 +792,35 @@ async function runBatchDelete(rows: ProviderCandidate[]) {
   }
 }
 
-const modelColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
-  // Selection column for the batch delete — desktop only, because the mobile
-  // card layout cannot render checkboxes and the toolbar batch button is
-  // desktop-only with it (single-row delete stays available there).
+// ---- The models tab's shared-table injections ----
+
+// Retest stays conditional, exactly as before the shared-table refactor:
+// anything without a passing verdict that the probe queue does not already
+// hold (failed rows and the "untested" leftovers of an interrupted queue
+// alike); rows the queue holds get no retest because their probe is already
+// coming.
+function retestableCandidate(row: ProviderCandidate): boolean {
+  return (
+    candidateProgressState(row) !== 'passed' &&
+    row.queue_state !== 'queued' &&
+    row.queue_state !== 'probing'
+  )
+}
+
+// This page's own columns around the shared table's core. Leading: the batch
+// selection column (desktop only — the mobile card layout cannot render
+// checkboxes and the toolbar batch button is desktop-only with it) plus the
+// model name with its unpriced hint. Trailing: the probe failure reason (the
+// probe badge column itself renders inside the shared table; these rows carry
+// the queue fields it reads).
+// The price column shows no mode tag — the mapping table is already
+// per-billing-mode context here.
+const candidatePriceColumn = computed<CandidatePriceColumn>(() => ({
+  title: t('providers.candidatePrice'),
+  tip: t('providers.candidatePrice_tip'),
+  minWidth: 120,
+}))
+const candidateLeadingColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
   ...(!isMobile.value ? [{ type: 'selection' } as const] : []),
   {
     title: columnTitle(t('models.name'), t('models.name_tip')),
@@ -830,107 +836,14 @@ const modelColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
       return h(NSpace, { size: 6, align: 'center', wrapItem: false }, { default: () => parts })
     },
   },
-  {
-    title: columnTitle(t('models.providerModelName'), t('models.providerModelName_tip')),
-    key: 'provider_model_name',
-    minWidth: 160,
-    render: (row) => row.provider_model_name || '-',
-  },
-  {
-    title: columnTitle(t('providers.candidatePrice'), t('providers.candidatePrice_tip')),
-    key: 'price',
-    minWidth: 120,
-    // The lines come from the shared candidate price renderer: the billing
-    // mode picks which slot means anything — image rows read their tier
-    // table, token rows their per-million prices with the cache pair as a
-    // quiet second line only when the mapping actually has them. What the
-    // numbers mean lives in the header tooltip, keeping the header itself
-    // to one word. This column shows no mode tag — the mapping table is
-    // already per-billing-mode context here.
-    render: (row) => h('div', candidatePriceLines(row, t)),
-  },
-  {
-    title: columnTitle(t('providers.candidateProbeStatus'), t('providers.candidateProbeStatus_tip')),
-    key: 'probe_state',
-    width: STATUS_COL_WIDTH,
-    render: (row) => renderProbeStateTag(t, row, { labelKey: 'providers.verificationUntested', type: 'default' }),
-  },
+])
+
+const candidateTrailingColumns = computed<DataTableColumns<ProviderCandidate>>(() => [
   {
     title: columnTitle(t('providers.candidateFailReason'), t('providers.candidateFailReason_tip')),
     key: 'last_test_error',
     minWidth: 200,
     render: renderFailReasonCell,
-  },
-  {
-    // Actions-column convention (same as the keys table above and the model
-    // page's candidate table): one compact "⋯" dropdown instead of inline
-    // text buttons. Edit/delete apply to EVERY row — a passed mapping is
-    // exactly the one worth repricing or renaming. Retest stays conditional:
-    // anything without a passing verdict that the probe queue does not
-    // already hold (failed rows and the "untested" leftovers of an
-    // interrupted queue alike); rows the queue holds get no retest because
-    // their probe is already coming.
-    title: t('common.actions'),
-    key: 'actions',
-    width: 60,
-    align: 'center',
-    render: (row) => {
-      const canRetest =
-        candidateProgressState(row) !== 'passed' &&
-        row.queue_state !== 'queued' &&
-        row.queue_state !== 'probing'
-      const busy = retestAction.activeId.value !== null
-      return h(
-        ResponsiveDropdown,
-        {
-          trigger: 'click',
-          placement: 'bottom-end',
-          triggerText: t('common.actions'),
-          disabled: retestAction.activeId.value === row.candidate_id,
-          loading: retestAction.activeId.value === row.candidate_id,
-          height: 200,
-          options: [
-            { label: t('models.editCandidate'), key: 'edit' },
-            ...(canRetest
-              ? [
-                  // Titled so the dropdown says what a retest actually does —
-                  // it reruns all three probes and rewrites the stored
-                  // verdicts (same as the model page's menu). Disabled while
-                  // any retest is in flight: the single-flight runner would
-                  // silently ignore a second click.
-                  {
-                    label: t('models.retest'),
-                    key: 'retest',
-                    disabled: busy,
-                    props: { title: t('models.retest_tip') },
-                  },
-                ]
-              : []),
-            { type: 'divider', key: 'd' },
-            { label: t('models.deleteCandidate'), key: 'delete', props: { style: 'color: var(--color-danger)' } },
-          ],
-          onSelect: (key: string) => {
-            if (key === 'edit') onEditCandidate(row)
-            else if (key === 'retest') void onRetestCandidate(row)
-            else if (key === 'delete') void onDeleteCandidate(row)
-          },
-        },
-        {
-          default: () =>
-            h(
-              NButton,
-              {
-                size: 'small',
-                quaternary: true,
-                circle: true,
-                loading: retestAction.activeId.value === row.candidate_id,
-                disabled: retestAction.activeId.value === row.candidate_id,
-              },
-              { icon: () => h(MoreHorizontal, { size: 16 }) },
-            ),
-        },
-      )
-    },
   },
 ])
 
@@ -1303,10 +1216,6 @@ async function onTestAll() {
 .models-toolbar {
   display: flex;
   justify-content: flex-end;
-  margin-bottom: var(--space-4);
-}
-
-.candidate-filter {
   margin-bottom: var(--space-4);
 }
 
