@@ -63,10 +63,31 @@ export interface Model {
    * Tri-state image-input declaration: null = undeclared (the gateway leaves
    * images alone), true/false = the admin's statement of whether this model
    * can read images (false enables vision fallback / image stripping).
+   * Deprecated on the wire in favor of input_modalities, which carries the
+   * same fact as part of a full modality array; the server keeps the two in
+   * sync (every input_modalities write derives this field).
    */
   supports_image_input: boolean | null
   /** What this model produces ("text", "image"), driving which endpoints answer it. */
   output_modalities: string[]
+  /**
+   * Admin-declared context window in tokens; null = undeclared.
+   * Informational metadata — nothing in the gateway reads it yet.
+   */
+  context_length: number | null
+  /**
+   * What this model accepts as input ("text", "image", "audio", "video").
+   * null (or an empty array on the write side) = undeclared — a missing input
+   * declaration must never be read as "text only". Supersedes the deprecated
+   * supports_image_input boolean.
+   */
+  input_modalities: string[] | null
+  /** Tri-state tool-calling declaration: null = undeclared, never "no". */
+  supports_tools: boolean | null
+  /** Tri-state reasoning-output declaration: null = undeclared, never "no". */
+  supports_reasoning: boolean | null
+  /** Recommended default temperature; null = undeclared. Metadata only. */
+  temperature: number | null
   candidates: ModelCandidate[]
   created_at: string
 }
@@ -223,16 +244,36 @@ export function getModel(id: number): Promise<Model> {
   return apiFetch(`/api/admin/models/${id}`)
 }
 
-/** The wire form of the tri-state declaration ("unknown" maps to null). */
-export type ImageInputChoice = 'unknown' | 'yes' | 'no'
+/**
+ * The wire form of a tri-state declaration: "unknown" maps to null on the
+ * server (clears back to undeclared). Shared by every yes/no/unknown select
+ * the console offers.
+ */
+export type TriStateChoice = 'unknown' | 'yes' | 'no'
 
 // ModelPatch is one PATCH's submitted fields; optional fields left undefined
-// are omitted from the request and keep their current server-side value.
+// are omitted from the request and keep their current server-side value
+// (absent = keep). The tri-state set-ness contract per field:
+//
+//   - tri-state selects (supportsTools / supportsReasoning): present "yes"/
+//     "no" declares, present "unknown" clears, absent keeps;
+//   - numbers (contextLength / temperature): a present number declares, a
+//     present null clears (compactBody keeps null on the wire), absent keeps;
+//   - inputModalities: a present non-empty array declares (and re-derives
+//     the deprecated image-input boolean server-side), a present empty array
+//     clears back to undeclared, absent keeps.
+//
+// The edit modal sends each field only when it differs from the row the form
+// was prefilled from, so an untouched field stays absent.
 export interface ModelPatch {
   name: string
-  imageInput?: ImageInputChoice
   schedulingMode?: SchedulingMode
   outputModalities?: string[]
+  inputModalities?: string[]
+  contextLength?: number | null
+  supportsTools?: TriStateChoice
+  supportsReasoning?: TriStateChoice
+  temperature?: number | null
 }
 
 export function updateModel(id: number, patch: ModelPatch): Promise<Model> {
@@ -240,9 +281,13 @@ export function updateModel(id: number, patch: ModelPatch): Promise<Model> {
     method: 'PATCH',
     body: compactBody({
       name: patch.name,
-      image_input: patch.imageInput,
       scheduling_mode: patch.schedulingMode,
       output_modalities: patch.outputModalities,
+      input_modalities: patch.inputModalities,
+      context_length: patch.contextLength,
+      supports_tools: patch.supportsTools,
+      supports_reasoning: patch.supportsReasoning,
+      temperature: patch.temperature,
     }),
   })
 }
