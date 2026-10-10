@@ -590,3 +590,168 @@ func UpdateOutboundProxy(db *gorm.DB, expectedVersion int64, mode, proxyURL stri
 	}
 	return settings.OutboundProxySetting{Mode: mode, URL: proxyURL}, newVersion, nil
 }
+
+// The capability-enforcement settings family: six independent switches and
+// the context-limit margin they share, seeded by migration 00057 as seven
+// system_settings rows that share one version, same contract as the
+// key-auto-recovery pair.
+const (
+	capabilityContextLimitBlockKey  = "capability_context_limit_block"
+	capabilityTemperatureDefaultKey = "capability_temperature_default"
+	capabilityTemperatureForceKey   = "capability_temperature_force"
+	capabilityToolsStrictKey        = "capability_tools_strict"
+	capabilityReasoningStrictKey    = "capability_reasoning_strict"
+	capabilityReasoningEgressKey    = "capability_reasoning_egress_clear"
+	capabilityContextMarginCellsKey = "capability_context_margin_percent"
+)
+
+// capabilityKeys lists the family's rows in field order. The reader maps a
+// row onto the snapshot by key, and the writer walks the same order, so the
+// two cannot disagree about which value lands in which field.
+var capabilityKeys = []string{
+	capabilityContextLimitBlockKey,
+	capabilityTemperatureDefaultKey,
+	capabilityTemperatureForceKey,
+	capabilityToolsStrictKey,
+	capabilityReasoningStrictKey,
+	capabilityReasoningEgressKey,
+	capabilityContextMarginCellsKey,
+}
+
+// capabilityRowValue renders one snapshot field as its stored string.
+func capabilityRowValue(s settings.CapabilityEnforcementSetting, key string) (string, error) {
+	boolField := func(on bool) string {
+		if on {
+			return "true"
+		}
+		return "false"
+	}
+	switch key {
+	case capabilityContextLimitBlockKey:
+		return boolField(s.ContextLimitBlock), nil
+	case capabilityTemperatureDefaultKey:
+		return boolField(s.TemperatureDefault), nil
+	case capabilityTemperatureForceKey:
+		return boolField(s.TemperatureForce), nil
+	case capabilityToolsStrictKey:
+		return boolField(s.ToolsStrict), nil
+	case capabilityReasoningStrictKey:
+		return boolField(s.ReasoningStrict), nil
+	case capabilityReasoningEgressKey:
+		return boolField(s.ReasoningEgressClear), nil
+	case capabilityContextMarginCellsKey:
+		return strconv.Itoa(s.ContextMarginPercent), nil
+	}
+	return "", fmt.Errorf("system_settings: unknown capability key %q", key)
+}
+
+// GetCapabilityEnforcement reads all seven capability rows as one snapshot.
+// Missing rows (a database migrated before 00057, where seeding has not run
+// yet) degrade to the shipped all-off default rather than erroring — the
+// gateway read path must never fail-closed on configuration. A partial
+// family, a version mismatch, a non-boolean switch, or a non-integer /
+// negative margin is corrupt data and surfaces as an error. The margin
+// deliberately carries NO upper bound here: the 0..1000 domain is the write
+// path's rule (service-layer validation on every update), and a hand-edited
+// oversized value widens the tolerance band rather than corrupting
+// anything — refusing the whole family over it would turn six switches off.
+func GetCapabilityEnforcement(db *gorm.DB) (settings.CapabilityEnforcementSetting, int64, error) {
+	var rows []struct {
+		Key     string
+		Value   string
+		Version int64
+	}
+	if err := db.Table("system_settings").
+		Select("key, value, version").
+		Where("key IN ?", capabilityKeys).
+		Find(&rows).Error; err != nil {
+		return settings.CapabilityEnforcementSetting{}, 0, err
+	}
+	if len(rows) == 0 {
+		return settings.DefaultCapabilityEnforcementSetting(), 0, nil
+	}
+	if len(rows) != len(capabilityKeys) {
+		return settings.CapabilityEnforcementSetting{}, 0, fmt.Errorf("system_settings: expected %d capability rows, got %d", len(capabilityKeys), len(rows))
+	}
+	var s settings.CapabilityEnforcementSetting
+	ver := rows[0].Version
+	for _, r := range rows {
+		if r.Version != ver {
+			return settings.CapabilityEnforcementSetting{}, 0, errors.New("system_settings: version mismatch between capability rows")
+		}
+		switch r.Key {
+		case capabilityContextMarginCellsKey:
+			n, err := strconv.Atoi(r.Value)
+			if err != nil || n < 0 {
+				return settings.CapabilityEnforcementSetting{}, 0, fmt.Errorf("system_settings: corrupt %s value %q", r.Key, r.Value)
+			}
+			s.ContextMarginPercent = n
+		default:
+			switch r.Value {
+			case "true":
+			case "false":
+			default:
+				return settings.CapabilityEnforcementSetting{}, 0, fmt.Errorf("system_settings: corrupt %s value %q", r.Key, r.Value)
+			}
+			on := r.Value == "true"
+			switch r.Key {
+			case capabilityContextLimitBlockKey:
+				s.ContextLimitBlock = on
+			case capabilityTemperatureDefaultKey:
+				s.TemperatureDefault = on
+			case capabilityTemperatureForceKey:
+				s.TemperatureForce = on
+			case capabilityToolsStrictKey:
+				s.ToolsStrict = on
+			case capabilityReasoningStrictKey:
+				s.ReasoningStrict = on
+			case capabilityReasoningEgressKey:
+				s.ReasoningEgressClear = on
+			}
+		}
+	}
+	return s, ver, nil
+}
+
+// UpdateCapabilityEnforcement CAS-updates all seven rows in one statement,
+// same CASE-driven shape as UpdateCustomSystemPrompt: RowsAffected == 7 is
+// the CAS witness (all rows share the version, enforced by the read path).
+// Returns the committed snapshot + new version so the handler can hand the
+// fresh version back to the caller; a second save with the stale version
+// would otherwise always conflict.
+func UpdateCapabilityEnforcement(db *gorm.DB, expectedVersion int64, s settings.CapabilityEnforcementSetting) (settings.CapabilityEnforcementSetting, int64, error) {
+	// The CASE expression and its args are built in key order so the SQL and
+	// the snapshot stay in the same frame of reference.
+	expr := "CASE key"
+	args := make([]interface{}, 0, len(capabilityKeys)*2)
+	for _, k := range capabilityKeys {
+		v, err := capabilityRowValue(s, k)
+		if err != nil {
+			return settings.CapabilityEnforcementSetting{}, 0, err
+		}
+		expr += " WHEN ? THEN ?"
+		args = append(args, k, v)
+	}
+	expr += " END"
+	var newVersion int64
+	err := db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Table("system_settings").
+			Where("key IN ? AND version = ?", capabilityKeys, expectedVersion).
+			Updates(map[string]interface{}{
+				"value":   gorm.Expr(expr, args...),
+				"version": gorm.Expr("version + 1"),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != int64(len(capabilityKeys)) {
+			return errcode.ErrCapabilityEnforcementConflict
+		}
+		newVersion = expectedVersion + 1
+		return nil
+	})
+	if err != nil {
+		return settings.CapabilityEnforcementSetting{}, 0, err
+	}
+	return s, newVersion, nil
+}

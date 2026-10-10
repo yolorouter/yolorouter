@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yolorouter/yolorouter/internal/settings"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 
 	"github.com/glebarez/sqlite"
@@ -1368,5 +1369,170 @@ func TestOutboundProxyUpdateCASConflict(t *testing.T) {
 	}
 	if _, _, err := svc.UpdateOutboundProxy(context.Background(), 1, "custom", "http://127.0.0.1:7890"); !errors.Is(err, errcode.ErrOutboundProxyConflict) {
 		t.Fatalf("want ErrOutboundProxyConflict, got %v", err)
+	}
+}
+
+// --- Capability enforcement ---------------------------------------------------
+
+// newSvcTestDBWithCapability returns a test DB with the seven
+// capability-enforcement rows seeded at the migration default: every
+// switch off, margin 5, all rows at v1.
+func newSvcTestDBWithCapability(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := newSvcTestDB(t)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES
+		('capability_context_limit_block','false'),
+		('capability_temperature_default','false'),
+		('capability_temperature_force','false'),
+		('capability_tools_strict','false'),
+		('capability_reasoning_strict','false'),
+		('capability_reasoning_egress_clear','false'),
+		('capability_context_margin_percent','5')`)
+	return db
+}
+
+// allOnCapability is the every-switch-on snapshot used to prove a write
+// round-trips every field (and, downstream, that a read failure never
+// un-configures it).
+func allOnCapability() settings.CapabilityEnforcementSetting {
+	return settings.CapabilityEnforcementSetting{
+		ContextLimitBlock:    true,
+		TemperatureDefault:   true,
+		TemperatureForce:     true,
+		ToolsStrict:          true,
+		ReasoningStrict:      true,
+		ReasoningEgressClear: true,
+		ContextMarginPercent: 12,
+	}
+}
+
+// The seeded default reads every switch off with the 5% margin — an
+// upgraded deployment changes nothing until an admin flips a switch.
+func TestCapabilityEnforcementReadReturnsSeededDefault(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithCapability(t))
+	s, ver, err := svc.GetCapabilityEnforcement(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if s != (settings.CapabilityEnforcementSetting{ContextMarginPercent: 5}) {
+		t.Fatalf("want all-off + margin 5, got %+v", s)
+	}
+	if ver != 1 {
+		t.Fatalf("want v1, got v%d", ver)
+	}
+}
+
+// A database migrated before the seeding migration reads the same default
+// without erroring — the gateway read path never fails closed on
+// configuration.
+func TestCapabilityEnforcementMissingRowsReturnDefault(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDB(t)) // no capability rows seeded
+	s, ver, err := svc.GetCapabilityEnforcement(context.Background())
+	if err != nil {
+		t.Fatalf("read on missing rows: want nil err, got %v", err)
+	}
+	if s != settings.DefaultCapabilityEnforcementSetting() || ver != 0 {
+		t.Fatalf("want shipped default/v0, got %+v v%d", s, ver)
+	}
+}
+
+// A CAS update commits all seven rows and publishes the snapshot so the
+// cached read sees it without an invalidate round-trip.
+func TestCapabilityEnforcementUpdatePublishesImmediately(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithCapability(t))
+	want := allOnCapability()
+	got, ver, err := svc.UpdateCapabilityEnforcement(context.Background(), 1, want)
+	if err != nil || ver != 2 {
+		t.Fatalf("update: got %+v v%d err=%v", got, ver, err)
+	}
+	if got != want {
+		t.Fatalf("update round-trip mismatch: got %+v want %+v", got, want)
+	}
+	again, _, err := svc.GetCapabilityEnforcement(context.Background())
+	if err != nil || again != want {
+		t.Fatalf("read after update: got %+v err=%v, want %+v", again, err, want)
+	}
+}
+
+// A second save with the stale version conflicts, same CAS contract as the
+// other settings families.
+func TestCapabilityEnforcementUpdateConflict(t *testing.T) {
+	svc := NewSystemSettingsService(newSvcTestDBWithCapability(t))
+	if _, _, err := svc.UpdateCapabilityEnforcement(context.Background(), 1, allOnCapability()); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	_, _, err := svc.UpdateCapabilityEnforcement(context.Background(), 1, settings.CapabilityEnforcementSetting{})
+	if !errors.Is(err, errcode.ErrCapabilityEnforcementConflict) {
+		t.Fatalf("want ErrCapabilityEnforcementConflict, got %v", err)
+	}
+}
+
+// The margin domain is validated before any row is touched; a refused
+// write leaves the stored snapshot alone.
+func TestCapabilityEnforcementRejectsMarginOutOfBounds(t *testing.T) {
+	for _, margin := range []int{-1, 1001} {
+		svc := NewSystemSettingsService(newSvcTestDBWithCapability(t))
+		snap := allOnCapability()
+		snap.ContextMarginPercent = margin
+		if _, _, err := svc.UpdateCapabilityEnforcement(context.Background(), 1, snap); !errors.Is(err, errcode.ErrCapabilityContextMarginInvalid) {
+			t.Fatalf("margin %d: want ErrCapabilityContextMarginInvalid, got %v", margin, err)
+		}
+		got, _, err := svc.GetCapabilityEnforcement(context.Background())
+		if err != nil || got != (settings.CapabilityEnforcementSetting{ContextMarginPercent: 5}) {
+			t.Fatalf("refused write must leave the stored default, got %+v err=%v", got, err)
+		}
+	}
+	for _, margin := range []int{0, 1000} {
+		svc := NewSystemSettingsService(newSvcTestDBWithCapability(t))
+		snap := allOnCapability()
+		snap.ContextMarginPercent = margin
+		if _, _, err := svc.UpdateCapabilityEnforcement(context.Background(), 1, snap); err != nil {
+			t.Fatalf("margin %d: want accepted, got %v", margin, err)
+		}
+	}
+}
+
+// Cold cache with a broken DB: the first read fails open to the shipped
+// all-off default (with the error), and the failure window serves the same
+// default silently — the cold-cache arm of "no row / cold cache = off".
+func TestCapabilityEnforcementColdCacheFailsOpenToOff(t *testing.T) {
+	db := newSvcTestDBWithCapability(t)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("underlying *sql.DB: %v", err)
+	}
+	svc := NewSystemSettingsService(db)
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	s, _, err := svc.GetCapabilityEnforcement(context.Background())
+	if err == nil {
+		t.Fatal("first cold read: want error, got nil")
+	}
+	if s != settings.DefaultCapabilityEnforcementSetting() {
+		t.Fatalf("cold read: want all-off + margin 5, got %+v", s)
+	}
+	for i := 0; i < 3; i++ {
+		s, _, err := svc.GetCapabilityEnforcement(context.Background())
+		if err != nil {
+			t.Fatalf("call %d in failure window: want nil error, got %v", i, err)
+		}
+		if s != settings.DefaultCapabilityEnforcementSetting() {
+			t.Fatalf("call %d in failure window: want all-off + margin 5, got %+v", i, s)
+		}
+	}
+}
+
+// A corrupt switch value (outside true/false) surfaces as an error rather
+// than being read as off — corruption must be visible, not silent.
+func TestCapabilityEnforcementCorruptSwitchSurfaces(t *testing.T) {
+	db := newSvcTestDBWithCapability(t)
+	if res := db.Exec(`UPDATE system_settings SET value='maybe' WHERE key='capability_tools_strict'`); res.Error != nil {
+		t.Fatalf("corrupt row: %v", res.Error)
+	}
+	svc := NewSystemSettingsService(db)
+	if _, _, err := svc.GetCapabilityEnforcement(context.Background()); err == nil {
+		t.Fatal("corrupt switch value must surface as an error")
 	}
 }

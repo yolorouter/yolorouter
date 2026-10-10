@@ -18,6 +18,7 @@ type SettingsProvider interface {
 	CustomSystemPrompt(ctx context.Context) (settings.CustomSystemPromptSetting, int64, error)
 	GetInputCompression(ctx context.Context) (bool, int64, error)
 	GetVisionFallback(ctx context.Context) (settings.VisionFallbackSetting, int64, error)
+	GetCapabilityEnforcement(ctx context.Context) (settings.CapabilityEnforcementSetting, int64, error)
 }
 
 // requestSettings is every setting one request needs, resolved once. Each
@@ -34,6 +35,11 @@ type requestSettings struct {
 	CustomSystemPrompt        string
 	VisionFallbackModel       string
 	VisionFallbackPrompt      string
+	// Capability carries the model-capability enforcement switches and the
+	// context-limit margin. It has no per-key override layer — enforcement
+	// is a site-wide posture, not a caller preference — so it joins as the
+	// natural no-override case, like vision fallback.
+	Capability settings.CapabilityEnforcementSetting
 }
 
 // resolveRequestSettings resolves every field of requestSettings in one
@@ -84,6 +90,19 @@ func resolveRequestSettings(ctx context.Context, sp SettingsProvider, apiKey *AP
 		// images a configured model could have described.
 		out.VisionFallbackModel = vf.Model
 		out.VisionFallbackPrompt = vf.Prompt
+	}
+
+	if sp != nil {
+		ce, _, err := sp.GetCapabilityEnforcement(ctx)
+		if err != nil {
+			logger.Warn("gateway: capability enforcement settings read failed",
+				zap.String("request_id", requestID), zap.Error(err))
+		}
+		// Assigned even on a read error: fail-open per the requestSettings
+		// doc — the value is the provider's last-known-good (or the shipped
+		// all-off default on a cold cache), never a silent flip of a
+		// configured switch.
+		out.Capability = ce
 	}
 
 	return out

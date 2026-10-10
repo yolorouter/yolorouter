@@ -97,14 +97,21 @@ type ModelCandidate struct {
 
 // Model is the model row's routing face.
 type Model struct {
-	ID                 uint
-	Name               string
-	ManagementStatus   int
-	SchedulingMode     SchedulingMode
+	ID               uint
+	Name             string
+	ManagementStatus int
+	SchedulingMode   SchedulingMode
+	// SupportsImageInput is the deprecated vision mirror the vision-fallback
+	// hot path still reads; the row converter keeps it derived from the
+	// modality array until that path moves.
 	SupportsImageInput *bool
-	OutputModalities   string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// ContextLength is the admin's declared context window in tokens, nil =
+	// undeclared. The context-limit precheck is its only reader; undeclared
+	// never blocks.
+	ContextLength    *int
+	OutputModalities string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // APIKey is the caller credential's face: quota switches, budget axes,

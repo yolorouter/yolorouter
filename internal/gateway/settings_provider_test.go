@@ -22,9 +22,10 @@ import (
 // supposed to short-circuit it — so the probe's job is to make "the global
 // read was skipped" observable, which no value assertion can.
 type probeProvider struct {
-	compress func() (bool, error)
-	prompt   func() (settings.CustomSystemPromptSetting, error)
-	vision   func() (settings.VisionFallbackSetting, error)
+	compress   func() (bool, error)
+	prompt     func() (settings.CustomSystemPromptSetting, error)
+	vision     func() (settings.VisionFallbackSetting, error)
+	capability func() (settings.CapabilityEnforcementSetting, error)
 }
 
 func (p *probeProvider) CustomSystemPrompt(context.Context) (settings.CustomSystemPromptSetting, int64, error) {
@@ -42,6 +43,11 @@ func (p *probeProvider) GetVisionFallback(context.Context) (settings.VisionFallb
 	return v, 1, err
 }
 
+func (p *probeProvider) GetCapabilityEnforcement(context.Context) (settings.CapabilityEnforcementSetting, int64, error) {
+	v, err := p.capability()
+	return v, 1, err
+}
+
 // quietProbe never errors and never fails; the default fixture for rows that
 // only care about one setting.
 func quietProbe() *probeProvider {
@@ -49,6 +55,9 @@ func quietProbe() *probeProvider {
 		compress: func() (bool, error) { return false, nil },
 		prompt:   func() (settings.CustomSystemPromptSetting, error) { return settings.CustomSystemPromptSetting{}, nil },
 		vision:   func() (settings.VisionFallbackSetting, error) { return settings.VisionFallbackSetting{}, nil },
+		capability: func() (settings.CapabilityEnforcementSetting, error) {
+			return settings.CapabilityEnforcementSetting{}, nil
+		},
 	}
 }
 
@@ -83,9 +92,11 @@ func TestResolveSettingsOverrideShortCircuitsTheGlobalRead(t *testing.T) {
 }
 
 // TestResolveSettingsKeepsLastKnownGoodOnReadError pins the fail-open
-// posture for all three settings: the provider delivers its snapshot
-// alongside the error, and the resolve keeps it. Flipping any of the three
-// to "error means disabled" turns this red.
+// posture for the settings families: the provider delivers its snapshot
+// alongside the error, and the resolve keeps it. Flipping any family to
+// "error means disabled" turns this red. The capability arm walks all six
+// switches: an enforcement posture the site configured must not silently
+// un-configure itself because a refresh failed.
 func TestResolveSettingsKeepsLastKnownGoodOnReadError(t *testing.T) {
 	probed := quietProbe()
 	probed.compress = func() (bool, error) { return true, errors.New("db down") }
@@ -94,6 +105,17 @@ func TestResolveSettingsKeepsLastKnownGoodOnReadError(t *testing.T) {
 	}
 	probed.vision = func() (settings.VisionFallbackSetting, error) {
 		return settings.VisionFallbackSetting{Model: "m1", Prompt: "p1"}, errors.New("db down")
+	}
+	probed.capability = func() (settings.CapabilityEnforcementSetting, error) {
+		return settings.CapabilityEnforcementSetting{
+			ContextLimitBlock:    true,
+			TemperatureDefault:   true,
+			TemperatureForce:     true,
+			ToolsStrict:          true,
+			ReasoningStrict:      true,
+			ReasoningEgressClear: true,
+			ContextMarginPercent: 7,
+		}, errors.New("db down")
 	}
 
 	got := resolveRequestSettings(context.Background(), probed, &APIKey{}, "req-1")
@@ -106,12 +128,22 @@ func TestResolveSettingsKeepsLastKnownGoodOnReadError(t *testing.T) {
 	if got.VisionFallbackModel != "m1" || got.VisionFallbackPrompt != "p1" {
 		t.Error("vision fallback: last-known-good dropped alongside the error")
 	}
+	c := got.Capability
+	if !c.ContextLimitBlock || !c.TemperatureDefault || !c.TemperatureForce ||
+		!c.ToolsStrict || !c.ReasoningStrict || !c.ReasoningEgressClear {
+		t.Errorf("capability: last-known-good switches dropped alongside the error: %+v", c)
+	}
+	if c.ContextMarginPercent != 7 {
+		t.Errorf("capability: last-known-good margin dropped alongside the error: %+v", c)
+	}
 }
 
 // TestResolveSettingsColdCacheYieldsZeroOnReadError separates the two
 // fail-open shapes: on a cold cache the provider has no snapshot, so the
 // zero value IS what "keep what the provider returned" means. Without this
 // row the test above could be misread as "errors always keep something".
+// The capability zero value is every switch off — the shipped posture a
+// not-yet-configured site runs with.
 func TestResolveSettingsColdCacheYieldsZeroOnReadError(t *testing.T) {
 	probed := quietProbe()
 	probed.compress = func() (bool, error) { return false, errors.New("db down") }
@@ -121,11 +153,17 @@ func TestResolveSettingsColdCacheYieldsZeroOnReadError(t *testing.T) {
 	probed.vision = func() (settings.VisionFallbackSetting, error) {
 		return settings.VisionFallbackSetting{}, errors.New("db down")
 	}
+	probed.capability = func() (settings.CapabilityEnforcementSetting, error) {
+		return settings.CapabilityEnforcementSetting{}, errors.New("db down")
+	}
 
 	got := resolveRequestSettings(context.Background(), probed, &APIKey{}, "req-1")
 	if got.CompressEnabled || got.CustomSystemPromptEnabled || got.CustomSystemPrompt != "" ||
 		got.VisionFallbackModel != "" || got.VisionFallbackPrompt != "" {
 		t.Fatalf("cold cache with error should yield the zero settings, got %+v", got)
+	}
+	if got.Capability != (settings.CapabilityEnforcementSetting{}) {
+		t.Fatalf("cold cache with error should yield the zero capability snapshot, got %+v", got.Capability)
 	}
 }
 
@@ -148,6 +186,9 @@ func TestSettingsReadErrorDoesNotBlockTheRequest(t *testing.T) {
 		},
 		vision: func() (settings.VisionFallbackSetting, error) {
 			return settings.VisionFallbackSetting{}, errors.New("db down")
+		},
+		capability: func() (settings.CapabilityEnforcementSetting, error) {
+			return settings.CapabilityEnforcementSetting{}, errors.New("db down")
 		},
 	}
 	masterKey := bytes.Repeat([]byte{0x42}, 32)
@@ -187,6 +228,9 @@ func TestResolveSettingsNilProviderKeepsOverridesAndZeroesTheRest(t *testing.T) 
 	}
 	if got.VisionFallbackModel != "" || got.VisionFallbackPrompt != "" {
 		t.Errorf("vision fallback has no override layer; a nil provider must leave it zero, got %+v", got)
+	}
+	if got.Capability != (settings.CapabilityEnforcementSetting{}) {
+		t.Errorf("capability has no override layer; a nil provider must leave it zero, got %+v", got.Capability)
 	}
 
 	zero := resolveRequestSettings(context.Background(), nil, &APIKey{}, "req-1")
@@ -297,6 +341,10 @@ func (c *countingProvider) GetInputCompression(ctx context.Context) (bool, int64
 
 func (c *countingProvider) GetVisionFallback(ctx context.Context) (settings.VisionFallbackSetting, int64, error) {
 	return c.inner.GetVisionFallback(ctx)
+}
+
+func (c *countingProvider) GetCapabilityEnforcement(ctx context.Context) (settings.CapabilityEnforcementSetting, int64, error) {
+	return c.inner.GetCapabilityEnforcement(ctx)
 }
 
 // TestSettingsResolveRunsBeforeTheBodyIsValidated: the settings read runs

@@ -61,6 +61,8 @@ const (
 	AdminAuditRetentionDaysInvalid = 11024 // admin audit retention_days is not a whole number of days within [0, 3650]
 	OutboundProxyConflict          = 11025 // optimistic-lock CAS miss on the outbound proxy settings pair PUT (another writer committed first)
 	OutboundProxyURLInvalid        = 11026 // proxy_url is not a storable proxy URL: unparseable, missing host, scheme outside {http,https,socks5,socks5h}, or address in a reserved range
+	CapabilityEnforcementConflict  = 11027 // optimistic-lock CAS miss on the capability enforcement settings rows PUT (another writer committed first)
+	CapabilityContextMarginInvalid = 11028 // capability_context_margin_percent is not a whole number within [0, 1000]
 
 	// === Provider errors (12xxx) ===
 	ProviderNotFound   = 12001
@@ -211,6 +213,8 @@ var ErrorMessages = map[int]string{
 	AdminAuditRetentionDaysInvalid: "admin audit retention must be a whole number of days between 0 and 3650 (0 keeps audit logs forever)",
 	OutboundProxyConflict:          "outbound proxy setting was modified concurrently, please refresh and retry",
 	OutboundProxyURLInvalid:        "proxy URL must be a parseable http, https, socks5, or socks5h URL whose address is not in a reserved range",
+	CapabilityEnforcementConflict:  "capability enforcement setting was modified concurrently, please refresh and retry",
+	CapabilityContextMarginInvalid: "capability context margin must be a whole percent between 0 and 1000",
 
 	ProviderNotFound:         "provider not found",
 	ProviderNameTaken:        "provider name already taken",
@@ -317,6 +321,8 @@ var (
 	ErrAdminAuditRetentionDaysInvalid = errors.New(ErrorMessages[AdminAuditRetentionDaysInvalid])
 	ErrOutboundProxyConflict          = errors.New(ErrorMessages[OutboundProxyConflict])
 	ErrOutboundProxyURLInvalid        = errors.New(ErrorMessages[OutboundProxyURLInvalid])
+	ErrCapabilityEnforcementConflict  = errors.New(ErrorMessages[CapabilityEnforcementConflict])
+	ErrCapabilityContextMarginInvalid = errors.New(ErrorMessages[CapabilityContextMarginInvalid])
 
 	ErrProviderNotFound         = errors.New(ErrorMessages[ProviderNotFound])
 	ErrProviderNameTaken        = errors.New(ErrorMessages[ProviderNameTaken])

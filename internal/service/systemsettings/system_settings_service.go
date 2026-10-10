@@ -44,6 +44,7 @@ const (
 	requestLogRetentionCacheKey = "request_log_retention"
 	adminAuditRetentionCacheKey = "admin_audit_retention"
 	outboundProxyCacheKey       = "outbound_proxy"
+	capabilityEnforcementKey    = "capability_enforcement"
 )
 
 // Bounds for the key-auto-recovery probe interval, in whole minutes. One
@@ -70,6 +71,16 @@ const (
 // ceiling, so neither retention setting can outlive the other by an order
 // of magnitude through a typo.
 const MaxAdminAuditRetentionDays = 3650
+
+// Bounds for the capability context-limit margin, in whole percent. Zero is
+// legal (refuse only past the exact declared window); 1000% (an elevenfold
+// window) is the ceiling so a typo cannot turn the check into a no-op
+// nobody notices. Enforced in the service layer so the handler PUT and any
+// internal writer hit the same rule.
+const (
+	MinCapabilityContextMarginPercent = 0
+	MaxCapabilityContextMarginPercent = 1000
+)
 
 // settingEntry holds the cached state for one setting key. The cache is shared
 // across all settings (CSP today, input compression switch added on top) so
@@ -137,6 +148,7 @@ func NewSystemSettingsService(db *gorm.DB) *SystemSettingsService {
 			requestLogRetentionCacheKey: {},
 			adminAuditRetentionCacheKey: {},
 			outboundProxyCacheKey:       {},
+			capabilityEnforcementKey:    {},
 		},
 	}
 }
@@ -174,6 +186,11 @@ func (s *SystemSettingsService) adminAuditRetentionEntry() *settingEntry {
 // outboundProxyEntry returns the outbound-proxy cache slot.
 func (s *SystemSettingsService) outboundProxyEntry() *settingEntry {
 	return s.entries[outboundProxyCacheKey]
+}
+
+// capabilityEnforcementEntry returns the capability-enforcement cache slot.
+func (s *SystemSettingsService) capabilityEnforcementEntry() *settingEntry {
+	return s.entries[capabilityEnforcementKey]
 }
 
 // readCached is the shared hot-path read for any registered setting. It serves
@@ -609,5 +626,50 @@ func (s *SystemSettingsService) UpdateOutboundProxy(ctx context.Context, expecte
 		return settings.OutboundProxySetting{}, 0, err
 	}
 	s.publishIfNewer(s.outboundProxyEntry(), got, ver)
+	return got, ver, nil
+}
+
+// --- Capability enforcement -------------------------------------------------
+
+// GetCapabilityEnforcement returns the cached snapshot (non-blocking,
+// fail-open to the shipped all-off default) — the gateway hot path's read.
+// On cold cache or stale snapshot it triggers a singleflight refresh with a
+// strict short timeout; on failure it returns last-known-good + error.
+// Fail-open here means fail-open to every switch OFF: a DB hiccup must not
+// start refusing requests a switched-off rule never touched, and must not
+// silently flip a switched-on rule off either — the provider's snapshot is
+// kept either way.
+func (s *SystemSettingsService) GetCapabilityEnforcement(ctx context.Context) (settings.CapabilityEnforcementSetting, int64, error) {
+	v, ver, err := s.readCached(ctx, capabilityEnforcementKey, s.capabilityEnforcementEntry(),
+		func(ctx context.Context) (any, int64, error) {
+			snap, v, e := repository.GetCapabilityEnforcement(s.db.WithContext(ctx))
+			return snap, v, e
+		},
+		settings.DefaultCapabilityEnforcementSetting())
+	if err != nil {
+		return v.(settings.CapabilityEnforcementSetting), ver, err
+	}
+	return v.(settings.CapabilityEnforcementSetting), ver, nil
+}
+
+// GetCapabilityEnforcementForHandler is the authoritative read for the
+// handler GET: straight from the DB, bound to the request ctx so a client
+// disconnect cancels the in-flight DB call.
+func (s *SystemSettingsService) GetCapabilityEnforcementForHandler(ctx context.Context) (settings.CapabilityEnforcementSetting, int64, error) {
+	return repository.GetCapabilityEnforcement(s.db.WithContext(ctx))
+}
+
+// UpdateCapabilityEnforcement validates the margin domain, CAS-updates all
+// seven rows, and publishes the committed snapshot to the cache so the
+// gateway sees the change within one cache TTL, without a restart.
+func (s *SystemSettingsService) UpdateCapabilityEnforcement(ctx context.Context, expectedVersion int64, snap settings.CapabilityEnforcementSetting) (settings.CapabilityEnforcementSetting, int64, error) {
+	if snap.ContextMarginPercent < MinCapabilityContextMarginPercent || snap.ContextMarginPercent > MaxCapabilityContextMarginPercent {
+		return settings.CapabilityEnforcementSetting{}, 0, errcode.ErrCapabilityContextMarginInvalid
+	}
+	got, ver, err := repository.UpdateCapabilityEnforcement(s.db.WithContext(ctx), expectedVersion, snap)
+	if err != nil {
+		return settings.CapabilityEnforcementSetting{}, 0, err
+	}
+	s.publishIfNewer(s.capabilityEnforcementEntry(), got, ver)
 	return got, ver, nil
 }

@@ -391,3 +391,94 @@ func TestUpdateOutboundProxyCASConflict(t *testing.T) {
 		t.Fatalf("want ErrOutboundProxyConflict, got %v", err)
 	}
 }
+
+// --- Capability enforcement ---------------------------------------------------
+
+// newCapabilityTestDB seeds the seven capability rows at the migration
+// default: every switch off, margin 5, all rows at v1.
+func newCapabilityTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := newSettingsTestDB(t)
+	db.Exec(`INSERT INTO system_settings (key, value) VALUES
+		('capability_context_limit_block','false'),
+		('capability_temperature_default','false'),
+		('capability_temperature_force','false'),
+		('capability_tools_strict','false'),
+		('capability_reasoning_strict','false'),
+		('capability_reasoning_egress_clear','false'),
+		('capability_context_margin_percent','5')`)
+	return db
+}
+
+func TestGetCapabilityEnforcementReadsSeededDefault(t *testing.T) {
+	db := newCapabilityTestDB(t)
+	s, ver, err := GetCapabilityEnforcement(db)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if s != (settings.CapabilityEnforcementSetting{ContextMarginPercent: 5}) || ver != 1 {
+		t.Fatalf("want all-off + margin 5 / v1, got %+v v%d", s, ver)
+	}
+}
+
+func TestGetCapabilityEnforcementMissingRowsReturnDefault(t *testing.T) {
+	db := newSettingsTestDB(t) // no capability rows seeded
+	s, ver, err := GetCapabilityEnforcement(db)
+	if err != nil {
+		t.Fatalf("Get on missing rows: %v", err)
+	}
+	if s != settings.DefaultCapabilityEnforcementSetting() || ver != 0 {
+		t.Fatalf("want shipped default / v0, got %+v v%d", s, ver)
+	}
+}
+
+func TestGetCapabilityEnforcementRejectsPartialFamily(t *testing.T) {
+	db := newCapabilityTestDB(t)
+	if res := db.Exec(`DELETE FROM system_settings WHERE key = 'capability_tools_strict'`); res.Error != nil {
+		t.Fatalf("delete row: %v", res.Error)
+	}
+	if _, _, err := GetCapabilityEnforcement(db); err == nil {
+		t.Fatal("a partial family must surface as corruption, not silently read")
+	}
+}
+
+func TestGetCapabilityEnforcementRejectsCorruptMargin(t *testing.T) {
+	db := newCapabilityTestDB(t)
+	if res := db.Exec(`UPDATE system_settings SET value='lots' WHERE key = 'capability_context_margin_percent'`); res.Error != nil {
+		t.Fatalf("corrupt margin: %v", res.Error)
+	}
+	if _, _, err := GetCapabilityEnforcement(db); err == nil {
+		t.Fatal("a non-numeric margin must surface as corruption, not silently read")
+	}
+}
+
+func TestUpdateCapabilityEnforcementSuccess(t *testing.T) {
+	db := newCapabilityTestDB(t)
+	want := settings.CapabilityEnforcementSetting{
+		ContextLimitBlock: true, TemperatureDefault: true, TemperatureForce: true,
+		ToolsStrict: true, ReasoningStrict: true, ReasoningEgressClear: true,
+		ContextMarginPercent: 20,
+	}
+	got, ver, err := UpdateCapabilityEnforcement(db, 1, want)
+	if err != nil || ver != 2 {
+		t.Fatalf("update: got %+v v%d err=%v", got, ver, err)
+	}
+	if got != want {
+		t.Fatalf("round-trip mismatch: got %+v want %+v", got, want)
+	}
+	back, gver, err := GetCapabilityEnforcement(db)
+	if err != nil || back != want || gver != 2 {
+		t.Fatalf("read-back mismatch: %+v v%d err=%v", back, gver, err)
+	}
+}
+
+func TestUpdateCapabilityEnforcementCASConflict(t *testing.T) {
+	db := newCapabilityTestDB(t)
+	if _, _, err := UpdateCapabilityEnforcement(db, 1, settings.CapabilityEnforcementSetting{ContextLimitBlock: true, ContextMarginPercent: 5}); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	_, _, err := UpdateCapabilityEnforcement(db, 1, settings.CapabilityEnforcementSetting{})
+	if !errors.Is(err, errcode.ErrCapabilityEnforcementConflict) {
+		t.Fatalf("want ErrCapabilityEnforcementConflict, got %v", err)
+	}
+}

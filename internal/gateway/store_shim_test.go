@@ -38,6 +38,7 @@ func (s *testStore) FindModelByName(ctx context.Context, name string) (*Model, e
 		//nolint:staticcheck // SA1019: the gateway row still carries the
 		// deprecated column by design during the input_modalities transition.
 		SchedulingMode: SchedulingMode(m.SchedulingMode), SupportsImageInput: m.SupportsImageInput,
+		ContextLength:    m.ContextLength,
 		OutputModalities: m.OutputModalities, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}, nil
 }
@@ -54,6 +55,7 @@ func (s *testStore) ListModels(ctx context.Context) ([]Model, error) {
 			ID: m.ID, Name: m.Name, ManagementStatus: m.ManagementStatus,
 			SchedulingMode:     SchedulingMode(m.SchedulingMode),
 			SupportsImageInput: m.SupportsImageInput, //nolint:staticcheck // SA1019: the gateway row still carries the deprecated column by design during the input_modalities transition
+			ContextLength:      m.ContextLength,
 			OutputModalities:   m.OutputModalities, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 		})
 	}

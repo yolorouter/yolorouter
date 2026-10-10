@@ -130,6 +130,9 @@ type stubSettingsProvider struct {
 	// visionFallbackErr simulates a cache-refresh failure delivered ALONGSIDE
 	// a last-known-good snapshot — the shape the real provider produces.
 	visionFallbackErr error
+	// capability is the capability-enforcement snapshot the stub serves;
+	// zero means every switch off, the shipped default.
+	capability settings.CapabilityEnforcementSetting
 }
 
 func (s stubSettingsProvider) CustomSystemPrompt(_ context.Context) (settings.CustomSystemPromptSetting, int64, error) {
@@ -142,6 +145,10 @@ func (s stubSettingsProvider) GetInputCompression(_ context.Context) (bool, int6
 
 func (s stubSettingsProvider) GetVisionFallback(_ context.Context) (settings.VisionFallbackSetting, int64, error) {
 	return s.visionFallback, 1, s.visionFallbackErr
+}
+
+func (s stubSettingsProvider) GetCapabilityEnforcement(_ context.Context) (settings.CapabilityEnforcementSetting, int64, error) {
+	return s.capability, 1, nil
 }
 
 // newSvc builds a Service and swaps in a plain transport so the

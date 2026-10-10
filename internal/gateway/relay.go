@@ -694,6 +694,20 @@ func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 	// or per-candidate.
 	_ = adm.payload.EstimateCost(rc.pricingBasis)
 
+	// The capability context-limit pre-gate rides the pricing admission's
+	// phase — after every ingress rewriter has had the body (the estimate
+	// reads the FINAL bytes: a request that compressed under the threshold
+	// passes even when its original form would not have), after the
+	// addressed model is known (the window is the caller's declared model's,
+	// not a landing candidate's), and before anything is dialled. It is a
+	// separate precheck, not an AdmissionOf capability: the admission
+	// machinery is the billing-fact channel, paired with settlement, and a
+	// refusal that never dispatches has nothing to settle through it.
+	if rej := s.precheckContextLimit(rc, m, admitBody); rej != nil {
+		s.rejectRequest(c, rc, rej.Status, rej.ErrorType, rej.Message, rej.FailReason, rej.Fault, start)
+		return
+	}
+
 	// The second admission phase: after every ingress rewriter has had the
 	// body, after a routable candidate exists, and before anything is dialled.
 	// An admission is asked here rather than on arrival because on arrival

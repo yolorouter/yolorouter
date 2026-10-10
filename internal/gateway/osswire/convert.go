@@ -100,9 +100,12 @@ func Model(m *model.Model) rows.Model {
 		// deprecated column — the vision-fallback hot path reads it — and the
 		// save path keeps it derived from input_modalities until the switch.
 		SupportsImageInput: m.SupportsImageInput,
-		OutputModalities:   m.OutputModalities,
-		CreatedAt:          m.CreatedAt,
-		UpdatedAt:          m.UpdatedAt,
+		// Declared context window; nil rides through as undeclared and the
+		// context-limit precheck leaves the request alone.
+		ContextLength:    m.ContextLength,
+		OutputModalities: m.OutputModalities,
+		CreatedAt:        m.CreatedAt,
+		UpdatedAt:        m.UpdatedAt,
 	}
 }
 

@@ -119,6 +119,52 @@ func DefaultOutboundProxySetting() OutboundProxySetting {
 	return OutboundProxySetting{Mode: "off", URL: ""}
 }
 
+// CapabilityEnforcementSetting is the typed snapshot of the six
+// model-capability enforcement switches plus the context-limit margin they
+// share, read as a whole for the same torn-read reason as the pairs above.
+// Every switch ships OFF: an existing deployment changes nothing on
+// upgrade, and a database that predates the seeding migration reads the
+// same way. It intentionally has NO json tags — it is an internal transfer
+// type; handlers wrap it in their own response DTO with json tags.
+type CapabilityEnforcementSetting struct {
+	// ContextLimitBlock refuses requests whose estimated input size breaks
+	// the addressed model's declared context window (with margin).
+	ContextLimitBlock bool
+	// TemperatureDefault injects the model's declared default temperature
+	// when the caller did not send one.
+	TemperatureDefault bool
+	// TemperatureForce overrides a temperature the caller did send.
+	TemperatureForce bool
+	// ToolsStrict answers a tools payload aimed at a model declared
+	// tools-incapable with a 400 instead of passing it through.
+	ToolsStrict bool
+	// ReasoningStrict answers a reasoning payload aimed at the addressed
+	// model declared reasoning-incapable with a 400 instead of passing it
+	// through.
+	ReasoningStrict bool
+	// ReasoningEgressClear strips reasoning configuration before dispatch
+	// to a landing candidate declared reasoning-incapable.
+	ReasoningEgressClear bool
+	// ContextMarginPercent widens the context-limit threshold above the
+	// declared window so estimation error at the boundary lets requests
+	// through rather than refusing them.
+	ContextMarginPercent int
+}
+
+// CapabilityContextMarginDefaultPercent is the shipped context-limit
+// margin, mirrored by the seeding migration (goose SQL cannot reference Go
+// constants).
+const CapabilityContextMarginDefaultPercent = 5
+
+// DefaultCapabilityEnforcementSetting returns the shipped default (every
+// switch off, margin 5%). It is served when the rows are absent — a
+// database that predates the seeding migration — and as the fail-open
+// value on a cold-cache refresh failure, so both paths behave exactly like
+// a freshly seeded deployment.
+func DefaultCapabilityEnforcementSetting() CapabilityEnforcementSetting {
+	return CapabilityEnforcementSetting{ContextMarginPercent: CapabilityContextMarginDefaultPercent}
+}
+
 // VisionFallbackDefaultPrompt is the runtime fallback describe instruction,
 // used only when the stored prompt is empty (never configured, or cleared on
 // purpose). It is NOT what the console displays: the console prefills its
