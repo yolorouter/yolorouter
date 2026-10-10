@@ -529,6 +529,10 @@ func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 		ContentType: c.GetHeader("Content-Type"),
 		Body:        admitBody,
 		APIKeyID:    rc.apiKeyID,
+		// The resolved enforcement posture rides the ingress because
+		// admission is the one moment every modality passes through; a
+		// modality that enforces nothing ignores it.
+		Capability: rc.settings.Capability,
 	})
 	if rej != nil {
 		s.rejectRequest(c, rc, rej.Status, rej.ErrorType, rej.Message, rej.FailReason, rej.Fault, start)
@@ -596,6 +600,14 @@ func (s *Service) Handle(c *gin.Context, apiKey *APIKey) {
 		s.rejectRequest(c, rc, http.StatusNotFound, errTypeNotFound, "model does not exist", "model_disabled", fact.FaultClient, start)
 		return
 	}
+
+	// The addressed model's declared default temperature, captured once
+	// here because the candidate walk below is where it is consumed: every
+	// offer the walk builds carries it so the temperature policy can apply
+	// it to the request bound for that candidate. Nil rides through as
+	// undeclared and the policy stands down — same leniency the
+	// context-limit precheck takes for an undeclared window.
+	rc.declaredTemperature = m.Temperature
 
 	// The model must declare the output modality this endpoint serves. The
 	// vocabulary is the modality's own id, so the gate stays generic: a new
@@ -1037,6 +1049,10 @@ func (s *Service) relayCandidates(c *gin.Context, rc *Exchange, adm admitted, ca
 			SupportsStreaming:       cand.SupportsStreaming != nil && *cand.SupportsStreaming,
 			SupportsFunctionCalling: cand.SupportsFunctionCalling != nil && *cand.SupportsFunctionCalling,
 			MaxOutput:               cand.MaxOutput,
+			// The addressed model's declared default temperature, the same
+			// value on every candidate of the walk — model-row fact, captured
+			// once in Handle.
+			DeclaredTemperature: rc.declaredTemperature,
 		}
 		if v := adm.payload.Supports(offer); !v.OK {
 			skipCandidate(cand, provider, AttemptBadStatus, v.Reason)

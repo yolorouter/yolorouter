@@ -10,6 +10,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/protocols"
+	"github.com/yolorouter/yolorouter/internal/settings"
 )
 
 // textModality serves the chat/completions family: JSON in, JSON or SSE out,
@@ -91,7 +92,7 @@ func (textModality) Admit(_ context.Context, in Ingress) (Payload, *Rejection) {
 		}
 	}
 
-	return &textPayload{ingress: in.Protocol, body: in.Body, meta: meta, path: in.Path}, nil
+	return &textPayload{ingress: in.Protocol, body: in.Body, meta: meta, path: in.Path, capability: in.Capability}, nil
 }
 
 // textPayload is one text request.
@@ -110,6 +111,12 @@ type textPayload struct {
 	// path, so a legacy /v1/completions caller reaches the upstream's own
 	// completions endpoint rather than being retitled into chat.
 	path string
+	// capability is the resolved enforcement posture the request runs
+	// under, captured at admission. The temperature policy reads it at
+	// PrepareUpstream time — the one moment the caller's sampling state
+	// and the model's declared default meet, whichever of the two body
+	// forms (IR or passthrough) this candidate takes.
+	capability settings.CapabilityEnforcementSetting
 	// cand is the candidate PrepareUpstream built for, read back by the
 	// delivery that follows. The kernel guarantees the two run in that order
 	// and for the same candidate.
@@ -160,13 +167,25 @@ func (p *textPayload) PrepareUpstream(cand Candidate) (*UpstreamCall, error) {
 		if err != nil {
 			return nil, fmt.Errorf("rewrite model field: %w", err)
 		}
-		out = rewritten
+		// The temperature policy runs on the forwarded bytes on this path:
+		// no IR exists here by design, and the decision is the same one
+		// the IR branch below applies between decode and encode.
+		out, err = applyPassthroughTemperature(rewritten, cand.EgressProtocol, cand.DeclaredTemperature, p.capability)
+		if err != nil {
+			return nil, fmt.Errorf("apply temperature policy: %w", err)
+		}
 	} else {
 		ir, err := codecsFor(p.ingress).RequestDecoder.DecodeRequest(
 			json.RawMessage(p.body), cand.ProviderModelName, p.meta.Stream)
 		if err != nil {
 			return nil, fmt.Errorf("decode ingress request (%s): %w", p.ingress, err)
 		}
+		// The temperature policy sits here deliberately: after the decode
+		// (the caller's temperature has landed on the IR) and before the
+		// encode, so every egress codec — including the Claude encoder's
+		// thinking temperature floor, which outranks this policy — sees
+		// the result as an ordinary value to encode or override.
+		applyTemperaturePolicy(ir, cand.DeclaredTemperature, p.capability)
 		encoded, err := egress.RequestEncoder.EncodeRequest(ir)
 		if err != nil {
 			return nil, fmt.Errorf("encode egress request (%s): %w", cand.EgressProtocol, err)

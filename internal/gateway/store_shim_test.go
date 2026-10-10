@@ -39,6 +39,7 @@ func (s *testStore) FindModelByName(ctx context.Context, name string) (*Model, e
 		// deprecated column by design during the input_modalities transition.
 		SchedulingMode: SchedulingMode(m.SchedulingMode), SupportsImageInput: m.SupportsImageInput,
 		ContextLength:    m.ContextLength,
+		Temperature:      m.Temperature,
 		OutputModalities: m.OutputModalities, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}, nil
 }

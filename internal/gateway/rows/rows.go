@@ -108,7 +108,12 @@ type Model struct {
 	// ContextLength is the admin's declared context window in tokens, nil =
 	// undeclared. The context-limit precheck is its only reader; undeclared
 	// never blocks.
-	ContextLength    *int
+	ContextLength *int
+	// Temperature is the admin's declared recommended default temperature,
+	// nil = undeclared. The model-capability temperature policy is its only
+	// reader; undeclared never injects. Despite the name it is model
+	// metadata, distinct from the per-request temperature callers send.
+	Temperature      *float64
 	OutputModalities string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time

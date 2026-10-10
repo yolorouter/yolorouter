@@ -102,7 +102,10 @@ func Model(m *model.Model) rows.Model {
 		SupportsImageInput: m.SupportsImageInput,
 		// Declared context window; nil rides through as undeclared and the
 		// context-limit precheck leaves the request alone.
-		ContextLength:    m.ContextLength,
+		ContextLength: m.ContextLength,
+		// Declared default temperature; nil rides through as undeclared
+		// and the temperature policy stands down.
+		Temperature:      m.Temperature,
 		OutputModalities: m.OutputModalities,
 		CreatedAt:        m.CreatedAt,
 		UpdatedAt:        m.UpdatedAt,

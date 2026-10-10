@@ -94,8 +94,11 @@ type Model struct {
 	// Temperature is the admin's declared recommended default temperature for
 	// calls to this model. Nil means undeclared. It is model metadata — the
 	// name collides with the request-passthrough temperature the gateway
-	// forwards upstream, and this field does not participate in that path at
-	// all. Informational at this stage.
+	// forwards upstream, and this field reaches that path only through the
+	// capability temperature policy: with the site's default switch on, a
+	// request that sends no temperature picks this value up; with the force
+	// switch on it replaces one the caller did send. Both switches off (the
+	// shipped default) leaves the forwarded request untouched.
 	Temperature *float64 `gorm:"column:temperature" json:"temperature"`
 	// OutputModalities is the JSON array of modality ids this model produces
 	// ("text", "image"), stored as a string column. The gateway routes a

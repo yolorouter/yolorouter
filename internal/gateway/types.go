@@ -43,6 +43,16 @@ type Exchange struct {
 	// compression gate and the CSP injection gate read this bool instead of
 	// recomputing isChatEndpoint(path) independently.
 	isChatEndpoint bool
+	// declaredTemperature is the addressed model's admin-declared default
+	// temperature, captured once in Handle when the model row loads and
+	// consumed by the candidate walk when it builds each offer: the
+	// model-capability temperature policy applies it to the request bound
+	// for a candidate. Nil = undeclared, and the policy stands down — the
+	// same leniency the context-limit precheck takes for an undeclared
+	// window. It lives on the exchange (not a parameter) for the same
+	// reason pricingBasis does: it is request-scoped kernel state a
+	// deep call needs without every signature in between growing a field.
+	declaredTemperature *float64
 	// settings is every settings-dependent value this request uses — the
 	// compression switch, the custom system prompt, the vision-fallback
 	// configuration — two-level-resolved once at entry: a per-key override

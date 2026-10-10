@@ -6,6 +6,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/protocols"
+	"github.com/yolorouter/yolorouter/internal/settings"
 )
 
 // A modality is a kind of thing a caller can ask for: a chat completion, an
@@ -65,6 +66,13 @@ type Ingress struct {
 	// request — a task a caller will poll for later — needs the owner at
 	// admission; request-scoped modalities ignore it.
 	APIKeyID uint
+	// Capability is the resolved model-capability enforcement posture the
+	// request runs under (the site switches and the context-limit margin),
+	// two-level-resolved once at Handle entry alongside the other settings.
+	// Enforcement is a site-wide posture with no per-key override, so it
+	// arrives here the same way for every caller. A modality that enforces
+	// nothing ignores it.
+	Capability settings.CapabilityEnforcementSetting
 }
 
 // Rejection is a refusal decided before any upstream was involved.
@@ -193,6 +201,14 @@ type Candidate struct {
 	SupportsStreaming       bool
 	SupportsFunctionCalling bool
 	MaxOutput               int
+
+	// DeclaredTemperature is the addressed model's admin-declared default
+	// temperature, nil = undeclared. It is a model-row fact every candidate
+	// of the request carries identically — not a per-provider one — but it
+	// rides the Candidate because the model row is a kernel fact a payload
+	// meets only per candidate, at PrepareUpstream time. The temperature
+	// policy is its only reader; undeclared never injects.
+	DeclaredTemperature *float64
 
 	// Identity fields: which model, candidate, and provider destination
 	// this option is. Deliberately after the request-scoped knobs: a
