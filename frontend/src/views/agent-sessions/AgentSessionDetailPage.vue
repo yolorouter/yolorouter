@@ -10,9 +10,11 @@
          known/unknown cost doublet, and the success ratio on the second.
          Same aggregate semantics as the session list row (the backend
          derives both from the same rows);
-       - the deduplicated system-prompt timeline as collapsed blocks at the
-         top of the replay — one per distinct value, annotated with the
-         request that first carried it;
+       - the deduplicated system-prompt timeline as ONE collapsed group at
+         the top of the replay — a single summary line (first appearance
+         plus the change count; a never-changed prompt drops the count)
+         that expands into the per-entry timeline, each entry annotated
+         with the request that first carried it;
        - one replay block per request, in chronological order: the
          caller-side messages that request newly contributed (the backend's
          prefix-dedup pass already stripped everything resent), then the
@@ -88,19 +90,32 @@
         </div>
       </div>
 
-      <!-- The deduplicated system-prompt timeline: one collapsed block per
-           distinct value (first value plus every change), each annotated
-           with the request that first carried it. Collapsed by default —
-           system prompts are walls of context the reader expands on
-           demand. -->
-      <NCollapse v-for="(entry, i) in transcript.system" :key="`sys-${i}`" class="replay-system">
+      <!-- The deduplicated system-prompt timeline as ONE collapsed group.
+           Real agent-tool traffic rewrites the system prompt on nearly
+           every request (volatile environment info rides inside it), so
+           the first-appearance-plus-changes timeline can run to dozens of
+           entries — a collapsible block per entry filled the whole first
+           screen above the conversation. The group therefore collapses to
+           a single summary line by default (first appearance plus the
+           change count; a never-changed prompt drops the count), and
+           expanding it reveals the original per-entry timeline: each entry
+           still its own collapsible block, annotated with the request that
+           first carried it and its truncation mark. -->
+      <NCollapse v-if="transcript.system.length > 0" class="replay-system">
         <NCollapseItem name="system">
           <template #header>
-            <span class="replay-system__title">{{ t('agentSessions.systemBlockTitle') }}</span>
-            <span class="replay-system__seen">{{ t('agentSessions.systemSeenAt', { id: entry.seen_at_request }) }}</span>
-            <span v-if="entry.truncated" class="replay-system__truncated">{{ t('agentSessions.flowTruncated') }}</span>
+            <span class="replay-system__title">{{ systemSummary }}</span>
           </template>
-          <ChatMessageFlow :body="systemFlow(entry)" :raw="systemRaw(entry)" />
+          <NCollapse v-for="(entry, i) in transcript.system" :key="`sys-${i}`" class="replay-system__entry">
+            <NCollapseItem name="system">
+              <template #header>
+                <span class="replay-system__entry-title">{{ t('agentSessions.systemBlockTitle') }}</span>
+                <span class="replay-system__seen">{{ t('agentSessions.systemSeenAt', { id: entry.seen_at_request }) }}</span>
+                <span v-if="entry.truncated" class="replay-system__truncated">{{ t('agentSessions.flowTruncated') }}</span>
+              </template>
+              <ChatMessageFlow :body="systemFlow(entry)" :raw="systemRaw(entry)" />
+            </NCollapseItem>
+          </NCollapse>
         </NCollapseItem>
       </NCollapse>
 
@@ -238,6 +253,17 @@ const sessionSpan = computed(() => {
   return formatSpan(Date.parse(s.last_seen_at) - Date.parse(s.first_seen_at))
 })
 
+// The collapsed group's one-line summary: the first appearance plus the
+// change count (N = timeline entries - 1; the first entry IS the first
+// appearance). A prompt that never changed degenerates to the plain
+// first-appearance copy with no count.
+const systemSummary = computed(() => {
+  const entries = transcript.value?.system ?? []
+  return entries.length > 1
+    ? t('agentSessions.systemGroupChanges', { n: entries.length - 1 })
+    : t('agentSessions.systemGroupFirstOnly')
+})
+
 // ---------- Translation (pure functions, applied per render) ----------
 
 function blockRaw(added: unknown[]): string {
@@ -360,8 +386,9 @@ function goRequestDetail(requestId: string) {
   font-variant-numeric: tabular-nums;
 }
 
-/* System-prompt timeline blocks: quieter than conversation turns — a
-   bordered panel per distinct value, collapsed by default. */
+/* System-prompt timeline: ONE bordered group container, collapsed by
+   default to its single summary line — quieter than the conversation
+   turns, and never taller than that line until the reader opens it. */
 .replay-system {
   margin-bottom: var(--space-3, 12px);
   border: 1px dashed var(--color-border, #e0e0e6);
@@ -370,6 +397,22 @@ function goRequestDetail(requestId: string) {
 }
 
 .replay-system__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+/* Per-entry blocks inside the expanded group: the original timeline, one
+   collapsible block per distinct value, separated by dashed rules. */
+.replay-system__entry {
+  border-top: 1px dashed var(--color-border, #e0e0e6);
+}
+
+.replay-system__entry:first-child {
+  border-top: none;
+}
+
+.replay-system__entry-title {
   font-size: 12px;
   font-weight: 600;
   color: var(--color-text-secondary);

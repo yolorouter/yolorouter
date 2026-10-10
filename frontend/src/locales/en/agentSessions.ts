@@ -41,6 +41,8 @@ export default {
   replayRequestLink: 'Request Details',
   systemBlockTitle: 'System Prompt',
   systemSeenAt: 'first seen on request {id}',
+  systemGroupChanges: 'System Prompt · first seen + {n} changes',
+  systemGroupFirstOnly: 'System Prompt · first seen',
 
   // Message flow (bubble view of the captured bodies). The disclosure-row
   // and stream-merge keys below migrated here from the retired request

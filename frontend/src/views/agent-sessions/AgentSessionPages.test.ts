@@ -21,8 +21,11 @@
 //   - assembly: one fetch renders the whole replay — the two-line info
 //     bar (tool / session id / request count / from-to clock + elapsed
 //     span; tokens in-out / known cost + unknown marker / success ratio),
-//     the system-prompt timeline as collapsed blocks annotated with the
-//     request that first carried each value, and the per-request turns in
+//     the system-prompt timeline as ONE collapsed group (a single summary
+//     line counting first appearance + changes — degenerating to the
+//     plain first-appearance copy when the prompt never changed — that
+//     expands into the per-entry timeline with each entry's first-seen
+//     annotation and truncation mark), and the per-request turns in
 //     chronological order with their metadata signs, failure status tags,
 //     and request-detail links
 //   - assistant source arms: inline / stream (ONE merged bubble plus the
@@ -259,7 +262,9 @@ function transcriptFixture(): AgentSessionTranscript {
     },
     system: [
       { seen_at_request: REQUEST_1, truncated: false, raw: 'You are a helpful assistant.' },
-      { seen_at_request: REQUEST_3, truncated: false, raw: [{ type: 'text', text: 'Revised system prompt.' }] },
+      // The changed value arrives truncated, so the timeline entry's
+      // truncation mark gets its rendering assertion too.
+      { seen_at_request: REQUEST_3, truncated: true, raw: [{ type: 'text', text: 'Revised system prompt.' }] },
     ],
     blocks: [
       {
@@ -501,26 +506,67 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage replay assembly (
     expect(line2, 'success ratio').toContain(copy[locale].replaySuccessRatio.replace('{success}', '3').replace('{total}', '4'))
   })
 
-  it('renders the system timeline as collapsed blocks at the top, annotated with the request that first carried each value', async () => {
+  it('renders the system timeline as ONE collapsed group: a single summary line counting the changes, expanding into the per-entry timeline', async () => {
     await mountReplay(locale)
 
-    const panels = [...document.body.querySelectorAll('.replay-system')]
-    expect(panels.length, 'one panel per distinct system value (first + one change)').toBe(2)
-    // Collapsed by default: the prompt text itself renders nowhere until
-    // a panel is opened.
+    // Exactly one group container for the whole timeline, and while
+    // collapsed it is exactly the summary line — no per-entry panels, no
+    // prompt text anywhere, so the conversation starts right under the
+    // info bar however many times the prompt changed.
+    const group = document.body.querySelector('.replay-system')
+    expect(group, 'one group container for the whole system timeline').toBeTruthy()
+    const header = group!.querySelector('.n-collapse-item__header')?.textContent ?? ''
+    expect(header, 'summary counts first appearance + changes (N = entries - 1)').toContain(
+      copy[locale].systemGroupChanges.replace('{n}', '1'),
+    )
+    expect(group!.querySelectorAll('.replay-system__entry').length, 'no per-entry panels while the group is collapsed').toBe(0)
     expect(document.body.textContent ?? '', 'system prompt hidden while collapsed').not.toContain('You are a helpful assistant.')
 
-    // Each header names the block and the request the value was first
-    // seen on — the fixture's two entries carry different request ids.
-    const headers = panels.map((p) => p.querySelector('.n-collapse-item__header')?.textContent ?? '')
-    expect(headers[0], 'first value annotated with its request').toContain(copy[locale].systemBlockTitle)
-    expect(headers[0]).toContain(copy[locale].systemSeenAt.replace('{id}', REQUEST_1))
-    expect(headers[1]).toContain(copy[locale].systemSeenAt.replace('{id}', REQUEST_3))
+    // Expanding the group reveals the per-entry timeline: every entry
+    // with its first-seen annotation (the fixture's two entries carry
+    // different request ids) and the truncation mark on the truncated
+    // one — and each entry is still collapsed on its own, so the prompt
+    // text stays hidden until the entry itself opens.
+    group!.querySelector('.n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(group!.querySelectorAll('.replay-system__entry').length, 'expanded group renders every timeline entry').toBe(2))
+    const entryHeaders = [...group!.querySelectorAll('.replay-system__entry .n-collapse-item__header')]
+    expect(entryHeaders[0]?.textContent ?? '', 'first entry annotated with its request').toContain(
+      copy[locale].systemSeenAt.replace('{id}', REQUEST_1),
+    )
+    expect(entryHeaders[1]?.textContent ?? '', 'changed entry annotated with its request').toContain(
+      copy[locale].systemSeenAt.replace('{id}', REQUEST_3),
+    )
+    expect(entryHeaders[0]?.textContent ?? '', 'entry keeps the block title').toContain(copy[locale].systemBlockTitle)
+    expect(entryHeaders[1]?.textContent ?? '', 'truncated entry carries the truncation mark').toContain(copy[locale].flowTruncated)
+    expect(entryHeaders[0]?.textContent ?? '', 'untruncated entry carries no truncation mark').not.toContain(copy[locale].flowTruncated)
+    expect(group!.textContent ?? '', 'entries stay individually collapsed after the group opens').not.toContain(
+      'You are a helpful assistant.',
+    )
 
-    // Opening the first panel reveals its prompt text through the shared
-    // bubble renderer.
-    panels[0].querySelector('.n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() => expect(panels[0].textContent ?? '', 'expanded panel shows its prompt text').toContain('You are a helpful assistant.'))
+    // Opening one entry reveals its prompt through the shared bubble
+    // renderer — the per-entry expand behavior rides along unchanged.
+    group!.querySelector('.replay-system__entry .n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(group!.textContent ?? '', 'expanded entry shows its prompt text').toContain('You are a helpful assistant.'))
+  })
+
+  it('degenerates to the plain first-appearance summary when the system prompt never changed', async () => {
+    // Same fixture with the timeline cut to its first entry — a session
+    // whose prompt stayed constant across every request.
+    const singleSystem = transcriptFixture()
+    singleSystem.system = [singleSystem.system[0]]
+    transcriptMock.mockResolvedValueOnce(singleSystem)
+    await mountReplay(locale)
+
+    const header = document.body.querySelector('.replay-system .n-collapse-item__header')?.textContent ?? ''
+    expect(header, 'no change count when there is only the first value').toContain(copy[locale].systemGroupFirstOnly)
+    // The changes-count copy must be gone ENTIRELY (not rendered with a
+    // zero): park the placeholder, regex-escape the rest — the en copy
+    // carries a literal '+' — then swap the placeholder for a digit run.
+    const changesPattern = copy[locale].systemGroupChanges
+      .replace(/\{n\}/g, '\u0000')
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace('\u0000', '\\d+')
+    expect(header, 'the changes-count copy is gone entirely, not a zero').not.toMatch(new RegExp(changesPattern))
   })
 
   it('renders the turns in chronological order with metadata signs, failure tags, and request-detail links', async () => {

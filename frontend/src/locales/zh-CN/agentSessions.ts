@@ -41,6 +41,8 @@ export default {
   replayRequestLink: '请求详情',
   systemBlockTitle: '系统提示',
   systemSeenAt: '首次出现于请求 {id}',
+  systemGroupChanges: '系统提示·首次出现+变化 {n} 次',
+  systemGroupFirstOnly: '系统提示·首次出现',
 
   // Message flow (bubble view of the captured bodies). The disclosure-row
   // and stream-merge keys below migrated here from the retired request
