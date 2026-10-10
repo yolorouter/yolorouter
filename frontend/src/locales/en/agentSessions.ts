@@ -43,6 +43,14 @@ export default {
   systemSeenAt: 'first seen on request {id}',
   systemGroupChanges: 'System Prompt · first seen + {n} changes',
   systemGroupFirstOnly: 'System Prompt · first seen',
+  systemRawFailed: 'Failed to load the system-prompt text',
+
+  // Lazy paging of the replay turns: the boundary rows' loading copy, the
+  // failure copy, and the retry action beside it.
+  loadOlder: 'Loading earlier turns…',
+  loadNewer: 'Loading newer turns…',
+  turnLoadFailed: 'Failed to load turns',
+  retry: 'Retry',
 
   // Message flow (bubble view of the captured bodies). The disclosure-row
   // and stream-merge keys below migrated here from the retired request

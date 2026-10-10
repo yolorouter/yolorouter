@@ -3,19 +3,38 @@
      one continuous conversation, the way the agent tool itself showed it
      while the work happened — not a table of requests to click through.
 
-     One fetch (the transcript endpoint) carries everything:
+     The replay loads lazily, one cursor-paginated page at a time:
+
+       - opening the page fetches the LATEST page and lands the viewport on
+         the newest turn (the agent-tool convention for resuming a session:
+         the reader comes back to see how far the work got);
+       - a sentinel above the loaded turns watches for the reader scrolling
+         up; each hit fetches the next older page through the exclusive
+         before cursor, prepends it, and compensates scrollTop by the
+         inserted height so the viewport stays on the turn being read;
+       - when the page was entered through a #req-<id> deep link, the first
+         fetch anchors AT that turn instead (the inclusive after cursor);
+         the older direction keeps working through the same sentinel, and
+         the toward-newer direction gets its own sentinel below the turns
+         until the session's tail is loaded;
+       - a session short enough to fit one page renders no paging controls
+         at all — small sessions see exactly the old behavior.
+
+     The transcript page carries everything else whole on every fetch:
 
        - a two-line info bar: tool / session id / request count / from-to
          clock plus elapsed span on the first line; tokens in/out, the
          known/unknown cost doublet, and the success ratio on the second.
          Same aggregate semantics as the session list row (the backend
-         derives both from the same rows);
+         derives both from the same rows) — and whole-session by contract,
+         so the numbers never depend on how much is loaded;
        - the deduplicated system-prompt timeline as ONE collapsed group at
          the top of the replay — a single summary line (first appearance
-         plus the change count; a never-changed prompt drops the count)
-         that expands into the per-entry timeline, each entry annotated
-         with the request that first carried it;
-       - one replay block per request, in chronological order: the
+         plus the change count; a never-changed prompt drops the count).
+         The group ships METADATA only; expanding it fetches the timeline's
+         raw text once, and each entry then expands into its prompt,
+         annotated with the request that first carried it;
+       - one replay block per loaded request, in chronological order: the
          caller-side messages that request newly contributed (the backend's
          prefix-dedup pass already stripped everything resent), then the
          assistant turn with its metadata sign (model, duration, in/out
@@ -30,9 +49,9 @@
      "not recorded" placeholder — never a fake empty bubble.
 
      Every block's root carries id="req-<request_id>", so a #req-<id> URL
-     hash scrolls the turn into view on mount (scrollIntoView on the block
-     itself — the app shell scrolls inside layout containers, the document
-     never overflows). -->
+     hash scrolls the turn into view (scrollIntoView on the block itself —
+     the app shell scrolls inside layout containers, the document never
+     overflows). -->
 <template>
   <div class="common-page">
     <PageHeader :eyebrow="t('agentSessions.detailEyebrow')" :title="t('agentSessions.detailTitle')" :description="t('agentSessions.detailDescription')">
@@ -58,35 +77,37 @@
       </template>
     </EmptyState>
 
-    <template v-else-if="transcript">
+    <template v-else-if="session">
       <!-- Info bar, line 1: tool attribution, the verbatim session id, the
            request count, and the from/to clock doublet with the elapsed
            span between the session's first and last request. -->
       <div class="replay-meta">
         <div class="replay-meta__line">
           <NTag size="small" round :bordered="false" type="info">{{ toolName }}</NTag>
-          <span class="replay-meta__id">{{ transcript.session.agent_session_id }}</span>
-          <span class="replay-meta__item">{{ transcript.session.request_count }} {{ t('agentSessions.detailRequestsUnit') }}</span>
+          <span class="replay-meta__id">{{ session.agent_session_id }}</span>
+          <span class="replay-meta__item">{{ session.request_count }} {{ t('agentSessions.detailRequestsUnit') }}</span>
           <span class="replay-meta__item replay-meta__item--clock">
-            {{ t('agentSessions.firstSeenLabel') }} {{ formatShortClock(transcript.session.first_seen_at) }}
-            → {{ t('agentSessions.lastSeenLabel') }} {{ formatShortClock(transcript.session.last_seen_at) }}
+            {{ t('agentSessions.firstSeenLabel') }} {{ formatShortClock(session.first_seen_at) }}
+            → {{ t('agentSessions.lastSeenLabel') }} {{ formatShortClock(session.last_seen_at) }}
             · {{ t('agentSessions.replayElapsed', { span: sessionSpan }) }}
           </span>
         </div>
         <!-- Info bar, line 2: token sums, the cost doublet (known sum plus
              the unknown-rows marker — unknown rows are never folded into
-             the total), and the success ratio. -->
+             the total), and the success ratio. The aggregate is
+             whole-session on every page, so upscrolling never rewrites
+             these numbers. -->
         <div class="replay-meta__line">
           <span class="replay-meta__item">
-            {{ t('requestLogs.tokenRowIn') }} {{ transcript.session.input_tokens }} / {{ t('requestLogs.tokenRowOut') }} {{ transcript.session.output_tokens }}
+            {{ t('requestLogs.tokenRowIn') }} {{ session.input_tokens }} / {{ t('requestLogs.tokenRowOut') }} {{ session.output_tokens }}
           </span>
           <span class="replay-meta__item replay-meta__item--cost">
-            {{ formatMicros(transcript.session.known_cost_micros) }}
-            <NTag v-if="transcript.session.unknown_cost_count > 0" size="tiny" round :bordered="false" type="warning">
-              {{ t('agentSessions.costUnknownNote', { n: transcript.session.unknown_cost_count }) }}
+            {{ formatMicros(session.known_cost_micros) }}
+            <NTag v-if="session.unknown_cost_count > 0" size="tiny" round :bordered="false" type="warning">
+              {{ t('agentSessions.costUnknownNote', { n: session.unknown_cost_count }) }}
             </NTag>
           </span>
-          <span class="replay-meta__item">{{ t('agentSessions.replaySuccessRatio', { success: transcript.session.success_count, total: transcript.session.request_count }) }}</span>
+          <span class="replay-meta__item">{{ t('agentSessions.replaySuccessRatio', { success: session.success_count, total: session.request_count }) }}</span>
         </div>
       </div>
 
@@ -97,30 +118,52 @@
            entries — a collapsible block per entry filled the whole first
            screen above the conversation. The group therefore collapses to
            a single summary line by default (first appearance plus the
-           change count; a never-changed prompt drops the count), and
-           expanding it reveals the original per-entry timeline: each entry
-           still its own collapsible block, annotated with the request that
-           first carried it and its truncation mark. -->
-      <NCollapse v-if="transcript.system.length > 0" class="replay-system">
+           change count; a never-changed prompt drops the count). The raw
+           prompt text is NOT part of any transcript page — expanding the
+           group fetches the whole timeline's raw text once
+           (.../transcript/system), and each entry then expands into its
+           own collapsible block, annotated with the request that first
+           carried it and its truncation mark. -->
+      <NCollapse v-if="systemMeta.length > 0" v-model:expanded-names="systemExpandedNames" class="replay-system">
         <NCollapseItem name="system">
           <template #header>
             <span class="replay-system__title">{{ systemSummary }}</span>
           </template>
-          <NCollapse v-for="(entry, i) in transcript.system" :key="`sys-${i}`" class="replay-system__entry">
+          <div v-if="systemRawError" class="replay-pager__row replay-pager__row--inside">
+            <span class="replay-pager__text replay-pager__text--error">{{ t('agentSessions.systemRawFailed') }}</span>
+            <NButton text size="tiny" type="primary" @click="loadSystemRaw">{{ t('agentSessions.retry') }}</NButton>
+          </div>
+          <div v-else-if="systemRaw === null" class="replay-pager__row replay-pager__row--inside">
+            <span class="replay-pager__text">{{ t('common.loading') }}</span>
+          </div>
+          <NCollapse v-for="(entry, i) in systemRaw ?? []" :key="`sys-${i}`" class="replay-system__entry">
             <NCollapseItem name="system">
               <template #header>
                 <span class="replay-system__entry-title">{{ t('agentSessions.systemBlockTitle') }}</span>
                 <span class="replay-system__seen">{{ t('agentSessions.systemSeenAt', { id: entry.seen_at_request }) }}</span>
                 <span v-if="entry.truncated" class="replay-system__truncated">{{ t('agentSessions.flowTruncated') }}</span>
               </template>
-              <ChatMessageFlow :body="systemFlow(entry)" :raw="systemRaw(entry)" />
+              <ChatMessageFlow :body="systemFlow(entry)" :raw="systemRawText(entry)" />
             </NCollapseItem>
           </NCollapse>
         </NCollapseItem>
       </NCollapse>
 
-      <!-- The replay itself: one block per request, chronological. -->
-      <section v-for="block in transcript.blocks" :id="`req-${block.request_id}`" :key="block.request_id" class="replay-block">
+      <!-- The older-direction boundary. The sentinel row exists exactly
+           while older blocks remain; when idle it renders no chrome at all
+           (a session that fits one page never shows it — nothing to page),
+           while busy it carries the loading copy, and a failed page turns
+           it into the retry row. -->
+      <div v-if="windowState.hasMoreBefore" ref="topSentinelEl" class="replay-pager" data-testid="replay-pager-top">
+        <span v-if="olderBusy" class="replay-pager__text">{{ t('agentSessions.loadOlder') }}</span>
+        <template v-else-if="olderError">
+          <span class="replay-pager__text replay-pager__text--error">{{ t('agentSessions.turnLoadFailed') }}</span>
+          <NButton text size="tiny" type="primary" @click="loadOlder">{{ t('agentSessions.retry') }}</NButton>
+        </template>
+      </div>
+
+      <!-- The replay itself: one block per loaded request, chronological. -->
+      <section v-for="block in windowState.blocks" :id="`req-${block.request_id}`" :key="block.request_id" class="replay-block">
         <!-- The caller-side messages this request newly contributed. A
              truncated request body degrades to an empty array upstream, so
              the flow renders only when there is anything to render and the
@@ -145,16 +188,34 @@
           <ChatMessageFlow :body="assistantFlow(block)" :raw="assistantRaw(block)" />
         </div>
       </section>
+
+      <!-- The toward-newer boundary: exists only when the page entered
+           through a mid-history anchor (or a continuation stopped short
+           of the tail), same chrome rules as the top sentinel. -->
+      <div v-if="windowState.hasMoreAfter" ref="bottomSentinelEl" class="replay-pager" data-testid="replay-pager-bottom">
+        <span v-if="newerBusy" class="replay-pager__text">{{ t('agentSessions.loadNewer') }}</span>
+        <template v-else-if="newerError">
+          <span class="replay-pager__text replay-pager__text--error">{{ t('agentSessions.turnLoadFailed') }}</span>
+          <NButton text size="tiny" type="primary" @click="loadNewer">{{ t('agentSessions.retry') }}</NButton>
+        </template>
+      </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NCollapse, NCollapseItem, NTag, useMessage } from 'naive-ui'
-import { getAgentSessionTranscript, type AgentSessionReplayBlock, type AgentSessionReplaySystem, type AgentSessionTranscript } from '../../api/agentSessions'
+import {
+  getAgentSessionTranscript,
+  getAgentSessionTranscriptSystem,
+  type AgentSessionReplayBlock,
+  type AgentSessionReplaySystem,
+  type AgentSessionRow,
+  type AgentSessionReplaySystemMeta,
+} from '../../api/agentSessions'
 import { APIError, displayMessage } from '../../api/client'
 import { formatDuration, formatShortClock, formatSpan } from '../../utils/format'
 import { formatMicros } from '../../utils/money'
@@ -164,16 +225,40 @@ import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import StatusClassTag from '../../components/request-logs/StatusClassTag.vue'
 import ChatMessageFlow from '../../components/agent-sessions/ChatMessageFlow.vue'
+import { anchorRequestId, mergeWindow, prependCompensation, windowFromPage, type TranscriptWindow } from './replayPaging'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
 
-const transcript = ref<AgentSessionTranscript | null>(null)
+// ---------- Lazy-load state ----------
+
+// The loaded window: rendered blocks plus one continuation cursor pair per
+// side (see replayPaging.ts). Seeded by the initial page, then extended by
+// the sentinels.
+const windowState = ref<TranscriptWindow>({ blocks: [], hasMoreBefore: false, nextBefore: '', hasMoreAfter: false, nextAfter: '' })
+// The whole-session aggregate and system timeline metadata — every page
+// carries them identically, so the info bar's numbers never depend on how
+// much is loaded.
+const session = ref<AgentSessionRow | null>(null)
+const systemMeta = ref<AgentSessionReplaySystemMeta[]>([])
+// The system timeline's raw text, fetched once when the collapsed group is
+// first expanded (null = not fetched yet; the group shows its loading row).
+const systemRaw = ref<AgentSessionReplaySystem[] | null>(null)
+const systemRawBusy = ref(false)
+const systemRawError = ref(false)
+const systemExpandedNames = ref<Array<string | number>>([])
+
+// First-screen states; the sentinel directions keep their own busy/error
+// flags so a failed upscroll degrades to a retry row, never a dead page.
 const loading = ref(false)
 const notFound = ref(false)
 const loadError = ref('')
+const olderBusy = ref(false)
+const olderError = ref(false)
+const newerBusy = ref(false)
+const newerError = ref(false)
 
 // sessionId comes from the URL, decoded once here. Session ids are opaque
 // tool-side identifiers (uuids for Claude Code, arbitrary strings for
@@ -190,6 +275,13 @@ onMounted(() => {
 // locale-independent — same convention as the request-log detail's 14005.
 const AGENT_SESSION_NOT_FOUND_CODE = 14006
 
+// reload fetches the first page. Without an anchor hash that is the LATEST
+// page and the viewport lands on the newest turn; with #req-<id> the fetch
+// anchors at that turn instead (after is inclusive), and the viewport
+// lands on it. A stale anchor — the server answers an unknown cursor with
+// an empty page — falls back to the latest page rather than rendering an
+// empty replay (a session that truly has requests cannot answer zero
+// blocks otherwise).
 async function reload() {
   if (!sessionId.value) {
     notFound.value = true
@@ -198,8 +290,31 @@ async function reload() {
   loading.value = true
   notFound.value = false
   loadError.value = ''
+  olderError.value = false
+  newerError.value = false
+  let anchor: string | null = null
   try {
-    transcript.value = await getAgentSessionTranscript(sessionId.value)
+    anchor = anchorRequestId(route.hash)
+    let page = await getAgentSessionTranscript(sessionId.value, anchor ? { after: anchor } : undefined)
+    if (anchor && page.blocks.length === 0 && page.session.request_count > 0) {
+      page = await getAgentSessionTranscript(sessionId.value)
+      anchor = null
+    }
+    session.value = page.session
+    systemMeta.value = page.system
+    systemRaw.value = null
+    systemRawError.value = false
+    windowState.value = windowFromPage(page)
+    // Drop the first-screen gate BEFORE the landing scroll: the blocks
+    // render on the next flush, and the scroll has to find them in the
+    // DOM (the finally below is the error paths' backstop, it runs too
+    // late for the scroll).
+    loading.value = false
+    await scrollInitial(anchor)
+    // A re-anchor with the system group already open dropped the raw text
+    // above; the expanded-names watch will not refire on its own, so pick
+    // the fetch back up here.
+    if (systemExpandedNames.value.includes('system')) void loadSystemRaw()
   } catch (err) {
     if (err instanceof APIError && err.code === AGENT_SESSION_NOT_FOUND_CODE) {
       notFound.value = true
@@ -214,31 +329,196 @@ async function reload() {
   }
 }
 
-// ---------- Anchor scrolling ----------
+// ---------- Landing and anchor scrolling ----------
 
-// A #req-<requestId> hash deep-links to one replay turn. The scroll runs
-// post-flush (after the transcript's DOM is committed) via scrollIntoView
-// on the block element itself — the app shell scrolls inside naive-ui
-// layout containers and the document never overflows, so window.scrollTo
-// would be a no-op. The optional call guards test DOMs that define no
-// scrollIntoView; real browsers always have it.
+// scrollInitial parks the viewport after the first page renders:
+// an anchor lands its turn at the viewport top, everything else lands the
+// NEWEST turn at the viewport bottom (the resume-a-session reading). Both
+// run post-flush via scrollIntoView on the block element itself — the app
+// shell scrolls inside naive-ui layout containers and the document never
+// overflows, so window.scrollTo would be a no-op. The optional call guards
+// test DOMs that define no scrollIntoView; real browsers always have it.
+async function scrollInitial(anchor: string | null) {
+  await nextTick()
+  await nextTick()
+  scrollToAnchor(anchor ?? '')
+}
+
+// scrollToAnchor scrolls one turn into view by its #req-<id> anchor. An
+// empty or unloaded id falls back to the newest loaded turn (bottom
+// landing) — the caller decides which is the intended target.
+function scrollToAnchor(anchor: string) {
+  const anchorEl = anchor ? document.getElementById(`req-${anchor}`) : null
+  const target = anchorEl ?? lastBlockEl()
+  const atAnchor = Boolean(anchor && anchorEl === target)
+  target?.scrollIntoView?.({ block: atAnchor ? 'start' : 'end' })
+}
+
+function lastBlockEl(): HTMLElement | null {
+  const blocks = windowState.value.blocks
+  if (blocks.length === 0) return null
+  return document.getElementById(`req-${blocks[blocks.length - 1].request_id}`)
+}
+
+// A #req-<id> hash arriving after mount (same route, new anchor): a turn
+// already in the loaded window only scrolls to it — no refetch; an
+// unloaded turn re-anchors the whole view (fresh window from that turn,
+// both directions continuable), exactly like entering the page by that
+// deep link.
 watch(
-  transcript,
-  (tr) => {
-    if (!tr) return
-    const hash = route.hash
-    if (!hash.startsWith('#req-')) return
-    document.getElementById(hash.slice(1))?.scrollIntoView?.({ block: 'start' })
+  () => route.hash,
+  (hash) => {
+    if (loading.value) return
+    const anchor = anchorRequestId(hash)
+    if (!anchor) return
+    if (windowState.value.blocks.some((b) => b.request_id === anchor)) {
+      void nextTick().then(() => scrollToAnchor(anchor))
+      return
+    }
+    void reload().catch((err) => message.error(displayMessage(err, t)))
   },
-  { flush: 'post' },
 )
+
+// ---------- Sentinel paging ----------
+
+const topSentinelEl = ref<HTMLElement | null>(null)
+const bottomSentinelEl = ref<HTMLElement | null>(null)
+
+// One observer watches both sentinels: each hit pages its own direction.
+// The root margin makes the boundary fire slightly BEFORE the sentinel
+// reaches the viewport edge, so the next page is usually in place by the
+// time the reader arrives. Test DOMs without IntersectionObserver (or with
+// the no-op stub happy-dom ships) simply never fire — the retry rows and
+// the anchors below still work, paging is the only thing idle.
+let viewportObserver: IntersectionObserver | null = null
+
+function ensureObserver(): IntersectionObserver | null {
+  if (typeof IntersectionObserver === 'undefined') return null
+  if (!viewportObserver) {
+    viewportObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue
+          if (entry.target === topSentinelEl.value) void loadOlder()
+          else if (entry.target === bottomSentinelEl.value) void loadNewer()
+        }
+      },
+      { rootMargin: '120px 0px' },
+    )
+  }
+  return viewportObserver
+}
+
+// The sentinel elements come and go with their has_more flags (a session
+// that fits one page never renders one); the watches keep the observer
+// pointed at whatever elements currently exist.
+watch(topSentinelEl, (el, prev) => {
+  if (prev) viewportObserver?.unobserve(prev)
+  if (el) ensureObserver()?.observe(el)
+})
+watch(bottomSentinelEl, (el, prev) => {
+  if (prev) viewportObserver?.unobserve(prev)
+  if (el) ensureObserver()?.observe(el)
+})
+
+onBeforeUnmount(() => {
+  viewportObserver?.disconnect()
+  viewportObserver = null
+})
+
+// scrollParentOf walks up from el to the nearest scrollable ancestor — the
+// app shell scrolls inside a layout container, not the document, so the
+// prepend compensation has to adjust that container's scrollTop. Test DOMs
+// expose no overflow style, return null there and the (pure, separately
+// tested) compensation is simply skipped.
+function scrollParentOf(el: Element | null): HTMLElement | null {
+  for (let node = el?.parentElement; node; node = node.parentElement) {
+    const overflowY = window.getComputedStyle(node).overflowY
+    if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) return node
+  }
+  return null
+}
+
+// loadOlder pages one step toward the session's head: the exclusive before
+// cursor asks for the blocks strictly older than the loaded window's
+// oldest, they prepend, and scrollTop grows by the inserted height so the
+// turn under the viewport stays under the viewport (the compensation value
+// is the pure before/after scrollHeight difference — see replayPaging.ts).
+// The busy flag collapses re-entrant fires (an in-flight direction does
+// not re-request); a failure flips the sentinel row to its retry form.
+async function loadOlder() {
+  if (!windowState.value.hasMoreBefore || olderBusy.value) return
+  olderBusy.value = true
+  olderError.value = false
+  const scroller = scrollParentOf(topSentinelEl.value)
+  const heightBefore = scroller?.scrollHeight ?? 0
+  try {
+    const page = await getAgentSessionTranscript(sessionId.value, { before: windowState.value.nextBefore })
+    windowState.value = mergeWindow(windowState.value, page, 'older')
+    session.value = page.session
+    systemMeta.value = page.system
+    await nextTick()
+    if (scroller) scroller.scrollTop += prependCompensation(heightBefore, scroller.scrollHeight)
+  } catch {
+    olderError.value = true
+  } finally {
+    olderBusy.value = false
+  }
+}
+
+// loadNewer pages one step toward the tail: the inclusive after cursor
+// resends the loaded window's newest block (mergeWindow drops the
+// duplicate), the new blocks append below, and the viewport needs no
+// compensation — content added below the reading position does not move
+// it. This direction only exists for an anchored entry (a latest-first
+// opening already sits at the tail).
+async function loadNewer() {
+  if (!windowState.value.hasMoreAfter || newerBusy.value) return
+  newerBusy.value = true
+  newerError.value = false
+  try {
+    const page = await getAgentSessionTranscript(sessionId.value, { after: windowState.value.nextAfter })
+    windowState.value = mergeWindow(windowState.value, page, 'newer')
+    session.value = page.session
+    systemMeta.value = page.system
+  } catch {
+    newerError.value = true
+  } finally {
+    newerBusy.value = false
+  }
+}
+
+// ---------- System-prompt raw text (on expand) ----------
+
+// The collapsed group's expansion is the fetch trigger: the transcript
+// pages carry metadata only, the raw text is one dedicated request the
+// first time the group opens. Re-collapsing and re-expanding does not
+// refetch (systemRaw is kept), and neither does continuing to page blocks
+// — the timeline is session-wide.
+watch(systemExpandedNames, (names) => {
+  if (!names.includes('system')) return
+  void loadSystemRaw()
+})
+
+async function loadSystemRaw() {
+  if (systemRaw.value !== null || systemRawBusy.value) return
+  systemRawBusy.value = true
+  systemRawError.value = false
+  try {
+    systemRaw.value = (await getAgentSessionTranscriptSystem(sessionId.value)).system
+  } catch {
+    systemRawError.value = true
+  } finally {
+    systemRawBusy.value = false
+  }
+}
 
 // ---------- Derived figures ----------
 
 // Tool display name via the shared enum mirror; a client outside the enum
 // (newer gateway) falls back to the raw value — still the truth.
 const toolName = computed(() => {
-  const client = transcript.value?.session.agent_client ?? ''
+  const client = session.value?.agent_client ?? ''
   const key = agentClientLabelKey(client)
   return key ? t(key) : client || '-'
 })
@@ -248,7 +528,7 @@ const toolName = computed(() => {
 // seconds, then h/m/s). Malformed timestamps parse to NaN and render as
 // NaN honesty rather than crashing the page.
 const sessionSpan = computed(() => {
-  const s = transcript.value?.session
+  const s = session.value
   if (!s) return ''
   return formatSpan(Date.parse(s.last_seen_at) - Date.parse(s.first_seen_at))
 })
@@ -256,9 +536,10 @@ const sessionSpan = computed(() => {
 // The collapsed group's one-line summary: the first appearance plus the
 // change count (N = timeline entries - 1; the first entry IS the first
 // appearance). A prompt that never changed degenerates to the plain
-// first-appearance copy with no count.
+// first-appearance copy with no count. The count comes from the metadata
+// list, so it is whole-session from the first page on.
 const systemSummary = computed(() => {
-  const entries = transcript.value?.system ?? []
+  const entries = systemMeta.value
   return entries.length > 1
     ? t('agentSessions.systemGroupChanges', { n: entries.length - 1 })
     : t('agentSessions.systemGroupFirstOnly')
@@ -290,7 +571,7 @@ function systemFlow(entry: AgentSessionReplaySystem): TranslatedBody {
   return translateMessageArray([{ role: 'system', content: raw }])
 }
 
-function systemRaw(entry: AgentSessionReplaySystem): string {
+function systemRawText(entry: AgentSessionReplaySystem): string {
   const raw = entry.raw
   if (typeof raw === 'string') return raw
   return blockRaw(Array.isArray(raw) ? raw : [raw])
@@ -429,6 +710,34 @@ function goRequestDetail(requestId: string) {
   margin-left: var(--space-2, 8px);
   font-size: 11px;
   color: var(--color-warning-text, #d48806);
+}
+
+/* Paging boundaries at the loaded window's edges. Idle they render as a
+   slim hit-area only (a session that fits one page never mounts one at
+   all); busy or failed they carry the loading copy / the retry row. */
+.replay-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2, 8px);
+  min-height: 32px;
+  margin-bottom: var(--space-3, 12px);
+}
+
+.replay-pager__text {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.replay-pager__text--error {
+  color: var(--color-error-text, #d03050);
+}
+
+/* The system group's on-expand rows (loading / retry) sit inside the
+   group's own padding. */
+.replay-pager__row--inside {
+  min-height: 24px;
+  margin: var(--space-2, 8px) var(--space-3, 12px);
 }
 
 /* One replay turn: the newly-added messages, then the assistant half. The

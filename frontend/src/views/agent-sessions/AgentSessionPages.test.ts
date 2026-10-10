@@ -17,17 +17,20 @@
 //     plus the startup backfill), and points tools with no session
 //     identifier at the Log Audit page (by its menu name)
 //
-//   detail page (the session replay):
-//   - assembly: one fetch renders the whole replay — the two-line info
-//     bar (tool / session id / request count / from-to clock + elapsed
-//     span; tokens in-out / known cost + unknown marker / success ratio),
-//     the system-prompt timeline as ONE collapsed group (a single summary
-//     line counting first appearance + changes — degenerating to the
-//     plain first-appearance copy when the prompt never changed — that
-//     expands into the per-entry timeline with each entry's first-seen
-//     annotation and truncation mark), and the per-request turns in
-//     chronological order with their metadata signs, failure status tags,
-//     and request-detail links
+//   detail page (the session replay — assembly under the cursor-paginated
+//   contract; the lazy-paging behavior itself has its own file,
+//   AgentSessionDetailPage.lazyload.test.ts):
+//   - assembly: one fetch renders the replay's first page — the two-line
+//     info bar (tool / session id / request count / from-to clock +
+//     elapsed span; tokens in-out / known cost + unknown marker / success
+//     ratio), the system-prompt timeline as ONE collapsed group (a single
+//     summary line counting first appearance + changes — degenerating to
+//     the plain first-appearance copy when the prompt never changed —
+//     whose expansion fetches the raw timeline once and then expands into
+//     the per-entry timeline with each entry's first-seen annotation and
+//     truncation mark), and the per-request turns in chronological order
+//     with their metadata signs, failure status tags, and request-detail
+//     links
 //   - assistant source arms: inline / stream (ONE merged bubble plus the
 //     merged-note) / resend / none (the explicit "not recorded"
 //     placeholder, never an empty bubble)
@@ -35,9 +38,11 @@
 //     polling, no per-request follow-up)
 //   - states: 14006 renders the not-found empty state with the back
 //     button; a transport failure renders the localized copy inline
-//   - anchor: a #req-<requestId> hash scrolls the target turn into view
-//     via scrollIntoView on the block element (the app shell scrolls
-//     inside layout containers, never the window); no hash, no scroll
+//   - anchor: a #req-<requestId> hash makes the FIRST fetch anchor at
+//     that turn (the inclusive after cursor) and scrolls it into view via
+//     scrollIntoView on the block element (the app shell scrolls inside
+//     layout containers, never the window); no hash opens on the latest
+//     page and lands the viewport on the newest turn
 //   - text rendering: markdown, the long-part clamp, image placeholders,
 //     and tool_use labels with their argument-detail block ride the shared
 //     bubble renderer unchanged
@@ -55,9 +60,11 @@ import { defineComponent, nextTick, type ComponentPublicInstance } from 'vue'
 
 import {
   getAgentSessionTranscript,
+  getAgentSessionTranscriptSystem,
   listAgentSessions,
   type AgentSessionPage,
   type AgentSessionTranscript,
+  type AgentSessionTranscriptSystem,
 } from '../../api/agentSessions'
 import { APIError, NetworkError } from '../../api/client'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
@@ -66,10 +73,12 @@ import { AGENT_CLIENTS } from '../../utils/agentClient'
 vi.mock('../../api/agentSessions', () => ({
   listAgentSessions: vi.fn(),
   getAgentSessionTranscript: vi.fn(),
+  getAgentSessionTranscriptSystem: vi.fn(),
 }))
 
 const listMock = vi.mocked(listAgentSessions)
 const transcriptMock = vi.mocked(getAgentSessionTranscript)
+const transcriptSystemMock = vi.mocked(getAgentSessionTranscriptSystem)
 
 // Must be imported after the vi.mock factory is registered.
 import AgentSessionListPage from './AgentSessionListPage.vue'
@@ -243,7 +252,9 @@ const STREAM_CAPTURE = [
 // The whole-session replay fixture: four turns covering the assistant
 // source arms (inline / stream / resend / none), a failed turn, a
 // truncated-request turn, and a two-entry system timeline (first value
-// plus one change). The session aggregate reuses the list fixture's
+// plus one change). It models a session that fits one page — both
+// has_more flags false — so this file's assembly assertions run without
+// any paging chrome. The session aggregate reuses the list fixture's
 // session-A figures with request_count lowered to the four blocks that
 // exist here, so the info bar's numbers and the turns agree.
 function transcriptFixture(): AgentSessionTranscript {
@@ -260,11 +271,14 @@ function transcriptFixture(): AgentSessionTranscript {
       first_seen_at: '2026-09-28T08:00:00Z',
       last_seen_at: '2026-09-28T09:30:00Z',
     },
+    // Metadata-only entries — the raw prompt text is the separate
+    // on-expand fetch (systemRawFixture below), index-aligned with this
+    // list.
     system: [
-      { seen_at_request: REQUEST_1, truncated: false, raw: 'You are a helpful assistant.' },
+      { seen_at_request: REQUEST_1, truncated: false, raw_length: 28 },
       // The changed value arrives truncated, so the timeline entry's
       // truncation mark gets its rendering assertion too.
-      { seen_at_request: REQUEST_3, truncated: true, raw: [{ type: 'text', text: 'Revised system prompt.' }] },
+      { seen_at_request: REQUEST_3, truncated: true, raw_length: 34 },
     ],
     blocks: [
       {
@@ -333,6 +347,21 @@ function transcriptFixture(): AgentSessionTranscript {
         added_truncated: true,
       },
     ],
+    has_more_before: false,
+    next_before: '',
+    has_more_after: false,
+    next_after: '',
+  }
+}
+
+// The on-expand system raw fetch's answer: the same two timeline entries
+// with their raw values, index-aligned with the metadata list above.
+function systemRawFixture(): AgentSessionTranscriptSystem {
+  return {
+    system: [
+      { seen_at_request: REQUEST_1, truncated: false, raw: 'You are a helpful assistant.' },
+      { seen_at_request: REQUEST_3, truncated: true, raw: [{ type: 'text', text: 'Revised system prompt.' }] },
+    ],
   }
 }
 
@@ -340,6 +369,7 @@ beforeEach(() => {
   stubDesktopMatchMedia()
   listMock.mockResolvedValue(listFixture())
   transcriptMock.mockResolvedValue(transcriptFixture())
+  transcriptSystemMock.mockResolvedValue(systemRawFixture())
 })
 
 afterEach(() => {
@@ -512,7 +542,8 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage replay assembly (
     // Exactly one group container for the whole timeline, and while
     // collapsed it is exactly the summary line — no per-entry panels, no
     // prompt text anywhere, so the conversation starts right under the
-    // info bar however many times the prompt changed.
+    // info bar however many times the prompt changed. Collapsed also
+    // means the raw-text endpoint has not been touched at all.
     const group = document.body.querySelector('.replay-system')
     expect(group, 'one group container for the whole system timeline').toBeTruthy()
     const header = group!.querySelector('.n-collapse-item__header')?.textContent ?? ''
@@ -521,13 +552,16 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage replay assembly (
     )
     expect(group!.querySelectorAll('.replay-system__entry').length, 'no per-entry panels while the group is collapsed').toBe(0)
     expect(document.body.textContent ?? '', 'system prompt hidden while collapsed').not.toContain('You are a helpful assistant.')
+    expect(transcriptSystemMock, 'no raw-text fetch while the group is collapsed').not.toHaveBeenCalled()
 
-    // Expanding the group reveals the per-entry timeline: every entry
-    // with its first-seen annotation (the fixture's two entries carry
-    // different request ids) and the truncation mark on the truncated
-    // one — and each entry is still collapsed on its own, so the prompt
-    // text stays hidden until the entry itself opens.
+    // Expanding the group fetches the timeline's raw text once and reveals
+    // the per-entry timeline: every entry with its first-seen annotation
+    // (the fixture's two entries carry different request ids) and the
+    // truncation mark on the truncated one — and each entry is still
+    // collapsed on its own, so the prompt text stays hidden until the
+    // entry itself opens.
     group!.querySelector('.n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(transcriptSystemMock, 'expanding fetches the raw timeline once').toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect(group!.querySelectorAll('.replay-system__entry').length, 'expanded group renders every timeline entry').toBe(2))
     const entryHeaders = [...group!.querySelectorAll('.replay-system__entry .n-collapse-item__header')]
     expect(entryHeaders[0]?.textContent ?? '', 'first entry annotated with its request').toContain(
@@ -705,12 +739,18 @@ describe('AgentSessionDetailPage anchor scrolling', () => {
     }
   }
 
-  it('a #req-<id> hash scrolls the target turn into view via scrollIntoView on the block element — not the window', async () => {
+  it('a #req-<id> hash anchors the first fetch at that turn and scrolls it into view via scrollIntoView on the block element — not the window', async () => {
     const { spy, restore } = stubScrollIntoView()
     const windowScroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
     try {
       await mountReplay('zh-CN', `/agent-sessions/${SESSION_A}#req-${REQUEST_2}`)
       await vi.waitFor(() => expect(spy, 'the target turn was scrolled to').toHaveBeenCalled())
+
+      // The first fetch anchored AT the deep-linked turn: the inclusive
+      // after cursor, never a bare latest-page fetch.
+      expect(transcriptMock, 'exactly one fetch for the anchored entry').toHaveBeenCalledTimes(1)
+      expect(transcriptMock.mock.calls[0][0], 'the fetch targeted the URL session id').toBe(SESSION_A)
+      expect(transcriptMock.mock.calls[0][1], 'the fetch anchored at the hashed turn (inclusive after cursor)').toEqual({ after: REQUEST_2 })
 
       // The call rides the block element itself — scrollIntoView walks the
       // real scrollable ancestors (the app shell's layout container);
@@ -724,12 +764,21 @@ describe('AgentSessionDetailPage anchor scrolling', () => {
     }
   })
 
-  it('no hash, no scroll', async () => {
+  it('no hash opens on the latest page and lands the viewport on the newest turn', async () => {
     const { spy, restore } = stubScrollIntoView()
     try {
       await mountReplay('zh-CN')
+      await vi.waitFor(() => expect(spy, 'the newest turn was scrolled to').toHaveBeenCalled())
       await new Promise((resolve) => setTimeout(resolve, 20))
-      expect(spy, 'a plain mount scrolls nothing').not.toHaveBeenCalled()
+
+      // The latest-page opening: a bare fetch (no cursor params at all)…
+      expect(transcriptMock, 'exactly one fetch').toHaveBeenCalledTimes(1)
+      expect(transcriptMock.mock.calls[0][1], 'no cursor params on the latest-page opening').toBeUndefined()
+      // …and the viewport lands on the LAST turn, bottom-aligned — the
+      // resume-a-session reading position.
+      expect(spy.mock.contexts[0], 'scrollIntoView was called ON the newest turn').toBe(blockEl(REQUEST_4))
+      expect(spy.mock.calls[0][0], 'bottom alignment for the latest-page landing').toEqual({ block: 'end' })
+      expect(spy, 'the landing scrolls exactly once').toHaveBeenCalledTimes(1)
     } finally {
       restore()
     }
@@ -781,6 +830,10 @@ describe('AgentSessionDetailPage text rendering', () => {
           added_truncated: false,
         },
       ],
+      has_more_before: false,
+      next_before: '',
+      has_more_after: false,
+      next_after: '',
     })
     await mountReplay('zh-CN')
 

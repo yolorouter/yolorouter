@@ -43,6 +43,14 @@ export default {
   systemSeenAt: '首次出现于请求 {id}',
   systemGroupChanges: '系统提示·首次出现+变化 {n} 次',
   systemGroupFirstOnly: '系统提示·首次出现',
+  systemRawFailed: '系统提示原文加载失败',
+
+  // Lazy paging of the replay turns: the boundary rows' loading copy, the
+  // failure copy, and the retry action beside it.
+  loadOlder: '加载更早轮次…',
+  loadNewer: '加载较新轮次…',
+  turnLoadFailed: '轮次加载失败',
+  retry: '重试',
 
   // Message flow (bubble view of the captured bodies). The disclosure-row
   // and stream-merge keys below migrated here from the retired request
