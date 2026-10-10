@@ -265,6 +265,11 @@ function modelDetail(candidates: ModelCandidate[], id = 100, name = 'model-passe
     scheduling_mode: 'failover',
     supports_image_input: null,
     output_modalities: ['text'],
+    context_length: null,
+    input_modalities: null,
+    supports_tools: null,
+    supports_reasoning: null,
+    temperature: null,
     candidates,
     created_at: '2026-09-01T00:00:00Z',
   }

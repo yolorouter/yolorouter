@@ -300,6 +300,7 @@ func newModelTestRouterSharingProviderDB(t *testing.T, db *gorm.DB, client provi
 	admin := r.Group("/api/admin")
 	admin.POST("/models", PostModel(svc))
 	admin.GET("/models/:id", GetModel(svc))
+	admin.PATCH("/models/:id", PatchModel(svc))
 	admin.POST("/models/:id/candidates", PostModelCandidate(svc))
 	admin.POST("/models/:id/candidates/test-and-create", PostModelCandidateTestAndCreate(svc))
 	admin.PATCH("/models/:id/candidates/:candidateId", PatchModelCandidate(svc))

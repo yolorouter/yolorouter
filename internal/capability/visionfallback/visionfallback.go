@@ -97,6 +97,11 @@ func (f *Fallback) RewriteIngress(ctx context.Context, view View, body []byte, s
 		return body, nil
 	}
 	m, err := repository.FindModelByName(f.db.WithContext(ctx), modelName)
+	//nolint:staticcheck // SA1019: reading the deprecated column is the point —
+	// this hot path keeps consuming supports_image_input until the switch to
+	// input_modalities; every save-path write of the array derives the column
+	// from the same direction, so this read observes exactly what the admin
+	// declared.
 	if err != nil || m.SupportsImageInput == nil || *m.SupportsImageInput {
 		// Unknown model (routing will reject it authoritatively), undeclared,
 		// or declared image-capable: not this capability's business.

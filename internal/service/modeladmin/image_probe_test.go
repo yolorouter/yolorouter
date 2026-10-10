@@ -34,9 +34,18 @@ func TestImageModelProbesThroughImageEndpoint(t *testing.T) {
 	imageBefore := client.CallCountFor("image")
 	streamingBefore := client.CallCountFor("streaming")
 
+	// The image billing declaration is mandatory since the save-time
+	// consistency rules: an image-output model's ENABLED candidates must bill
+	// per image with a pricing table, so the probe-shape scenario under test
+	// (an enabled mapping on an image model) carries one.
 	report, err := svc.TestAndCreateCandidate(t.Context(), imageModel.ID, modeladmin.CreateCandidateInput{
 		ProviderID: provider.ID, ProviderModelName: "wan2.2-image",
 		ManagementStatus: model.ModelCandidateStatusEnabled,
+		BillingMode:      model.BillingModeImage,
+		ImagePricingTiers: &model.ImagePricingTiers{
+			Mode:         "per_image",
+			DefaultPrice: ptrFloat(0.25),
+		},
 	}, now)
 	if err != nil {
 		t.Fatalf("test-and-create: %v", err)

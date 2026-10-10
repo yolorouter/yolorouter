@@ -60,7 +60,43 @@ type Model struct {
 	// read images. Tri-state: nil = undeclared, and the gateway must not
 	// touch images at all (neither describe nor strip) — a missing
 	// declaration must never degrade a vision-capable model.
+	//
+	// Deprecated: InputModalities carries the same fact as part of a full
+	// input-modality array. This column is kept in mirror for the transition
+	// period — every write of input_modalities derives it (contains image ⇒
+	// true, a non-empty list without image ⇒ false, undeclared ⇒ nil) in the
+	// same statement, and the migration backfilled input_modalities from it —
+	// because the gateway's vision-fallback hot path still reads this column.
+	// It will be removed once the gateway reads input_modalities instead.
 	SupportsImageInput *bool `gorm:"column:supports_image_input" json:"supports_image_input"`
+	// ContextLength is the admin's declared context window in tokens. Nil
+	// means undeclared. Purely informational at this stage — no routing or
+	// admission decision reads it yet.
+	ContextLength *int `gorm:"column:context_length" json:"context_length"`
+	// InputModalities is the JSON array of modality ids this model accepts as
+	// input ("text", "image", ...), stored as a string column. Supersedes the
+	// deprecated SupportsImageInput boolean: the array form can express
+	// audio/video input the boolean never could. Read leniently: an empty,
+	// NULL or malformed value reads as undeclared (a nil list), which is what
+	// every row predating the column was — and an undeclared input must never
+	// be read as "text only".
+	InputModalities string `gorm:"column:input_modalities" json:"input_modalities"`
+	// SupportsTools is the admin's tri-state declaration that the model can
+	// be called with tools (nil = undeclared, never "no"). Model-level and
+	// admin-declared, so it is deliberately distinct from the candidate-level
+	// SupportsFunctionCalling, which only records what a probe confirmed on
+	// one mapping. Informational at this stage.
+	SupportsTools *bool `gorm:"column:supports_tools" json:"supports_tools"`
+	// SupportsReasoning is the admin's tri-state declaration that the model
+	// produces reasoning output (nil = undeclared, never "no"). Informational
+	// at this stage.
+	SupportsReasoning *bool `gorm:"column:supports_reasoning" json:"supports_reasoning"`
+	// Temperature is the admin's declared recommended default temperature for
+	// calls to this model. Nil means undeclared. It is model metadata — the
+	// name collides with the request-passthrough temperature the gateway
+	// forwards upstream, and this field does not participate in that path at
+	// all. Informational at this stage.
+	Temperature *float64 `gorm:"column:temperature" json:"temperature"`
 	// OutputModalities is the JSON array of modality ids this model produces
 	// ("text", "image"), stored as a string column. The gateway routes a
 	// request only when the endpoint's modality is declared here, so models
@@ -169,6 +205,100 @@ func CanonicalOutputModalities(list []string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// The modality ids a model may declare in input_modalities. They share their
+// spellings with the output vocabulary because both sides name the same
+// media kinds; they are kept as separate constants because each column's
+// write path validates against its own list, and a future modality may
+// legitimately be valid on one side and not the other.
+const (
+	InputModalityText  = "text"
+	InputModalityImage = "image"
+	InputModalityAudio = "audio"
+	InputModalityVideo = "video"
+)
+
+// ValidInputModalities is the write-path vocabulary for input_modalities,
+// mirroring ValidOutputModalities. The read path (InputModalityList) is
+// deliberately laxer — an unknown id in a stored row reads as simply not
+// that modality rather than failing anything.
+var ValidInputModalities = []string{InputModalityText, InputModalityImage, InputModalityAudio, InputModalityVideo}
+
+// CanonicalInputModalities validates an input declaration from the write
+// path and returns the JSON form the column stores. The empty string (also
+// returned for an empty list) means "no declaration" and is stored as NULL —
+// unlike output modalities, an undeclared input is a legal, meaningful state
+// (the tri-state the old boolean column carried). Ids are case-folded and
+// trimmed before validation so a sloppy client cannot store a near-miss of a
+// valid id; an empty or unknown id after folding is a rejection, as is a
+// duplicate.
+func CanonicalInputModalities(list []string) (string, error) {
+	if len(list) == 0 {
+		return "", nil
+	}
+	folded := make([]string, 0, len(list))
+	seen := make(map[string]bool, len(list))
+	for _, raw := range list {
+		id := strings.ToLower(strings.TrimSpace(raw))
+		if id == "" {
+			return "", errors.New("input modalities must not contain an empty id")
+		}
+		if !slices.Contains(ValidInputModalities, id) {
+			return "", fmt.Errorf("unknown input modality %q", raw)
+		}
+		if seen[id] {
+			return "", fmt.Errorf("duplicate input modality %q", id)
+		}
+		seen[id] = true
+		folded = append(folded, id)
+	}
+	out, err := json.Marshal(folded)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// InputModalityList parses the stored declaration. NULL, empty and malformed
+// values all read as nil — undeclared — because that is what every row that
+// predates the column was, and an undeclared input must never be narrowed
+// into a declaration (nil is the state the gateway-side semantics treat as
+// "do not act on this").
+func (m Model) InputModalityList() []string {
+	raw := strings.TrimSpace(m.InputModalities)
+	if raw == "" {
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil || len(list) == 0 {
+		return nil
+	}
+	return list
+}
+
+// DeriveImageInputSupport maps a canonical input_modalities value onto the
+// deprecated supports_image_input tri-state, preserving the column's
+// semantics: a list containing image ⇒ true, a non-empty list without image
+// ⇒ false, and no declaration (empty, NULL, or unparseable) ⇒ nil. The
+// direction is load-bearing — the vision-fallback hot path still reads the
+// old column, so a save that declared ["text","image"] while leaving the old
+// column nil would silently disable image pass-through. Every writer of
+// input_modalities must derive the old column in the same statement through
+// this function.
+func DeriveImageInputSupport(canonicalInputModalities string) *bool {
+	list := Model{InputModalities: canonicalInputModalities}.InputModalityList()
+	if len(list) == 0 {
+		return nil
+	}
+	for _, id := range list {
+		if id == InputModalityImage {
+			t := true
+			return &t
+		}
+	}
+	f := false
+	return &f
 }
 
 // SchedulingMode is how the gateway orders a model's candidate chain. It is

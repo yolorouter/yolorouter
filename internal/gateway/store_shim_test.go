@@ -35,6 +35,8 @@ func (s *testStore) FindModelByName(ctx context.Context, name string) (*Model, e
 	}
 	return &Model{
 		ID: m.ID, Name: m.Name, ManagementStatus: m.ManagementStatus,
+		//nolint:staticcheck // SA1019: the gateway row still carries the
+		// deprecated column by design during the input_modalities transition.
 		SchedulingMode: SchedulingMode(m.SchedulingMode), SupportsImageInput: m.SupportsImageInput,
 		OutputModalities: m.OutputModalities, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}, nil
@@ -50,8 +52,9 @@ func (s *testStore) ListModels(ctx context.Context) ([]Model, error) {
 		m := &all[i]
 		out = append(out, Model{
 			ID: m.ID, Name: m.Name, ManagementStatus: m.ManagementStatus,
-			SchedulingMode: SchedulingMode(m.SchedulingMode), SupportsImageInput: m.SupportsImageInput,
-			OutputModalities: m.OutputModalities, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
+			SchedulingMode:     SchedulingMode(m.SchedulingMode),
+			SupportsImageInput: m.SupportsImageInput, //nolint:staticcheck // SA1019: the gateway row still carries the deprecated column by design during the input_modalities transition
+			OutputModalities:   m.OutputModalities, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 		})
 	}
 	return out, nil

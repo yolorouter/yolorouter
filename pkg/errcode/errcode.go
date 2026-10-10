@@ -97,6 +97,14 @@ const (
 	ModelSchedulingModeInvalid = 12107 // scheduling_mode is not one of failover/balanced
 	ModelOutputModalityInvalid = 12108 // output_modalities is not a list of known modality ids
 	ModelBillingInvalid        = 12109 // billing_mode/image_pricing_tiers is not a valid billing declaration
+	ModelInputModalityInvalid  = 12110 // input_modalities is not a list of known modality ids
+	// The three save-time consistency rejections below each name a pair — the
+	// model's capability declaration against its candidate set — that
+	// contradicts itself. They are asserted on both the model save and the
+	// candidate save paths, so neither side can drift the pair apart alone.
+	ModelImageBillingMismatch    = 12111 // an image-output model's enabled candidate does not bill per image with a pricing table
+	ModelMaxOutputExceedsContext = 12112 // an enabled candidate's max_output exceeds the model's declared context_length
+	ModelTemperatureInvalid      = 12113 // model temperature is declared outside the [0, 2] closed interval
 
 	// === User group errors (13xxx) — user group serving three roles at once ===
 	UserGroupNotFound       = 13001
@@ -219,14 +227,18 @@ var ErrorMessages = map[int]string{
 	ProviderProtocolInvalid:  "invalid provider_type or protocol_endpoints",
 	ProviderProxyInvalid:     "invalid provider proxy configuration: proxy_mode must be inherit, off, or custom, and a custom proxy needs a valid proxy URL",
 
-	ModelNotFound:               "model not found",
-	ModelNameTaken:              "model name already taken",
-	ModelCandidateNotFound:      "model candidate not found",
-	ModelCandidateProviderTaken: "this provider is already a candidate for this model",
-	ModelCandidateNotVerified:   "cannot enable a candidate that has not passed the basic test",
-	ModelSchedulingModeInvalid:  "scheduling mode must be failover or balanced",
-	ModelOutputModalityInvalid:  "output modalities must be a non-empty list of: text, image",
-	ModelBillingInvalid:         "billing declaration is invalid",
+	ModelNotFound:                "model not found",
+	ModelNameTaken:               "model name already taken",
+	ModelCandidateNotFound:       "model candidate not found",
+	ModelCandidateProviderTaken:  "this provider is already a candidate for this model",
+	ModelCandidateNotVerified:    "cannot enable a candidate that has not passed the basic test",
+	ModelSchedulingModeInvalid:   "scheduling mode must be failover or balanced",
+	ModelOutputModalityInvalid:   "output modalities must be a non-empty list of: text, image",
+	ModelBillingInvalid:          "billing declaration is invalid",
+	ModelInputModalityInvalid:    "input modalities must be a list of: text, image, audio, video",
+	ModelImageBillingMismatch:    "an image-output model's enabled candidates must bill per image with a pricing table",
+	ModelMaxOutputExceedsContext: "an enabled candidate's max_output must not exceed the model's declared context_length",
+	ModelTemperatureInvalid:      "temperature must be within [0, 2]",
 
 	UserGroupNotFound:       "user group not found",
 	UserGroupNameTaken:      "user group name already taken",
@@ -321,14 +333,18 @@ var (
 	ErrProviderProtocolInvalid  = errors.New(ErrorMessages[ProviderProtocolInvalid])
 	ErrProviderProxyInvalid     = errors.New(ErrorMessages[ProviderProxyInvalid])
 
-	ErrModelNotFound               = errors.New(ErrorMessages[ModelNotFound])
-	ErrModelNameTaken              = errors.New(ErrorMessages[ModelNameTaken])
-	ErrModelCandidateNotFound      = errors.New(ErrorMessages[ModelCandidateNotFound])
-	ErrModelCandidateProviderTaken = errors.New(ErrorMessages[ModelCandidateProviderTaken])
-	ErrModelCandidateNotVerified   = errors.New(ErrorMessages[ModelCandidateNotVerified])
-	ErrModelSchedulingModeInvalid  = errors.New(ErrorMessages[ModelSchedulingModeInvalid])
-	ErrModelOutputModalityInvalid  = errors.New(ErrorMessages[ModelOutputModalityInvalid])
-	ErrModelBillingInvalid         = errors.New(ErrorMessages[ModelBillingInvalid])
+	ErrModelNotFound                = errors.New(ErrorMessages[ModelNotFound])
+	ErrModelNameTaken               = errors.New(ErrorMessages[ModelNameTaken])
+	ErrModelCandidateNotFound       = errors.New(ErrorMessages[ModelCandidateNotFound])
+	ErrModelCandidateProviderTaken  = errors.New(ErrorMessages[ModelCandidateProviderTaken])
+	ErrModelCandidateNotVerified    = errors.New(ErrorMessages[ModelCandidateNotVerified])
+	ErrModelSchedulingModeInvalid   = errors.New(ErrorMessages[ModelSchedulingModeInvalid])
+	ErrModelOutputModalityInvalid   = errors.New(ErrorMessages[ModelOutputModalityInvalid])
+	ErrModelBillingInvalid          = errors.New(ErrorMessages[ModelBillingInvalid])
+	ErrModelInputModalityInvalid    = errors.New(ErrorMessages[ModelInputModalityInvalid])
+	ErrModelImageBillingMismatch    = errors.New(ErrorMessages[ModelImageBillingMismatch])
+	ErrModelMaxOutputExceedsContext = errors.New(ErrorMessages[ModelMaxOutputExceedsContext])
+	ErrModelTemperatureInvalid      = errors.New(ErrorMessages[ModelTemperatureInvalid])
 
 	ErrUserGroupNotFound       = errors.New(ErrorMessages[UserGroupNotFound])
 	ErrUserGroupNameTaken      = errors.New(ErrorMessages[UserGroupNameTaken])

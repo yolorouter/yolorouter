@@ -130,8 +130,27 @@ type ModelView struct {
 	RunningStatus  string               `json:"running_status"`
 	// SupportsImageInput mirrors the admin's tri-state declaration (nil =
 	// undeclared): whether this model can read images, driving the vision
-	// fallback and strip behaviors in the gateway.
+	// fallback and strip behaviors in the gateway. Deprecated in favour of
+	// InputModalities, which the save path derives this field from; exposed
+	// until the gateway stops reading the column.
 	SupportsImageInput *bool `json:"supports_image_input"`
+	// ContextLength is the admin's declared context window in tokens; nil
+	// means undeclared. Informational — nothing routes on it in this phase.
+	ContextLength *int `json:"context_length"`
+	// InputModalities is what the model accepts as input, in the modality
+	// vocabulary ("text", "image", "audio", "video"). nil means undeclared —
+	// the tri-state the old image-input boolean carried, now in array form.
+	InputModalities []string `json:"input_modalities"`
+	// SupportsTools / SupportsReasoning are the admin's tri-state capability
+	// declarations (nil = undeclared, never "no"). Distinct from the
+	// candidate-level probe flags: these are model-wide and admin-declared.
+	// Informational in this phase.
+	SupportsTools     *bool `json:"supports_tools"`
+	SupportsReasoning *bool `json:"supports_reasoning"`
+	// Temperature is the admin's declared recommended default temperature;
+	// nil means undeclared. Model metadata only — it never takes part in the
+	// request-passthrough temperature the gateway forwards upstream.
+	Temperature *float64 `json:"temperature"`
 	// OutputModalities is what the model produces, in the gateway's modality
 	// vocabulary ("text", "image"). Drives which endpoints the model answers:
 	// a request whose endpoint serves a modality the row does not declare is
@@ -263,10 +282,18 @@ func buildCandidateView(c model.ModelCandidate, providerName string, blockedBy s
 func (s *ModelService) toModelView(m model.Model, candidates []model.ModelCandidate, keysByProvider map[uint][]model.ProviderKey) ModelView {
 	views := s.buildCandidateViews(candidates, keysByProvider)
 	return ModelView{
+		//nolint:staticcheck // SA1019: the API keeps exposing the deprecated
+		// column through the transition; the console reads it until it moves
+		// to input_modalities.
 		ID: m.ID, Name: m.Name, ManagementStatus: m.ManagementStatus, SupportsImageInput: m.SupportsImageInput,
-		OutputModalities: m.OutputModalityList(),
-		SchedulingMode:   m.SchedulingMode.Normalized(),
-		RunningStatus:    computeModelRunningStatus(m.SchedulingMode, views), Candidates: views, CreatedAt: m.CreatedAt,
+		ContextLength:     m.ContextLength,
+		InputModalities:   m.InputModalityList(),
+		SupportsTools:     m.SupportsTools,
+		SupportsReasoning: m.SupportsReasoning,
+		Temperature:       m.Temperature,
+		OutputModalities:  m.OutputModalityList(),
+		SchedulingMode:    m.SchedulingMode.Normalized(),
+		RunningStatus:     computeModelRunningStatus(m.SchedulingMode, views), Candidates: views, CreatedAt: m.CreatedAt,
 	}
 }
 
@@ -995,6 +1022,27 @@ func (s *ModelService) TestAndCreateCandidate(ctx context.Context, modelID uint,
 
 	requestedEnable := input.ManagementStatus == model.ModelCandidateStatusEnabled
 
+	// The consistency rules are asserted BEFORE the probe runs: a save the
+	// rules would refuse regardless of the probe's outcome must not spend
+	// upstream requests learning it. requestedEnable is the premise — a save
+	// asking for an enabled row is judged against the enabled rules even
+	// though a failing probe would have left nothing stored. Resolving the
+	// billing declaration here also surfaces its own rejections before the
+	// probe rather than after it.
+	billingMode, tiersJSON, _, _, err := resolveBillingDeclaration(input.BillingMode, input.ImagePricingTiers, input.VideoPricingTiers, input.AudioUnitPrice)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateCandidateSaveConsistency(modelID, 0, candidateDeclaration{
+		providerID:     input.ProviderID,
+		enabled:        requestedEnable,
+		billingMode:    billingMode,
+		imageTiersJSON: tiersJSON,
+		maxOutput:      input.MaxOutput,
+	}); err != nil {
+		return nil, err
+	}
+
 	report, err := s.probeCandidateMapping(ctx, modelID, input.ProviderID, providerModelName)
 	if err != nil {
 		// The probe could not run at all — no verified key on the provider yet, or
@@ -1182,6 +1230,19 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 	}
 	billingMode, tiersJSON, videoTiersJSON, audioPrice, err := resolveBillingDeclaration(input.BillingMode, input.ImagePricingTiers, input.VideoPricingTiers, input.AudioUnitPrice)
 	if err != nil {
+		return nil, err
+	}
+	// The row inserts disabled, but the save's requested target is what the
+	// consistency rules judge it by: an enable request whose row would violate
+	// the pair's invariants is refused outright rather than stored and left
+	// for the probe to (possibly) enable into a contradiction.
+	if err := s.validateCandidateSaveConsistency(modelID, 0, candidateDeclaration{
+		providerID:     input.ProviderID,
+		enabled:        input.ManagementStatus == model.ModelCandidateStatusEnabled,
+		billingMode:    billingMode,
+		imageTiersJSON: tiersJSON,
+		maxOutput:      input.MaxOutput,
+	}); err != nil {
 		return nil, err
 	}
 	candidate := &model.ModelCandidate{
@@ -1678,6 +1739,21 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 		billingMode, imageTiersJSON, videoTiersJSON, audioPrice = resolvedMode, resolvedTiers, resolvedVideoTiers, resolvedAudioPrice
 	}
 
+	// The consistency rules span both sides of the model/candidate pair, so a
+	// candidate save re-reads the model and the siblings and re-asserts them
+	// against THIS candidate's effective post-save state — before anything is
+	// written and before a probe is spent on a save that would be refused
+	// regardless of the probe's outcome.
+	if err := s.validateCandidateSaveConsistency(candidate.ModelID, id, candidateDeclaration{
+		providerID:     candidate.ProviderID,
+		enabled:        targetEnabled,
+		billingMode:    billingMode,
+		imageTiersJSON: imageTiersJSON,
+		maxOutput:      maxOutput,
+	}); err != nil {
+		return nil, err
+	}
+
 	// One transaction for the status instruction and the field update, so a
 	// failure on either write rolls back both — the caller's error response
 	// then describes the whole edit, not a half-applied one where the disable
@@ -2017,6 +2093,24 @@ type UpdateModelInput struct {
 	// that omits it leaves the stored declaration alone.
 	OutputModalitiesSet bool
 	OutputModalities    []string
+	// The capability-metadata declarations follow the ImageInput convention:
+	// a set-flag paired with a tri-state value, nil with the flag set meaning
+	// "clear back to undeclared".
+	ContextLengthSet     bool
+	ContextLength        *int
+	SupportsToolsSet     bool
+	SupportsTools        *bool
+	SupportsReasoningSet bool
+	SupportsReasoning    *bool
+	TemperatureSet       bool
+	Temperature          *float64
+	// InputModalitiesSet marks the input declaration as submitted. Unlike the
+	// output list, an empty submitted list is legal and means "clear back to
+	// undeclared" — input has a meaningful no-declaration state. A submitted
+	// declaration also supersedes ImageInput in the same request: the array
+	// is authoritative and the deprecated boolean is derived from it.
+	InputModalitiesSet bool
+	InputModalities    []string
 }
 
 // UpdateModel saves the model's name and every submitted optional field in
@@ -2048,6 +2142,17 @@ func (s *ModelService) UpdateModel(id uint, in UpdateModelInput, now time.Time) 
 		}
 		outputModalities = out
 	}
+	// The input list carries a tri-state, so an empty submitted list is the
+	// legal "clear back to undeclared" rather than the rejection it is on
+	// the output side; the canonical form of undeclared is the empty string.
+	inputModalities := ""
+	if in.InputModalitiesSet {
+		out, err := model.CanonicalInputModalities(in.InputModalities)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errcode.ErrModelInputModalityInvalid, err)
+		}
+		inputModalities = out
+	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		m, err := repository.FindModelByID(tx, id)
 		if err != nil {
@@ -2056,11 +2161,27 @@ func (s *ModelService) UpdateModel(id uint, in UpdateModelInput, now time.Time) 
 			}
 			return err
 		}
+		// The consistency rules run before the write, inside the same
+		// transaction, against the candidate set this very transaction is
+		// about to leave behind — a rejected PATCH persists nothing.
+		if err := s.validateModelSaveConsistency(tx, *m, in, outputModalities); err != nil {
+			return err
+		}
 		update := repository.ModelUpdate{
 			Name: in.Name, Status: m.ManagementStatus,
 			ImageInputSet: in.ImageInputSet, ImageInput: in.ImageInput,
 			SchedulingMode:      in.SchedulingMode,
 			OutputModalitiesSet: in.OutputModalitiesSet, OutputModalities: outputModalities,
+			ContextLengthSet:     in.ContextLengthSet,
+			ContextLength:        in.ContextLength,
+			SupportsToolsSet:     in.SupportsToolsSet,
+			SupportsTools:        in.SupportsTools,
+			SupportsReasoningSet: in.SupportsReasoningSet,
+			SupportsReasoning:    in.SupportsReasoning,
+			TemperatureSet:       in.TemperatureSet,
+			Temperature:          in.Temperature,
+			InputModalitiesSet:   in.InputModalitiesSet,
+			InputModalities:      inputModalities,
 		}
 		if err := repository.UpdateModel(tx, id, update, now); err != nil {
 			return err

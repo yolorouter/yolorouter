@@ -34,6 +34,11 @@
       </template>
     </PageHeader>
 
+    <!-- The admin-declared capability metadata (context length, modalities,
+         tri-states, temperature) and the candidate max-output ceiling —
+         read-only summary; editing lives in the edit modal. -->
+    <ModelCapabilityCard :model="modelData" class="model-detail__capability-card" />
+
     <n-tabs v-model:value="activeTab" type="line" animated>
       <n-tab-pane name="route" :tab="t('models.tabRoute')">
         <div v-if="!isMobile" class="route-toolbar">
@@ -135,6 +140,7 @@ import { getModelImpact, type BillingMode, type Model, type ModelCandidate, type
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import CandidateEditModal from '../../components/models/CandidateEditModal.vue'
+import ModelCapabilityCard from '../../components/models/ModelCapabilityCard.vue'
 import ModelEditModal from '../../components/models/ModelEditModal.vue'
 import DeleteModelModal from '../../components/models/DeleteModelModal.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
@@ -564,6 +570,10 @@ const candidateColumns = computed<DataTableColumns<ModelCandidate>>(() => {
   display: flex;
   justify-content: flex-end;
   margin-bottom: var(--space-4);
+}
+
+.model-detail__capability-card {
+  margin-bottom: var(--space-6);
 }
 
 .candidate-filter {

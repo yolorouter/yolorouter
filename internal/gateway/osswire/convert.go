@@ -92,10 +92,13 @@ func ProviderKeys(ks []model.ProviderKey) []rows.ProviderKey {
 // Model copies the model row's routing face.
 func Model(m *model.Model) rows.Model {
 	return rows.Model{
-		ID:                 m.ID,
-		Name:               m.Name,
-		ManagementStatus:   m.ManagementStatus,
-		SchedulingMode:     rows.SchedulingMode(m.SchedulingMode),
+		ID:               m.ID,
+		Name:             m.Name,
+		ManagementStatus: m.ManagementStatus,
+		SchedulingMode:   rows.SchedulingMode(m.SchedulingMode),
+		//nolint:staticcheck // SA1019: the gateway row still carries the
+		// deprecated column — the vision-fallback hot path reads it — and the
+		// save path keeps it derived from input_modalities until the switch.
 		SupportsImageInput: m.SupportsImageInput,
 		OutputModalities:   m.OutputModalities,
 		CreatedAt:          m.CreatedAt,
