@@ -7,6 +7,119 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Every administrative action now leaves an audit trail. Each admin
+  write — and the sensitive reads — lands one append-only row: who
+  (an identity snapshot that survives logout and deletion), from
+  where (source IP, user agent), which request, what action, and a
+  detail document run through a dual-layer redaction pipeline
+  (field-name blacklist plus value sniffing for sk-/ghp_/AKIA-style
+  secrets, JWTs, bcrypt hashes, and credential-bearing URLs) with
+  passwords never captured in any form; typed settings saves record
+  changed fields only, and login denials and lockouts are explicit
+  events of their own. The console page (System Settings group)
+  filters across six dimensions, exports CSV (BOM header,
+  formula-injection-sanitized cells), and hosts the retention
+  setting — 180 days by default, 0 keeps forever — drained by the
+  same bounded-sweep machinery as request logs. Provider keys gain a
+  last-4 suffix column (startup-backfilled for legacy rows) so lists
+  and audit rows can name a key without its plaintext.
+
+- Provider keys can be revealed and copied again, without the console
+  ever holding the plaintext. A new reveal endpoint — admin session
+  required, rate-limited to ten per minute per admin account and
+  answered before any database work when over — returns the plaintext
+  exactly once with no-store caching, while the audit trail records
+  the action carrying only the key's last-4 suffix. The console's
+  copy actions hand the plaintext straight to the clipboard: never a
+  ref, never a store, never the DOM.
+
+- Upstream traffic can ride a proxy. A two-level egress
+  configuration: a global setting (off / follow the system
+  environment / custom URL — http, https, socks5, socks5h, with
+  reserved-range targets validated and rejected) plus a per-provider
+  override that empties to inherit. The main relay, provider
+  probing, and async video polling all resolve through it —
+  provider-explicit beats global, probing rides the same path as
+  traffic — while update-check and OAuth fetches deliberately stay
+  direct. Resolution is dynamic: a config change takes effect within
+  30 seconds without a restart (system mode reads the process
+  environment, so container env changes need one). Setting changes
+  leave an audit row with the URL redacted, and the provider list
+  and detail surface a warning glyph whenever a custom proxy is in
+  effect. The READMEs gain an Upstream proxy section covering all of
+  it.
+
+- A model comparison playground, in the console. Pick one of your
+  own API keys and up to four models, write one prompt (a vision
+  image can ride along on the text lane), and run them side by side:
+  text columns stream live over SSE with per-column cancel, image
+  lanes render inline media, audio synthesizes with a voice picker
+  and playback, and video submits through the async task bridge with
+  stop-and-wait. Each column head settles with its own figures —
+  cost (per-image, per-character, or per-second as the modality
+  bills), duration, usage. Runs ride the console's session and your
+  key ownership — no key material changes hands — and playground
+  requests show up in the request log with their own source filter
+  and badge. The bench/canvas layout keeps run controls pinned left
+  while the equal-split grid folds gracefully down to phones.
+
+- Models can declare what they can do. Five capability fields —
+  context length, input modalities, tool support, reasoning support,
+  and a recommended temperature — editable in the model dialog (with
+  32K/128K/200K/1M context presets), shown on a detail-page card
+  marked informational, and mirrored onto the legacy image-input
+  switch the vision-fallback path reads. Saves cross-validate the
+  declarations where paths meet: an image-output model's enabled
+  candidates must carry per-image pricing, a candidate's max output
+  may not exceed the declared context window, and temperature stays
+  inside [0, 2].
+
+- Those declarations can now be enforced, switch by switch. Six
+  system settings (all shipped off) on the General settings page
+  gate the wire: a context-limit pre-gate refuses requests whose
+  estimated input exceeds the declared window (plus a configurable
+  safety margin) with a 413 naming the model and its window; strict
+  refusals turn declared-false tools or reasoning into 400s at the
+  door — asked once per request, never re-asked across failover
+  candidates — each in its protocol's own dialect; the gentler
+  reasoning-clear switch strips reasoning configuration per landing
+  instead of refusing, so a failover target is cleared like the
+  first route; and temperature default/force switches inject or
+  override the caller's value from the declared recommendation (a
+  Claude body carrying thinking configuration makes the whole policy
+  stand down). Every change to the card lands in the audit log with
+  a seven-field diff.
+
+- Session replay grows up, replacing the per-request transcript page
+  entirely. The tool-session detail now replays the whole session as
+  one continuous conversation: an aggregate info bar; one collapsed
+  system-prompt group whose per-request prompts fetch on demand, so
+  a volatile prompt no longer floods the first screens; real user
+  input as the only user-side bubbles; tool calls with highlighted
+  arguments and results as cards; injected IDE context split out and
+  folded to counts; resent prompts folded; and reasoning collapsed
+  inside its reply — every turn signed with model, duration, tokens,
+  and failure tag, deep-linkable per turn (#req-…), one hop from the
+  full request log. Scale arrived with it: replay turns are derived
+  at write time into turn rows (history backfilled at startup,
+  cascade-deleted with retention), transcripts page over cursor
+  windows under a byte budget, the page lazy-loads older and newer
+  blocks with scroll compensation, and API responses compress with
+  gzip engine-wide — a 72-request, ~5 MB session renders its first
+  screen in ~16 ms.
+
+- The mapping tables gain table manners. The provider-detail and
+  model-detail candidate tables are now one shared component with a
+  keyword search and a verification-status filter, row actions
+  behind the same dropdown menu the models page uses — edit and
+  delete on every row, a last-routable-candidate consequence warning
+  before delete — and a batch-delete runner capped at three
+  concurrent requests that reports partial failures by row.
+
 ## [0.2.7] - 2026-10-03
 
 ### Added
