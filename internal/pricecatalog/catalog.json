@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-10-02",
+  "updated_at": "2026-10-10",
   "currency": "CNY",
   "unit": "per_million_tokens",
   "prices": {
@@ -464,12 +464,6 @@
         "cache_write": null,
         "cache_read": null
       },
-      "qwen3-max": {
-        "input": 2.5,
-        "output": 10,
-        "cache_write": null,
-        "cache_read": null
-      },
       "qwen-max": {
         "input": 2.4,
         "output": 9.6,
@@ -518,51 +512,9 @@
         "cache_write": null,
         "cache_read": null
       },
-      "qwen-turbo": {
-        "input": 0.3,
-        "output": 0.6,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "qwen-long": {
-        "input": 0.5,
-        "output": 2,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "qwen-math-plus": {
-        "input": 4,
-        "output": 12,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "qwen-math-turbo": {
-        "input": 2,
-        "output": 6,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "qwen3-coder-plus": {
-        "input": 4,
-        "output": 16,
-        "cache_write": null,
-        "cache_read": null
-      },
       "qwen3-coder-flash": {
         "input": 1,
         "output": 4,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "qwen-coder-plus": {
-        "input": 3.5,
-        "output": 7,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "qwen-coder-turbo": {
-        "input": 2,
-        "output": 6,
         "cache_write": null,
         "cache_read": null
       },
@@ -581,12 +533,6 @@
       "qwen-mt-lite": {
         "input": 0.6,
         "output": 1.6,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "qwen-mt-turbo": {
-        "input": 0.7,
-        "output": 1.95,
         "cache_write": null,
         "cache_read": null
       },
@@ -650,12 +596,6 @@
         "cache_write": null,
         "cache_read": null
       },
-      "qwen3-32b": {
-        "input": 2,
-        "output": 8,
-        "cache_write": null,
-        "cache_read": null
-      },
       "qwen3-30b-a3b": {
         "input": 0.75,
         "output": 3,
@@ -671,12 +611,6 @@
       "qwen3-8b": {
         "input": 0.5,
         "output": 2,
-        "cache_write": null,
-        "cache_read": null
-      },
-      "qwen3-coder-next": {
-        "input": 1,
-        "output": 4,
         "cache_write": null,
         "cache_read": null
       },

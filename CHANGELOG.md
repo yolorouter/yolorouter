@@ -120,6 +120,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before delete — and a batch-delete runner capped at three
   concurrent requests that reports partial failures by row.
 
+- The embedded price-catalog seed re-syncs from the live catalog:
+  dashscope retired eleven qwen-family listings (qwen-turbo,
+  qwen-long, qwen3-max, the coder/math/mt variants), so the shipped
+  fallback prices drop the same eleven.
+
 ## [0.2.7] - 2026-10-03
 
 ### Added
