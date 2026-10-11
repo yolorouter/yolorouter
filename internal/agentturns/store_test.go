@@ -468,11 +468,17 @@ func turnsFixtureSession(t *testing.T, db *gorm.DB, sess string) {
 	const b1 = `{"system":"S-one","messages":[{"role":"user","content":"q1"}]}`
 	const b2 = `{"system":"S-one","messages":[{"role":"user","content":"q1"},{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"path":"/a"}}]},{"role":"user","content":"q2"}]}`
 	seedTurnFixtureRow(t, db, sess, "tf-1", base)
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "tf-1", RequestBody: b1})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "tf-1", RequestBody: b1}); err != nil {
+		t.Fatalf("body tf-1: %v", err)
+	}
 	seedTurnFixtureRow(t, db, sess, "tf-2", base.Add(time.Minute))
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "tf-2", RequestBody: b2, ResponseBody: `{"content":[{"type":"text","text":"r2"}]}`})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "tf-2", RequestBody: b2, ResponseBody: `{"content":[{"type":"text","text":"r2"}]}`}); err != nil {
+		t.Fatalf("body tf-2: %v", err)
+	}
 	seedTurnFixtureRow(t, db, sess, "tf-3", base.Add(2*time.Minute))
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "tf-3", RequestBody: b2, ResponseBody: `{"content":[{"type":"text","text":"r3"}]}`})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "tf-3", RequestBody: b2, ResponseBody: `{"content":[{"type":"text","text":"r3"}]}`}); err != nil {
+		t.Fatalf("body tf-3: %v", err)
+	}
 }
 
 // stripTurnIDs strips the autoincrement column so live-written and
@@ -557,12 +563,16 @@ func TestBackfillRoundCandidateRules(t *testing.T) {
 	// One fully processed request: the next round must not name it.
 	const b1 = `{"system":"S","messages":[{"role":"user","content":"q1"}]}`
 	pk1 := seedTurnFixtureRow(t, db, sess, "c-1", base)
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "c-1", RequestBody: b1})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "c-1", RequestBody: b1}); err != nil {
+		t.Fatalf("body c-1: %v", err)
+	}
 	fixtureWrite(t, db, sess, "c-1", pk1, base, b1, "", "")
 
 	// One pending-only request: a candidate.
 	pk2 := seedTurnFixtureRow(t, db, sess, "c-2", base.Add(time.Minute))
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "c-2", RequestBody: b1})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "c-2", RequestBody: b1}); err != nil {
+		t.Fatalf("body c-2: %v", err)
+	}
 	db.Create(&model.AgentSessionTurn{
 		AgentSessionID: sess, RequestID: "c-2", RequestPK: pk2, RequestCreatedAt: base.Add(time.Minute),
 		Seq: PendingSeq, EventType: EventPending,
@@ -572,7 +582,9 @@ func TestBackfillRoundCandidateRules(t *testing.T) {
 	// before a deploy backfilled it): still a candidate.
 	const b2 = `{"system":"S","messages":[{"role":"user","content":"q1"},{"role":"assistant","content":"r1"},{"role":"user","content":"q2"}]}`
 	pk3 := seedTurnFixtureRow(t, db, sess, "c-3", base.Add(2*time.Minute))
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "c-3", RequestBody: b2})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "c-3", RequestBody: b2}); err != nil {
+		t.Fatalf("body c-3: %v", err)
+	}
 	db.Create(&model.AgentSessionTurn{
 		AgentSessionID: sess, RequestID: "c-3", RequestPK: pk3, RequestCreatedAt: base.Add(2 * time.Minute),
 		Seq: SupplementSeqBase, EventType: EventAssistantReply,
@@ -581,7 +593,9 @@ func TestBackfillRoundCandidateRules(t *testing.T) {
 
 	// One untouched request: a candidate.
 	pk4 := seedTurnFixtureRow(t, db, sess, "c-4", base.Add(3*time.Minute))
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "c-4", RequestBody: b2, ResponseBody: `{"content":[{"type":"text","text":"r"}]}`})
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "c-4", RequestBody: b2, ResponseBody: `{"content":[{"type":"text","text":"r"}]}`}); err != nil {
+		t.Fatalf("body c-4: %v", err)
+	}
 	_ = pk4
 
 	// Drain: exactly the three candidates are named (their own batches
@@ -645,9 +659,14 @@ func TestFetchPrevRequestOrdersByCreatedAtThenID(t *testing.T) {
 	pk1 := seedTurnFixtureRow(t, db, sess, "o-1", base)
 	pk2 := seedTurnFixtureRow(t, db, sess, "o-2", base)
 	pk3 := seedTurnFixtureRow(t, db, sess, "o-3", base.Add(time.Second))
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "o-1", RequestBody: `{"messages":[{"role":"user","content":"1"}]}`})
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "o-2", RequestBody: `{"messages":[{"role":"user","content":"2"}]}`})
-	repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "o-3", RequestBody: `{"messages":[{"role":"user","content":"3"}]}`})
+	for _, b := range []struct {
+		id  string
+		req string
+	}{{"o-1", `{"messages":[{"role":"user","content":"1"}]}`}, {"o-2", `{"messages":[{"role":"user","content":"2"}]}`}, {"o-3", `{"messages":[{"role":"user","content":"3"}]}`}} {
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: b.id, RequestBody: b.req}); err != nil {
+			t.Fatalf("body %s: %v", b.id, err)
+		}
+	}
 
 	prev, err := fetchPrevRequest(db, sess, base.Add(time.Second), pk3)
 	if err != nil || prev == nil || prev.RequestID != "o-2" || prev.RequestPK != pk2 {

@@ -34,7 +34,7 @@ func assertCapabilitySeed(t *testing.T, db *sql.DB, tree string, wantPresent boo
 	if err != nil {
 		t.Fatalf("%s tree: read capability rows: %v", tree, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	got := map[string]struct {
 		value   string
 		version int64

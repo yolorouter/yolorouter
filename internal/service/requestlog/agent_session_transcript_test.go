@@ -50,7 +50,7 @@ func liveWriteTurns(t *testing.T, db *gorm.DB, rows []model.RequestLog) {
 		if body != nil {
 			reqBody, respBody, streamPath = body.RequestBody, body.ResponseBody, body.StreamBodyPath
 		}
-		agentturns.RecordTurnsForRequest(db, agentturns.RequestInput{
+		if err := agentturns.RecordTurnsForRequest(db, agentturns.RequestInput{
 			SessionID:        derefString(rows[i].AgentSessionID),
 			RequestID:        rows[i].RequestID,
 			RequestPK:        rows[i].ID,
@@ -58,7 +58,9 @@ func liveWriteTurns(t *testing.T, db *gorm.DB, rows []model.RequestLog) {
 			RequestBody:      reqBody,
 			HasInlineReply:   respBody != "",
 			HasStreamCapture: streamPath != "",
-		})
+		}); err != nil {
+			t.Fatalf("record turns for %s: %v", rows[i].RequestID, err)
+		}
 	}
 }
 

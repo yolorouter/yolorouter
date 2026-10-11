@@ -389,7 +389,6 @@ func TestDeriveTurnEventsUserInputDedup(t *testing.T) {
 type deriveCase struct {
 	name     string
 	ownBody  string
-	prevBody string
 	prev     *PrevBody // nil = first request of the session
 	baseline SystemBaseline
 	// userBase is the session's duplicate-input state entering the own
