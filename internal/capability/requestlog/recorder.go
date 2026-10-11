@@ -16,6 +16,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/agentturns"
 	"github.com/yolorouter/yolorouter/internal/fact"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
@@ -194,6 +195,30 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 	if err := repository.UpsertRequestLogBody(r.db.WithContext(ctx), bodyRow); err != nil {
 		logger.Error("gateway: write request log body failed",
 			zap.String("request_id", view.RequestID()), zap.Error(err))
+	}
+
+	// The persisted turn store's write: the session's replay structure is
+	// derived HERE, at record time, so the transcript endpoints read
+	// finished turns instead of re-assembling the whole session on every
+	// view. Only requests the recognizer attributed to a tool session have
+	// a turn half. A failure degrades inside the engine (a pending marker,
+	// or nothing when even that fails) and is logged here — the audit rows
+	// above are already committed and must never be rolled back because
+	// the turn classification could not be stored.
+	if session := view.AgentSessionID(); session != "" {
+		err := agentturns.RecordTurnsForRequest(r.db.WithContext(ctx), agentturns.RequestInput{
+			SessionID:        session,
+			RequestID:        view.RequestID(),
+			RequestPK:        row.ID,
+			CreatedAt:        row.CreatedAt,
+			RequestBody:      string(view.RequestBody()),
+			HasInlineReply:   len(view.ResponseBody()) > 0,
+			HasStreamCapture: view.StreamBodyPath() != "",
+		})
+		if err != nil {
+			logger.Warn("gateway: write agent session turns failed",
+				zap.String("request_id", view.RequestID()), zap.Error(err))
+		}
 	}
 }
 

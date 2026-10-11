@@ -49,10 +49,12 @@ func TestMemberScopeRouteConformance(t *testing.T) {
 		// callers' traffic by construction, same classification as the
 		// request-log audit it derives from. The transcript subroute carries
 		// the whole deduplicated conversation — the strongest reading of the
-		// same cross-account concern.
+		// same cross-account concern — and its /system subroute carries the
+		// raw system-prompt text of the same conversations.
 		"/api/admin/agent-sessions",
 		"/api/admin/agent-sessions/:sessionId",
 		"/api/admin/agent-sessions/:sessionId/transcript",
+		"/api/admin/agent-sessions/:sessionId/transcript/system",
 		"/api/admin/models",
 		"/api/admin/models/:id",
 		"/api/admin/models/:id/impact",

@@ -2,7 +2,7 @@
 // RequestLogService the request-log views use; all SQL lives in the
 // repository, all composition in the service.
 //
-// Three routes, all admin-only (registered on the protected group, and pinned
+// Four routes, all admin-only (registered on the protected group, and pinned
 // by the member-scope route conformance test like every other admin GET):
 //
 //   - GET /api/admin/agent-sessions            paginated aggregate list,
@@ -11,12 +11,17 @@
 //     tool session, chronological
 //   - GET /api/admin/agent-sessions/:sessionId/transcript
 //     the session's deduplicated replay transcript (aggregate + system
-//     timeline + one block per request), assembled by the service over the
-//     pure replay pass
+//     timeline metadata + one cursor-paginated page of blocks), paged by
+//     the service out of the persisted turn store the write path keeps
+//   - GET /api/admin/agent-sessions/:sessionId/transcript/system
+//     the system-prompt raw text: the whole deduplicated timeline (no
+//     params), or the single value in effect at one request
+//     (?request=<request_id>, the per-block on-expand fetch)
 package handler
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -28,8 +33,11 @@ import (
 
 // GetAgentSessions handles GET /api/admin/agent-sessions — one aggregate row
 // per tool session, most recent activity first, server-side paginated.
-// Reuses parseAPIKeyPagination (1-indexed, default 20, max 200) since the
-// pagination contract is identical across all paginated admin endpoints.
+// Reuses parseAPIKeyPagination (1-indexed, default 20, max 200) — the shared
+// page/page_size contract of the offset-paginated list endpoints. Note this
+// is no longer "every" paginated endpoint's contract: the transcript route
+// below deliberately deviates with cursor pagination (see
+// GetAgentSessionTranscript for the declared deviation).
 func GetAgentSessions(svc *requestlog.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		page, pageSize := parseAPIKeyPagination(c)
@@ -75,11 +83,36 @@ func GetAgentSessionDetail(svc *requestlog.RequestLogService) gin.HandlerFunc {
 }
 
 // GetAgentSessionTranscript handles GET
-// /api/admin/agent-sessions/:sessionId/transcript — the whole session replay
-// in one payload (session aggregate, deduplicated system timeline, one block
-// per request), so the replay page needs a single fetch instead of per-request
-// round trips. An unknown session id answers the domain 404 envelope, the
-// same convention the detail endpoint holds.
+// /api/admin/agent-sessions/:sessionId/transcript — the session replay as a
+// cursor-paginated payload: the session aggregate and system timeline
+// METADATA arrive whole (the header bar's numbers are session-wide, the
+// system raw text is fetched from /transcript/system on expand), while the
+// blocks arrive one page at a time.
+//
+// DEVIATION FROM THE UNIFIED PAGINATION CONTRACT: this endpoint uses
+// cursor + byte-budget pagination, NOT the page/page_size offset contract
+// parseAPIKeyPagination serves. Offset semantics cannot express "continue
+// toward older from where I stopped" or "start at this anchor block" — both
+// of which the replay page needs.
+//
+// Query parameters:
+//
+//   - limit: block-count cap. Default 20, max 200; anything non-numeric,
+//     non-positive, or over 200 silently falls back to 20 (the same
+//     lenient-fallback precedent the page/page_size params set).
+//   - before: block cursor (request_id) — the blocks strictly OLDER than the
+//     cursor (exclusive). The upscroll continuation.
+//   - after: block cursor (request_id) — the blocks from the cursor ONWARD
+//     (inclusive). The #req-<id> anchor entry and the toward-newer
+//     continuation share it.
+//   - No cursor: the latest blocks (the first screen lands on the newest
+//     turn).
+//   - A cursor that names no block of the session answers an empty page
+//     with both has_more flags false (a stale deep link must not explode).
+//   - before and after together: 400 ParamError — one call pages one way.
+//
+// An unknown session id answers the domain 404 envelope, the same convention
+// the detail endpoint holds.
 func GetAgentSessionTranscript(svc *requestlog.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sessionID := c.Param("sessionId")
@@ -87,7 +120,24 @@ func GetAgentSessionTranscript(svc *requestlog.RequestLogService) gin.HandlerFun
 			response.ParamError(c, "sessionId is required")
 			return
 		}
-		transcript, err := svc.GetAgentSessionTranscript(sessionID)
+		before := c.Query("before")
+		after := c.Query("after")
+		if before != "" && after != "" {
+			response.ParamError(c, "before and after cannot be combined")
+			return
+		}
+		// A non-numeric limit stays 0; the slicer normalizes 0 (and any
+		// out-of-range value) to the default — the boundary rule lives in
+		// one place.
+		limit := 0
+		if v, err := strconv.Atoi(c.Query("limit")); err == nil {
+			limit = v
+		}
+		transcript, err := svc.GetAgentSessionTranscript(sessionID, requestlog.AgentSessionTranscriptPage{
+			Limit:  limit,
+			Before: before,
+			After:  after,
+		})
 		if err != nil {
 			if errors.Is(err, errcode.ErrAgentSessionNotFound) {
 				response.NotFound(c, errcode.AgentSessionNotFound, errcode.GetMessage(errcode.AgentSessionNotFound))
@@ -97,5 +147,41 @@ func GetAgentSessionTranscript(svc *requestlog.RequestLogService) gin.HandlerFun
 			return
 		}
 		response.Success(c, transcript)
+	}
+}
+
+// GetAgentSessionTranscriptSystem handles GET
+// /api/admin/agent-sessions/:sessionId/transcript/system — the
+// system-prompt raw text, fetched when a collapsed system row is expanded.
+// Two forms share the route:
+//
+//   - no params: the full deduplicated timeline with its raw values,
+//     index-aligned with the transcript's system metadata list (both come
+//     from the same assembly) — the export/back-compat form;
+//   - ?request=<request_id>: the single value that was in effect at that
+//     request (the per-block expansion fetch — a block's own prompt row
+//     resolves through the same chronological walk, so the two never
+//     disagree). An id that names no request of the session answers the
+//     empty timeline, the lenient convention the transcript cursors set.
+//
+// An unknown session id answers the domain 404 envelope, like the
+// transcript route.
+func GetAgentSessionTranscriptSystem(svc *requestlog.RequestLogService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		sessionID := c.Param("sessionId")
+		if sessionID == "" {
+			response.ParamError(c, "sessionId is required")
+			return
+		}
+		system, err := svc.GetAgentSessionTranscriptSystemAtRequest(sessionID, c.Query("request"))
+		if err != nil {
+			if errors.Is(err, errcode.ErrAgentSessionNotFound) {
+				response.NotFound(c, errcode.AgentSessionNotFound, errcode.GetMessage(errcode.AgentSessionNotFound))
+				return
+			}
+			response.Error(c, errcode.InternalError, errcode.GetMessage(errcode.InternalError))
+			return
+		}
+		response.Success(c, system)
 	}
 }

@@ -1,13 +1,20 @@
-// Replay assembly for tool sessions: the pure dedup pass that turns one
-// session's chronological request sequence into a replay transcript — one
-// block per request carrying ONLY what that request newly contributed (its
-// new caller-side messages plus its own assistant reply), so a long
-// session reads as one continuous conversation instead of N copies of an
-// ever-growing history. No storage, no clock, no error surface: every
-// degraded input (unparseable body, capped body, missing capture) degrades
-// to a well-shaped block so a single bad row can never take the whole
-// replay down.
-package requestlog
+// Package agentturns owns the persisted turn store for tool sessions: the
+// replay assembly semantics, the write-time derivation that classifies
+// each request's contribution into event rows, the storage engine that
+// writes and reads those rows, and the startup backfill that derives
+// history written before the store existed.
+//
+// This file holds the pure replay pass — the single source of the assembly
+// semantics. It predates the turn store (it was the whole read path when
+// the transcript was assembled on every view) and survives the storage
+// rework in two roles: it is the table-tested SPECIFICATION the write-time
+// derivation must reproduce event for event (the parity tests diff the two
+// against the same fixtures), and it supplies the parse/diff helpers both
+// halves share. No storage, no clock, no error surface: every degraded
+// input (unparseable body, capped body, missing capture) degrades to a
+// well-shaped block so a single bad row can never take the whole replay
+// down.
+package agentturns
 
 import (
 	"encoding/json"
@@ -25,6 +32,14 @@ const (
 	ReplaySourceResend = "resend"
 	ReplaySourceNone   = "none"
 )
+
+// MaxInlineBodyBytes is the shared inline cap for captured bodies: the
+// stored column keeps the full text, every INLINE copy read for display is
+// cut here, and — the half this package owns — a request body over the cap
+// parses to no messages at all, on the read paths and the write-time
+// derivation alike. One constant, one owner: the write engine's degradation
+// and the transcript reader's truncation flags can never drift apart.
+const MaxInlineBodyBytes = 1 << 20 // 1 MiB
 
 // AgentSessionReplayInput is one request's contribution to the assembly:
 // the row metadata the replay block echoes, plus the three captured text
@@ -54,8 +69,8 @@ type AgentSessionReplayInput struct {
 	ResponseBody          string
 	ResponseBodyTruncated bool
 	// StreamBody is the sent-SSE capture text (merged from disk by the
-	// caller); empty means no capture exists. StreamBodyTruncated marks
-	// the cap.
+	// caller); empty means no capture exists. StreamBodyTruncated marks the
+	// cap.
 	StreamBody          string
 	StreamBodyTruncated bool
 }
@@ -86,13 +101,29 @@ type AgentSessionReplayBlock struct {
 	OutputTokens int       `json:"output_tokens"`
 	DurationMs   int64     `json:"duration_ms"`
 	ProviderName string    `json:"provider_name"`
-	// Added holds this request's NEW caller-side messages as raw JSON
-	// objects: everything after the longest structurally equal prefix
-	// shared with the previous request's messages, minus the assistant and
-	// system roles — the previous turn's reply arrives via Assistant (or as
-	// the next block's resend), and system prompts have their own channel.
-	// An empty array means a pure retry or no new input.
+	// Added holds this request's NEW caller-side input as raw JSON objects:
+	// everything after the longest structurally equal prefix shared with
+	// the previous request's messages, minus the assistant and system
+	// roles, then split at the text-block level (a user message mixing
+	// IDE/system-reminder blocks with human text becomes one element per
+	// injected block plus ONE trailing element that merges every kept
+	// block — see SplitUserMessageForAdded) with resent duplicate user
+	// inputs folded
+	// (the previous request's same NON-EMPTY real text is not repeated; an
+	// empty real text — a pure-image input — never folds, because "" is
+	// every textless message's key, not same-text evidence; see
+	// userInputFolder). The previous turn's reply arrives via Assistant (or
+	// as the next block's resend), and system prompts have their own
+	// channel. An empty array means a pure retry or no new input.
 	Added []any `json:"added"`
+	// System is the system-prompt value IN EFFECT at this request — the
+	// timeline entry this request's prompt resolves to, where a request
+	// whose value equals its predecessor's inherits the last recorded
+	// entry (dedup records a row only on change). Nil means no system
+	// value was in effect (nothing recorded at or before this request).
+	// Metadata only, same contract as the timeline's own entries: the raw
+	// text is a separate on-expand fetch.
+	System *AgentSessionReplaySystemMeta `json:"system,omitempty"`
 	// Assistant is the reply attribution for this turn (the four sources
 	// are documented on AgentSessionReplayAssistant).
 	Assistant AgentSessionReplayAssistant `json:"assistant"`
@@ -114,6 +145,18 @@ type AgentSessionReplaySystem struct {
 	Raw           any    `json:"raw"`
 }
 
+// AgentSessionReplaySystemMeta is the metadata-only half of one system
+// timeline entry — what a payload ships when the raw prompt text stays
+// behind a dedicated fetch (a long session can hold dozens of kilobytes per
+// distinct value). RawLength is the raw value's JSON serialization size in
+// UTF-8 bytes, measured by systemRawSerializedSize, so both halves of the
+// contract speak one number.
+type AgentSessionReplaySystemMeta struct {
+	SeenAtRequest string `json:"seen_at_request"`
+	Truncated     bool   `json:"truncated"`
+	RawLength     int    `json:"raw_length"`
+}
+
 // AssembleAgentSessionReplay turns a session's chronological request
 // sequence into the two replay halves: one block per request, plus the
 // deduplicated system-prompt timeline. The pass runs in three steps over
@@ -125,12 +168,16 @@ type AgentSessionReplaySystem struct {
 //     structurally and no dialect semantics are needed.
 //  2. new_i = messages_i minus the longest structurally equal prefix it
 //     shares with messages_{i-1} (the first request keeps everything).
-//  3. Per request: added_i = new_i minus the assistant and system roles;
-//     assistant_i sources by priority inline > stream > resend > none,
-//     where resend lifts the assistant copies the NEXT request's new
-//     suffix carries (a client resending an unrecorded reply as history);
-//     the system timeline appends a record whenever this request's system
-//     value differs from the last recorded one.
+//  3. Per request: added_i = new_i minus the assistant and system roles,
+//     split into per-block elements (SplitUserMessageForAdded) with
+//     duplicate user inputs folded against the session's running last real
+//     text (userInputFolder); assistant_i sources by priority inline >
+//     stream > resend > none, where resend lifts the assistant copies the
+//     NEXT request's new suffix carries (a client resending an unrecorded
+//     reply as history); the system timeline appends a record whenever
+//     this request's system value differs from the last recorded one, and
+//     the block carries the timeline entry in effect at its request
+//     (System) so the request's own prompt is presentable per block.
 //
 // The filter in step 3 plus the priority in its assistant rule make every
 // assistant message appear exactly once: when the reply was recorded, the
@@ -144,38 +191,49 @@ func AssembleAgentSessionReplay(inputs []AgentSessionReplayInput) (blocks []Agen
 		return blocks, system
 	}
 
-	type replayParsedBody struct {
-		messages  []any
-		system    any
-		hasSystem bool
-	}
 	parsed := make([]replayParsedBody, len(inputs))
 	for i := range inputs {
 		parsed[i].messages, parsed[i].system, parsed[i].hasSystem =
-			parseReplayBody(inputs[i].RequestBody, inputs[i].RequestBodyTruncated)
+			ParseReplayBody(inputs[i].RequestBody, inputs[i].RequestBodyTruncated)
 	}
 
 	// newSuffix[i] is messages_i after the longest structural common prefix
 	// with messages_{i-1} is stripped (all of messages_0 for the first
 	// request, whose prefix is empty by definition).
-	newSuffix := make([][]any, len(inputs))
+	newSuffix := make([][]any, len(parsed))
 	for i := range parsed {
 		var prev []any
 		if i > 0 {
 			prev = parsed[i-1].messages
 		}
-		newSuffix[i] = parsed[i].messages[commonStructPrefixLen(prev, parsed[i].messages):]
+		newSuffix[i] = parsed[i].messages[CommonStructPrefixLen(prev, parsed[i].messages):]
 	}
 
 	var lastSystem any
 	hasLastSystem := false
+	// The effective-entry cursor for the per-block System field: the index
+	// of the timeline entry a request's prompt resolves to (-1 while no
+	// value has been recorded yet). A request whose value equals the last
+	// recorded one keeps the cursor where it is — its effective prompt IS
+	// that entry.
+	systemCursor := -1
+	// The session-wide duplicate-input fold: the last real text KEPT, in
+	// walk order — the same state the write path reads from the session's
+	// last user_input row (see DeriveTurnEvents), so the pass and the
+	// store fold the same messages.
+	userFolder := userInputFolder{}
 	for i := range inputs {
 		in := &inputs[i]
 
 		added := make([]any, 0, len(newSuffix[i]))
 		for _, m := range newSuffix[i] {
-			if role := replayMessageRole(m); role != "assistant" && role != "system" {
-				added = append(added, m)
+			if role := ReplayMessageRole(m); role != "assistant" && role != "system" {
+				for _, el := range SplitUserMessageForAdded(m) {
+					if !userFolder.keep(el) {
+						continue // the resent duplicate of the previous user input
+					}
+					added = append(added, el)
+				}
 			}
 		}
 
@@ -190,8 +248,17 @@ func AssembleAgentSessionReplay(inputs []AgentSessionReplayInput) (blocks []Agen
 				Raw:           parsed[i].system,
 			})
 			lastSystem, hasLastSystem = parsed[i].system, true
+			systemCursor = len(system) - 1
 		}
 
+		var effectiveSystem *AgentSessionReplaySystemMeta
+		if systemCursor >= 0 {
+			effectiveSystem = &AgentSessionReplaySystemMeta{
+				SeenAtRequest: system[systemCursor].SeenAtRequest,
+				Truncated:     system[systemCursor].Truncated,
+				RawLength:     systemRawSerializedSize(system[systemCursor].Raw),
+			}
+		}
 		blocks = append(blocks, AgentSessionReplayBlock{
 			RequestID:      in.RequestID,
 			CreatedAt:      in.CreatedAt,
@@ -203,6 +270,7 @@ func AssembleAgentSessionReplay(inputs []AgentSessionReplayInput) (blocks []Agen
 			DurationMs:     in.DurationMs,
 			ProviderName:   in.ProviderName,
 			Added:          added,
+			System:         effectiveSystem,
 			Assistant:      replayAssistant(in, newSuffix, i),
 			AddedTruncated: in.RequestBodyTruncated,
 		})
@@ -232,7 +300,7 @@ func replayAssistant(in *AgentSessionReplayInput, newSuffix [][]any, i int) Agen
 		}
 	}
 	if i+1 < len(newSuffix) {
-		if copies := replayAssistantMessages(newSuffix[i+1]); len(copies) > 0 {
+		if copies := ReplayAssistantMessages(newSuffix[i+1]); len(copies) > 0 {
 			return AgentSessionReplayAssistant{
 				Source: ReplaySourceResend,
 				Raw:    copies,
@@ -242,14 +310,21 @@ func replayAssistant(in *AgentSessionReplayInput, newSuffix [][]any, i int) Agen
 	return AgentSessionReplayAssistant{Source: ReplaySourceNone}
 }
 
-// parseReplayBody extracts the two replay-relevant halves of one request
+// replayParsedBody is one request body parsed down to its two replay halves.
+type replayParsedBody struct {
+	messages  []any
+	system    any
+	hasSystem bool
+}
+
+// ParseReplayBody extracts the two replay-relevant halves of one request
 // body: the top-level messages array and the system value. A capped body is
 // not the full original and an unparseable one carries no structure at
 // all, so both degrade to "no messages, no system" while the block keeps
 // its metadata. The system value is the Anthropic top-level system field
 // (string or block array) when present, else the OpenAI dialect's
 // role=system messages collected in order.
-func parseReplayBody(body string, truncated bool) (messages []any, systemValue any, hasSystem bool) {
+func ParseReplayBody(body string, truncated bool) (messages []any, systemValue any, hasSystem bool) {
 	if truncated || body == "" {
 		return nil, nil, false
 	}
@@ -265,7 +340,7 @@ func parseReplayBody(body string, truncated bool) (messages []any, systemValue a
 	}
 	var systemMsgs []any
 	for _, m := range messages {
-		if replayMessageRole(m) == "system" {
+		if ReplayMessageRole(m) == "system" {
 			systemMsgs = append(systemMsgs, m)
 		}
 	}
@@ -275,10 +350,10 @@ func parseReplayBody(body string, truncated bool) (messages []any, systemValue a
 	return messages, nil, false
 }
 
-// replayMessageRole returns a message object's role string, or "" when the
+// ReplayMessageRole returns a message object's role string, or "" when the
 // element is not an object or carries no string role — such an element is
 // neither assistant nor system, so it stays in added.
-func replayMessageRole(m any) string {
+func ReplayMessageRole(m any) string {
 	obj, ok := m.(map[string]any)
 	if !ok {
 		return ""
@@ -287,25 +362,25 @@ func replayMessageRole(m any) string {
 	return role
 }
 
-// replayAssistantMessages picks the assistant-role messages out of one
+// ReplayAssistantMessages picks the assistant-role messages out of one
 // request's new suffix, in order — the copies a client resends when it
 // replays a reply our store never recorded as history.
-func replayAssistantMessages(suffix []any) []any {
+func ReplayAssistantMessages(suffix []any) []any {
 	var out []any
 	for _, m := range suffix {
-		if replayMessageRole(m) == "assistant" {
+		if ReplayMessageRole(m) == "assistant" {
 			out = append(out, m)
 		}
 	}
 	return out
 }
 
-// commonStructPrefixLen returns the length of the longest prefix a and b
+// CommonStructPrefixLen returns the length of the longest prefix a and b
 // share under element-wise structural equality (parsed JSON values: maps,
 // slices, strings, float64 numbers, bools). Zero when the first elements
 // already differ; min(len(a), len(b)) when one is a prefix of the other,
 // which is what makes an identical retry produce an empty new suffix.
-func commonStructPrefixLen(a, b []any) int {
+func CommonStructPrefixLen(a, b []any) int {
 	n := len(a)
 	if len(b) < n {
 		n = len(b)

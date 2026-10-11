@@ -144,6 +144,11 @@ func TestCommentsNameOnlyIdentifiersThatExist(t *testing.T) {
 		"checkdone":                   "protocols tree: stale caller name; fix with the next parity sync",
 		"buildterminalusage":          "protocols tree: stale helper name; fix with the next parity sync",
 		"buildmessagedeltapatchusage": "protocols tree: stale helper name; fix with the next parity sync",
+
+		// agentturns' classification table has a read-side mirror in the
+		// frontend tree that pins the same arm set one-to-one; the Go test's
+		// prose points the reader at that file by name.
+		"turnevents": "frontend file name quoted in prose (the read-side classification mirror of agentturns' table)",
 	}
 
 	lowerCamel := regexp.MustCompile(`\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*\b`)

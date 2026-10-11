@@ -17,17 +17,26 @@
 //     plus the startup backfill), and points tools with no session
 //     identifier at the Log Audit page (by its menu name)
 //
-//   detail page (the session replay):
-//   - assembly: one fetch renders the whole replay — the two-line info
-//     bar (tool / session id / request count / from-to clock + elapsed
-//     span; tokens in-out / known cost + unknown marker / success ratio),
-//     the system-prompt timeline as ONE collapsed group (a single summary
-//     line counting first appearance + changes — degenerating to the
-//     plain first-appearance copy when the prompt never changed — that
-//     expands into the per-entry timeline with each entry's first-seen
-//     annotation and truncation mark), and the per-request turns in
-//     chronological order with their metadata signs, failure status tags,
-//     and request-detail links
+//   detail page (the session replay — assembly under the cursor-paginated
+//   contract; the lazy-paging behavior itself has its own file,
+//   AgentSessionDetailPage.lazyload.test.ts):
+//   - assembly: one fetch renders the replay's first page — the two-line
+//     info bar (tool / session id / request count / from-to clock +
+//     elapsed span; tokens in-out / known cost + unknown marker / success
+//     ratio), one system-prompt row per request block (the request's own
+//     plainly "System Prompt" (no first-seen/change-count phrasing; the
+//     historical versions live inside the expansion as secondary entries,
+//     each annotated with its request id and truncation mark), and the
+//     per-request turns in chronological order with their metadata signs,
+//     failure status tags, and request-detail links
+//   - conversation model grading: only a human input renders a user
+//     bubble; a tool result renders as a compact card whose tool name
+//     comes from the CROSS-TURN correlation (a previous turn's streamed
+//     tool_use id → name); machine-injected context (system reminders,
+//     command echoes) collapses behind one "injected context (N sections)"
+//     line; an all-thinking+tool_use stream turn renders a non-empty
+//     reply — collapsed thinking disclosure + a call card — never the
+//     bare empty bubble the old merge painted
 //   - assistant source arms: inline / stream (ONE merged bubble plus the
 //     merged-note) / resend / none (the explicit "not recorded"
 //     placeholder, never an empty bubble)
@@ -35,9 +44,11 @@
 //     polling, no per-request follow-up)
 //   - states: 14006 renders the not-found empty state with the back
 //     button; a transport failure renders the localized copy inline
-//   - anchor: a #req-<requestId> hash scrolls the target turn into view
-//     via scrollIntoView on the block element (the app shell scrolls
-//     inside layout containers, never the window); no hash, no scroll
+//   - anchor: a #req-<requestId> hash makes the FIRST fetch anchor at
+//     that turn (the inclusive after cursor) and scrolls it into view via
+//     scrollIntoView on the block element (the app shell scrolls inside
+//     layout containers, never the window); no hash opens on the latest
+//     page and lands the viewport on the newest turn
 //   - text rendering: markdown, the long-part clamp, image placeholders,
 //     and tool_use labels with their argument-detail block ride the shared
 //     bubble renderer unchanged
@@ -55,9 +66,11 @@ import { defineComponent, nextTick, type ComponentPublicInstance } from 'vue'
 
 import {
   getAgentSessionTranscript,
+  getAgentSessionTranscriptSystem,
   listAgentSessions,
   type AgentSessionPage,
   type AgentSessionTranscript,
+  type AgentSessionTranscriptSystem,
 } from '../../api/agentSessions'
 import { APIError, NetworkError } from '../../api/client'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
@@ -66,10 +79,12 @@ import { AGENT_CLIENTS } from '../../utils/agentClient'
 vi.mock('../../api/agentSessions', () => ({
   listAgentSessions: vi.fn(),
   getAgentSessionTranscript: vi.fn(),
+  getAgentSessionTranscriptSystem: vi.fn(),
 }))
 
 const listMock = vi.mocked(listAgentSessions)
 const transcriptMock = vi.mocked(getAgentSessionTranscript)
+const transcriptSystemMock = vi.mocked(getAgentSessionTranscriptSystem)
 
 // Must be imported after the vi.mock factory is registered.
 import AgentSessionListPage from './AgentSessionListPage.vue'
@@ -243,7 +258,9 @@ const STREAM_CAPTURE = [
 // The whole-session replay fixture: four turns covering the assistant
 // source arms (inline / stream / resend / none), a failed turn, a
 // truncated-request turn, and a two-entry system timeline (first value
-// plus one change). The session aggregate reuses the list fixture's
+// plus one change). It models a session that fits one page — both
+// has_more flags false — so this file's assembly assertions run without
+// any paging chrome. The session aggregate reuses the list fixture's
 // session-A figures with request_count lowered to the four blocks that
 // exist here, so the info bar's numbers and the turns agree.
 function transcriptFixture(): AgentSessionTranscript {
@@ -260,16 +277,20 @@ function transcriptFixture(): AgentSessionTranscript {
       first_seen_at: '2026-09-28T08:00:00Z',
       last_seen_at: '2026-09-28T09:30:00Z',
     },
+    // Metadata-only entries — the raw prompt text is the separate
+    // on-expand fetch (systemRawFor below), index-aligned with this
+    // list.
     system: [
-      { seen_at_request: REQUEST_1, truncated: false, raw: 'You are a helpful assistant.' },
+      { seen_at_request: REQUEST_1, truncated: false, raw_length: 28 },
       // The changed value arrives truncated, so the timeline entry's
       // truncation mark gets its rendering assertion too.
-      { seen_at_request: REQUEST_3, truncated: true, raw: [{ type: 'text', text: 'Revised system prompt.' }] },
+      { seen_at_request: REQUEST_3, truncated: true, raw_length: 34 },
     ],
     blocks: [
       {
         // Inline reply turn: OpenAI string content in, recorded response
-        // body out.
+        // body out — the reply carries a tool call whose id the LATER
+        // turn's tool result correlates (the cross-block name index).
         request_id: REQUEST_1,
         created_at: '2026-09-28T08:00:00Z',
         model_name: 'model-one',
@@ -280,8 +301,18 @@ function transcriptFixture(): AgentSessionTranscript {
         duration_ms: 123,
         provider_name: 'demo-provider',
         added: [{ role: 'user', content: '第一轮问题' }],
-        assistant: { source: 'inline', truncated: false, raw: '{"choices":[{"message":{"role":"assistant","content":"第一轮回复"}}]}' },
+        assistant: {
+          source: 'inline',
+          truncated: false,
+          raw: JSON.stringify({
+            content: [
+              { type: 'text', text: '第一轮回复' },
+              { type: 'tool_use', id: 'tu-1', name: 'Bash', input: { command: 'ls -la' } },
+            ],
+          }),
+        },
         added_truncated: false,
+        system: { seen_at_request: REQUEST_1, truncated: false, raw_length: 28 },
       },
       {
         // The failed turn: Anthropic blocks in (text + image), the reply
@@ -298,6 +329,8 @@ function transcriptFixture(): AgentSessionTranscript {
         added: [{ role: 'user', content: [{ type: 'text', text: '看看这张图' }, { type: 'image' }] }],
         assistant: { source: 'stream', truncated: false, raw: STREAM_CAPTURE },
         added_truncated: false,
+        // Same value as the first request: inherits its timeline entry.
+        system: { seen_at_request: REQUEST_1, truncated: false, raw_length: 28 },
       },
       {
         // Unrecorded reply lifted from the next request's resent copy; the
@@ -314,6 +347,8 @@ function transcriptFixture(): AgentSessionTranscript {
         added: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'file list output' }] }],
         assistant: { source: 'resend', truncated: false, raw: [{ role: 'assistant', content: '重发的回复' }] },
         added_truncated: false,
+        // The changed (truncated) value's own entry.
+        system: { seen_at_request: REQUEST_3, truncated: true, raw_length: 34 },
       },
       {
         // Capped request body: added degrades to the empty array and the
@@ -331,15 +366,32 @@ function transcriptFixture(): AgentSessionTranscript {
         added: [],
         assistant: { source: 'none', truncated: false, raw: null },
         added_truncated: true,
+        system: { seen_at_request: REQUEST_3, truncated: true, raw_length: 34 },
       },
     ],
+    has_more_before: false,
+    next_before: '',
+    has_more_after: false,
+    next_after: '',
   }
+}
+
+// The per-request system raw fetch's answer: the timeline entry in effect
+// at the named request — the first value (recorded at REQUEST_1) for
+// REQUEST_1/2, the changed truncated value (recorded at REQUEST_3) for
+// REQUEST_3/4.
+function systemRawFor(requestId: string): AgentSessionTranscriptSystem {
+  if (requestId === REQUEST_1 || requestId === REQUEST_2) {
+    return { system: [{ seen_at_request: REQUEST_1, truncated: false, raw: 'You are a helpful assistant.' }] }
+  }
+  return { system: [{ seen_at_request: REQUEST_3, truncated: true, raw: [{ type: 'text', text: 'Revised system prompt.' }] }] }
 }
 
 beforeEach(() => {
   stubDesktopMatchMedia()
   listMock.mockResolvedValue(listFixture())
   transcriptMock.mockResolvedValue(transcriptFixture())
+  transcriptSystemMock.mockImplementation(async (_sid: string, opts?: { request?: string }) => systemRawFor(opts?.request ?? ''))
 })
 
 afterEach(() => {
@@ -506,67 +558,92 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage replay assembly (
     expect(line2, 'success ratio').toContain(copy[locale].replaySuccessRatio.replace('{success}', '3').replace('{total}', '4'))
   })
 
-  it('renders the system timeline as ONE collapsed group: a single summary line counting the changes, expanding into the per-entry timeline', async () => {
+  it("renders one system-prompt row per request block — collapsed by default, expanding fetches that request's raw text once", async () => {
     await mountReplay(locale)
 
-    // Exactly one group container for the whole timeline, and while
-    // collapsed it is exactly the summary line — no per-entry panels, no
-    // prompt text anywhere, so the conversation starts right under the
-    // info bar however many times the prompt changed.
-    const group = document.body.querySelector('.replay-system')
-    expect(group, 'one group container for the whole system timeline').toBeTruthy()
-    const header = group!.querySelector('.n-collapse-item__header')?.textContent ?? ''
-    expect(header, 'summary counts first appearance + changes (N = entries - 1)').toContain(
-      copy[locale].systemGroupChanges.replace('{n}', '1'),
-    )
-    expect(group!.querySelectorAll('.replay-system__entry').length, 'no per-entry panels while the group is collapsed').toBe(0)
-    expect(document.body.textContent ?? '', 'system prompt hidden while collapsed').not.toContain('You are a helpful assistant.')
+    // One quiet row per block, directly under the block header (the
+    // metadata sign), labeled with the plain "System Prompt" — no
+    // "first seen + N changes" phrasing anywhere, no per-request
+    // annotations, no prompt text. Collapsed also means the raw-text
+    // endpoint has not been touched at all.
+    const rows = [...document.body.querySelectorAll<HTMLElement>('[data-testid="replay-system-row"]')]
+    expect(rows.length, 'one system row per request block').toBe(4)
+    for (const row of rows) {
+      expect(row.textContent ?? '', 'the row label is the plain "System Prompt"').toContain(copy[locale].systemPromptLabel)
+    }
+    // Each row sits right under its block's own metadata sign (the block
+    // header), before the conversation axis starts.
+    const turn1 = blockEl(REQUEST_1)!
+    const meta1 = turn1.querySelector('.replay-block__meta')
+    const row1 = turn1.querySelector('[data-testid="replay-system-row"]')
+    expect(meta1 && row1, 'the turn carries both header and system row').toBeTruthy()
+    expect(row1!.previousElementSibling, 'the system row follows the header line').toBe(meta1)
+    // The retired phrasings are gone ENTIRELY — not rendered with another
+    // number, not in another locale's leftover (regex-escaped patterns;
+    // the zh copy carried '·' and '+', the en copy a literal '+').
+    const pageText = document.body.textContent ?? ''
+    expect(pageText, 'no "first seen" phrasing survives').not.toMatch(/首次出现|first seen/)
+    expect(pageText, 'no change-count phrasing survives').not.toMatch(/变化\s*\d+\s*次|\+\s*\d+\s+changes?/)
+    expect(pageText, 'system prompt hidden while collapsed').not.toContain('You are a helpful assistant.')
+    expect(transcriptSystemMock, 'no raw-text fetch while the rows are collapsed').not.toHaveBeenCalled()
 
-    // Expanding the group reveals the per-entry timeline: every entry
-    // with its first-seen annotation (the fixture's two entries carry
-    // different request ids) and the truncation mark on the truncated
-    // one — and each entry is still collapsed on its own, so the prompt
-    // text stays hidden until the entry itself opens.
-    group!.querySelector('.n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() => expect(group!.querySelectorAll('.replay-system__entry').length, 'expanded group renders every timeline entry').toBe(2))
-    const entryHeaders = [...group!.querySelectorAll('.replay-system__entry .n-collapse-item__header')]
-    expect(entryHeaders[0]?.textContent ?? '', 'first entry annotated with its request').toContain(
-      copy[locale].systemSeenAt.replace('{id}', REQUEST_1),
-    )
-    expect(entryHeaders[1]?.textContent ?? '', 'changed entry annotated with its request').toContain(
-      copy[locale].systemSeenAt.replace('{id}', REQUEST_3),
-    )
-    expect(entryHeaders[0]?.textContent ?? '', 'entry keeps the block title').toContain(copy[locale].systemBlockTitle)
-    expect(entryHeaders[1]?.textContent ?? '', 'truncated entry carries the truncation mark').toContain(copy[locale].flowTruncated)
-    expect(entryHeaders[0]?.textContent ?? '', 'untruncated entry carries no truncation mark').not.toContain(copy[locale].flowTruncated)
-    expect(group!.textContent ?? '', 'entries stay individually collapsed after the group opens').not.toContain(
-      'You are a helpful assistant.',
+    // Expanding one request's row fetches exactly that request's raw text
+    // (the second request inherits the first's value; the endpoint answers
+    // the value in effect at the named request) and renders it through the
+    // shared bubble renderer.
+    const toggleOf = (id: string) =>
+      blockEl(id)!.querySelector<HTMLButtonElement>('[data-testid="replay-system-row"] button')!
+    toggleOf(REQUEST_2).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(transcriptSystemMock, "expanding fetches the request's raw text once").toHaveBeenCalledTimes(1))
+    expect(transcriptSystemMock.mock.calls[0][1], 'the fetch names the expanded request').toEqual({ request: REQUEST_2 })
+    await vi.waitFor(() =>
+      expect(blockEl(REQUEST_2)?.textContent ?? '', 'the inherited value renders').toContain('You are a helpful assistant.'),
     )
 
-    // Opening one entry reveals its prompt through the shared bubble
-    // renderer — the per-entry expand behavior rides along unchanged.
-    group!.querySelector('.replay-system__entry .n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() => expect(group!.textContent ?? '', 'expanded entry shows its prompt text').toContain('You are a helpful assistant.'))
+    // Expanding the FIRST request's row — same timeline entry, unchanged
+    // value — reuses the same fetch: one entry, one fetch, however many
+    // blocks resolve to it.
+    toggleOf(REQUEST_1).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() =>
+      expect(blockEl(REQUEST_1)?.textContent ?? '', 'the same value renders on its own block').toContain('You are a helpful assistant.'),
+    )
+    expect(transcriptSystemMock, 'blocks sharing one timeline entry share one fetch').toHaveBeenCalledTimes(1)
+
+    // The changed value fetches under its own request and carries the
+    // truncation mark (the fixture records that entry as truncated).
+    toggleOf(REQUEST_3).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(transcriptSystemMock).toHaveBeenCalledTimes(2))
+    expect(transcriptSystemMock.mock.calls[1][1], 'the changed value fetches under its own request').toEqual({ request: REQUEST_3 })
+    await vi.waitFor(() => {
+      const turn3 = blockEl(REQUEST_3)!
+      expect(turn3.textContent ?? '', 'the revised prompt renders').toContain('Revised system prompt.')
+      expect(turn3.textContent ?? '', 'the truncated entry carries the truncation mark').toContain(copy[locale].flowTruncated)
+    })
+    expect(blockEl(REQUEST_1)?.textContent ?? '', 'the untruncated entry carries no truncation mark').not.toContain(copy[locale].flowTruncated)
   })
 
-  it('degenerates to the plain first-appearance summary when the system prompt never changed', async () => {
-    // Same fixture with the timeline cut to its first entry — a session
-    // whose prompt stayed constant across every request.
-    const singleSystem = transcriptFixture()
-    singleSystem.system = [singleSystem.system[0]]
-    transcriptMock.mockResolvedValueOnce(singleSystem)
+  it('keeps the plain row label whatever the timeline shape — a never-changed prompt renders the same collapsed line on every block', async () => {
+    // Same fixture with every block resolving to the FIRST timeline entry
+    // (the change never happened): every row is the same collapsed line,
+    // and however many rows the reader opens, one entry means one fetch.
+    const constant = transcriptFixture()
+    constant.system = [constant.system[0]]
+    for (const b of constant.blocks) {
+      b.system = { seen_at_request: REQUEST_1, truncated: false, raw_length: 28 }
+    }
+    transcriptMock.mockResolvedValueOnce(constant)
     await mountReplay(locale)
 
-    const header = document.body.querySelector('.replay-system .n-collapse-item__header')?.textContent ?? ''
-    expect(header, 'no change count when there is only the first value').toContain(copy[locale].systemGroupFirstOnly)
-    // The changes-count copy must be gone ENTIRELY (not rendered with a
-    // zero): park the placeholder, regex-escape the rest — the en copy
-    // carries a literal '+' — then swap the placeholder for a digit run.
-    const changesPattern = copy[locale].systemGroupChanges
-      .replace(/\{n\}/g, '\u0000')
-      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      .replace('\u0000', '\\d+')
-    expect(header, 'the changes-count copy is gone entirely, not a zero').not.toMatch(new RegExp(changesPattern))
+    const rows = document.body.querySelectorAll('[data-testid="replay-system-row"]')
+    expect(rows.length, 'one row per block still').toBe(4)
+    for (const row of rows) {
+      expect(row.textContent ?? '', 'the same plain label').toContain(copy[locale].systemPromptLabel)
+    }
+    const toggles = [...document.body.querySelectorAll<HTMLButtonElement>('[data-testid="replay-system-row"] button')]
+    toggles[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    toggles[3].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(transcriptSystemMock, 'one timeline entry, one fetch — however many rows open').toHaveBeenCalledTimes(1))
+    expect(document.body.textContent ?? '', 'still no change-count phrasing').not.toMatch(/变化|changes/)
   })
 
   it('renders the turns in chronological order with metadata signs, failure tags, and request-detail links', async () => {
@@ -639,6 +716,178 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage replay assembly (
   })
 })
 
+// ---------------------------------------------------------------------------
+// Detail page — the graded conversation model (owner 2026-10-10 rework)
+// ---------------------------------------------------------------------------
+
+// A miniature of the REAL all-machine-product turn the rework targets
+// (the replay fixtures' thinking-then-tool_use stream captures, no text
+// delta at all — the shape that used to merge to a bare empty bubble):
+// thinking fragments plus a tool_use reassembled from its input_json_delta
+// pieces.
+const THINKING_TOOL_CAPTURE = [
+  'event: message_start',
+  'data: {"type":"message_start","message":{"role":"assistant","content":[]}}',
+  'event: content_block_start',
+  'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}',
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check the listing first."}}',
+  'event: content_block_start',
+  'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01","name":"Bash","input":{}}}',
+  'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"comm"}}',
+  'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"and\\": \\"ls -la\\"}"}}',
+  'data: {"type":"content_block_stop","index":0}',
+  'data: {"type":"content_block_stop","index":1}',
+  'data: {"type":"message_stop"}',
+  '',
+].join('\n')
+
+function conversationModelFixture(): AgentSessionTranscript {
+  return {
+    session: {
+      agent_session_id: SESSION_A,
+      agent_client: 'claude-code',
+      request_count: 2,
+      success_count: 2,
+      input_tokens: 40,
+      output_tokens: 80,
+      known_cost_micros: 0,
+      unknown_cost_count: 0,
+      first_seen_at: '2026-09-28T08:00:00Z',
+      last_seen_at: '2026-09-28T08:10:00Z',
+    },
+    system: [],
+    blocks: [
+      {
+        // The assistant turn that THINKS and CALLS — stream capture with
+        // no text delta at all (the four regression blocks' shape).
+        request_id: 'req-conv-1',
+        created_at: '2026-09-28T08:00:00Z',
+        model_name: 'model-conv',
+        status_class: 'success',
+        is_stream: true,
+        input_tokens: 20,
+        output_tokens: 40,
+        duration_ms: 500,
+        provider_name: 'demo-provider',
+        added: [{ role: 'user', content: '列一下目录' }],
+        assistant: { source: 'stream', truncated: false, raw: THINKING_TOOL_CAPTURE },
+        added_truncated: false,
+      },
+      {
+        // The follow-up turn: the tool's result, two machine injections,
+        // then the human's actual follow-up question.
+        request_id: 'req-conv-2',
+        created_at: '2026-09-28T08:10:00Z',
+        model_name: 'model-conv',
+        status_class: 'success',
+        is_stream: false,
+        input_tokens: 20,
+        output_tokens: 40,
+        duration_ms: 300,
+        provider_name: 'demo-provider',
+        added: [
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_01', content: [{ type: 'text', text: 'total 0\nexit 0' }] }] },
+          { role: 'user', content: '<system-reminder>\nCalled the Bash tool with the listing above.' },
+          { role: 'user', content: '<command-name>/compact</command-name>' },
+          { role: 'user', content: '人类追问：下一步呢' },
+        ],
+        assistant: { source: 'none', truncated: false, raw: null },
+        added_truncated: false,
+      },
+    ],
+    has_more_before: false,
+    next_before: '',
+    has_more_after: false,
+    next_after: '',
+  }
+}
+
+describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage graded conversation model (%s)', (locale) => {
+  beforeEach(() => {
+    transcriptMock.mockResolvedValue(conversationModelFixture())
+  })
+
+  it('an all-thinking+tool_use stream turn renders a NON-empty reply: collapsed thinking + a call card, never a bare bubble', async () => {
+    await mountReplay(locale)
+    const turn = blockEl('req-conv-1')!
+
+    // Exactly one assistant bubble, and it is NOT empty: its content is
+    // the thinking disclosure plus the call card (the old merge dropped
+    // both and painted a bare bubble).
+    const rightRows = turn.querySelectorAll('.msg-flow__row--right')
+    expect(rightRows.length, 'one assistant bubble for the streamed reply').toBe(1)
+    const bubble = rightRows[0]
+    expect(bubble.querySelector('.msg-flow__thinking-toggle'), 'thinking disclosure inside the reply').toBeTruthy()
+    expect(bubble.querySelector('.msg-flow__thinking-label')?.textContent, 'thinking label copy').toContain(
+      copy[locale].thinkingBlock,
+    )
+    expect(bubble.textContent ?? '', 'thinking text hidden while collapsed').not.toContain('Check the listing first.')
+
+    // Expanding the disclosure reveals the assembled reasoning text.
+    bubble.querySelector('.msg-flow__thinking-toggle')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() =>
+      expect(bubble.querySelector('.msg-flow__thinking-body')?.textContent, 'expanded thinking text').toContain(
+        'Check the listing first.',
+      ),
+    )
+
+    // The tool call: a compact card with the tool name, args collapsed.
+    const callCard = bubble.querySelector('.toolcard')
+    expect(callCard, 'the streamed tool_use renders as a call card').toBeTruthy()
+    expect(callCard?.querySelector('.toolcard__name')?.textContent, 'card names the tool').toContain('Bash')
+    expect(callCard?.querySelector('.toolcard__detail'), 'arguments collapsed by default').toBeNull()
+    callCard?.querySelector('.toolcard__head')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() =>
+      expect(callCard?.querySelector('.toolcard__detail')?.textContent, 'expanded arguments carry the reassembled JSON').toContain(
+        '"ls -la"',
+      ),
+    )
+  })
+
+  it('tool results render as compact cards with the correlated tool name — never user bubbles; injected context collapses off the axis', async () => {
+    await mountReplay(locale)
+    const turn = blockEl('req-conv-2')!
+
+    // The conversation axis of this turn carries exactly ONE user bubble:
+    // the human's follow-up. The tool result and the injected context
+    // never appear as user bubbles.
+    const leftRows = turn.querySelectorAll('.msg-flow__row--left')
+    expect(leftRows.length, 'only the human input renders a user bubble').toBe(1)
+    expect(leftRows[0].textContent, 'the bubble is the human follow-up').toContain('人类追问：下一步呢')
+
+    // The tool result: a compact card, named by the CROSS-TURN correlation
+    // (the previous turn's streamed tool_use id → name), with the output's
+    // first line as the preview and the full output behind the toggle.
+    const cards = turn.querySelectorAll('.toolcard')
+    expect(cards.length, 'one result card').toBe(1)
+    const card = cards[0]
+    expect(card.querySelector('.toolcard__kind')?.textContent, 'result card kind label').toContain(copy[locale].toolResult)
+    expect(card.querySelector('.toolcard__name')?.textContent, 'result card carries the correlated tool name').toContain('Bash')
+    expect(card.querySelector('.toolcard__preview')?.textContent, 'first-line preview on the header').toContain('total 0')
+    expect(card.querySelector('.toolcard__detail'), 'output collapsed by default').toBeNull()
+    card.querySelector('.toolcard__head')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(card.querySelector('.toolcard__detail')?.textContent, 'expanded output').toContain('exit 0'))
+
+    // The injected run: one quiet line naming BOTH sections, their text
+    // hidden until the line expands. (The line's exact copy is spelled out
+    // per locale — the zh copy counts sections, the en copy carries the
+    // bare count.)
+    const injectedLine = turn.querySelector('.replay-injected')
+    expect(injectedLine, 'the injected run renders its collapse line').toBeTruthy()
+    const expectedInjectedLine = locale === 'zh-CN' ? '已注入上下文（2 段）' : 'Injected context (2)'
+    expect(injectedLine?.querySelector('.replay-injected__label')?.textContent, 'the line counts its sections').toContain(
+      expectedInjectedLine,
+    )
+    const turnText = () => turn.textContent ?? ''
+    expect(turnText(), 'injected content hidden while collapsed').not.toContain('Called the Bash tool')
+    injectedLine?.querySelector('.replay-injected__toggle')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => {
+      expect(turnText(), 'expanded run shows the first section').toContain('Called the Bash tool')
+      expect(turnText(), 'expanded run shows the second section').toContain('/compact')
+    })
+  })
+})
+
 describe('AgentSessionDetailPage fetch discipline', () => {
   it('calls the transcript API exactly once — no polling, no per-request follow-up', async () => {
     await mountReplay('zh-CN')
@@ -705,12 +954,18 @@ describe('AgentSessionDetailPage anchor scrolling', () => {
     }
   }
 
-  it('a #req-<id> hash scrolls the target turn into view via scrollIntoView on the block element — not the window', async () => {
+  it('a #req-<id> hash anchors the first fetch at that turn and scrolls it into view via scrollIntoView on the block element — not the window', async () => {
     const { spy, restore } = stubScrollIntoView()
     const windowScroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
     try {
       await mountReplay('zh-CN', `/agent-sessions/${SESSION_A}#req-${REQUEST_2}`)
       await vi.waitFor(() => expect(spy, 'the target turn was scrolled to').toHaveBeenCalled())
+
+      // The first fetch anchored AT the deep-linked turn: the inclusive
+      // after cursor, never a bare latest-page fetch.
+      expect(transcriptMock, 'exactly one fetch for the anchored entry').toHaveBeenCalledTimes(1)
+      expect(transcriptMock.mock.calls[0][0], 'the fetch targeted the URL session id').toBe(SESSION_A)
+      expect(transcriptMock.mock.calls[0][1], 'the fetch anchored at the hashed turn (inclusive after cursor)').toEqual({ after: REQUEST_2 })
 
       // The call rides the block element itself — scrollIntoView walks the
       // real scrollable ancestors (the app shell's layout container);
@@ -724,12 +979,21 @@ describe('AgentSessionDetailPage anchor scrolling', () => {
     }
   })
 
-  it('no hash, no scroll', async () => {
+  it('no hash opens on the latest page and lands the viewport on the newest turn', async () => {
     const { spy, restore } = stubScrollIntoView()
     try {
       await mountReplay('zh-CN')
+      await vi.waitFor(() => expect(spy, 'the newest turn was scrolled to').toHaveBeenCalled())
       await new Promise((resolve) => setTimeout(resolve, 20))
-      expect(spy, 'a plain mount scrolls nothing').not.toHaveBeenCalled()
+
+      // The latest-page opening: a bare fetch (no cursor params at all)…
+      expect(transcriptMock, 'exactly one fetch').toHaveBeenCalledTimes(1)
+      expect(transcriptMock.mock.calls[0][1], 'no cursor params on the latest-page opening').toBeUndefined()
+      // …and the viewport lands on the LAST turn, bottom-aligned — the
+      // resume-a-session reading position.
+      expect(spy.mock.contexts[0], 'scrollIntoView was called ON the newest turn').toBe(blockEl(REQUEST_4))
+      expect(spy.mock.calls[0][0], 'bottom alignment for the latest-page landing').toEqual({ block: 'end' })
+      expect(spy, 'the landing scrolls exactly once').toHaveBeenCalledTimes(1)
     } finally {
       restore()
     }
@@ -781,6 +1045,10 @@ describe('AgentSessionDetailPage text rendering', () => {
           added_truncated: false,
         },
       ],
+      has_more_before: false,
+      next_before: '',
+      has_more_after: false,
+      next_after: '',
     })
     await mountReplay('zh-CN')
 
@@ -803,18 +1071,25 @@ describe('AgentSessionDetailPage text rendering', () => {
     expect(turnText, 'the heading text itself rendered').toContain('回放标题')
     // Image part: the placeholder block, never the payload.
     expect(turn.querySelector('.msg-flow__image')?.textContent, 'image placeholder block').toContain(zhCN.agentSessions.partImage)
-    // tool_use part: the type label pill with the tool name...
-    expect(turn.querySelector('.msg-flow__tool')?.textContent, 'tool_use type label').toContain('tool_use: Bash')
-    // ...and its parameter detail: the translator
-    // lifts input:{command:'ls'} into part.detail as pretty-printed JSON
-    // with detailLang 'json', and the bubble renders it as the mono
-    // tooldetail block — highlighted through the same shared hljs core the
-    // fenced blocks use (attr token = the parameter name, string token =
-    // the argument value), so a broken detail arm fails here, visibly.
-    const toolDetailEl = turn.querySelector('.msg-flow__tooldetail')
+    // tool_use part: a compact CALL card — the kind label + the tool
+    // name on the header, payload hidden until expanded...
+    const callCard = turn.querySelector('.toolcard')
+    expect(callCard, 'tool_use renders as a call card').toBeTruthy()
+    expect(callCard?.querySelector('.toolcard__kind')?.textContent, 'call card kind label').toContain(zhCN.agentSessions.toolCall)
+    expect(callCard?.querySelector('.toolcard__name')?.textContent, 'call card carries the tool name').toContain('Bash')
+    expect(callCard?.querySelector('.toolcard__detail'), 'call payload collapsed by default').toBeNull()
+    // ...and its parameter detail on expand: the translator lifts
+    // input:{command:'ls'} into part.detail as pretty-printed JSON with
+    // detailLang 'json', and the card renders it as the mono detail block
+    // — highlighted through the same shared hljs core the fenced blocks
+    // use (attr token = the parameter name, string token = the argument
+    // value), so a broken detail arm fails here, visibly.
+    callCard?.querySelector('.toolcard__head')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(callCard?.querySelector('.toolcard__detail'), 'expanded call card shows its payload').toBeTruthy())
+    const toolDetailEl = callCard?.querySelector('.toolcard__detail') ?? null
     expect(toolDetailEl?.textContent, 'tool_use detail carries the parameter name').toContain('"command"')
     expect(toolDetailEl?.textContent, 'tool_use detail carries the argument value').toContain('"ls"')
-    const toolDetailCode = toolDetailEl?.querySelector('code.msg-flow__tooldetail-code')
+    const toolDetailCode = toolDetailEl?.querySelector('code.toolcard__detail-code')
     expect(toolDetailCode?.innerHTML, 'json arguments went through highlight.js (attr token)').toContain('hljs-attr')
     expect(toolDetailCode?.innerHTML, 'json arguments went through highlight.js (string token)').toContain('hljs-string')
     // Long part: clamped by default behind the disclosure row; clicking

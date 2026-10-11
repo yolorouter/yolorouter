@@ -107,9 +107,17 @@ func SweepExpiredRequestLogs(db *gorm.DB, bodiesDir string, now time.Time, reten
 	// its request_logs row (or vice versa): the triple leaves together or
 	// not at all. There is no foreign key between the tables — the 1:1 is
 	// enforced by the unique index and this cascade, not by the schema.
+	// The agent-session turn rows join the same cascade: a turn row's
+	// request ids must never outlive the request_logs row they name (and a
+	// resend supplement references its PREDECESSOR's request id, which this
+	// same request_ids list covers because retention deletes oldest-first
+	// — the predecessor of an expired request is at least as old).
 	var deleted int64
 	err := db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("request_id IN ?", requestIDs).Delete(&model.RequestLogBody{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("request_id IN ?", requestIDs).Delete(&model.AgentSessionTurn{}).Error; err != nil {
 			return err
 		}
 		res := tx.Where("request_id IN ?", requestIDs).Delete(&model.RequestLog{})

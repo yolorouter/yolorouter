@@ -8,7 +8,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,12 +22,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/agentturns"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/service/requestlog"
 	"github.com/yolorouter/yolorouter/internal/testutil"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 )
+
+// backfillAgentTurns stands in for the startup turns pass over the seeded
+// history: the fixtures write the audit rows the gateway wrote, and this
+// derives the turn store half exactly as a deployed instance would at boot.
+func backfillAgentTurns(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if _, err := agentturns.BackfillAll(context.Background(), db); err != nil {
+		t.Fatalf("backfill agent turns: %v", err)
+	}
+}
 
 // newAgentSessionTestRouter wires the two tool-session routes over a fresh
 // migrated SQLite DB with a real RequestLogService.
@@ -241,7 +254,7 @@ func TestGetAgentSessionDetailReturnsTimeline(t *testing.T) {
 	}
 }
 
-// newAgentSessionTranscriptRouter wires the transcript route (plus the list
+// newAgentSessionTranscriptRouter wires the transcript routes (plus the list
 // route, so a test can cross-check the transcript's session aggregate against
 // the list row the same SQL family produces) over a fresh migrated SQLite DB
 // with a real RequestLogService bound to the given bodiesDir.
@@ -254,6 +267,7 @@ func newAgentSessionTranscriptRouter(t *testing.T, bodiesDir string) (*gin.Engin
 	admin := r.Group("/api/admin")
 	admin.GET("/agent-sessions", GetAgentSessions(svc))
 	admin.GET("/agent-sessions/:sessionId/transcript", GetAgentSessionTranscript(svc))
+	admin.GET("/agent-sessions/:sessionId/transcript/system", GetAgentSessionTranscriptSystem(svc))
 	return r, db
 }
 
@@ -266,22 +280,32 @@ type transcriptAssistant struct {
 
 // transcriptBlock mirrors AgentSessionReplayBlock's JSON shape.
 type transcriptBlock struct {
-	RequestID      string              `json:"request_id"`
-	CreatedAt      time.Time           `json:"created_at"`
-	ModelName      string              `json:"model_name"`
-	StatusClass    string              `json:"status_class"`
-	IsStream       bool                `json:"is_stream"`
-	InputTokens    int                 `json:"input_tokens"`
-	OutputTokens   int                 `json:"output_tokens"`
-	DurationMs     int64               `json:"duration_ms"`
-	ProviderName   string              `json:"provider_name"`
-	Added          []any               `json:"added"`
-	Assistant      transcriptAssistant `json:"assistant"`
-	AddedTruncated bool                `json:"added_truncated"`
+	RequestID      string                `json:"request_id"`
+	CreatedAt      time.Time             `json:"created_at"`
+	ModelName      string                `json:"model_name"`
+	StatusClass    string                `json:"status_class"`
+	IsStream       bool                  `json:"is_stream"`
+	InputTokens    int                   `json:"input_tokens"`
+	OutputTokens   int                   `json:"output_tokens"`
+	DurationMs     int64                 `json:"duration_ms"`
+	ProviderName   string                `json:"provider_name"`
+	Added          []any                 `json:"added"`
+	System         *transcriptSystemMeta `json:"system"`
+	Assistant      transcriptAssistant   `json:"assistant"`
+	AddedTruncated bool                  `json:"added_truncated"`
 }
 
-// transcriptSystem mirrors AgentSessionReplaySystem's JSON shape.
-type transcriptSystem struct {
+// transcriptSystemMeta mirrors AgentSessionReplaySystemMeta's JSON shape —
+// the transcript endpoint's metadata-only system entry (no raw).
+type transcriptSystemMeta struct {
+	SeenAtRequest string `json:"seen_at_request"`
+	Truncated     bool   `json:"truncated"`
+	RawLength     int    `json:"raw_length"`
+}
+
+// transcriptSystemRaw mirrors AgentSessionReplaySystem's JSON shape — the
+// /transcript/system endpoint's entry carrying the raw value.
+type transcriptSystemRaw struct {
 	SeenAtRequest string `json:"seen_at_request"`
 	Truncated     bool   `json:"truncated"`
 	Raw           any    `json:"raw"`
@@ -290,15 +314,24 @@ type transcriptSystem struct {
 // transcriptPayload mirrors AgentSessionTranscript's JSON shape, reusing
 // sessionListItem for the session half.
 type transcriptPayload struct {
-	Session sessionListItem    `json:"session"`
-	System  []transcriptSystem `json:"system"`
-	Blocks  []transcriptBlock  `json:"blocks"`
+	Session       sessionListItem        `json:"session"`
+	System        []transcriptSystemMeta `json:"system"`
+	Blocks        []transcriptBlock      `json:"blocks"`
+	HasMoreBefore bool                   `json:"has_more_before"`
+	NextBefore    string                 `json:"next_before"`
+	HasMoreAfter  bool                   `json:"has_more_after"`
+	NextAfter     string                 `json:"next_after"`
 }
 
-// fetchTranscript GETs the transcript endpoint and decodes its payload.
-func fetchTranscript(t *testing.T, r *gin.Engine, sessionID string) (*httptest.ResponseRecorder, transcriptPayload) {
+// fetchTranscript GETs the transcript endpoint with an optional query string
+// and decodes its payload.
+func fetchTranscript(t *testing.T, r *gin.Engine, sessionID, query string) (*httptest.ResponseRecorder, transcriptPayload) {
 	t.Helper()
-	w, env := doJSON(t, r, http.MethodGet, "/api/admin/agent-sessions/"+sessionID+"/transcript", nil, nil)
+	path := "/api/admin/agent-sessions/" + sessionID + "/transcript"
+	if query != "" {
+		path += "?" + query
+	}
+	w, env := doJSON(t, r, http.MethodGet, path, nil, nil)
 	var p transcriptPayload
 	if err := json.Unmarshal(env.Data, &p); err != nil {
 		t.Fatalf("unmarshal transcript: %v (body: %s)", err, w.Body.String())
@@ -382,8 +415,9 @@ func TestGetAgentSessionTranscriptReturnsReplay(t *testing.T) {
 	// t5 — 499 cancelled, no body row at all (capture failure), SAME
 	// created_at as t4: pins the id ASC tie-break of the block order.
 	seed("req-t5", base.Add(3*time.Minute), nil, "claude-3-7", 499, 1, 1, 0, false, 2, true)
+	backfillAgentTurns(t, db)
 
-	w, p := fetchTranscript(t, r, "hs-t")
+	w, p := fetchTranscript(t, r, "hs-t", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("transcript hs-t: expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -425,15 +459,17 @@ func TestGetAgentSessionTranscriptReturnsReplay(t *testing.T) {
 		t.Fatalf("transcript session %+v disagrees with list row %+v", s, *listRow)
 	}
 
-	// System timeline: one entry, from the first request, carrying the value.
+	// System timeline METADATA: one entry, from the first request, carrying
+	// the raw value's serialized size — the raw text itself only ships from
+	// the /transcript/system endpoint (asserted in the alignment test below).
 	if len(p.System) != 1 {
 		t.Fatalf("system timeline = %d entries, want 1: %+v", len(p.System), p.System)
 	}
 	if p.System[0].SeenAtRequest != "req-t1" || p.System[0].Truncated {
 		t.Fatalf("system[0] = (%s, truncated=%v), want (req-t1, false)", p.System[0].SeenAtRequest, p.System[0].Truncated)
 	}
-	if p.System[0].Raw != "You are a coder." {
-		t.Fatalf("system[0].raw = %v, want the system string", p.System[0].Raw)
+	if want := len(`"You are a coder."`); p.System[0].RawLength != want {
+		t.Fatalf("system[0].raw_length = %d, want %d (the JSON-serialized size of the prompt)", p.System[0].RawLength, want)
 	}
 
 	// Blocks: EXACTLY one per request — count first, so a duplicated or
@@ -572,8 +608,9 @@ func TestGetAgentSessionTranscriptDegradesWithoutBodiesDir(t *testing.T) {
 	seedBody("req-e3",
 		`{"messages":[{"role":"user","content":"q1"},{"role":"assistant","content":"r1"},{"role":"user","content":"q2"},{"role":"assistant","content":"r2"},{"role":"user","content":"q3"}]}`,
 		"")
+	backfillAgentTurns(t, db)
 
-	w, p := fetchTranscript(t, r, "hs-e")
+	w, p := fetchTranscript(t, r, "hs-e", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("transcript hs-e: expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
@@ -678,22 +715,33 @@ func TestGetAgentSessionTranscriptMarksTruncation(t *testing.T) {
 		t.Fatalf("write capture file: %v", err)
 	}
 	seedBody("req-x4", `{"messages":[{"role":"user","content":"q4"}]}`, "", "req-x4.stream", true)
+	backfillAgentTurns(t, db)
 
-	w, p := fetchTranscript(t, r, "hs-x")
+	// Two of these blocks (x2's capped inline copy, x3's capped capture)
+	// each serialize to ~1 MiB, so the shipped 1.5 MiB page budget pages the
+	// fixture: the first call serves the newest fit, and the cursor walk
+	// collects the rest — itself a live pin that the truncation fixtures
+	// ride the byte budget exactly as the paging contract says.
+	w, p := fetchTranscript(t, r, "hs-x", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("transcript hs-x: expected 200, got %d, body: %s", w.Code, w.Body.String())
 	}
-	if len(p.Blocks) != 4 {
-		t.Fatalf("blocks = %d, want 4", len(p.Blocks))
+	blocks := append([]transcriptBlock{}, p.Blocks...)
+	for p.HasMoreBefore {
+		_, p = fetchTranscript(t, r, "hs-x", "before="+p.NextBefore)
+		blocks = append(append([]transcriptBlock{}, p.Blocks...), blocks...)
+	}
+	if len(blocks) != 4 {
+		t.Fatalf("blocks = %d, want 4", len(blocks))
 	}
 	for i, want := range []time.Time{base, base.Add(time.Minute), base.Add(2 * time.Minute), base.Add(3 * time.Minute)} {
-		if !p.Blocks[i].CreatedAt.Equal(want) {
-			t.Fatalf("block %d created_at = %v, want %v", i, p.Blocks[i].CreatedAt, want)
+		if !blocks[i].CreatedAt.Equal(want) {
+			t.Fatalf("block %d created_at = %v, want %v", i, blocks[i].CreatedAt, want)
 		}
 	}
 
 	// x1: the request body's len>cap derivation.
-	x1 := p.Blocks[0]
+	x1 := blocks[0]
 	if !x1.AddedTruncated {
 		t.Fatalf("x1 added_truncated = false, want true (request body over the inline cap)")
 	}
@@ -702,7 +750,7 @@ func TestGetAgentSessionTranscriptMarksTruncation(t *testing.T) {
 	}
 
 	// x2: the response body's len>cap derivation — flag and cut text together.
-	x2 := p.Blocks[1]
+	x2 := blocks[1]
 	if x2.AddedTruncated {
 		t.Fatalf("x2 added_truncated = true, want false (its request body fits the cap)")
 	}
@@ -715,8 +763,10 @@ func TestGetAgentSessionTranscriptMarksTruncation(t *testing.T) {
 	}
 	assertCutCopy(t, "x2 inline response", resp2, bigResp)
 
-	// x3: read-side cap on the capture file — the OR's streamCapped half.
-	x3 := p.Blocks[2]
+	// x3: read-side cap on the capture file — the capped-read half of the
+	// readStreamBodyInlineCapped OR (the body row's write-side flag is
+	// false here; the read alone raises the marker).
+	x3 := blocks[2]
 	if x3.Assistant.Source != "stream" || !x3.Assistant.Truncated {
 		t.Fatalf("x3 assistant = (%s, truncated=%v), want (stream, true) from the read-side cap alone", x3.Assistant.Source, x3.Assistant.Truncated)
 	}
@@ -728,7 +778,7 @@ func TestGetAgentSessionTranscriptMarksTruncation(t *testing.T) {
 
 	// x4: write-side backstop flag on an under-cap file — the OR's other
 	// half, with the small capture still shipped whole.
-	x4 := p.Blocks[3]
+	x4 := blocks[3]
 	if x4.Assistant.Source != "stream" || !x4.Assistant.Truncated {
 		t.Fatalf("x4 assistant = %+v, want (stream, truncated=true) from the write-side backstop flag alone", x4.Assistant)
 	}
@@ -751,5 +801,338 @@ func assertCutCopy(t *testing.T, what, got, original string) {
 	}
 	if !strings.Contains(got, "[truncated") {
 		t.Fatalf("%s: inline copy carries no visible truncation marker", what)
+	}
+}
+
+// seedTranscriptPageSession seeds a 25-request session (ids zero-padded,
+// one minute apart) with a minimal per-request body — the cursor-pagination
+// handler tests only care about which blocks a call returns.
+func seedTranscriptPageSession(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	base := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	claude := "claude-code"
+	sess := "hs-page"
+	for i := 1; i <= 25; i++ {
+		id := fmt.Sprintf("req-%02d", i)
+		testutil.SeedRequestLog(t, db, id, base.Add(time.Duration(i)*time.Minute), func(r *model.RequestLog) {
+			r.AgentClient = &claude
+			r.AgentSessionID = &sess
+			r.StatusCode = 200
+		})
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+			RequestID:    id,
+			RequestBody:  fmt.Sprintf(`{"messages":[{"role":"user","content":"q%d"}]}`, i),
+			ResponseBody: fmt.Sprintf(`{"content":[{"type":"text","text":"r%d"}]}`, i),
+		}); err != nil {
+			t.Fatalf("upsert body %s: %v", id, err)
+		}
+	}
+	backfillAgentTurns(t, db)
+}
+
+// transcriptBlockIDs collects a payload's block ids in order.
+func transcriptBlockIDs(p transcriptPayload) []string {
+	ids := make([]string, 0, len(p.Blocks))
+	for i := range p.Blocks {
+		ids = append(ids, p.Blocks[i].RequestID)
+	}
+	return ids
+}
+
+// TestGetAgentSessionTranscriptCursorWireSmoke pins that the query params
+// reach the slicer with the declared semantics on the wire: the no-cursor
+// call serves the newest blocks, before continues exclusively toward older,
+// after anchors inclusively — the handler's plumbing around the table-tested
+// pure function (TC-01/02/03's integration cross-check).
+func TestGetAgentSessionTranscriptCursorWireSmoke(t *testing.T) {
+	r, db := newAgentSessionTranscriptRouter(t, "")
+	seedTranscriptPageSession(t, db)
+
+	_, p := fetchTranscript(t, r, "hs-page", "limit=10")
+	if got := transcriptBlockIDs(p); len(got) != 10 || got[0] != "req-16" || got[9] != "req-25" {
+		t.Fatalf("latest page = %v, want req-16..req-25", got)
+	}
+	if !p.HasMoreBefore || p.NextBefore != "req-16" || p.HasMoreAfter {
+		t.Fatalf("latest page continuation = (%v,%q,%v), want (true, req-16, false)", p.HasMoreBefore, p.NextBefore, p.HasMoreAfter)
+	}
+
+	_, p = fetchTranscript(t, r, "hs-page", "limit=10&before=req-16")
+	if got := transcriptBlockIDs(p); len(got) != 10 || got[0] != "req-06" || got[9] != "req-15" {
+		t.Fatalf("before page = %v, want req-06..req-15 (cursor block excluded)", got)
+	}
+
+	_, p = fetchTranscript(t, r, "hs-page", "limit=5&after=req-03")
+	if got := transcriptBlockIDs(p); len(got) != 5 || got[0] != "req-03" || got[4] != "req-07" {
+		t.Fatalf("after page = %v, want req-03..req-07 (cursor block included)", got)
+	}
+	if !p.HasMoreAfter || p.NextAfter != "req-07" {
+		t.Fatalf("after page continuation = (%v, %q), want (true, req-07)", p.HasMoreAfter, p.NextAfter)
+	}
+}
+
+// TestGetAgentSessionTranscriptParamBounds pins TC-04 on the wire: limit
+// fallback (non-numeric / zero / over-max all behave as the default 20; 200
+// itself is valid), the lenient bad-cursor empty page, and the 400 for
+// before+after together.
+func TestGetAgentSessionTranscriptParamBounds(t *testing.T) {
+	r, db := newAgentSessionTranscriptRouter(t, "")
+	seedTranscriptPageSession(t, db)
+
+	for _, q := range []string{"limit=abc", "limit=0", "limit=999999", ""} {
+		_, p := fetchTranscript(t, r, "hs-page", q)
+		if len(p.Blocks) != 20 || p.Blocks[0].RequestID != "req-06" {
+			t.Fatalf("query %q: blocks = %d starting at %s, want 20 starting at req-06 (default limit)", q, len(p.Blocks), p.Blocks[0].RequestID)
+		}
+	}
+	_, p := fetchTranscript(t, r, "hs-page", "limit=200")
+	if len(p.Blocks) != 25 {
+		t.Fatalf("limit=200: blocks = %d, want all 25 (the cap is a valid size, not a clamp to 20)", len(p.Blocks))
+	}
+
+	// Bad cursors: unknown ids answer an empty page with both has_more false
+	// — a stale deep link must read as "nothing left", not an error.
+	for _, q := range []string{"before=req-nope", "after=req-nope", "limit=5&before=gone-id"} {
+		w, p := fetchTranscript(t, r, "hs-page", q)
+		if w.Code != http.StatusOK {
+			t.Fatalf("query %q: status %d, want 200", q, w.Code)
+		}
+		if p.Blocks == nil || len(p.Blocks) != 0 {
+			t.Fatalf("query %q: blocks = %#v, want a non-nil empty array", q, p.Blocks)
+		}
+		if p.HasMoreBefore || p.HasMoreAfter || p.NextBefore != "" || p.NextAfter != "" {
+			t.Fatalf("query %q: continuation = (%v,%q,%v,%q), want all clear", q, p.HasMoreBefore, p.NextBefore, p.HasMoreAfter, p.NextAfter)
+		}
+		// The session half still arrives — the page is empty, not the session.
+		if p.Session.RequestCount != 25 {
+			t.Fatalf("query %q: session request_count = %d, want 25", q, p.Session.RequestCount)
+		}
+	}
+
+	// before+after together: one call pages one way — 400 ParamError.
+	w, env := doJSON(t, r, http.MethodGet, "/api/admin/agent-sessions/hs-page/transcript?before=req-05&after=req-10", nil, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("before+after: status %d, want 400, body: %s", w.Code, w.Body.String())
+	}
+	if env.Code != errcode.InvalidParam {
+		t.Fatalf("before+after: code = %d, want %d (InvalidParam)", env.Code, errcode.InvalidParam)
+	}
+}
+
+// TestGetAgentSessionTranscriptSystemAlignment pins TC-08: the transcript's
+// system METADATA and the /transcript/system raw timeline are two views of
+// one assembly — index-aligned entry counts, seen_at_request sequences,
+// truncated flags, raw_length == each raw value's UTF-8 byte count as
+// serialized — and the transcript response carries no system raw key at all.
+func TestGetAgentSessionTranscriptSystemAlignment(t *testing.T) {
+	r, db := newAgentSessionTranscriptRouter(t, "")
+	base := time.Date(2026, 10, 10, 13, 0, 0, 0, time.UTC)
+	claude := "claude-code"
+	sess := "hs-align"
+
+	for i, sys := range []string{"align-one", "align-two", "align-two"} {
+		id := fmt.Sprintf("req-a%d", i+1)
+		testutil.SeedRequestLog(t, db, id, base.Add(time.Duration(i)*time.Minute), func(row *model.RequestLog) {
+			row.AgentClient = &claude
+			row.AgentSessionID = &sess
+			row.StatusCode = 200
+		})
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+			RequestID:    id,
+			RequestBody:  fmt.Sprintf(`{"system":%q,"messages":[{"role":"user","content":"q"}]}`, sys),
+			ResponseBody: `{"content":[{"type":"text","text":"r"}]}`,
+		}); err != nil {
+			t.Fatalf("upsert body %s: %v", id, err)
+		}
+	}
+	backfillAgentTurns(t, db)
+
+	_, p := fetchTranscript(t, r, sess, "")
+	if len(p.System) != 2 {
+		t.Fatalf("transcript system metadata = %d entries, want 2 (deduplicated): %+v", len(p.System), p.System)
+	}
+	w, env := doJSON(t, r, http.MethodGet, "/api/admin/agent-sessions/"+sess+"/transcript/system", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("transcript/system: status %d, body: %s", w.Code, w.Body.String())
+	}
+	var sysPayload struct {
+		System []transcriptSystemRaw `json:"system"`
+	}
+	if err := json.Unmarshal(env.Data, &sysPayload); err != nil {
+		t.Fatalf("unmarshal transcript/system: %v (body: %s)", err, w.Body.String())
+	}
+	if len(sysPayload.System) != len(p.System) {
+		t.Fatalf("entry counts = raw %d / metadata %d, want equal (index-aligned halves)", len(sysPayload.System), len(p.System))
+	}
+	for i := range sysPayload.System {
+		raw, meta := sysPayload.System[i], p.System[i]
+		if raw.SeenAtRequest != meta.SeenAtRequest {
+			t.Fatalf("entry %d seen_at_request = raw %q / metadata %q, want equal", i, raw.SeenAtRequest, meta.SeenAtRequest)
+		}
+		if raw.Truncated != meta.Truncated {
+			t.Fatalf("entry %d truncated = raw %v / metadata %v, want equal", i, raw.Truncated, meta.Truncated)
+		}
+		serialized, err := json.Marshal(raw.Raw)
+		if err != nil {
+			t.Fatalf("marshal raw %d: %v", i, err)
+		}
+		if meta.RawLength != len(serialized) {
+			t.Fatalf("entry %d raw_length = %d, want %d (the raw's serialized UTF-8 bytes)", i, meta.RawLength, len(serialized))
+		}
+	}
+	if sysPayload.System[0].Raw != "align-one" || sysPayload.System[1].Raw != "align-two" {
+		t.Fatalf("raw values = (%v, %v), want the two prompts in order", sysPayload.System[0].Raw, sysPayload.System[1].Raw)
+	}
+
+	// The transcript payload must not carry the raw key anywhere in system.
+	var probe struct {
+		System []map[string]json.RawMessage `json:"system"`
+	}
+	if err := json.Unmarshal(env2Data(t, r, sess), &probe); err != nil {
+		t.Fatalf("unmarshal transcript probe: %v", err)
+	}
+	for i, entry := range probe.System {
+		if _, has := entry["raw"]; has {
+			t.Fatalf("transcript system[%d] carries a raw key — the raw text belongs to /transcript/system only", i)
+		}
+		for _, key := range []string{"seen_at_request", "truncated", "raw_length"} {
+			if _, has := entry[key]; !has {
+				t.Fatalf("transcript system[%d] lacks %q", i, key)
+			}
+		}
+	}
+}
+
+// env2Data fetches the transcript endpoint's raw data JSON for key-level
+// probes (mirror structs cannot see keys that must be ABSENT).
+func env2Data(t *testing.T, r *gin.Engine, sessionID string) json.RawMessage {
+	t.Helper()
+	w, env := doJSON(t, r, http.MethodGet, "/api/admin/agent-sessions/"+sessionID+"/transcript", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("transcript %s: status %d, body: %s", sessionID, w.Code, w.Body.String())
+	}
+	return env.Data
+}
+
+// TestGetAgentSessionTranscriptSystemPerRequest pins the ?request= form on
+// the wire: the block's own system metadata (the per-request collapse row's
+// data hook) ships metadata-only inside the transcript, and the raw fetch
+// resolves to the value in effect at the named request — its own entry when
+// the value changed there, the inherited one when it repeated it, the empty
+// timeline for an id that names no request of the session (lenient, like
+// the stale cursors), and 14006 for an unknown session with the param.
+func TestGetAgentSessionTranscriptSystemPerRequest(t *testing.T) {
+	r, db := newAgentSessionTranscriptRouter(t, "")
+	base := time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
+	claude := "claude-code"
+	sess := "hs-pr"
+
+	bodies := map[string]string{
+		"p0": `{"messages":[{"role":"user","content":"q0"}]}`,
+		"p1": `{"system":"sys-one","messages":[{"role":"user","content":"q1"}]}`,
+		"p2": `{"system":"sys-one","messages":[{"role":"user","content":"q2"}]}`,
+		"p3": `{"system":"sys-two","messages":[{"role":"user","content":"q3"}]}`,
+	}
+	order := []string{"p0", "p1", "p2", "p3"}
+	for i, id := range order {
+		testutil.SeedRequestLog(t, db, id, base.Add(time.Duration(i)*time.Minute), func(row *model.RequestLog) {
+			row.AgentClient = &claude
+			row.AgentSessionID = &sess
+			row.StatusCode = 200
+		})
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+			RequestID:   id,
+			RequestBody: bodies[id],
+		}); err != nil {
+			t.Fatalf("upsert body %s: %v", id, err)
+		}
+	}
+	backfillAgentTurns(t, db)
+
+	// The transcript's blocks carry the per-request metadata — present for
+	// requests with a value in effect, absent for the request that precedes
+	// every recorded entry, and never carrying raw text.
+	_, p := fetchTranscript(t, r, sess, "")
+	if len(p.Blocks) != 4 {
+		t.Fatalf("blocks = %d, want 4", len(p.Blocks))
+	}
+	if p.Blocks[0].System != nil {
+		t.Fatalf("p0 block System = %+v, want nil (nothing recorded yet)", p.Blocks[0].System)
+	}
+	if p.Blocks[1].System == nil || p.Blocks[1].System.SeenAtRequest != "p1" || p.Blocks[1].System.RawLength == 0 {
+		t.Fatalf("p1 block System = %+v, want p1's entry with its raw length", p.Blocks[1].System)
+	}
+	if p.Blocks[2].System == nil || p.Blocks[2].System.SeenAtRequest != "p1" {
+		t.Fatalf("p2 block System = %+v, want the inherited p1 entry (same value, no row of its own)", p.Blocks[2].System)
+	}
+	if p.Blocks[3].System == nil || p.Blocks[3].System.SeenAtRequest != "p3" {
+		t.Fatalf("p3 block System = %+v, want p3's own entry", p.Blocks[3].System)
+	}
+
+	fetchAt := func(query string) []transcriptSystemRaw {
+		t.Helper()
+		w, env := doJSON(t, r, http.MethodGet, "/api/admin/agent-sessions/"+sess+"/transcript/system?"+query, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("system?%s: status %d, body: %s", query, w.Code, w.Body.String())
+		}
+		var payload struct {
+			System []transcriptSystemRaw `json:"system"`
+		}
+		if err := json.Unmarshal(env.Data, &payload); err != nil {
+			t.Fatalf("system?%s: unmarshal: %v", query, err)
+		}
+		return payload.System
+	}
+
+	// No-param form stays the whole timeline (two deduplicated values).
+	if got := fetchAt(""); len(got) != 2 {
+		t.Fatalf("no-param timeline = %d entries, want 2", len(got))
+	}
+	// Per-request forms resolve to the effective value.
+	if got := fetchAt("request=p1"); len(got) != 1 || got[0].Raw != "sys-one" || got[0].SeenAtRequest != "p1" {
+		t.Fatalf("request=p1 = %+v, want its own entry", got)
+	}
+	if got := fetchAt("request=p2"); len(got) != 1 || got[0].Raw != "sys-one" || got[0].SeenAtRequest != "p1" {
+		t.Fatalf("request=p2 = %+v, want the inherited p1 entry", got)
+	}
+	if got := fetchAt("request=p3"); len(got) != 1 || got[0].Raw != "sys-two" || got[0].SeenAtRequest != "p3" {
+		t.Fatalf("request=p3 = %+v, want its own entry", got)
+	}
+	// A request with no value in effect, and an id that names no request of
+	// the session: the lenient empty timeline (200, not an error).
+	for _, q := range []string{"request=p0", "request=nope"} {
+		if got := fetchAt(q); len(got) != 0 {
+			t.Fatalf("system?%s = %+v, want the empty timeline", q, got)
+		}
+	}
+	// Unknown session with the param: the domain 14006 envelope wins.
+	w, env := doJSON(t, r, http.MethodGet, "/api/admin/agent-sessions/void/transcript/system?request=p1", nil, nil)
+	if w.Code != http.StatusNotFound || env.Code != errcode.AgentSessionNotFound {
+		t.Fatalf("unknown session with request param: status %d code %d, want 404/%d", w.Code, env.Code, errcode.AgentSessionNotFound)
+	}
+}
+
+// TestGetAgentSessionTranscriptDomainErrorsWithParams pins TC-20's 14006
+// arm: the new parameter shapes ride the same domain envelopes — an unknown
+// session answers 14006 not-found on the transcript (with cursors), the
+// transcript/system endpoint, and bad cursors on an unknown session stay
+// 14006 (not-found wins over the lenient empty page). The member-403 arm is
+// pinned by the router package's member-scope conformance test, which
+// classifies both routes admin-only.
+func TestGetAgentSessionTranscriptDomainErrorsWithParams(t *testing.T) {
+	r, db := newAgentSessionTranscriptRouter(t, "")
+	seedTranscriptPageSession(t, db)
+
+	for _, path := range []string{
+		"/api/admin/agent-sessions/nope/transcript?limit=5&before=req-x",
+		"/api/admin/agent-sessions/nope/transcript?after=req-x",
+		"/api/admin/agent-sessions/nope/transcript/system",
+	} {
+		w, env := doJSON(t, r, http.MethodGet, path, nil, nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s: status %d, want 404, body: %s", path, w.Code, w.Body.String())
+		}
+		if env.Code != errcode.AgentSessionNotFound {
+			t.Fatalf("%s: code = %d, want %d (AgentSessionNotFound)", path, env.Code, errcode.AgentSessionNotFound)
+		}
 	}
 }

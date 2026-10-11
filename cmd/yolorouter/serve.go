@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/yolorouter/yolorouter/internal/agentbackfill"
+	"github.com/yolorouter/yolorouter/internal/agentturns"
 	"github.com/yolorouter/yolorouter/internal/audit"
 	"github.com/yolorouter/yolorouter/internal/auditretention"
 	"github.com/yolorouter/yolorouter/internal/gateway/osswire"
@@ -483,6 +484,30 @@ func runServe(ctx context.Context, args []string) error {
 	defer func() {
 		backfillCancel()
 		stopBackfill()
+	}()
+
+	// The agent-session turns backfill: one idempotent background pass over
+	// the request_logs history, started at boot and self-exiting when done.
+	// Requests written before the agent_session_turns table existed (and
+	// any whose live derivation degraded to a pending marker) still have
+	// their whole audit trail in request_logs + request_log_bodies, and the
+	// pass replays each of them through the SAME engine the live write path
+	// uses — the previous body is read from the stored capture either way —
+	// so a backfilled session's turn rows can never disagree with a freshly
+	// written one's. Rounds are small with a pause between them so a large
+	// history drains without competing with the live write path; whatever
+	// the pass still cannot derive keeps its pending marker (or its
+	// absence), and the next startup's pass rescans exactly that residue.
+	// Started here, after the migration created the table, for the same
+	// reason the loops above wait. Runs on a context derived from serve's
+	// own ctx and is awaited by a deferred cancel + stop so the goroutine
+	// exits before the process does.
+	turnsBackfill := agentturns.NewBackfillTask(app.DB)
+	turnsBackfillCtx, turnsBackfillCancel := context.WithCancel(ctx)
+	stopTurnsBackfill := turnsBackfill.Start(turnsBackfillCtx)
+	defer func() {
+		turnsBackfillCancel()
+		stopTurnsBackfill()
 	}()
 
 	// The provider key-suffix backfill: one idempotent background pass over

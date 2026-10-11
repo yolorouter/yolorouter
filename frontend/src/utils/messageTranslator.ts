@@ -13,10 +13,12 @@
 //                           top-level `content` array; empty body (a stream
 //                           request's response lives on disk) → placeholder
 //   translateStreamBody   — SSE increment merge: OpenAI
-//                           `choices[].delta.content` sequences and Anthropic
-//                           `content_block_delta.text_delta` sequences (block
-//                           boundaries included) concatenated back into the
-//                           full reply text
+//                           `choices[].delta.content` sequences, Anthropic
+//                           text_delta sequences (block boundaries included),
+//                           thinking_delta sequences (the model's reasoning,
+//                           kept as an off-axis thinking part), and tool_use
+//                           blocks reassembled from content_block_start +
+//                           input_json_delta fragments into call cards
 //   translateMessageArray — a bare message-object array with no surrounding
 //                           body: the slice the session replay transcript
 //                           delivers per request (the messages a request
@@ -24,6 +26,9 @@
 //                           client resends as history when the gateway never
 //                           recorded the reply). Emits the same internal
 //                           structure the whole-body paths emit.
+//   translateOneMessage   — the per-message half of the array path, for
+//                           callers that classify each wire message before
+//                           deciding what renders (the replay turn segments)
 //
 // Format judgment order is FIXED: Anthropic features are
 // tested first (top-level `system`, content arrays that read as Anthropic
@@ -51,14 +56,32 @@ export interface ChatImagePart {
   type: 'image'
 }
 
-/** Any other non-text part (tool_use / tool_calls / tool_result / ...),
- *  shown as a type label pill. When the block carries a payload worth
- *  reading — a tool call's arguments, a tool result's output text — the
- *  translator lifts it into `detail` and the bubble renders it as a
- *  scrollable block under the pill; without a payload it stays a pill. */
+/** The model's reasoning (Anthropic `thinking` blocks / thinking_delta
+ *  streams). Content is shown verbatim but NEVER on the conversation axis:
+ *  the bubble renders it as a default-collapsed "thinking" disclosure, so a
+ *  reasoning-heavy reply still reads as one quiet answer. Not counted into
+ *  ChatMessage.text — the reply's text stays the answer itself. */
+export interface ChatThinkingPart {
+  type: 'thinking'
+  text: string
+}
+
+/** A tool interaction part. When the block carries a payload worth reading —
+ *  a tool call's arguments, a tool result's output text — the translator
+ *  lifts it into `detail` and the bubble renders it as a compact card with
+ *  an expandable detail block; without a payload it stays a bare pill. */
 export interface ChatToolPart {
   type: 'tool'
   label: string
+  /** The bare tool name when the wire carried one ('Bash' of
+   *  'tool_use: Bash'); cards render it as their title. */
+  name?: string
+  /** Which side of the tool exchange this part is: an assistant-side call,
+ *  a tool-side result, or an untyped block (pill rendering). */
+  variant?: 'call' | 'result'
+  /** The wire id (Anthropic tool_use id / OpenAI tool_call id) — lets a
+ *  later tool_result correlate the tool name of the call it answers. */
+  id?: string
   detail?: string
   /** Highlight language for `detail` — set only when the payload is known
    *  to be pretty-printed JSON (a tool call's arguments), so the bubble
@@ -67,7 +90,7 @@ export interface ChatToolPart {
   detailLang?: 'json'
 }
 
-export type ChatPart = ChatTextPart | ChatImagePart | ChatToolPart
+export type ChatPart = ChatTextPart | ChatImagePart | ChatThinkingPart | ChatToolPart
 
 export interface ChatMessage {
   /** Wire role, passed through verbatim ('user' | 'assistant' | 'system' |
@@ -180,17 +203,22 @@ function toolDetail(v: unknown): ToolPayload {
 }
 
 // The one constructor for tool parts: a payload worth reading becomes a
-// pill with a detail block (highlighted when it is JSON), anything else
-// stays a bare pill.
-function toolPart(label: string, payload: ToolPayload): ChatToolPart {
-  if (!payload.text) return { type: 'tool', label }
-  if (payload.lang) return { type: 'tool', label, detail: payload.text, detailLang: payload.lang }
-  return { type: 'tool', label, detail: payload.text }
+// card (variant-carrying) or pill with a detail block (highlighted when it
+// is JSON), anything else stays a bare pill. `meta` carries the identity
+// fields (name / variant / id) the card rendering and the cross-turn
+// correlation read.
+function toolPart(label: string, payload: ToolPayload, meta: Pick<ChatToolPart, 'name' | 'variant' | 'id'> = {}): ChatToolPart {
+  const base = { type: 'tool' as const, label, ...meta }
+  if (!payload.text) return base
+  if (payload.lang) return { ...base, detail: payload.text, detailLang: payload.lang }
+  return { ...base, detail: payload.text }
 }
 
 // A tool_result's readable output: string content verbatim, a blocks array
-// reduced to its text blocks' texts, anything else no detail.
-function toolResultText(content: unknown): string {
+// reduced to its text blocks' texts, anything else no detail. Public: the
+// replay turn segments build tool-result cards from raw wire messages and
+// need the same extraction rule the whole-body path uses.
+export function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
   const texts: string[] = []
@@ -209,10 +237,6 @@ function makeMessage(role: string, parts: ChatPart[]): ChatMessage {
       .join(''),
     parts,
   }
-}
-
-function emptyAssistantMessage(): ChatMessage {
-  return { role: 'assistant', text: '', parts: [] }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,30 +268,37 @@ function isBlocksArray(content: unknown): boolean {
 }
 
 // One element of an Anthropic-style blocks array → part. Known carriers:
-// text (verbatim), image (placeholder). Everything else — tool_use,
-// tool_result, thinking, document, ... — is a non-text part and shows its
-// type (plus the tool name for tool_use).
+// text (verbatim), image (placeholder), thinking (the model's reasoning,
+// rendered off-axis as a collapsed disclosure). Everything else — tool_use,
+// tool_result, document, ... — is a tool part: calls and results carry their
+// variant/name/id so the bubble renders them as compact cards and a later
+// result can correlate the call's tool name.
 function blockToPart(block: Record<string, unknown>, toolNames?: Map<string, string>): ChatPart {
   const type = typeof block.type === 'string' ? block.type : ''
   if (type === 'text') {
     return { type: 'text', text: typeof block.text === 'string' ? block.text : '' }
   }
+  if (type === 'thinking') {
+    return { type: 'thinking', text: typeof block.thinking === 'string' ? block.thinking : '' }
+  }
   if (type === 'image') {
     return { type: 'image' }
   }
   if (type === 'tool_use') {
-    if (toolNames && typeof block.id === 'string') {
-      const name = typeof block.name === 'string' ? block.name : ''
-      if (name) toolNames.set(block.id, name)
-    }
-    return toolPart(toolLabel(type, block.name), toolDetail(block.input))
+    const name = typeof block.name === 'string' ? block.name : ''
+    const id = typeof block.id === 'string' ? block.id : undefined
+    if (toolNames && id && name) toolNames.set(id, name)
+    return toolPart(toolLabel(type, name), toolDetail(block.input), { name: name || undefined, variant: 'call', id })
   }
   if (type === 'tool_result') {
-    // Correlate with the earlier tool_use by id, so the pill reads
+    // Correlate with the earlier tool_use by id, so the card title reads
     // "tool_result: Bash" instead of a bare type name.
     const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : ''
     const name = (id && toolNames?.get(id)) || ''
-    return toolPart(toolLabel(type, name), toolDetail(toolResultText(block.content)))
+    return toolPart(toolLabel(type, name), toolDetail(toolResultText(block.content)), {
+      name: name || undefined,
+      variant: 'result',
+    })
   }
   return { type: 'tool', label: toolLabel(type || 'unknown', block.name) }
 }
@@ -352,7 +383,9 @@ function responsesItemToMessage(item: Record<string, unknown>): ChatMessage | nu
     return makeMessage('tool', parts)
   }
   if (type !== '') {
-    return makeMessage('assistant', [toolPart(toolLabel(type, item.name), toolDetail(item.arguments))])
+    const callName = typeof item.name === 'string' ? item.name : ''
+    const callId = typeof item.call_id === 'string' ? item.call_id : (typeof item.id === 'string' ? item.id : undefined)
+    return makeMessage('assistant', [toolPart(toolLabel(type, callName), toolDetail(item.arguments), { name: callName || undefined, variant: 'call', id: callId })])
   }
   return makeMessage('tool', [{ type: 'tool', label: 'item' }])
 }
@@ -426,7 +459,9 @@ export function translateRequestBody(raw: string): TranslatedBody {
         for (const call of m.tool_calls) {
           if (!isRecord(call)) continue
           const fn = isRecord(call.function) ? call.function : {}
-          parts.push(toolPart(toolLabel('tool_calls', fn.name), toolDetail(fn.arguments)))
+          const fnName = typeof fn.name === 'string' ? fn.name : ''
+          const callId = typeof call.id === 'string' ? call.id : undefined
+          parts.push(toolPart(toolLabel('tool_calls', fnName), toolDetail(fn.arguments), { name: fnName || undefined, variant: 'call', id: callId }))
         }
       }
       messages.push(makeMessage(role, parts))
@@ -471,6 +506,31 @@ export function translateRequestBody(raw: string): TranslatedBody {
 // emit the same internal structure for the shared vocabulary, so a
 // single-dialect array translates identically to the whole-body path and
 // a mixed one still renders.
+// One bare message object → internal ChatMessage (the per-message half of
+// translateMessageArray's walk). Public: the replay turn segments classify
+// each raw `added` message on the wire and translate exactly the ones that
+// stay on the conversation axis, through the same reading the array path
+// applies. Non-record input yields null (nothing to render); the toolNames
+// map is optional and only feeds within-message tool_use → tool_result
+// correlation.
+export function translateOneMessage(m: unknown, toolNames?: Map<string, string>): ChatMessage | null {
+  if (!isRecord(m)) return null
+  const role = typeof m.role === 'string' ? m.role : ''
+  const parts = contentToParts(m.content, isBlocksArray(m.content), toolNames)
+  // Assistant tool_calls live beside content, not inside it (the OpenAI
+  // resend copies) — one labeled part per call, appended in wire order.
+  if (Array.isArray(m.tool_calls)) {
+    for (const call of m.tool_calls) {
+      if (!isRecord(call)) continue
+      const fn = isRecord(call.function) ? call.function : {}
+      const fnName = typeof fn.name === 'string' ? fn.name : ''
+      const callId = typeof call.id === 'string' ? call.id : undefined
+      parts.push(toolPart(toolLabel('tool_calls', fnName), toolDetail(fn.arguments), { name: fnName || undefined, variant: 'call', id: callId }))
+    }
+  }
+  return makeMessage(role, parts)
+}
+
 export function translateMessageArray(input: unknown): TranslatedBody {
   // Nothing delivered at all (the transcript's not-recorded reply source
   // carries no raw) — the placeholder note, the same reading an empty
@@ -484,19 +544,8 @@ export function translateMessageArray(input: unknown): TranslatedBody {
   const toolNames = new Map<string, string>()
   const messages: ChatMessage[] = []
   for (const m of input) {
-    if (!isRecord(m)) continue
-    const role = typeof m.role === 'string' ? m.role : ''
-    const parts = contentToParts(m.content, isBlocksArray(m.content), toolNames)
-    // Assistant tool_calls live beside content, not inside it (the OpenAI
-    // resend copies) — one labeled part per call, appended in wire order.
-    if (Array.isArray(m.tool_calls)) {
-      for (const call of m.tool_calls) {
-        if (!isRecord(call)) continue
-        const fn = isRecord(call.function) ? call.function : {}
-        parts.push(toolPart(toolLabel('tool_calls', fn.name), toolDetail(fn.arguments)))
-      }
-    }
-    messages.push(makeMessage(role, parts))
+    const translated = translateOneMessage(m, toolNames)
+    if (translated) messages.push(translated)
   }
   // An array that yielded no messages — an empty list (a pure retry that
   // contributed nothing) or one made only of non-record elements — has
@@ -545,7 +594,9 @@ export function translateResponseBody(raw: string): TranslatedBody {
         for (const call of msg.tool_calls) {
           if (!isRecord(call)) continue
           const fn = isRecord(call.function) ? call.function : {}
-          parts.push(toolPart(toolLabel('tool_calls', fn.name), toolDetail(fn.arguments)))
+          const fnName = typeof fn.name === 'string' ? fn.name : ''
+          const callId = typeof call.id === 'string' ? call.id : undefined
+          parts.push(toolPart(toolLabel('tool_calls', fnName), toolDetail(fn.arguments), { name: fnName || undefined, variant: 'call', id: callId }))
         }
       }
       messages.push(makeMessage(role, parts))
@@ -581,22 +632,51 @@ const ANTHROPIC_STREAM_EVENT_TYPES = new Set([
   'ping',
 ])
 
+// One tool_use block assembled from its stream increments: the
+// content_block_start frame carries the id and name, and the
+// input_json_delta fragments concatenate (in arrival order, which for one
+// block IS the serialization order) into the full arguments JSON.
+interface StreamToolUse {
+  id: string
+  name: string
+  json: string
+}
+
+// Pretty-print the assembled arguments when they parse (the common case),
+// otherwise keep the concatenated fragments verbatim — a capture cut
+// mid-arguments still shows exactly what arrived.
+function streamToolDetail(json: string): ToolPayload {
+  if (json.trim() === '') return { text: '' }
+  try {
+    return { text: JSON.stringify(JSON.parse(json), null, 2), lang: 'json' }
+  } catch {
+    return { text: json }
+  }
+}
+
 export function translateStreamBody(raw: string): TranslatedBody {
   const cleaned = stripBOM(raw)
-  // An empty capture merges to an empty reply — still a bubble, matching
-  // the non-stream empty-content rendering.
+  // An empty capture means nothing was captured at all — the same
+  // "not recorded" placeholder an empty non-stream response body gets.
+  // (A capture with frames but no content is a real, empty reply — that
+  // case renders below as an empty bubble.)
   if (cleaned.trim() === '') {
-    return { kind: 'messages', messages: [emptyAssistantMessage()], truncated: false }
+    return PLACEHOLDER
   }
   const truncated = hasInlineTruncationMarker(cleaned)
 
   let role = 'assistant'
   let text = ''
+  let thinking = ''
   let sawFrame = false
   // Responses dialect: the done-frame items are the primary merge source
   // (each carries the complete message); text deltas only cover captures
   // truncated before any item completed.
   const doneItems: Array<Record<string, unknown>> = []
+  // Anthropic tool_use blocks, keyed by block index (deltas carry the index
+  // they extend) with a start-order list for faithful ordering.
+  const toolUses = new Map<number, StreamToolUse>()
+  const toolUseOrder: number[] = []
 
   for (const line of cleaned.split('\n')) {
     const trimmed = line.trim()
@@ -655,21 +735,41 @@ export function translateStreamBody(raw: string): TranslatedBody {
       continue
     }
 
-    // Anthropic-shaped event. Only text-bearing pieces contribute:
-    // content_block_start's initial text (usually '') plus every
-    // text_delta. Block boundaries and indices need no bookkeeping —
-    // appending in arrival order IS the block-boundary-correct merge,
-    // interleaved blocks included. tool_use blocks (input_json_delta)
-    // and usage frames carry no reply text and are frame-only.
+    // Anthropic-shaped event. The reply-bearing pieces contribute: text
+    // blocks (start text + every text_delta), thinking blocks (start
+    // thinking + every thinking_delta — the model's reasoning, rendered
+    // off-axis), and tool_use blocks (content_block_start's id/name plus
+    // the input_json_delta fragments concatenated into the arguments).
+    // Text and thinking append in arrival order — for one block that IS
+    // the serialization order, and a block's deltas never interleave with
+    // another text block's in practice; tool_use keeps index-keyed
+    // bookkeeping because its fragments must land in the right card.
     const type = typeof chunk.type === 'string' ? chunk.type : ''
     if (!ANTHROPIC_STREAM_EVENT_TYPES.has(type)) continue
     sawFrame = true
     if (type === 'content_block_start' && isRecord(chunk.content_block)) {
       const block = chunk.content_block
+      const index = typeof chunk.index === 'number' ? chunk.index : -1
       if (block.type === 'text' && typeof block.text === 'string') text += block.text
+      else if (block.type === 'thinking' && typeof block.thinking === 'string') thinking += block.thinking
+      else if (block.type === 'tool_use') {
+        const use: StreamToolUse = {
+          id: typeof block.id === 'string' ? block.id : '',
+          name: typeof block.name === 'string' ? block.name : '',
+          json: '',
+        }
+        toolUses.set(index, use)
+        toolUseOrder.push(index)
+      }
     } else if (type === 'content_block_delta' && isRecord(chunk.delta)) {
       const delta = chunk.delta
       if (delta.type === 'text_delta' && typeof delta.text === 'string') text += delta.text
+      else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') thinking += delta.thinking
+      else if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+        const use = toolUses.get(typeof chunk.index === 'number' ? chunk.index : -1)
+        if (use) use.json += delta.partial_json
+      }
+      // signature_delta frames are authenticity metadata, not content.
     }
   }
 
@@ -688,13 +788,35 @@ export function translateStreamBody(raw: string): TranslatedBody {
     }
   }
 
+  // The merged reply: thinking first (the collapsed disclosure), then the
+  // answer text, then the tool calls in the order the model issued them —
+  // the reading order a chat view gives a reasoning turn. A thinking-only
+  // or tool-only capture still yields a NON-empty bubble: its content lives
+  // in the parts instead of the text, which is exactly what the four
+  // all-machine-product captures on the replay fixtures need (an empty
+  // text merge used to paint a bare empty bubble for them).
+  const parts: ChatPart[] = []
+  if (thinking !== '') parts.push({ type: 'thinking', text: thinking })
+  if (text !== '') parts.push({ type: 'text', text })
+  for (const index of toolUseOrder) {
+    const use = toolUses.get(index)
+    if (!use) continue
+    parts.push(
+      toolPart(toolLabel('tool_use', use.name), streamToolDetail(use.json), {
+        name: use.name || undefined,
+        variant: 'call',
+        id: use.id || undefined,
+      }),
+    )
+  }
+
   return {
     kind: 'messages',
     messages: [
       {
         role,
         text,
-        parts: text === '' ? [] : [{ type: 'text', text }],
+        parts,
       },
     ],
     truncated,

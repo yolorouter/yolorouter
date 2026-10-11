@@ -227,6 +227,18 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	r.Use(middleware.AccessLog())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.Timezone())
+	// Transport compression sits at the engine root so every surface of
+	// this single binary shares it: the admin JSON API, the embedded
+	// frontend's text assets, the SPA fallback, and the gateway's
+	// whole-body relays. The middleware's own content-type allowlist keeps
+	// the streaming and binary relays out of it by construction — SSE
+	// streams flush per frame and binary media is already compressed —
+	// while the relays that commit their headers before writing (the
+	// commit-then-write delivery path) are decided at that commit, so the
+	// encoding header is on the wire before it serializes. Negotiation
+	// means a caller that does not send Accept-Encoding: gzip sees
+	// byte-for-byte what it saw before.
+	r.Use(middleware.Gzip())
 
 	healthz := func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -533,9 +545,12 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// session-level reading of other callers' traffic.
 	protected.GET("/agent-sessions", handler.GetAgentSessions(requestLogSvc))
 	protected.GET("/agent-sessions/:sessionId", handler.GetAgentSessionDetail(requestLogSvc))
-	// The session's full replay transcript — read-only like its two siblings,
-	// same admin-only classification (cross-account callers' conversations).
+	// The session's replay transcript (cursor-paginated blocks + system
+	// metadata) and the system timeline's raw values (the on-expand fetch) —
+	// read-only like their two siblings, same admin-only classification
+	// (cross-account callers' conversations).
 	protected.GET("/agent-sessions/:sessionId/transcript", handler.GetAgentSessionTranscript(requestLogSvc))
+	protected.GET("/agent-sessions/:sessionId/transcript/system", handler.GetAgentSessionTranscriptSystem(requestLogSvc))
 
 	// Video tasks: read-only admin window over the task domain. The task
 	// row is its own lifecycle record and billing evidence; refreshes

@@ -39,10 +39,19 @@ export default {
   replayElapsed: '{span} elapsed',
   replaySuccessRatio: '{success}/{total} succeeded',
   replayRequestLink: 'Request Details',
-  systemBlockTitle: 'System Prompt',
-  systemSeenAt: 'first seen on request {id}',
-  systemGroupChanges: 'System Prompt · first seen + {n} changes',
-  systemGroupFirstOnly: 'System Prompt · first seen',
+  // The per-request system-prompt row (owner 2026-10-11 rework): every
+  // request block carries its own prompt as one collapsed line under the
+  // block header — the session-wide group and its per-entry request
+  // annotations are gone.
+  systemPromptLabel: 'System Prompt',
+  systemRawFailed: 'Failed to load the system-prompt text',
+
+  // Lazy paging of the replay turns: the boundary rows' loading copy, the
+  // failure copy, and the retry action beside it.
+  loadOlder: 'Loading earlier turns…',
+  loadNewer: 'Loading newer turns…',
+  turnLoadFailed: 'Failed to load turns',
+  retry: 'Retry',
 
   // Message flow (bubble view of the captured bodies). The disclosure-row
   // and stream-merge keys below migrated here from the retired request
@@ -52,7 +61,17 @@ export default {
   flowFallbackTitle: 'Raw body',
   partImage: 'Image',
   expandFull: 'Show all',
+  expand: 'Expand',
   collapse: 'Collapse',
   partCharsNote: '{n} characters',
   streamMergedNote: 'streamed reply, merged from the sent chunks',
+
+  // The conversation model's graded elements (owner 2026-10-10 rework):
+  // the model's reasoning renders as a default-collapsed disclosure inside
+  // the reply; tool calls/results render as compact cards; machine-injected
+  // context collapses behind one quiet line naming its section count.
+  thinkingBlock: 'Thinking',
+  toolCall: 'Tool Call',
+  toolResult: 'Tool Result',
+  injectedContext: 'Injected context ({n})',
 }

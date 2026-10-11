@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"github.com/yolorouter/yolorouter/internal/agentturns"
 	"github.com/yolorouter/yolorouter/internal/gateway"
 	"github.com/yolorouter/yolorouter/internal/model"
 	"github.com/yolorouter/yolorouter/internal/repository"
@@ -29,10 +30,11 @@ import (
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
 
-// RequestLogService is the stateless composition layer over
-// request_log_query.go. It has no caching, masking, or permission post-
-// processing — those concerns will hang off this struct in later milestones
-// (per-role masking is a likely add).
+// RequestLogService is the composition layer over request_log_query.go.
+// Stateless mappings only — the replay transcript reads the persisted turn
+// store page by page, so there is no assembly state left to hold. No
+// masking or permission post-processing — those concerns will hang off this
+// struct in later milestones (per-role masking is a likely add).
 type RequestLogService struct {
 	db *gorm.DB
 	// bodiesDir is the absolute data/bodies/ directory the gateway's stream
@@ -224,8 +226,11 @@ type RequestLogDetail struct {
 // marker — never silently, matching the stream body's truncation-flag
 // convention. The stream capture file's inline copy (stream_body) runs under
 // the same cap; its raw uncapped bytes stay on the ranged /body/stream
-// endpoint, which the four DB-backed bodies do not have.
-const maxInlineBodyBytes = 1 << 20 // 1 MiB
+// endpoint, which the four DB-backed bodies do not have. The constant is
+// owned by internal/agentturns (the write-time turn derivation applies the
+// same cap as its parse-degradation threshold) and aliased here so the
+// read-side truncation and the write-side degradation can never drift.
+const maxInlineBodyBytes = agentturns.MaxInlineBodyBytes
 
 // inlineTruncationMarker is the human-readable suffix appended whenever an
 // inline body is cut, stating how much of the original is shown. Shared by

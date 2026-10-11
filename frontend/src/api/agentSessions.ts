@@ -1,12 +1,16 @@
 // frontend/src/api/agentSessions.ts
 //
 // API client for the tool-session views: one aggregate row per
-// agent_session_id plus the whole-session replay transcript. Mirrors the
+// agent_session_id plus the cursor-paginated replay transcript. Mirrors the
 // backend DTOs in internal/service/requestlog (AgentSessionListItem,
 // AgentSessionTranscript and its replay halves) and the query keys parsed
-// by internal/handler/agent_session_handler.go (page / page_size /
-// agent_client — the same pagination contract every paginated admin
-// endpoint uses).
+// by internal/handler/agent_session_handler.go. Pagination note: the LIST
+// endpoint below uses page / page_size / agent_client, the same offset
+// contract every other paginated admin endpoint uses — the TRANSCRIPT
+// endpoint deliberately deviates from it (block cursors + a server-side
+// byte budget), because offset semantics cannot express "continue toward
+// older from where I stopped" or "start at this anchor block", both of
+// which the replay page needs; see AgentSessionTranscriptParams.
 import { apiFetch } from './client'
 import type { StatusClass } from './requestLogs'
 
@@ -58,7 +62,9 @@ export interface AgentSessionReplayAssistant {
 // Mirrors service.AgentSessionReplayBlock: one request's replay turn — the
 // row metadata the turn's labels need, the caller-side messages this
 // request newly contributed (raw wire objects, assistant and system roles
-// already excluded by the backend dedup pass), and the reply attribution.
+// already excluded by the backend dedup pass), the system-prompt value in
+// effect at this request (metadata only — the raw text is the per-request
+// on-expand fetch below), and the reply attribution.
 export interface AgentSessionReplayBlock {
   request_id: string
   created_at: string
@@ -70,29 +76,81 @@ export interface AgentSessionReplayBlock {
   duration_ms: number
   provider_name: string
   added: unknown[]
+  /** The system timeline entry in effect at this request; absent/null when
+   *  no system value had been recorded at or before it (no prompt row). */
+  system?: AgentSessionReplaySystemMeta | null
   assistant: AgentSessionReplayAssistant
   added_truncated: boolean
 }
 
-// Mirrors service.AgentSessionReplaySystem: one entry of the deduplicated
-// system-prompt timeline. Raw is polymorphic by dialect — the Anthropic
-// top-level system value (string or block array) or the OpenAI dialect's
-// role=system message objects.
+// Mirrors service.AgentSessionReplaySystemMeta: the metadata-only half of
+// one system-timeline entry. The transcript response deliberately ships NO
+// raw prompt text — a long session can hold dozens of kilobytes per
+// distinct value — the raw values are fetched from .../transcript/system
+// when the collapsed system group is expanded. RawLength is the raw
+// value's JSON serialization size in UTF-8 bytes, exactly the bytes the
+// entry adds to that on-expand response.
+export interface AgentSessionReplaySystemMeta {
+  seen_at_request: string
+  truncated: boolean
+  raw_length: number
+}
+
+// Mirrors service.AgentSessionReplaySystem (the .../transcript/system
+// entries): one entry of the deduplicated system-prompt timeline with its
+// raw value. Raw is polymorphic by dialect — the Anthropic top-level
+// system value (string or block array) or the OpenAI dialect's role=system
+// message objects. Index-aligned with the transcript's system metadata
+// list by backend construction (both come from the same assembly).
 export interface AgentSessionReplaySystem {
   seen_at_request: string
   truncated: boolean
   raw: unknown
 }
 
-// Mirrors service.AgentSessionTranscript: the whole replay in one payload —
-// the session-level aggregate (AgentSessionListItem verbatim, so the replay
-// header bar and the list row can never drift into two shapes or two
-// numbers), the system-prompt timeline, and one block per request in
-// chronological order. One fetch renders the entire page.
+// Mirrors service.AgentSessionTranscript: one cursor-paginated page of the
+// replay. Session and system metadata arrive whole on every page (the info
+// bar's numbers are session-wide by contract, so they never depend on how
+// much is loaded), while blocks is one page carrying the direction-wise
+// continuation metadata:
+//   - has_more_before / next_before: whether older blocks exist beyond this
+//     page, and the upscroll cursor (the page's oldest block id — the
+//     server treats it exclusively);
+//   - has_more_after / next_after: whether newer blocks exist beyond this
+//     page, and the toward-newer cursor — normally the page's newest block
+//     id (the server treats it inclusively, so the anchor entry and its
+//     continuation share the after parameter), except when a page carries
+//     nothing beyond its anchor block, where it names the first block
+//     beyond the page so continuing always advances.
 export interface AgentSessionTranscript {
   session: AgentSessionRow
-  system: AgentSessionReplaySystem[]
+  system: AgentSessionReplaySystemMeta[]
   blocks: AgentSessionReplayBlock[]
+  has_more_before: boolean
+  next_before: string
+  has_more_after: boolean
+  next_after: string
+}
+
+// Mirrors service.AgentSessionTranscriptSystem: the on-expand payload of
+// .../transcript/system — the full deduplicated system-prompt timeline
+// with its raw values.
+export interface AgentSessionTranscriptSystem {
+  system: AgentSessionReplaySystem[]
+}
+
+// The transcript endpoint's cursor parameters. This paging contract is a
+// deliberate deviation from the page/page_size offset envelope the list
+// endpoint uses (see the file header): before pages one call exclusively
+// toward older, after pages one call inclusively toward newer, and their
+// absence asks for the latest page.
+export interface AgentSessionTranscriptParams {
+  /** Block-count cap. Default 20, max 200, both server-side. */
+  limit?: number
+  /** Exclusive older-direction cursor: the blocks strictly BEFORE this request id. */
+  before?: string
+  /** Inclusive toward-newer cursor: the blocks FROM this request id onward. */
+  after?: string
 }
 
 export interface AgentSessionListParams {
@@ -129,9 +187,42 @@ export function listAgentSessions(filter: AgentSessionListParams): Promise<Agent
   return apiFetch(`/api/admin/agent-sessions?${sp.toString()}`)
 }
 
-// The whole session replay in one request — the aggregate, the system
-// timeline, and every turn's blocks. The page mounts, fetches this exactly
-// once, and renders; there is deliberately no per-request follow-up fetch.
-export function getAgentSessionTranscript(sessionId: string): Promise<AgentSessionTranscript> {
-  return apiFetch(`/api/admin/agent-sessions/${encodeURIComponent(sessionId)}/transcript`)
+// buildTranscriptQuery encodes the transcript cursor params, skipping
+// absent values so a defaulted call stays a bare transcript URL (no empty
+// ?before= or ?limit= on the wire). The params mirror the handler's names
+// one-to-one — the table tests pin that pairing, so the client and the
+// handler cannot drift apart silently.
+export function buildTranscriptQuery(params: AgentSessionTranscriptParams = {}): URLSearchParams {
+  return buildQuery({
+    limit: params.limit,
+    before: params.before,
+    after: params.after,
+  })
+}
+
+// One cursor-paginated page of the replay (see AgentSessionTranscript):
+// no cursor params asks for the latest page, which is how the replay page
+// opens; before continues toward older; after starts at (or continues
+// from) an anchor block. Every page carries the whole-session aggregate
+// and the system timeline metadata, so continuation fetches only ever add
+// blocks.
+export function getAgentSessionTranscript(sessionId: string, params?: AgentSessionTranscriptParams): Promise<AgentSessionTranscript> {
+  const qs = buildTranscriptQuery(params).toString()
+  const base = `/api/admin/agent-sessions/${encodeURIComponent(sessionId)}/transcript`
+  return apiFetch(qs ? `${base}?${qs}` : base)
+}
+
+// The system-prompt raw text. Two forms share the endpoint: no params
+// fetches the whole deduplicated timeline (the export/back-compat form),
+// while { request } fetches the single value that was in effect at that
+// request — the per-block expansion fetch. The block's own system metadata
+// names the timeline entry the value resolves to, so blocks between two
+// changes share one fetch.
+export function getAgentSessionTranscriptSystem(
+  sessionId: string,
+  opts?: { request?: string },
+): Promise<AgentSessionTranscriptSystem> {
+  const base = `/api/admin/agent-sessions/${encodeURIComponent(sessionId)}/transcript/system`
+  const qs = buildQuery({ request: opts?.request }).toString()
+  return apiFetch(qs ? `${base}?${qs}` : base)
 }

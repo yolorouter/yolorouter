@@ -13,8 +13,11 @@
 //   SSE increment merge  OpenAI delta sequences (first chunk role),
 //                        Anthropic text_delta sequences across
 //                        content_block_start/delta/stop boundaries,
-//                        interleaved and malformed lines, empty stream →
-//                        empty reply
+//                        thinking_delta sequences (off-axis thinking
+//                        part), tool_use reassembled from input_json_delta
+//                        fragments (call part with id/name), interleaved
+//                        and malformed lines, empty capture → not-recorded
+//                        placeholder, terminator-only stream → empty reply
 //   bare message array   the session-replay slice form: one message-object
 //                        array per dialect, asserted isomorphic to the
 //                        whole-body translation of the equivalent body,
@@ -119,7 +122,7 @@ describe('translateRequestBody (request-side matrix)', () => {
       }),
       [
         msg('user', 'Weather?', [{ type: 'text', text: 'Weather?' }]),
-        msg('assistant', '', [{ type: 'tool', label: 'tool_calls: get_weather' }]),
+        msg('assistant', '', [{ type: 'tool', label: 'tool_calls: get_weather', name: 'get_weather', variant: 'call', id: 'call_1' }]),
         msg('tool', '22C sunny', [{ type: 'text', text: '22C sunny' }]),
       ],
     ],
@@ -150,7 +153,7 @@ describe('translateRequestBody (request-side matrix)', () => {
         msg('user', 'Read this chart', [{ type: 'text', text: 'Read this chart' }, { type: 'image' }]),
         msg('assistant', 'I will run the analysis.', [
           { type: 'text', text: 'I will run the analysis.' },
-          { type: 'tool', label: 'tool_use: Bash', detail: '{\n  "command": "ls"\n}', detailLang: 'json' },
+          { type: 'tool', label: 'tool_use: Bash', name: 'Bash', variant: 'call', id: 'toolu_1', detail: '{\n  "command": "ls"\n}', detailLang: 'json' },
         ]),
       ],
     ],
@@ -170,7 +173,7 @@ describe('translateRequestBody (request-side matrix)', () => {
       JSON.stringify({
         messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '22C sunny' }] }],
       }),
-      [msg('user', '', [{ type: 'tool', label: 'tool_result', detail: '22C sunny' }])],
+      [msg('user', '', [{ type: 'tool', label: 'tool_result', variant: 'result', detail: '22C sunny' }])],
     ],
   ])('translates %s', (_name, raw, expected) => {
     expect(reqMessages(raw)).toEqual(expected)
@@ -264,16 +267,16 @@ describe('translateMessageArray (bare message-array matrix)', () => {
   it.each([
     ['OpenAI dialect group: user / assistant tool_calls / tool result', OPENAI_SLICE as unknown[], [
       msg('user', 'Weather in Beijing?', [{ type: 'text', text: 'Weather in Beijing?' }]),
-      msg('assistant', '', [{ type: 'tool', label: 'tool_calls: get_weather', detail: '{\n  "city": "北京"\n}', detailLang: 'json' }]),
+      msg('assistant', '', [{ type: 'tool', label: 'tool_calls: get_weather', name: 'get_weather', variant: 'call', id: 'c1', detail: '{\n  "city": "北京"\n}', detailLang: 'json' }]),
       msg('tool', '晴 26 度', [{ type: 'text', text: '晴 26 度' }]),
     ]],
     ['Anthropic dialect group: blocks walk the blocks parser with in-array tool naming', ANTHROPIC_SLICE as unknown[], [
       msg('user', 'Run the deploy check', [{ type: 'text', text: 'Run the deploy check' }]),
       msg('assistant', 'Checking.', [
         { type: 'text', text: 'Checking.' },
-        { type: 'tool', label: 'tool_use: Bash', detail: '{\n  "command": "ls"\n}', detailLang: 'json' },
+        { type: 'tool', label: 'tool_use: Bash', name: 'Bash', variant: 'call', id: 'tu_1', detail: '{\n  "command": "ls"\n}', detailLang: 'json' },
       ]),
-      msg('user', '', [{ type: 'tool', label: 'tool_result: Bash', detail: 'total 0' }]),
+      msg('user', '', [{ type: 'tool', label: 'tool_result: Bash', name: 'Bash', variant: 'result', detail: 'total 0' }]),
     ]],
   ] as Array<[string, unknown[], ChatMessage[]]>)('translates the %s', (_name, input, expected) => {
     const out = translateMessageArray(input)
@@ -302,7 +305,7 @@ describe('translateMessageArray (bare message-array matrix)', () => {
     expect(out.kind).toBe('messages')
     expect(out.messages).toEqual([
       msg('assistant', 'First attempt.', [{ type: 'text', text: 'First attempt.' }]),
-      msg('assistant', '', [{ type: 'tool', label: 'tool_calls: calc' }]),
+      msg('assistant', '', [{ type: 'tool', label: 'tool_calls: calc', name: 'calc', variant: 'call', id: 'c9' }]),
       msg('assistant', 'Done.', [{ type: 'text', text: 'Done.' }]),
     ])
   })
@@ -384,7 +387,7 @@ describe('translateResponseBody (response-side matrix)', () => {
       [
         msg('assistant', 'Let me check.', [
           { type: 'text', text: 'Let me check.' },
-          { type: 'tool', label: 'tool_calls: search' },
+          { type: 'tool', label: 'tool_calls: search', name: 'search', variant: 'call', id: 'c1' },
         ]),
       ],
     ],
@@ -393,7 +396,7 @@ describe('translateResponseBody (response-side matrix)', () => {
       JSON.stringify({
         choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ function: { name: 'calc' } }] } }],
       }),
-      [msg('assistant', '', [{ type: 'tool', label: 'tool_calls: calc' }])],
+      [msg('assistant', '', [{ type: 'tool', label: 'tool_calls: calc', name: 'calc', variant: 'call' }])],
     ],
     [
       'OpenAI multiple choices render one message each',
@@ -432,7 +435,7 @@ describe('translateResponseBody (response-side matrix)', () => {
       [
         msg('assistant', 'Running it.', [
           { type: 'text', text: 'Running it.' },
-          { type: 'tool', label: 'tool_use: Read', detail: '{\n  "path": "/tmp"\n}', detailLang: 'json' },
+          { type: 'tool', label: 'tool_use: Read', name: 'Read', variant: 'call', id: 'toolu_1', detail: '{\n  "path": "/tmp"\n}', detailLang: 'json' },
         ]),
       ],
     ],
@@ -535,10 +538,11 @@ describe('translateStreamBody (SSE merge matrix)', () => {
     } satisfies TranslatedBody)
   })
 
-  it('merges interleaved multi-block sequences in arrival order and ignores non-text blocks', () => {
+  it('merges interleaved multi-block text in arrival order while the tool_use block assembles beside it', () => {
     // Blocks 0 and 1 interleave (a delta for 0 arrives after block 1
     // started); block 2 is a tool_use whose input_json_delta fragments
-    // must contribute nothing to the merged text.
+    // must contribute nothing to the merged TEXT — they land in the
+    // assembled call part instead.
     const raw = [
       'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Part one. "}}',
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"More A. "}}',
@@ -552,7 +556,13 @@ describe('translateStreamBody (SSE merge matrix)', () => {
       'data: {"type":"content_block_stop","index":2}',
       'data: {"type":"message_stop"}',
     ].join('\n')
-    expect(translateStreamBody(raw).messages[0]?.text).toBe('Part one. More A. Part two.Tail A.')
+    const reply = translateStreamBody(raw).messages[0]!
+    expect(reply.text, 'text still merges in arrival order').toBe('Part one. More A. Part two.Tail A.')
+    expect(reply.parts.filter((p) => p.type === 'tool')).toEqual([
+      // The lone fragment '{"c"' no longer parses — it stays verbatim with
+      // no JSON highlighting, exactly what arrived.
+      { type: 'tool', label: 'tool_use: Bash', name: 'Bash', variant: 'call', id: 't1', detail: '{"c"' },
+    ])
   })
 
   it('skips malformed and stray lines without breaking the merge', () => {
@@ -573,13 +583,130 @@ describe('translateStreamBody (SSE merge matrix)', () => {
   it.each<[string, string]>([
     ['an empty capture', ''],
     ['a whitespace-only capture', '\n\n \n'],
-    ['a terminator-only OpenAI stream', 'data: [DONE]\n'],
-  ])('merges %s into an empty reply bubble', (_name, raw) => {
+  ])('renders %s as the not-recorded placeholder — nothing was captured', (_name, raw) => {
     expect(translateStreamBody(raw)).toEqual({
+      kind: 'placeholder',
+      messages: [],
+      truncated: false,
+    } satisfies TranslatedBody)
+  })
+
+  it('merges a terminator-only OpenAI stream into an empty reply bubble — a real stream that said nothing', () => {
+    expect(translateStreamBody('data: [DONE]\n')).toEqual({
       kind: 'messages',
       messages: [msg('assistant', '', [])],
       truncated: false,
     } satisfies TranslatedBody)
+  })
+
+  it('merges thinking_delta sequences into an off-axis thinking part, keeping the answer text separate', () => {
+    const raw = [
+      'data: {"type":"message_start","message":{"role":"assistant","content":[]}}',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Plan: "}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"list first."}}',
+      'data: {"type":"content_block_stop","index":0}',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Here is the listing."}}',
+      'data: {"type":"message_stop"}',
+    ].join('\n')
+    const out = translateStreamBody(raw)
+    expect(out.kind).toBe('messages')
+    expect(out.messages).toEqual([
+      {
+        role: 'assistant',
+        // The answer text alone — reasoning never pollutes the bubble text.
+        text: 'Here is the listing.',
+        parts: [
+          { type: 'thinking', text: 'Plan: list first.' },
+          { type: 'text', text: 'Here is the listing.' },
+        ],
+      },
+    ])
+  })
+
+  it('reassembles a streamed tool_use from its input_json_delta fragments — the all-machine-product capture that used to paint a bare empty bubble', () => {
+    // The four replay regression captures' shape: thinking block + tool_use
+    // block, no text delta at all. The old merge dropped both deltas and
+    // answered an empty bubble; the rework assembles both into parts.
+    const raw = [
+      'data: {"type":"message_start","message":{"role":"assistant","content":[]}}',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Run it."}}',
+      'data: {"type":"content_block_stop","index":0}',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01","name":"Bash","input":{}}}',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"comm"}}',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"and\\": \\"ls -la\\"}"}}',
+      'data: {"type":"content_block_stop","index":1}',
+      'data: {"type":"message_stop"}',
+    ].join('\n')
+    const out = translateStreamBody(raw)
+    expect(out.kind).toBe('messages')
+    expect(out.messages).toHaveLength(1)
+    const reply = out.messages[0]!
+    expect(reply.text, 'no text delta means no text — but the bubble is NOT empty').toBe('')
+    expect(reply.parts).toEqual([
+      { type: 'thinking', text: 'Run it.' },
+      {
+        type: 'tool',
+        label: 'tool_use: Bash',
+        name: 'Bash',
+        variant: 'call',
+        id: 'toolu_01',
+        detail: '{\n  "command": "ls -la"\n}',
+        detailLang: 'json',
+      },
+    ])
+  })
+
+  it('merges a mixed reasoning turn: thinking, answer text, then the tool call — parts in reading order', () => {
+    const raw = [
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Think."}}',
+      'data: {"type":"content_block_stop","index":0}',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Answering, and I will call the tool."}}',
+      'data: {"type":"content_block_stop","index":1}',
+      'data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_02","name":"Read","input":{}}}',
+      'data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\": \\"/tmp\\"}"}}',
+      'data: {"type":"content_block_stop","index":2}',
+      'data: {"type":"message_stop"}',
+    ].join('\n')
+    const out = translateStreamBody(raw)
+    const reply = out.messages[0]!
+    expect(reply.text).toBe('Answering, and I will call the tool.')
+    expect(reply.parts.map((p) => p.type)).toEqual(['thinking', 'text', 'tool'])
+    expect(reply.parts[2]).toMatchObject({ name: 'Read', variant: 'call', id: 'toolu_02', detailLang: 'json' })
+  })
+
+  it('keeps an unparseable input_json_delta tail verbatim instead of dropping the call', () => {
+    // A capture cut mid-arguments: the fragments concatenate to something
+    // that no longer parses — the card still shows exactly what arrived.
+    const raw = [
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_03","name":"Bash","input":{}}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"comm"}}',
+      'data: {"type":"message_stop"}',
+    ].join('\n')
+    const out = translateStreamBody(raw)
+    expect(out.messages[0]?.parts[0]).toEqual({
+      type: 'tool',
+      label: 'tool_use: Bash',
+      name: 'Bash',
+      variant: 'call',
+      id: 'toolu_03',
+      detail: '{"comm',
+    })
+  })
+
+  it('renders thinking blocks in resent assistant copies as thinking parts (the message-array path)', () => {
+    const out = translateMessageArray([
+      { role: 'assistant', content: [{ type: 'thinking', thinking: 'prior reasoning' }, { type: 'text', text: 'prior answer' }] },
+    ])
+    expect(out.messages[0]?.parts).toEqual([
+      { type: 'thinking', text: 'prior reasoning' },
+      { type: 'text', text: 'prior answer' },
+    ])
+    expect(out.messages[0]?.text, 'thinking stays out of the bubble text').toBe('prior answer')
   })
 
   it.each<[string, string]>([
@@ -626,7 +753,7 @@ describe('translateRequestBody (responses dialect)', () => {
     expect(out.messages.map((m) => m.role)).toEqual(['system', 'developer', 'user', 'assistant', 'tool'])
     expect(out.messages[0]?.text).toBe('You are a coding agent running in the Codex CLI.')
     expect(out.messages[1]?.text).toBe('配置说明')
-    expect(out.messages[3]?.parts).toEqual([{ type: 'tool', label: 'function_call: shell' }])
+    expect(out.messages[3]?.parts).toEqual([{ type: 'tool', label: 'function_call: shell', name: 'shell', variant: 'call', id: 'call_1' }])
     expect(out.messages[4]?.text).toBe('exit 0')
   })
 
@@ -652,7 +779,7 @@ describe('translateResponseBody (responses dialect)', () => {
     expect(out.kind).toBe('messages')
     expect(out.messages.map((m) => m.role)).toEqual(['assistant', 'assistant'])
     expect(out.messages[0]?.text).toBe('答案在这里')
-    expect(out.messages[1]?.parts).toEqual([{ type: 'tool', label: 'function_call: shell' }])
+    expect(out.messages[1]?.parts).toEqual([{ type: 'tool', label: 'function_call: shell', name: 'shell', variant: 'call', id: 'c1' }])
   })
 })
 
@@ -746,6 +873,6 @@ describe('tool part payloads (detail lifting)', () => {
   it('keeps a bare tool part pill when the block carries no payload', () => {
     const raw = JSON.stringify({ model: 'claude-x', messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'nope', content: '' }] }] })
     const out = translateRequestBody(raw)
-    expect(out.messages[0]?.parts[0]).toEqual({ type: 'tool', label: 'tool_result' })
+    expect(out.messages[0]?.parts[0]).toEqual({ type: 'tool', label: 'tool_result', variant: 'result' })
   })
 })
