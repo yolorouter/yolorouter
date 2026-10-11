@@ -297,11 +297,6 @@ const navItems = computed<NavItem[]>(() => {
     { key: 'group-analytics', label: t('nav.groupAnalytics'), group: true },
     { key: 'usage', label: t('nav.usage'), icon: BarChart3, to: '/analytics' },
     { key: 'log-audit', label: t('nav.logAudit'), icon: ScrollText, to: '/request-logs' },
-    // The console's own change trail — one entry below the request-log
-    // audit it complements (gateway traffic vs. console actions).
-    // Admin-only branch only: the member surface above is untouched,
-    // matching the /audit-logs route guard.
-    { key: 'admin-audit', label: t('nav.adminAudit'), icon: ShieldCheck, to: '/audit-logs' },
     // Tool-session aggregate view — sits next to Log Audit in the analytics
     // group because it answers the same audit questions one level up (per
     // calling-tool session instead of per request). Admin-only branch only:
@@ -333,6 +328,11 @@ const navItems = computed<NavItem[]>(() => {
     // language entry. Key auto recovery used to open its own modal from a
     // sidebar entry; it now lives on this page as a form.
     { key: 'general-settings', label: t('nav.generalSettings'), icon: Settings, to: '/settings/general' },
+    // The console's own change trail, grouped with the instance-wide system
+    // settings it governs (audit retention lives on the settings page).
+    // Admin-only branch only: the member surface above is untouched,
+    // matching the /audit-logs route guard.
+    { key: 'admin-audit', label: t('nav.adminAudit'), icon: ShieldCheck, to: '/audit-logs' },
     { key: 'language', label: t('nav.language'), icon: Languages, onClick: () => (showLanguage.value = true) },
     // An admin promoted from an OAuth account has no password to change —
     // same is_local gate as the member branch above.
