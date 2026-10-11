@@ -1,6 +1,6 @@
 // AgentSessionTurn — one replay event of one tool session's persisted
 // turn store. Schema lives in
-// migrations/{sqlite,postgres}/00056_agent_session_turns.sql — goose owns
+// migrations/{sqlite,postgres}/00058_agent_session_turns.sql — goose owns
 // DDL, GORM here is query-only (no AutoMigrate), mirroring RequestLog.
 package model
 

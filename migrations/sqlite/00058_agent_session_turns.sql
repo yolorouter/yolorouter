@@ -1,6 +1,6 @@
--- migrations/sqlite/00056_agent_session_turns.sql
+-- migrations/sqlite/00058_agent_session_turns.sql
 --
--- SQLite mirror of migrations/postgres/00056_agent_session_turns.sql (TEXT
+-- SQLite mirror of migrations/postgres/00058_agent_session_turns.sql (TEXT
 -- stands in for the twin's wider columns; the payloads are the same
 -- strings). See the postgres twin's header note for the full column
 -- contract.
