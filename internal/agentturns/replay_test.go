@@ -366,6 +366,62 @@ func TestAssembleReplaySystemTimeline(t *testing.T) {
 	}
 }
 
+// TestAssembleReplayPerBlockSystemMeta pins the per-block System field: the
+// timeline entry IN EFFECT at each request — a request that changes the
+// value points at its own new entry, a request repeating the predecessor's
+// value inherits the last recorded entry, and a request that precedes every
+// recorded entry (a session that starts without a system prompt) carries
+// nil. The metadata half must agree entry-for-entry with the timeline the
+// same pass appends (seen_at_request, truncated, raw_length == the entry
+// raw's serialized size).
+func TestAssembleReplayPerBlockSystemMeta(t *testing.T) {
+	uQ1 := replayMsg("user", "hello")
+	sysV1 := "You are helpful."
+	sysV2 := "You are terse."
+	anthropic := func(sys string, msgs ...string) string {
+		return `{"system":` + sys + `,"messages":[` + strings.Join(msgs, ",") + `]}`
+	}
+	inputs := []AgentSessionReplayInput{
+		// No system value at all: nothing in effect yet.
+		replayInput("r0", replayBody(uQ1)),
+		// First value recorded here.
+		replayInput("r1", anthropic(`"`+sysV1+`"`, uQ1)),
+		// Same value: inherits r1's entry.
+		replayInput("r2", anthropic(`"`+sysV1+`"`, uQ1, replayMsg("user", "2"))),
+		// Changed value: its own new entry.
+		replayInput("r3", anthropic(`"`+sysV2+`"`, uQ1, replayMsg("user", "2"), replayMsg("user", "3"))),
+		// Same value again: inherits r3's entry.
+		replayInput("r4", anthropic(`"`+sysV2+`"`, uQ1, replayMsg("user", "2"), replayMsg("user", "3"), replayMsg("user", "4"))),
+	}
+
+	blocks, system := AssembleAgentSessionReplay(inputs)
+	if len(system) != 2 {
+		t.Fatalf("timeline = %+v, want the two changed values", system)
+	}
+	if blocks[0].System != nil {
+		t.Fatalf("request before any recorded value: System = %+v, want nil", blocks[0].System)
+	}
+	for i, wantSeen := range map[int]string{1: "r1", 2: "r1", 3: "r3", 4: "r3"} {
+		got := blocks[i].System
+		if got == nil {
+			t.Fatalf("block %d System = nil, want the entry recorded at %s", i, wantSeen)
+		}
+		if got.SeenAtRequest != wantSeen {
+			t.Errorf("block %d System.SeenAtRequest = %q, want %q", i, got.SeenAtRequest, wantSeen)
+		}
+		if got.Truncated {
+			t.Errorf("block %d System.Truncated = true, want false (a recorded value was never cut)", i)
+		}
+		wantLen := systemRawSerializedSize(system[len(system)-1].Raw)
+		if wantSeen == "r1" {
+			wantLen = systemRawSerializedSize(system[0].Raw)
+		}
+		if got.RawLength != wantLen {
+			t.Errorf("block %d System.RawLength = %d, want %d (the effective entry raw's serialized size)", i, got.RawLength, wantLen)
+		}
+	}
+}
+
 // TestAssembleReplayPureRetry pins the pure-retry shape: a request whose
 // messages are structurally identical to the previous request's (the
 // client retried) contributes no new input — an empty added array, not

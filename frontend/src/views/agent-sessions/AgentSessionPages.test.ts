@@ -23,7 +23,7 @@
 //   - assembly: one fetch renders the replay's first page — the two-line
 //     info bar (tool / session id / request count / from-to clock +
 //     elapsed span; tokens in-out / known cost + unknown marker / success
-//     ratio), the system-prompt timeline as ONE collapsed group titled
+//     ratio), one system-prompt row per request block (the request's own
 //     plainly "System Prompt" (no first-seen/change-count phrasing; the
 //     historical versions live inside the expansion as secondary entries,
 //     each annotated with its request id and truncation mark), and the
@@ -278,7 +278,7 @@ function transcriptFixture(): AgentSessionTranscript {
       last_seen_at: '2026-09-28T09:30:00Z',
     },
     // Metadata-only entries — the raw prompt text is the separate
-    // on-expand fetch (systemRawFixture below), index-aligned with this
+    // on-expand fetch (systemRawFor below), index-aligned with this
     // list.
     system: [
       { seen_at_request: REQUEST_1, truncated: false, raw_length: 28 },
@@ -312,6 +312,7 @@ function transcriptFixture(): AgentSessionTranscript {
           }),
         },
         added_truncated: false,
+        system: { seen_at_request: REQUEST_1, truncated: false, raw_length: 28 },
       },
       {
         // The failed turn: Anthropic blocks in (text + image), the reply
@@ -328,6 +329,8 @@ function transcriptFixture(): AgentSessionTranscript {
         added: [{ role: 'user', content: [{ type: 'text', text: '看看这张图' }, { type: 'image' }] }],
         assistant: { source: 'stream', truncated: false, raw: STREAM_CAPTURE },
         added_truncated: false,
+        // Same value as the first request: inherits its timeline entry.
+        system: { seen_at_request: REQUEST_1, truncated: false, raw_length: 28 },
       },
       {
         // Unrecorded reply lifted from the next request's resent copy; the
@@ -344,6 +347,8 @@ function transcriptFixture(): AgentSessionTranscript {
         added: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'file list output' }] }],
         assistant: { source: 'resend', truncated: false, raw: [{ role: 'assistant', content: '重发的回复' }] },
         added_truncated: false,
+        // The changed (truncated) value's own entry.
+        system: { seen_at_request: REQUEST_3, truncated: true, raw_length: 34 },
       },
       {
         // Capped request body: added degrades to the empty array and the
@@ -361,6 +366,7 @@ function transcriptFixture(): AgentSessionTranscript {
         added: [],
         assistant: { source: 'none', truncated: false, raw: null },
         added_truncated: true,
+        system: { seen_at_request: REQUEST_3, truncated: true, raw_length: 34 },
       },
     ],
     has_more_before: false,
@@ -370,22 +376,22 @@ function transcriptFixture(): AgentSessionTranscript {
   }
 }
 
-// The on-expand system raw fetch's answer: the same two timeline entries
-// with their raw values, index-aligned with the metadata list above.
-function systemRawFixture(): AgentSessionTranscriptSystem {
-  return {
-    system: [
-      { seen_at_request: REQUEST_1, truncated: false, raw: 'You are a helpful assistant.' },
-      { seen_at_request: REQUEST_3, truncated: true, raw: [{ type: 'text', text: 'Revised system prompt.' }] },
-    ],
+// The per-request system raw fetch's answer: the timeline entry in effect
+// at the named request — the first value (recorded at REQUEST_1) for
+// REQUEST_1/2, the changed truncated value (recorded at REQUEST_3) for
+// REQUEST_3/4.
+function systemRawFor(requestId: string): AgentSessionTranscriptSystem {
+  if (requestId === REQUEST_1 || requestId === REQUEST_2) {
+    return { system: [{ seen_at_request: REQUEST_1, truncated: false, raw: 'You are a helpful assistant.' }] }
   }
+  return { system: [{ seen_at_request: REQUEST_3, truncated: true, raw: [{ type: 'text', text: 'Revised system prompt.' }] }] }
 }
 
 beforeEach(() => {
   stubDesktopMatchMedia()
   listMock.mockResolvedValue(listFixture())
   transcriptMock.mockResolvedValue(transcriptFixture())
-  transcriptSystemMock.mockResolvedValue(systemRawFixture())
+  transcriptSystemMock.mockImplementation(async (_sid: string, opts?: { request?: string }) => systemRawFor(opts?.request ?? ''))
 })
 
 afterEach(() => {
@@ -552,70 +558,92 @@ describe.each<Locale>(['zh-CN', 'en'])('AgentSessionDetailPage replay assembly (
     expect(line2, 'success ratio').toContain(copy[locale].replaySuccessRatio.replace('{success}', '3').replace('{total}', '4'))
   })
 
-  it('renders the system timeline as ONE collapsed group titled simply "System Prompt", expanding into the secondary per-entry timeline', async () => {
+  it("renders one system-prompt row per request block — collapsed by default, expanding fetches that request's raw text once", async () => {
     await mountReplay(locale)
 
-    // Exactly one group container for the whole timeline, and while
-    // collapsed it is exactly the plain title line — no "first seen + N
-    // changes" phrasing anywhere, no per-entry panels, no prompt text, so
-    // the conversation starts right under the info bar however many times
-    // the prompt changed. Collapsed also means the raw-text endpoint has
-    // not been touched at all.
-    const group = document.body.querySelector('.replay-system')
-    expect(group, 'one group container for the whole system timeline').toBeTruthy()
-    const header = group!.querySelector('.n-collapse-item__header')?.textContent ?? ''
-    expect(header, 'the group title is the plain "System Prompt"').toContain(copy[locale].systemGroupTitle)
+    // One quiet row per block, directly under the block header (the
+    // metadata sign), labeled with the plain "System Prompt" — no
+    // "first seen + N changes" phrasing anywhere, no per-request
+    // annotations, no prompt text. Collapsed also means the raw-text
+    // endpoint has not been touched at all.
+    const rows = [...document.body.querySelectorAll<HTMLElement>('[data-testid="replay-system-row"]')]
+    expect(rows.length, 'one system row per request block').toBe(4)
+    for (const row of rows) {
+      expect(row.textContent ?? '', 'the row label is the plain "System Prompt"').toContain(copy[locale].systemPromptLabel)
+    }
+    // Each row sits right under its block's own metadata sign (the block
+    // header), before the conversation axis starts.
+    const turn1 = blockEl(REQUEST_1)!
+    const meta1 = turn1.querySelector('.replay-block__meta')
+    const row1 = turn1.querySelector('[data-testid="replay-system-row"]')
+    expect(meta1 && row1, 'the turn carries both header and system row').toBeTruthy()
+    expect(row1!.previousElementSibling, 'the system row follows the header line').toBe(meta1)
     // The retired phrasings are gone ENTIRELY — not rendered with another
     // number, not in another locale's leftover (regex-escaped patterns;
     // the zh copy carried '·' and '+', the en copy a literal '+').
     const pageText = document.body.textContent ?? ''
     expect(pageText, 'no "first seen" phrasing survives').not.toMatch(/首次出现|first seen/)
     expect(pageText, 'no change-count phrasing survives').not.toMatch(/变化\s*\d+\s*次|\+\s*\d+\s+changes?/)
-    expect(group!.querySelectorAll('.replay-system__entry').length, 'no per-entry panels while the group is collapsed').toBe(0)
     expect(pageText, 'system prompt hidden while collapsed').not.toContain('You are a helpful assistant.')
-    expect(transcriptSystemMock, 'no raw-text fetch while the group is collapsed').not.toHaveBeenCalled()
+    expect(transcriptSystemMock, 'no raw-text fetch while the rows are collapsed').not.toHaveBeenCalled()
 
-    // Expanding the group fetches the timeline's raw text once and reveals
-    // the historical versions in their secondary position: every entry
-    // annotated with the request that carried it (the fixture's two
-    // entries carry different request ids) plus the truncation mark on the
-    // truncated one — and each entry is still collapsed on its own, so the
-    // prompt text stays hidden until the entry itself opens.
-    group!.querySelector('.n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() => expect(transcriptSystemMock, 'expanding fetches the raw timeline once').toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(group!.querySelectorAll('.replay-system__entry').length, 'expanded group renders every timeline entry').toBe(2))
-    const entryHeaders = [...group!.querySelectorAll('.replay-system__entry .n-collapse-item__header')]
-    expect(entryHeaders[0]?.textContent ?? '', 'first entry annotated with its request').toContain(
-      copy[locale].systemEntrySeenAt.replace('{id}', REQUEST_1),
-    )
-    expect(entryHeaders[1]?.textContent ?? '', 'changed entry annotated with its request').toContain(
-      copy[locale].systemEntrySeenAt.replace('{id}', REQUEST_3),
-    )
-    expect(entryHeaders[1]?.textContent ?? '', 'truncated entry carries the truncation mark').toContain(copy[locale].flowTruncated)
-    expect(entryHeaders[0]?.textContent ?? '', 'untruncated entry carries no truncation mark').not.toContain(copy[locale].flowTruncated)
-    expect(group!.textContent ?? '', 'entries stay individually collapsed after the group opens').not.toContain(
-      'You are a helpful assistant.',
+    // Expanding one request's row fetches exactly that request's raw text
+    // (the second request inherits the first's value; the endpoint answers
+    // the value in effect at the named request) and renders it through the
+    // shared bubble renderer.
+    const toggleOf = (id: string) =>
+      blockEl(id)!.querySelector<HTMLButtonElement>('[data-testid="replay-system-row"] button')!
+    toggleOf(REQUEST_2).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(transcriptSystemMock, "expanding fetches the request's raw text once").toHaveBeenCalledTimes(1))
+    expect(transcriptSystemMock.mock.calls[0][1], 'the fetch names the expanded request').toEqual({ request: REQUEST_2 })
+    await vi.waitFor(() =>
+      expect(blockEl(REQUEST_2)?.textContent ?? '', 'the inherited value renders').toContain('You are a helpful assistant.'),
     )
 
-    // Opening one entry reveals its prompt through the shared bubble
-    // renderer — the per-entry expand behavior rides along unchanged.
-    group!.querySelector('.replay-system__entry .n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() => expect(group!.textContent ?? '', 'expanded entry shows its prompt text').toContain('You are a helpful assistant.'))
+    // Expanding the FIRST request's row — same timeline entry, unchanged
+    // value — reuses the same fetch: one entry, one fetch, however many
+    // blocks resolve to it.
+    toggleOf(REQUEST_1).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() =>
+      expect(blockEl(REQUEST_1)?.textContent ?? '', 'the same value renders on its own block').toContain('You are a helpful assistant.'),
+    )
+    expect(transcriptSystemMock, 'blocks sharing one timeline entry share one fetch').toHaveBeenCalledTimes(1)
+
+    // The changed value fetches under its own request and carries the
+    // truncation mark (the fixture records that entry as truncated).
+    toggleOf(REQUEST_3).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(transcriptSystemMock).toHaveBeenCalledTimes(2))
+    expect(transcriptSystemMock.mock.calls[1][1], 'the changed value fetches under its own request').toEqual({ request: REQUEST_3 })
+    await vi.waitFor(() => {
+      const turn3 = blockEl(REQUEST_3)!
+      expect(turn3.textContent ?? '', 'the revised prompt renders').toContain('Revised system prompt.')
+      expect(turn3.textContent ?? '', 'the truncated entry carries the truncation mark').toContain(copy[locale].flowTruncated)
+    })
+    expect(blockEl(REQUEST_1)?.textContent ?? '', 'the untruncated entry carries no truncation mark').not.toContain(copy[locale].flowTruncated)
   })
 
-  it('keeps the plain title whatever the timeline length — a never-changed prompt renders the same line', async () => {
-    // Same fixture with the timeline cut to its first entry — a session
-    // whose prompt stayed constant across every request. The collapsed
-    // group is the SAME plain title (the change count is not part of the
-    // vocabulary anymore), so both timeline shapes read identically.
-    const singleSystem = transcriptFixture()
-    singleSystem.system = [singleSystem.system[0]]
-    transcriptMock.mockResolvedValueOnce(singleSystem)
+  it('keeps the plain row label whatever the timeline shape — a never-changed prompt renders the same collapsed line on every block', async () => {
+    // Same fixture with every block resolving to the FIRST timeline entry
+    // (the change never happened): every row is the same collapsed line,
+    // and however many rows the reader opens, one entry means one fetch.
+    const constant = transcriptFixture()
+    constant.system = [constant.system[0]]
+    for (const b of constant.blocks) {
+      b.system = { seen_at_request: REQUEST_1, truncated: false, raw_length: 28 }
+    }
+    transcriptMock.mockResolvedValueOnce(constant)
     await mountReplay(locale)
 
-    const header = document.body.querySelector('.replay-system .n-collapse-item__header')?.textContent ?? ''
-    expect(header, 'single-entry timeline carries the same plain title').toContain(copy[locale].systemGroupTitle)
-    expect(header, 'still no change-count phrasing').not.toMatch(/变化|changes/)
+    const rows = document.body.querySelectorAll('[data-testid="replay-system-row"]')
+    expect(rows.length, 'one row per block still').toBe(4)
+    for (const row of rows) {
+      expect(row.textContent ?? '', 'the same plain label').toContain(copy[locale].systemPromptLabel)
+    }
+    const toggles = [...document.body.querySelectorAll<HTMLButtonElement>('[data-testid="replay-system-row"] button')]
+    toggles[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    toggles[3].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(transcriptSystemMock, 'one timeline entry, one fetch — however many rows open').toHaveBeenCalledTimes(1))
+    expect(document.body.textContent ?? '', 'still no change-count phrasing').not.toMatch(/变化|changes/)
   })
 
   it('renders the turns in chronological order with metadata signs, failure tags, and request-detail links', async () => {

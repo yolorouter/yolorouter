@@ -14,8 +14,9 @@
 //     timeline metadata + one cursor-paginated page of blocks), paged by
 //     the service out of the persisted turn store the write path keeps
 //   - GET /api/admin/agent-sessions/:sessionId/transcript/system
-//     the system timeline's raw values (the on-expand fetch for the
-//     collapsed system group)
+//     the system-prompt raw text: the whole deduplicated timeline (no
+//     params), or the single value in effect at one request
+//     (?request=<request_id>, the per-block on-expand fetch)
 package handler
 
 import (
@@ -150,11 +151,21 @@ func GetAgentSessionTranscript(svc *requestlog.RequestLogService) gin.HandlerFun
 }
 
 // GetAgentSessionTranscriptSystem handles GET
-// /api/admin/agent-sessions/:sessionId/transcript/system — the full
-// deduplicated system-prompt timeline with its raw values, fetched when the
-// collapsed system group is expanded. Index-aligned with the transcript's
-// system metadata list (both come from the same assembly). An unknown
-// session id answers the domain 404 envelope, like the transcript route.
+// /api/admin/agent-sessions/:sessionId/transcript/system — the
+// system-prompt raw text, fetched when a collapsed system row is expanded.
+// Two forms share the route:
+//
+//   - no params: the full deduplicated timeline with its raw values,
+//     index-aligned with the transcript's system metadata list (both come
+//     from the same assembly) — the export/back-compat form;
+//   - ?request=<request_id>: the single value that was in effect at that
+//     request (the per-block expansion fetch — a block's own prompt row
+//     resolves through the same chronological walk, so the two never
+//     disagree). An id that names no request of the session answers the
+//     empty timeline, the lenient convention the transcript cursors set.
+//
+// An unknown session id answers the domain 404 envelope, like the
+// transcript route.
 func GetAgentSessionTranscriptSystem(svc *requestlog.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sessionID := c.Param("sessionId")
@@ -162,7 +173,7 @@ func GetAgentSessionTranscriptSystem(svc *requestlog.RequestLogService) gin.Hand
 			response.ParamError(c, "sessionId is required")
 			return
 		}
-		system, err := svc.GetAgentSessionTranscriptSystem(sessionID)
+		system, err := svc.GetAgentSessionTranscriptSystemAtRequest(sessionID, c.Query("request"))
 		if err != nil {
 			if errors.Is(err, errcode.ErrAgentSessionNotFound) {
 				response.NotFound(c, errcode.AgentSessionNotFound, errcode.GetMessage(errcode.AgentSessionNotFound))

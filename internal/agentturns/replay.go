@@ -116,6 +116,14 @@ type AgentSessionReplayBlock struct {
 	// as the next block's resend), and system prompts have their own
 	// channel. An empty array means a pure retry or no new input.
 	Added []any `json:"added"`
+	// System is the system-prompt value IN EFFECT at this request — the
+	// timeline entry this request's prompt resolves to, where a request
+	// whose value equals its predecessor's inherits the last recorded
+	// entry (dedup records a row only on change). Nil means no system
+	// value was in effect (nothing recorded at or before this request).
+	// Metadata only, same contract as the timeline's own entries: the raw
+	// text is a separate on-expand fetch.
+	System *AgentSessionReplaySystemMeta `json:"system,omitempty"`
 	// Assistant is the reply attribution for this turn (the four sources
 	// are documented on AgentSessionReplayAssistant).
 	Assistant AgentSessionReplayAssistant `json:"assistant"`
@@ -137,6 +145,18 @@ type AgentSessionReplaySystem struct {
 	Raw           any    `json:"raw"`
 }
 
+// AgentSessionReplaySystemMeta is the metadata-only half of one system
+// timeline entry — what a payload ships when the raw prompt text stays
+// behind a dedicated fetch (a long session can hold dozens of kilobytes per
+// distinct value). RawLength is the raw value's JSON serialization size in
+// UTF-8 bytes, measured by systemRawSerializedSize, so both halves of the
+// contract speak one number.
+type AgentSessionReplaySystemMeta struct {
+	SeenAtRequest string `json:"seen_at_request"`
+	Truncated     bool   `json:"truncated"`
+	RawLength     int    `json:"raw_length"`
+}
+
 // AssembleAgentSessionReplay turns a session's chronological request
 // sequence into the two replay halves: one block per request, plus the
 // deduplicated system-prompt timeline. The pass runs in three steps over
@@ -155,7 +175,9 @@ type AgentSessionReplaySystem struct {
 //     stream > resend > none, where resend lifts the assistant copies the
 //     NEXT request's new suffix carries (a client resending an unrecorded
 //     reply as history); the system timeline appends a record whenever
-//     this request's system value differs from the last recorded one.
+//     this request's system value differs from the last recorded one, and
+//     the block carries the timeline entry in effect at its request
+//     (System) so the request's own prompt is presentable per block.
 //
 // The filter in step 3 plus the priority in its assistant rule make every
 // assistant message appear exactly once: when the reply was recorded, the
@@ -189,6 +211,12 @@ func AssembleAgentSessionReplay(inputs []AgentSessionReplayInput) (blocks []Agen
 
 	var lastSystem any
 	hasLastSystem := false
+	// The effective-entry cursor for the per-block System field: the index
+	// of the timeline entry a request's prompt resolves to (-1 while no
+	// value has been recorded yet). A request whose value equals the last
+	// recorded one keeps the cursor where it is — its effective prompt IS
+	// that entry.
+	systemCursor := -1
 	// The session-wide duplicate-input fold: the last real text KEPT, in
 	// walk order — the same state the write path reads from the session's
 	// last user_input row (see DeriveTurnEvents), so the pass and the
@@ -220,8 +248,17 @@ func AssembleAgentSessionReplay(inputs []AgentSessionReplayInput) (blocks []Agen
 				Raw:           parsed[i].system,
 			})
 			lastSystem, hasLastSystem = parsed[i].system, true
+			systemCursor = len(system) - 1
 		}
 
+		var effectiveSystem *AgentSessionReplaySystemMeta
+		if systemCursor >= 0 {
+			effectiveSystem = &AgentSessionReplaySystemMeta{
+				SeenAtRequest: system[systemCursor].SeenAtRequest,
+				Truncated:     system[systemCursor].Truncated,
+				RawLength:     systemRawSerializedSize(system[systemCursor].Raw),
+			}
+		}
 		blocks = append(blocks, AgentSessionReplayBlock{
 			RequestID:      in.RequestID,
 			CreatedAt:      in.CreatedAt,
@@ -233,6 +270,7 @@ func AssembleAgentSessionReplay(inputs []AgentSessionReplayInput) (blocks []Agen
 			DurationMs:     in.DurationMs,
 			ProviderName:   in.ProviderName,
 			Added:          added,
+			System:         effectiveSystem,
 			Assistant:      replayAssistant(in, newSuffix, i),
 			AddedTruncated: in.RequestBodyTruncated,
 		})

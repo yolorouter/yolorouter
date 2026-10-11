@@ -28,20 +28,17 @@
          Same aggregate semantics as the session list row (the backend
          derives both from the same rows) — and whole-session by contract,
          so the numbers never depend on how much is loaded;
-       - the deduplicated system-prompt timeline as ONE collapsed group at
-         the top of the replay — titled simply "System Prompt" and collapsed
-         to that bare title line (real agent traffic rewrites the prompt on
-         nearly every request, so the historical versions stay SECONDARY,
-         living inside the expansion; no first-appearance/change-count
-         summary copy). The group ships METADATA only; expanding it fetches
-         the timeline's raw text once, and each entry then expands into its
-         prompt, annotated with the request that carried it;
-       - one replay block per loaded request, in chronological order: the
-         caller-side messages that request newly contributed (the backend's
-         prefix-dedup pass already stripped everything resent), then the
-         assistant turn with its metadata sign (model, duration, in/out
-         tokens, a status tag when the request did not succeed) and a link
-         to the full request-log detail.
+       - one replay block per loaded request, in chronological order, laid
+         out as the request itself read: a metadata sign first (model,
+         duration, in/out tokens, a status tag when the request did not
+         succeed, a link to the full request-log detail), then the
+         request's OWN system-prompt row — one quiet collapsed line the
+         reader can expand into the prompt that was in effect at exactly
+         this request (the raw text is fetched per request on expand;
+         blocks whose prompt did not change share one fetch), then the
+         caller-side messages this request newly contributed (the
+         backend's prefix-dedup pass already stripped everything resent),
+         and finally the assistant reply.
 
      The assistant reply is attributed by source (the backend's four-way
      priority): inline bodies and stream captures translate through the
@@ -113,41 +110,6 @@
         </div>
       </div>
 
-      <!-- The deduplicated system-prompt timeline as ONE collapsed group —
-           titled simply "System Prompt". Real agent-tool traffic rewrites
-           the system prompt on nearly every request (volatile environment
-           info rides inside it), so the timeline can run to dozens of
-           entries; they stay SECONDARY — the group collapses to the bare
-           title line, and the historical versions live inside the
-           expansion. The raw prompt text is NOT part of any transcript
-           page: expanding the group fetches the whole timeline's raw text
-           once (.../transcript/system), and each entry then expands into
-           its own collapsible block, annotated with the request that
-           carried it. -->
-      <NCollapse v-if="systemMeta.length > 0" v-model:expanded-names="systemExpandedNames" class="replay-system">
-        <NCollapseItem name="system">
-          <template #header>
-            <span class="replay-system__title">{{ t('agentSessions.systemGroupTitle') }}</span>
-          </template>
-          <div v-if="systemRawError" class="replay-pager__row replay-pager__row--inside">
-            <span class="replay-pager__text replay-pager__text--error">{{ t('agentSessions.systemRawFailed') }}</span>
-            <NButton text size="tiny" type="primary" @click="loadSystemRaw">{{ t('agentSessions.retry') }}</NButton>
-          </div>
-          <div v-else-if="systemRaw === null" class="replay-pager__row replay-pager__row--inside">
-            <span class="replay-pager__text">{{ t('common.loading') }}</span>
-          </div>
-          <NCollapse v-for="(entry, i) in systemRaw ?? []" :key="`sys-${i}`" class="replay-system__entry">
-            <NCollapseItem name="system">
-              <template #header>
-                <span class="replay-system__seen">{{ t('agentSessions.systemEntrySeenAt', { id: entry.seen_at_request }) }}</span>
-                <span v-if="entry.truncated" class="replay-system__truncated">{{ t('agentSessions.flowTruncated') }}</span>
-              </template>
-              <ChatMessageFlow :body="systemFlow(entry)" :raw="systemRawText(entry)" />
-            </NCollapseItem>
-          </NCollapse>
-        </NCollapseItem>
-      </NCollapse>
-
       <!-- The older-direction boundary. The sentinel row exists exactly
            while older blocks remain; when idle it renders no chrome at all
            (a session that fits one page never shows it — nothing to page),
@@ -162,14 +124,56 @@
       </div>
 
       <!-- The replay itself: one block per loaded request, chronological.
-           Each block grades its added slice by the turn store's event
-           classes (utils/turnEvents mirrors the backend's write-time
-           classification): only a HUMAN input renders a user bubble on the
-           conversation axis; tool results render as compact result cards;
-           machine-injected context collapses behind one quiet line. The
-           conversation reads as "system prompt + user input + reply", the
-           way a mature chat view renders a session. -->
+           Each block opens with the request's metadata sign (the block
+           header), then the request's OWN system-prompt row — a quiet
+           collapsed line under the header, expandable into the prompt that
+           was in effect at exactly this request. Below it, the added slice
+           is graded by the turn store's event classes (utils/turnEvents
+           mirrors the backend's write-time classification): only a HUMAN
+           input renders a user bubble on the conversation axis; tool
+           results render as compact result cards; machine-injected context
+           collapses behind one quiet line. The conversation reads as
+           "system prompt + user input + reply", the way a mature chat view
+           renders a session. -->
       <section v-for="block in windowState.blocks" :id="`req-${block.request_id}`" :key="block.request_id" class="replay-block">
+        <!-- The block header / metadata sign: model, duration, in/out
+             tokens, a status tag for every non-success request — a failed
+             turn must read as failed, never silently disappear — the
+             "merged from the sent chunks" note for stream captures, and
+             the hop into the full request-log detail. -->
+        <div class="replay-block__meta">
+          <span class="replay-block__model" :title="block.model_name">{{ block.model_name || '—' }}</span>
+          <span class="replay-block__figure">{{ formatDuration(block.duration_ms) }}</span>
+          <span class="replay-block__figure">{{ t('requestLogs.tokenRowIn') }} {{ block.input_tokens }} / {{ t('requestLogs.tokenRowOut') }} {{ block.output_tokens }}</span>
+          <StatusClassTag v-if="block.status_class !== 'success'" :status="block.status_class" />
+          <span v-if="block.assistant.source === 'stream'" class="replay-block__mergednote">{{ t('agentSessions.streamMergedNote') }}</span>
+          <NButton text size="tiny" type="primary" @click="goRequestDetail(block.request_id)">{{ t('agentSessions.replayRequestLink') }}</NButton>
+        </div>
+
+        <!-- This request's system prompt: one quiet collapsed line under
+             the header, expandable into the prompt that was in effect at
+             exactly this request (the backend resolves per-request, so a
+             mid-session prompt change reads as the new value from the
+             request that carried it). The raw text is NOT part of any
+             transcript page — expanding fetches it once, keyed by the
+             timeline entry the block's metadata names, so consecutive
+             blocks with an unchanged prompt share one fetch. Absent for
+             requests before any recorded value. -->
+        <div v-if="block.system" class="replay-block__system" data-testid="replay-system-row">
+          <button type="button" class="replay-block__system-toggle" @click="toggleSystem(block)">
+            <span class="replay-block__system-label">{{ t('agentSessions.systemPromptLabel') }}</span>
+            <span class="replay-block__system-state">{{ isSystemOpen(block) ? t('agentSessions.collapse') : t('agentSessions.expand') }}</span>
+          </button>
+          <div v-if="isSystemOpen(block)" class="replay-block__system-body">
+            <div v-if="systemEntryFor(block) === 'error'" class="replay-block__system-error">
+              <span>{{ t('agentSessions.systemRawFailed') }}</span>
+              <NButton text size="tiny" type="primary" @click="retrySystem(block)">{{ t('agentSessions.retry') }}</NButton>
+            </div>
+            <div v-else-if="!systemEntryFor(block)" class="replay-block__system-loading">{{ t('common.loading') }}</div>
+            <ChatMessageFlow v-else :body="systemFlow(systemEntryFor(block))" :raw="systemRawText(systemEntryFor(block))" />
+          </div>
+        </div>
+
         <!-- The caller-side messages this request newly contributed, graded
              per event class. A truncated request body degrades to an empty
              array upstream, so the walk renders only when there is anything
@@ -197,20 +201,8 @@
         </template>
         <p v-if="block.added_truncated" class="replay-block__truncated">{{ t('agentSessions.flowTruncated') }}</p>
 
-        <!-- The assistant turn: metadata sign first (model, duration, in/out
-             tokens, a status tag for every non-success request — a failed
-             turn must read as failed, never silently disappear), the
-             "merged from the sent chunks" note for stream captures, then
-             the reply itself through the source-routed translator. -->
+        <!-- The assistant reply through the source-routed translator. -->
         <div class="replay-block__assistant">
-          <div class="replay-block__meta">
-            <span class="replay-block__model" :title="block.model_name">{{ block.model_name || '—' }}</span>
-            <span class="replay-block__figure">{{ formatDuration(block.duration_ms) }}</span>
-            <span class="replay-block__figure">{{ t('requestLogs.tokenRowIn') }} {{ block.input_tokens }} / {{ t('requestLogs.tokenRowOut') }} {{ block.output_tokens }}</span>
-            <StatusClassTag v-if="block.status_class !== 'success'" :status="block.status_class" />
-            <span v-if="block.assistant.source === 'stream'" class="replay-block__mergednote">{{ t('agentSessions.streamMergedNote') }}</span>
-            <NButton text size="tiny" type="primary" @click="goRequestDetail(block.request_id)">{{ t('agentSessions.replayRequestLink') }}</NButton>
-          </div>
           <ChatMessageFlow :body="assistantFlow(block)" :raw="assistantRaw(block)" />
         </div>
       </section>
@@ -233,14 +225,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NCollapse, NCollapseItem, NTag, useMessage } from 'naive-ui'
+import { NButton, NTag, useMessage } from 'naive-ui'
 import {
   getAgentSessionTranscript,
   getAgentSessionTranscriptSystem,
   type AgentSessionReplayBlock,
   type AgentSessionReplaySystem,
   type AgentSessionRow,
-  type AgentSessionReplaySystemMeta,
 } from '../../api/agentSessions'
 import { APIError, displayMessage } from '../../api/client'
 import { formatDuration, formatShortClock, formatSpan } from '../../utils/format'
@@ -266,17 +257,9 @@ const message = useMessage()
 // side (see replayPaging.ts). Seeded by the initial page, then extended by
 // the sentinels.
 const windowState = ref<TranscriptWindow>({ blocks: [], hasMoreBefore: false, nextBefore: '', hasMoreAfter: false, nextAfter: '' })
-// The whole-session aggregate and system timeline metadata — every page
-// carries them identically, so the info bar's numbers never depend on how
-// much is loaded.
+// The whole-session aggregate — every page carries it identically, so the
+// info bar's numbers never depend on how much is loaded.
 const session = ref<AgentSessionRow | null>(null)
-const systemMeta = ref<AgentSessionReplaySystemMeta[]>([])
-// The system timeline's raw text, fetched once when the collapsed group is
-// first expanded (null = not fetched yet; the group shows its loading row).
-const systemRaw = ref<AgentSessionReplaySystem[] | null>(null)
-const systemRawBusy = ref(false)
-const systemRawError = ref(false)
-const systemExpandedNames = ref<Array<string | number>>([])
 
 // First-screen states; the sentinel directions keep their own busy/error
 // flags so a failed upscroll degrades to a retry row, never a dead page.
@@ -329,9 +312,7 @@ async function reload() {
       anchor = null
     }
     session.value = page.session
-    systemMeta.value = page.system
-    systemRaw.value = null
-    systemRawError.value = false
+    resetSystemRows()
     windowState.value = windowFromPage(page)
     // Drop the first-screen gate BEFORE the landing scroll: the blocks
     // render on the next flush, and the scroll has to find them in the
@@ -339,10 +320,6 @@ async function reload() {
     // late for the scroll).
     loading.value = false
     await scrollInitial(anchor)
-    // A re-anchor with the system group already open dropped the raw text
-    // above; the expanded-names watch will not refire on its own, so pick
-    // the fetch back up here.
-    if (systemExpandedNames.value.includes('system')) void loadSystemRaw()
   } catch (err) {
     if (err instanceof APIError && err.code === AGENT_SESSION_NOT_FOUND_CODE) {
       notFound.value = true
@@ -484,7 +461,6 @@ async function loadOlder() {
     const page = await getAgentSessionTranscript(sessionId.value, { before: windowState.value.nextBefore })
     windowState.value = mergeWindow(windowState.value, page, 'older')
     session.value = page.session
-    systemMeta.value = page.system
     await nextTick()
     if (scroller) scroller.scrollTop += prependCompensation(heightBefore, scroller.scrollHeight)
   } catch {
@@ -508,7 +484,6 @@ async function loadNewer() {
     const page = await getAgentSessionTranscript(sessionId.value, { after: windowState.value.nextAfter })
     windowState.value = mergeWindow(windowState.value, page, 'newer')
     session.value = page.session
-    systemMeta.value = page.system
   } catch {
     newerError.value = true
   } finally {
@@ -516,28 +491,85 @@ async function loadNewer() {
   }
 }
 
-// ---------- System-prompt raw text (on expand) ----------
+// ---------- Per-request system-prompt rows (on expand) ----------
 
-// The collapsed group's expansion is the fetch trigger: the transcript
-// pages carry metadata only, the raw text is one dedicated request the
-// first time the group opens. Re-collapsing and re-expanding does not
-// refetch (systemRaw is kept), and neither does continuing to page blocks
-// — the timeline is session-wide.
-watch(systemExpandedNames, (names) => {
-  if (!names.includes('system')) return
-  void loadSystemRaw()
-})
+// One collapsed system row per request block. The raw prompt text is not
+// part of any transcript page — a block's row fetches it the first time it
+// opens. Open state is per BLOCK (each row toggles itself), while the
+// fetched payload is cached by the timeline entry the block's system
+// metadata names (seen_at_request): consecutive requests with an unchanged
+// prompt share ONE entry and therefore ONE fetch, and a change keys a new
+// fetch exactly where the value changed. A re-anchor rebuilds the window
+// and the row state with it (same contract as the injected runs); paging
+// more blocks never invalidates anything — the entries are session-wide.
+const openSystemRows = ref(new Set<string>())
+const systemEntryRaw = ref(new Map<string, AgentSessionReplaySystem | 'error'>())
+const systemEntryBusy = ref(new Set<string>())
 
-async function loadSystemRaw() {
-  if (systemRaw.value !== null || systemRawBusy.value) return
-  systemRawBusy.value = true
-  systemRawError.value = false
+function resetSystemRows() {
+  openSystemRows.value = new Set()
+  systemEntryRaw.value = new Map()
+  systemEntryBusy.value = new Set()
+}
+
+// The map key a block's system row caches under: the timeline entry the
+// request's prompt resolves to, not the request id — that is what makes
+// unchanged-prompt blocks share a fetch.
+function systemRowKey(block: AgentSessionReplayBlock): string {
+  return block.system?.seen_at_request ?? block.request_id
+}
+
+function isSystemOpen(block: AgentSessionReplayBlock): boolean {
+  return openSystemRows.value.has(block.request_id)
+}
+
+// The block's fetched entry ('error' after a failed fetch, undefined while
+// loading or not fetched — the row renders its loading copy for the
+// latter).
+function systemEntryFor(block: AgentSessionReplayBlock): AgentSessionReplaySystem | 'error' | undefined {
+  return systemEntryRaw.value.get(systemRowKey(block))
+}
+
+function toggleSystem(block: AgentSessionReplayBlock) {
+  const next = new Set(openSystemRows.value)
+  if (next.has(block.request_id)) next.delete(block.request_id)
+  else next.add(block.request_id)
+  openSystemRows.value = next
+  void ensureSystemRaw(block)
+}
+
+// retrySystem clears the failed marker and refetches — the same one-flight
+// discipline as the first fetch.
+function retrySystem(block: AgentSessionReplayBlock) {
+  const key = systemRowKey(block)
+  const entries = new Map(systemEntryRaw.value)
+  entries.delete(key)
+  systemEntryRaw.value = entries
+  void ensureSystemRaw(block)
+}
+
+async function ensureSystemRaw(block: AgentSessionReplayBlock) {
+  const key = systemRowKey(block)
+  if (!isSystemOpen(block) || systemEntryRaw.value.has(key) || systemEntryBusy.value.has(key)) return
+  const busy = new Set(systemEntryBusy.value)
+  busy.add(key)
+  systemEntryBusy.value = busy
   try {
-    systemRaw.value = (await getAgentSessionTranscriptSystem(sessionId.value)).system
+    const payload = await getAgentSessionTranscriptSystem(sessionId.value, { request: block.request_id })
+    const entries = new Map(systemEntryRaw.value)
+    // Cache under the row key (the entry the block resolves to); the
+    // payload's own seen_at_request names the same entry when the value
+    // changed at this request and an earlier one when inherited.
+    entries.set(key, payload.system[0] ?? { seen_at_request: key, truncated: false, raw: null })
+    systemEntryRaw.value = entries
   } catch {
-    systemRawError.value = true
+    const entries = new Map(systemEntryRaw.value)
+    entries.set(key, 'error')
+    systemEntryRaw.value = entries
   } finally {
-    systemRawBusy.value = false
+    const done = new Set(systemEntryBusy.value)
+    done.delete(key)
+    systemEntryBusy.value = done
   }
 }
 
@@ -617,19 +649,31 @@ function toggleInjected(requestId: string, segIndex: number) {
   openInjectedRuns.value = next
 }
 
-// One system-timeline entry. Raw is polymorphic by dialect: the Anthropic
+// One system-prompt entry. Raw is polymorphic by dialect: the Anthropic
 // top-level system value (string or block array) wraps into a synthetic
 // system message, while the OpenAI dialect's role=system message objects
-// are already a message array and translate directly.
-function systemFlow(entry: AgentSessionReplaySystem): TranslatedBody {
-  const raw = entry.raw
-  if (Array.isArray(raw) && raw.some((el) => typeof el === 'object' && el !== null && 'role' in el)) {
-    return translateMessageArray(raw)
+// are already a message array and translate directly. The entry's own
+// truncation flag rides alongside whatever the translator detected, the
+// same fold the assistant sources use.
+function systemFlow(entry: AgentSessionReplaySystem | 'error' | undefined): TranslatedBody {
+  // The 'error'/undefined arms are unreachable on this path (the template
+  // routes them to the retry/loading rows) — accepting the union keeps the
+  // template's repeated-call expressions honest for the type checker.
+  if (!entry || entry === 'error') {
+    return { kind: 'placeholder', messages: [], truncated: false }
   }
-  return translateMessageArray([{ role: 'system', content: raw }])
+  const raw = entry.raw
+  let body: TranslatedBody
+  if (Array.isArray(raw) && raw.some((el) => typeof el === 'object' && el !== null && 'role' in el)) {
+    body = translateMessageArray(raw)
+  } else {
+    body = translateMessageArray([{ role: 'system', content: raw }])
+  }
+  return entry.truncated && !body.truncated ? { ...body, truncated: true } : body
 }
 
-function systemRawText(entry: AgentSessionReplaySystem): string {
+function systemRawText(entry: AgentSessionReplaySystem | 'error' | undefined): string {
+  if (!entry || entry === 'error') return ''
   const raw = entry.raw
   if (typeof raw === 'string') return raw
   return jsonRaw(Array.isArray(raw) ? raw : [raw])
@@ -725,42 +769,64 @@ function goRequestDetail(requestId: string) {
   font-variant-numeric: tabular-nums;
 }
 
-/* System-prompt timeline: ONE bordered group container, collapsed by
-   default to its single summary line — quieter than the conversation
-   turns, and never taller than that line until the reader opens it. */
-.replay-system {
-  margin-bottom: var(--space-3, 12px);
+/* This request's system prompt: one quiet collapsed line under the block
+   header — same visual register as the injected-context rows (a footnote
+   to the turn, not a participant in it), never taller than that line
+   until the reader opens it. */
+.replay-block__system {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.replay-block__system-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2, 8px);
+  appearance: none;
   border: 1px dashed var(--color-border, #e0e0e6);
-  border-radius: var(--radius-md, 8px);
-  background: var(--color-bg-soft, #f2f3f5);
-}
-
-.replay-system__title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
-}
-
-/* Per-entry blocks inside the expanded group: the original timeline, one
-   collapsible block per distinct value, separated by dashed rules. */
-.replay-system__entry {
-  border-top: 1px dashed var(--color-border, #e0e0e6);
-}
-
-.replay-system__entry:first-child {
-  border-top: none;
-}
-
-.replay-system__seen {
-  font-family: var(--font-mono, monospace);
+  border-radius: var(--radius-full, 999px);
+  background: none;
+  padding: 1px 10px;
   font-size: 11px;
+  cursor: pointer;
+}
+
+.replay-block__system-toggle:focus-visible {
+  outline: 2px solid var(--color-accent, #6467f2);
+  outline-offset: 2px;
+}
+
+.replay-block__system-label {
+  font-weight: 600;
   color: var(--color-text-muted);
 }
 
-.replay-system__truncated {
-  margin-left: var(--space-2, 8px);
-  font-size: 11px;
-  color: var(--color-warning-text, #d48806);
+.replay-block__system-state {
+  color: var(--color-accent, #6467f2);
+}
+
+.replay-block__system-toggle:hover .replay-block__system-state {
+  text-decoration: underline;
+}
+
+.replay-block__system-body {
+  width: 100%;
+  min-width: 0;
+  margin-top: var(--space-1, 4px);
+}
+
+.replay-block__system-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font-size: 12px;
+  color: var(--color-error-text, #d03050);
+}
+
+.replay-block__system-loading {
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 /* Machine-injected context (system reminders, skill listings, command
@@ -853,16 +919,10 @@ function goRequestDetail(requestId: string) {
   color: var(--color-error-text, #d03050);
 }
 
-/* The system group's on-expand rows (loading / retry) sit inside the
-   group's own padding. */
-.replay-pager__row--inside {
-  min-height: 24px;
-  margin: var(--space-2, 8px) var(--space-3, 12px);
-}
-
-/* One replay turn: the newly-added messages, then the assistant half. The
-   assistant metadata sign rides above the reply, right-aligned so it reads
-   as attached to the assistant side of the conversation. */
+/* One replay turn: the block-header metadata sign, then the request's
+   system-prompt row, the newly-added messages, and the assistant reply.
+   The header sign stays right-aligned so it reads as the request's own
+   quiet label line rather than a heading. */
 .replay-block {
   display: flex;
   flex-direction: column;

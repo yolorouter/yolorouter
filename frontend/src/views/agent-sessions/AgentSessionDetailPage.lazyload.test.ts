@@ -33,8 +33,10 @@
 //          cross-turn tool names backfill
 //   TC-17  the info bar keeps showing the whole-session aggregate however
 //          many older pages load
-//   TC-18  the system group fetches its raw text exactly on first expand
-//          (zero requests while collapsed, none again on re-expand)
+//   TC-18  the per-request system rows fetch raw text exactly on first
+//          expand (zero requests while collapsed; blocks sharing one
+//          timeline entry share one fetch; re-expand and paging never
+//          refetch)
 //   cross- a result card whose calling turn sits outside the loaded
 //   turn    window degrades to the raw wire label (.toolcard__name--raw),
 //   names   and the upscroll that loads the calling turn backfills the
@@ -821,64 +823,101 @@ describe('AgentSessionDetailPage lazy loading — cross-turn tool names (degrade
 })
 
 // ---------------------------------------------------------------------------
-// TC-18 — system raw text: fetched exactly on first expand
+// TC-18 — per-request system rows: raw text fetched exactly on first expand
 // ---------------------------------------------------------------------------
 
-describe('AgentSessionDetailPage lazy loading — system raw on expand (TC-18)', () => {
+describe('AgentSessionDetailPage lazy loading — per-request system rows on expand (TC-18)', () => {
+  // Timeline: one value recorded at b00, a changed (truncated) value at
+  // b10. Every block of the latest window (b14..b23) and the older page
+  // (b04..b13 from b10 on) resolves to the b10 entry; b04..b09 resolve to
+  // the b00 entry. The per-block metadata is what drives the rows.
   const SYSTEM_META: AgentSessionTranscript['system'] = [
     { seen_at_request: 'b00', truncated: false, raw_length: 28 },
     { seen_at_request: 'b10', truncated: true, raw_length: 34 },
   ]
 
+  function blockSystem(requestId: string): AgentSessionTranscript['blocks'][number]['system'] {
+    if (requestId >= 'b10') return { seen_at_request: 'b10', truncated: true, raw_length: 34 }
+    if (requestId >= 'b00') return { seen_at_request: 'b00', truncated: false, raw_length: 28 }
+    return null
+  }
+
   function installSystemPages() {
+    const decorate = (page: AgentSessionTranscript): AgentSessionTranscript => ({
+      ...page,
+      system: SYSTEM_META,
+      blocks: page.blocks.map((b) => ({ ...b, system: blockSystem(b.request_id) })),
+    })
     transcriptMock.mockImplementation(async (_sid: string, params?: { before?: string; after?: string }) => {
-      if (!params || (!params.before && !params.after)) return pageOf(ALL_IDS.slice(14), true, 'b14', false, '', SYSTEM_META)
-      if (params.before === 'b14') return pageOf(ALL_IDS.slice(4, 14), true, 'b04', true, 'b13', SYSTEM_META)
+      if (!params || (!params.before && !params.after)) return decorate(pageOf(ALL_IDS.slice(14), true, 'b14', false, ''))
+      if (params.before === 'b14') return decorate(pageOf(ALL_IDS.slice(4, 14), true, 'b04', true, 'b13'))
       return pageOf([], false, '', false, '', SYSTEM_META)
     })
-    transcriptSystemMock.mockResolvedValue({
-      system: [
-        { seen_at_request: 'b00', truncated: false, raw: 'You are a helpful assistant.' },
-        { seen_at_request: 'b10', truncated: true, raw: [{ type: 'text', text: 'Revised system prompt.' }] },
-      ],
+    transcriptSystemMock.mockImplementation(async (_sid: string, opts?: { request?: string }) => {
+      // The per-request form: the entry in effect at the named request.
+      const seen = opts?.request && opts.request >= 'b10' ? 'b10' : 'b00'
+      if (seen === 'b10') {
+        return { system: [{ seen_at_request: 'b10', truncated: true, raw: [{ type: 'text', text: 'Revised system prompt.' }] }] }
+      }
+      return { system: [{ seen_at_request: 'b00', truncated: false, raw: 'You are a helpful assistant.' }] }
     })
   }
 
-  it('zero raw-text requests while collapsed; exactly one on expand, kept on re-expand; the timeline renders complete', async () => {
+  function systemRowOf(requestId: string): HTMLElement | null {
+    return blockEl(requestId)?.querySelector<HTMLElement>('[data-testid="replay-system-row"]') ?? null
+  }
+
+  function clickSystemToggle(requestId: string) {
+    systemRowOf(requestId)!.querySelector('button')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
+
+  it('zero raw-text requests while collapsed; one fetch per timeline entry on expand, shared across blocks, kept on re-expand and paging', async () => {
     installSystemPages()
     await mountReplay()
 
-    // Collapsed: metadata summary line only, and the raw-text endpoint
-    // untouched — the first screen carries no system prompt text.
-    const group = document.body.querySelector('.replay-system')
-    expect(group, 'the system group renders from metadata').toBeTruthy()
+    // Collapsed: one quiet row per loaded block (all of the latest window
+    // resolve to the b10 entry), no prompt text anywhere, and the raw-text
+    // endpoint untouched — the first screen carries no system prompt text.
+    const rows = document.body.querySelectorAll('[data-testid="replay-system-row"]')
+    expect(rows.length, 'one system row per loaded block').toBe(10)
+    for (const row of rows) {
+      expect(row.textContent ?? '', 'the row is the plain label + expand hint').toContain(zhCopy.systemPromptLabel)
+    }
     expect(transcriptSystemMock, 'no raw-text fetch while collapsed').not.toHaveBeenCalled()
     expect(document.body.textContent ?? '', 'prompt text absent while collapsed').not.toContain('You are a helpful assistant.')
 
-    // Expand: exactly one raw-text fetch, then the full timeline.
-    group!.querySelector('.n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() => expect(transcriptSystemMock, 'expanding fetches the raw timeline exactly once').toHaveBeenCalledTimes(1))
+    // Expand ONE block's row: exactly one fetch, targeted at that request,
+    // and the fetched prompt renders inside the row.
+    clickSystemToggle('b23')
+    await vi.waitFor(() => expect(transcriptSystemMock, 'expanding fetches the raw text exactly once').toHaveBeenCalledTimes(1))
     expect(transcriptSystemMock.mock.calls[0][0]).toBe(SESSION)
-    await vi.waitFor(() => expect(group!.querySelectorAll('.replay-system__entry').length, 'the timeline renders every entry').toBe(2))
-    const entryHeaders = [...group!.querySelectorAll('.replay-system__entry .n-collapse-item__header')]
-    expect(entryHeaders[0]?.textContent ?? '', 'first entry annotated').toContain(zhCopy.systemEntrySeenAt.replace('{id}', 'b00'))
-    expect(entryHeaders[1]?.textContent ?? '', 'changed entry annotated').toContain(zhCopy.systemEntrySeenAt.replace('{id}', 'b10'))
+    expect(transcriptSystemMock.mock.calls[0][1], 'the fetch names the expanded block\'s request').toEqual({ request: 'b23' })
+    await vi.waitFor(() => expect(systemRowOf('b23')?.textContent ?? '', 'the fetched raw prompt renders in the row').toContain('Revised system prompt.'))
 
-    // Opening one entry reveals its prompt through the shared renderer.
-    group!.querySelector('.replay-system__entry .n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() => expect(group!.textContent ?? '', 'the fetched raw prompt renders').toContain('You are a helpful assistant.'))
+    // Expanding a DIFFERENT block that resolves to the same timeline entry
+    // (same effective prompt): no second fetch — the entry is the cache key.
+    clickSystemToggle('b15')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(transcriptSystemMock, 'blocks sharing one entry share one fetch').toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(systemRowOf('b15')?.textContent ?? '').toContain('Revised system prompt.'))
 
     // Re-collapse and re-expand: the raw text is kept, no second request.
-    group!.querySelector('.n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() => expect(group!.querySelectorAll('.replay-system__entry').length).toBe(0))
-    group!.querySelector('.n-collapse-item__header-main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await vi.waitFor(() => expect(group!.querySelectorAll('.replay-system__entry').length).toBe(2))
+    clickSystemToggle('b23')
+    await vi.waitFor(() => expect(systemRowOf('b23')?.textContent ?? '', 'collapsed again — text hidden').not.toContain('Revised system prompt.'))
+    clickSystemToggle('b23')
+    await vi.waitFor(() => expect(systemRowOf('b23')?.textContent ?? '').toContain('Revised system prompt.'))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(transcriptSystemMock, 're-expanding does not refetch').toHaveBeenCalledTimes(1)
 
-    // And paging the blocks never touches the raw-text endpoint either.
+    // Paging loads blocks resolving to the OTHER entry (b04..b09 → b00):
+    // still zero fetches (rows render collapsed), and expanding one of
+    // them fetches exactly once more under its own request id.
     fireTop()
     await vi.waitFor(() => expect(blockIdsInOrder()).toEqual(ALL_IDS.slice(4)))
-    expect(transcriptSystemMock, 'block paging does not refetch the raw text').toHaveBeenCalledTimes(1)
+    expect(transcriptSystemMock, 'paging does not refetch anything').toHaveBeenCalledTimes(1)
+    clickSystemToggle('b05')
+    await vi.waitFor(() => expect(transcriptSystemMock).toHaveBeenCalledTimes(2))
+    expect(transcriptSystemMock.mock.calls[1][1], 'the older entry fetches under its own request').toEqual({ request: 'b05' })
+    await vi.waitFor(() => expect(systemRowOf('b05')?.textContent ?? '', 'the inherited first value renders').toContain('You are a helpful assistant.'))
   })
 })

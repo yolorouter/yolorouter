@@ -65,9 +65,19 @@ describe('getAgentSessionTranscript', () => {
 })
 
 describe('getAgentSessionTranscriptSystem', () => {
-  it('targets the raw-text endpoint', async () => {
+  it('a defaulted call is the bare raw-text endpoint — no trailing question mark', async () => {
     await getAgentSessionTranscriptSystem('sess-1')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/admin/agent-sessions/sess-1/transcript/system')
+  })
+
+  it('the per-request form carries the request param under the handler name', async () => {
+    await getAgentSessionTranscriptSystem('sess-1', { request: 'req-0009' })
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/admin/agent-sessions/sess-1/transcript/system?request=req-0009')
+  })
+
+  it('an empty request value is dropped — the bare URL, the handler whole-timeline form', async () => {
+    await getAgentSessionTranscriptSystem('sess-1', { request: '' })
     expect(fetchMock.mock.calls[0][0]).toBe('/api/admin/agent-sessions/sess-1/transcript/system')
   })
 })

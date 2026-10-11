@@ -36,10 +36,11 @@ import (
 // handler layer, and the tests all speak them — while the single
 // definition lives with the assembly semantics.
 type (
-	AgentSessionReplayInput     = agentturns.AgentSessionReplayInput
-	AgentSessionReplayAssistant = agentturns.AgentSessionReplayAssistant
-	AgentSessionReplayBlock     = agentturns.AgentSessionReplayBlock
-	AgentSessionReplaySystem    = agentturns.AgentSessionReplaySystem
+	AgentSessionReplayInput      = agentturns.AgentSessionReplayInput
+	AgentSessionReplayAssistant  = agentturns.AgentSessionReplayAssistant
+	AgentSessionReplayBlock      = agentturns.AgentSessionReplayBlock
+	AgentSessionReplaySystem     = agentturns.AgentSessionReplaySystem
+	AgentSessionReplaySystemMeta = agentturns.AgentSessionReplaySystemMeta
 )
 
 // Replay-source tags, aliased for the same reason as the types above.
@@ -56,19 +57,15 @@ const (
 // any future one) diff the turns-backed read against.
 var AssembleAgentSessionReplay = agentturns.AssembleAgentSessionReplay
 
-// AgentSessionReplaySystemMeta is the metadata-only half of one system
-// timeline entry, what the transcript response ships so the first screen
-// carries no raw system-prompt text (a long session can hold dozens of
-// kilobytes × N of it). RawLength is the raw value's JSON serialization size
-// in UTF-8 bytes — exactly the bytes the entry adds to the
-// /transcript/system response — so the frontend can budget the on-expand
-// fetch. It is served from the system_prompt turn row's content_bytes
-// sidecar, measured at write time by the same rule.
-type AgentSessionReplaySystemMeta struct {
-	SeenAtRequest string `json:"seen_at_request"`
-	Truncated     bool   `json:"truncated"`
-	RawLength     int    `json:"raw_length"`
-}
+// AgentSessionReplaySystemMeta is aliased from agentturns (the single
+// definition, alongside the replay vocabulary it describes): the
+// metadata-only half of one system timeline entry, what the transcript
+// response ships so no payload carries raw system-prompt text (a long
+// session can hold dozens of kilobytes × N of it). RawLength is the raw
+// value's JSON serialization size in UTF-8 bytes — exactly the bytes the
+// entry adds to the /transcript/system response — served from the
+// system_prompt turn row's content_bytes sidecar, measured at write time by
+// the same rule.
 
 // AgentSessionTranscript is the cursor-paginated transcript payload: the
 // aggregate and system timeline METADATA stay whole on every page (the header
@@ -146,7 +143,7 @@ func (s *RequestLogService) GetAgentSessionTranscript(sessionID string, page Age
 	if err != nil {
 		return nil, err
 	}
-	seq, err := s.turnBlockSequence(sessionID, rows)
+	seq, err := s.turnBlockSequence(sessionID, rows, systemMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +184,59 @@ func (s *RequestLogService) GetAgentSessionTranscriptSystem(sessionID string) (*
 		})
 	}
 	return &AgentSessionTranscriptSystem{System: system}, nil
+}
+
+// GetAgentSessionTranscriptSystemAtRequest answers the per-request form of
+// the raw fetch: the system-prompt value that was IN EFFECT at one named
+// request. Dedup means a request whose value equals its predecessor's
+// carries no system row of its own — its effective value is the last entry
+// recorded at or before it, resolved by the same chronological walk the
+// transcript's per-block System metadata uses (effectiveSystemIndices), so
+// the block's collapse row and this endpoint can never disagree. The
+// answer carries the single timeline entry (its SeenAtRequest names the
+// request the value was recorded on, which may precede the asked-for
+// request); an empty timeline answers when no value was in effect (the
+// request precedes every recorded entry) or when the id names no request of
+// the session — the lenient empty-page convention the transcript cursors
+// set, so a stale deep link reads as "nothing here", not an error.
+func (s *RequestLogService) GetAgentSessionTranscriptSystemAtRequest(sessionID, requestID string) (*AgentSessionTranscriptSystem, error) {
+	if requestID == "" {
+		return s.GetAgentSessionTranscriptSystem(sessionID)
+	}
+	rows, err := s.loadSessionRows(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := agentturns.ListSystemTurnEntries(s.db, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	entryIndexByRequest := make(map[string]int, len(entries))
+	for i := range entries {
+		if _, dup := entryIndexByRequest[entries[i].SeenAtRequest]; !dup {
+			entryIndexByRequest[entries[i].SeenAtRequest] = i
+		}
+	}
+	effective := -1
+	found := false
+	for i := range rows {
+		if idx, ok := entryIndexByRequest[rows[i].RequestID]; ok {
+			effective = idx
+		}
+		if rows[i].RequestID == requestID {
+			found = true
+			break
+		}
+	}
+	if !found || effective < 0 {
+		return &AgentSessionTranscriptSystem{System: []AgentSessionReplaySystem{}}, nil
+	}
+	entry := entries[effective]
+	return &AgentSessionTranscriptSystem{System: []AgentSessionReplaySystem{{
+		SeenAtRequest: entry.SeenAtRequest,
+		Truncated:     false, // a capped body parses to no system row at all — a recorded value was never cut
+		Raw:           entry.Raw,
+	}}}, nil
 }
 
 // loadSessionRows reads the session's request rows chronologically and maps
@@ -264,19 +314,53 @@ func agentSessionSummaryFromRows(sessionID string, rows []model.RequestLog) Agen
 // touch and memoizes, so the slicer's walk pays for exactly the blocks it
 // takes and the cursor lookups cost one id comparison each. Provider names
 // resolve once for the whole session (a bounded distinct set), the same
-// batched read the list endpoints use.
-func (s *RequestLogService) turnBlockSequence(sessionID string, rows []model.RequestLog) (transcriptBlockSequence, error) {
+// batched read the list endpoints use. systemMeta — the session's timeline
+// in order — feeds the per-block effective-system resolution (see
+// effectiveSystemIndices), so each block can present the prompt that was in
+// effect at its request without another query.
+func (s *RequestLogService) turnBlockSequence(sessionID string, rows []model.RequestLog, systemMeta []AgentSessionReplaySystemMeta) (transcriptBlockSequence, error) {
 	providerNames, err := repository.FindProviderNamesByIDs(s.db,
 		repository.CollectPtrIDs(rows, func(r *model.RequestLog) *uint { return r.ProviderID }))
 	if err != nil {
 		return transcriptBlockSequence{}, err
 	}
-	src := &turnsBlockSource{svc: s, providerNames: providerNames, cache: make([]*AgentSessionReplayBlock, len(rows))}
+	src := &turnsBlockSource{
+		svc:                s,
+		providerNames:      providerNames,
+		systemByRow:        effectiveSystemIndices(rows, systemMeta),
+		systemTimelineMeta: systemMeta,
+		cache:              make([]*AgentSessionReplayBlock, len(rows)),
+	}
 	return transcriptBlockSequence{
 		length:  len(rows),
 		idAt:    func(i int) string { return rows[i].RequestID },
 		blockAt: func(i int) AgentSessionReplayBlock { return src.block(&rows[i], i) },
 	}, nil
+}
+
+// effectiveSystemIndices resolves, for every request row, the index of the
+// system timeline entry in effect at that request (-1 when none was yet
+// recorded). One chronological walk: a request that carries its own
+// system_prompt row (a value change) advances the cursor to its entry, and
+// every request between changes inherits the last one — exactly the
+// whole-session pass's System field semantics (AssembleAgentSessionReplay),
+// so the turns-backed read and the parity oracle agree by construction.
+func effectiveSystemIndices(rows []model.RequestLog, systemMeta []AgentSessionReplaySystemMeta) []int {
+	entryIndexByRequest := make(map[string]int, len(systemMeta))
+	for i := range systemMeta {
+		if _, dup := entryIndexByRequest[systemMeta[i].SeenAtRequest]; !dup {
+			entryIndexByRequest[systemMeta[i].SeenAtRequest] = i
+		}
+	}
+	out := make([]int, len(rows))
+	cursor := -1
+	for i := range rows {
+		if idx, ok := entryIndexByRequest[rows[i].RequestID]; ok {
+			cursor = idx
+		}
+		out[i] = cursor
+	}
+	return out
 }
 
 // turnsBlockSource is the per-request materializer behind the lazy
@@ -287,7 +371,12 @@ func (s *RequestLogService) turnBlockSequence(sessionID string, rows []model.Req
 type turnsBlockSource struct {
 	svc           *RequestLogService
 	providerNames map[uint]string
-	cache         []*AgentSessionReplayBlock // one slot per row; nil = not materialized
+	// systemByRow[i] is the system timeline entry index in effect at row i
+	// (-1 = none); systemTimelineMeta is the timeline itself, so a block's
+	// System metadata is one indexed copy away.
+	systemByRow        []int
+	systemTimelineMeta []AgentSessionReplaySystemMeta
+	cache              []*AgentSessionReplayBlock // one slot per row; nil = not materialized
 }
 
 // block materializes row i's replay block. Every lookup failure degrades
@@ -298,14 +387,14 @@ func (src *turnsBlockSource) block(row *model.RequestLog, i int) AgentSessionRep
 	if b := src.cache[i]; b != nil {
 		return *b
 	}
-	b := src.materialize(row)
+	b := src.materialize(row, i)
 	src.cache[i] = &b
 	return b
 }
 
 // materialize builds one block from the request row, its turn rows, and its
 // body row.
-func (src *turnsBlockSource) materialize(row *model.RequestLog) AgentSessionReplayBlock {
+func (src *turnsBlockSource) materialize(row *model.RequestLog, i int) AgentSessionReplayBlock {
 	turns, turnsErr := agentturns.ListTurnsByRequestIDs(src.svc.db, []string{row.RequestID})
 	if turnsErr != nil {
 		logger.Warn("agent session transcript: fetch turns failed",
@@ -330,6 +419,15 @@ func (src *turnsBlockSource) materialize(row *model.RequestLog) AgentSessionRepl
 		DurationMs:   row.DurationMs,
 		ProviderName: lookupName(row.ProviderID, src.providerNames),
 		Added:        []any{},
+	}
+
+	// The effective system metadata for this request: nil when no value
+	// was recorded at or before it (the block then has no prompt row to
+	// render), else a copy of the timeline entry in effect — metadata
+	// only, the raw text stays behind the on-expand fetch.
+	if ei := src.systemByRow[i]; ei >= 0 && ei < len(src.systemTimelineMeta) {
+		meta := src.systemTimelineMeta[ei]
+		block.System = &meta
 	}
 
 	var body *model.RequestLogBody

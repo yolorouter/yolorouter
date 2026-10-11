@@ -39,11 +39,11 @@ export default {
   replayElapsed: '{span} elapsed',
   replaySuccessRatio: '{success}/{total} succeeded',
   replayRequestLink: 'Request Details',
-  // The system-prompt group: titled plainly — no "first seen + N changes"
-  // phrasing (owner 2026-10-10); the historical versions live inside the
-  // expansion as secondary entries, each annotated with its request id.
-  systemGroupTitle: 'System Prompt',
-  systemEntrySeenAt: 'request {id}',
+  // The per-request system-prompt row (owner 2026-10-11 rework): every
+  // request block carries its own prompt as one collapsed line under the
+  // block header — the session-wide group and its per-entry request
+  // annotations are gone.
+  systemPromptLabel: 'System Prompt',
   systemRawFailed: 'Failed to load the system-prompt text',
 
   // Lazy paging of the replay turns: the boundary rows' loading copy, the

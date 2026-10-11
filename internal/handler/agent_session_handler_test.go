@@ -280,18 +280,19 @@ type transcriptAssistant struct {
 
 // transcriptBlock mirrors AgentSessionReplayBlock's JSON shape.
 type transcriptBlock struct {
-	RequestID      string              `json:"request_id"`
-	CreatedAt      time.Time           `json:"created_at"`
-	ModelName      string              `json:"model_name"`
-	StatusClass    string              `json:"status_class"`
-	IsStream       bool                `json:"is_stream"`
-	InputTokens    int                 `json:"input_tokens"`
-	OutputTokens   int                 `json:"output_tokens"`
-	DurationMs     int64               `json:"duration_ms"`
-	ProviderName   string              `json:"provider_name"`
-	Added          []any               `json:"added"`
-	Assistant      transcriptAssistant `json:"assistant"`
-	AddedTruncated bool                `json:"added_truncated"`
+	RequestID      string                `json:"request_id"`
+	CreatedAt      time.Time             `json:"created_at"`
+	ModelName      string                `json:"model_name"`
+	StatusClass    string                `json:"status_class"`
+	IsStream       bool                  `json:"is_stream"`
+	InputTokens    int                   `json:"input_tokens"`
+	OutputTokens   int                   `json:"output_tokens"`
+	DurationMs     int64                 `json:"duration_ms"`
+	ProviderName   string                `json:"provider_name"`
+	Added          []any                 `json:"added"`
+	System         *transcriptSystemMeta `json:"system"`
+	Assistant      transcriptAssistant   `json:"assistant"`
+	AddedTruncated bool                  `json:"added_truncated"`
 }
 
 // transcriptSystemMeta mirrors AgentSessionReplaySystemMeta's JSON shape —
@@ -1010,6 +1011,104 @@ func env2Data(t *testing.T, r *gin.Engine, sessionID string) json.RawMessage {
 		t.Fatalf("transcript %s: status %d, body: %s", sessionID, w.Code, w.Body.String())
 	}
 	return env.Data
+}
+
+// TestGetAgentSessionTranscriptSystemPerRequest pins the ?request= form on
+// the wire: the block's own system metadata (the per-request collapse row's
+// data hook) ships metadata-only inside the transcript, and the raw fetch
+// resolves to the value in effect at the named request — its own entry when
+// the value changed there, the inherited one when it repeated it, the empty
+// timeline for an id that names no request of the session (lenient, like
+// the stale cursors), and 14006 for an unknown session with the param.
+func TestGetAgentSessionTranscriptSystemPerRequest(t *testing.T) {
+	r, db := newAgentSessionTranscriptRouter(t, "")
+	base := time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
+	claude := "claude-code"
+	sess := "hs-pr"
+
+	bodies := map[string]string{
+		"p0": `{"messages":[{"role":"user","content":"q0"}]}`,
+		"p1": `{"system":"sys-one","messages":[{"role":"user","content":"q1"}]}`,
+		"p2": `{"system":"sys-one","messages":[{"role":"user","content":"q2"}]}`,
+		"p3": `{"system":"sys-two","messages":[{"role":"user","content":"q3"}]}`,
+	}
+	order := []string{"p0", "p1", "p2", "p3"}
+	for i, id := range order {
+		testutil.SeedRequestLog(t, db, id, base.Add(time.Duration(i)*time.Minute), func(row *model.RequestLog) {
+			row.AgentClient = &claude
+			row.AgentSessionID = &sess
+			row.StatusCode = 200
+		})
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+			RequestID:   id,
+			RequestBody: bodies[id],
+		}); err != nil {
+			t.Fatalf("upsert body %s: %v", id, err)
+		}
+	}
+	backfillAgentTurns(t, db)
+
+	// The transcript's blocks carry the per-request metadata — present for
+	// requests with a value in effect, absent for the request that precedes
+	// every recorded entry, and never carrying raw text.
+	_, p := fetchTranscript(t, r, sess, "")
+	if len(p.Blocks) != 4 {
+		t.Fatalf("blocks = %d, want 4", len(p.Blocks))
+	}
+	if p.Blocks[0].System != nil {
+		t.Fatalf("p0 block System = %+v, want nil (nothing recorded yet)", p.Blocks[0].System)
+	}
+	if p.Blocks[1].System == nil || p.Blocks[1].System.SeenAtRequest != "p1" || p.Blocks[1].System.RawLength == 0 {
+		t.Fatalf("p1 block System = %+v, want p1's entry with its raw length", p.Blocks[1].System)
+	}
+	if p.Blocks[2].System == nil || p.Blocks[2].System.SeenAtRequest != "p1" {
+		t.Fatalf("p2 block System = %+v, want the inherited p1 entry (same value, no row of its own)", p.Blocks[2].System)
+	}
+	if p.Blocks[3].System == nil || p.Blocks[3].System.SeenAtRequest != "p3" {
+		t.Fatalf("p3 block System = %+v, want p3's own entry", p.Blocks[3].System)
+	}
+
+	fetchAt := func(query string) []transcriptSystemRaw {
+		t.Helper()
+		w, env := doJSON(t, r, http.MethodGet, "/api/admin/agent-sessions/"+sess+"/transcript/system?"+query, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("system?%s: status %d, body: %s", query, w.Code, w.Body.String())
+		}
+		var payload struct {
+			System []transcriptSystemRaw `json:"system"`
+		}
+		if err := json.Unmarshal(env.Data, &payload); err != nil {
+			t.Fatalf("system?%s: unmarshal: %v", query, err)
+		}
+		return payload.System
+	}
+
+	// No-param form stays the whole timeline (two deduplicated values).
+	if got := fetchAt(""); len(got) != 2 {
+		t.Fatalf("no-param timeline = %d entries, want 2", len(got))
+	}
+	// Per-request forms resolve to the effective value.
+	if got := fetchAt("request=p1"); len(got) != 1 || got[0].Raw != "sys-one" || got[0].SeenAtRequest != "p1" {
+		t.Fatalf("request=p1 = %+v, want its own entry", got)
+	}
+	if got := fetchAt("request=p2"); len(got) != 1 || got[0].Raw != "sys-one" || got[0].SeenAtRequest != "p1" {
+		t.Fatalf("request=p2 = %+v, want the inherited p1 entry", got)
+	}
+	if got := fetchAt("request=p3"); len(got) != 1 || got[0].Raw != "sys-two" || got[0].SeenAtRequest != "p3" {
+		t.Fatalf("request=p3 = %+v, want its own entry", got)
+	}
+	// A request with no value in effect, and an id that names no request of
+	// the session: the lenient empty timeline (200, not an error).
+	for _, q := range []string{"request=p0", "request=nope"} {
+		if got := fetchAt(q); len(got) != 0 {
+			t.Fatalf("system?%s = %+v, want the empty timeline", q, got)
+		}
+	}
+	// Unknown session with the param: the domain 14006 envelope wins.
+	w, env := doJSON(t, r, http.MethodGet, "/api/admin/agent-sessions/void/transcript/system?request=p1", nil, nil)
+	if w.Code != http.StatusNotFound || env.Code != errcode.AgentSessionNotFound {
+		t.Fatalf("unknown session with request param: status %d code %d, want 404/%d", w.Code, env.Code, errcode.AgentSessionNotFound)
+	}
 }
 
 // TestGetAgentSessionTranscriptDomainErrorsWithParams pins TC-20's 14006

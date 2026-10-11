@@ -62,7 +62,9 @@ export interface AgentSessionReplayAssistant {
 // Mirrors service.AgentSessionReplayBlock: one request's replay turn — the
 // row metadata the turn's labels need, the caller-side messages this
 // request newly contributed (raw wire objects, assistant and system roles
-// already excluded by the backend dedup pass), and the reply attribution.
+// already excluded by the backend dedup pass), the system-prompt value in
+// effect at this request (metadata only — the raw text is the per-request
+// on-expand fetch below), and the reply attribution.
 export interface AgentSessionReplayBlock {
   request_id: string
   created_at: string
@@ -74,6 +76,9 @@ export interface AgentSessionReplayBlock {
   duration_ms: number
   provider_name: string
   added: unknown[]
+  /** The system timeline entry in effect at this request; absent/null when
+   *  no system value had been recorded at or before it (no prompt row). */
+  system?: AgentSessionReplaySystemMeta | null
   assistant: AgentSessionReplayAssistant
   added_truncated: boolean
 }
@@ -207,9 +212,17 @@ export function getAgentSessionTranscript(sessionId: string, params?: AgentSessi
   return apiFetch(qs ? `${base}?${qs}` : base)
 }
 
-// The system timeline's raw values — the whole deduplicated timeline in
-// one payload, fetched when the collapsed system group is expanded (the
-// transcript response itself carries metadata only).
-export function getAgentSessionTranscriptSystem(sessionId: string): Promise<AgentSessionTranscriptSystem> {
-  return apiFetch(`/api/admin/agent-sessions/${encodeURIComponent(sessionId)}/transcript/system`)
+// The system-prompt raw text. Two forms share the endpoint: no params
+// fetches the whole deduplicated timeline (the export/back-compat form),
+// while { request } fetches the single value that was in effect at that
+// request — the per-block expansion fetch. The block's own system metadata
+// names the timeline entry the value resolves to, so blocks between two
+// changes share one fetch.
+export function getAgentSessionTranscriptSystem(
+  sessionId: string,
+  opts?: { request?: string },
+): Promise<AgentSessionTranscriptSystem> {
+  const base = `/api/admin/agent-sessions/${encodeURIComponent(sessionId)}/transcript/system`
+  const qs = buildQuery({ request: opts?.request }).toString()
+  return apiFetch(qs ? `${base}?${qs}` : base)
 }

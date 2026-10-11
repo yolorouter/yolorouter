@@ -601,6 +601,108 @@ func TestGetAgentSessionTranscriptSystemRaw(t *testing.T) {
 	}
 }
 
+// TestGetAgentSessionTranscriptSystemAtRequest pins the per-request form of
+// the system raw fetch: the value IN EFFECT at the named request — its own
+// row when the value changed there, the last earlier entry when it merely
+// repeated it, the empty timeline for a request that precedes every
+// recorded value or names no request of the session (the lenient
+// stale-deep-link convention), and the domain not-found for an unknown
+// session. The per-block System metadata must point at the same entry, so
+// the block's collapse row and this fetch can never disagree.
+func TestGetAgentSessionTranscriptSystemAtRequest(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	svc := NewRequestLogService(db, "")
+	base := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	claude := "claude-code"
+	sess := "hs-at"
+
+	// Timeline shape: r0 has no system value; r1 records v1; r2 repeats v1
+	// (no row of its own); r3 changes to v2.
+	bodies := map[string]string{
+		"r0": `{"system":null,"messages":[{"role":"user","content":"q0"}]}`,
+		"r1": `{"system":"v1","messages":[{"role":"user","content":"q1"}]}`,
+		"r2": `{"system":"v1","messages":[{"role":"user","content":"q2"}]}`,
+		"r3": `{"system":"v2","messages":[{"role":"user","content":"q3"}]}`,
+	}
+	order := []string{"r0", "r1", "r2", "r3"}
+	for i, id := range order {
+		testutil.SeedRequestLog(t, db, id, base.Add(time.Duration(i)*time.Minute), func(r *model.RequestLog) {
+			r.AgentClient = &claude
+			r.AgentSessionID = &sess
+			r.StatusCode = 200
+		})
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{
+			RequestID:   id,
+			RequestBody: bodies[id],
+		}); err != nil {
+			t.Fatalf("upsert body %s: %v", id, err)
+		}
+	}
+	backfillTurns(t, db)
+
+	// Per-block metadata: the effective entry per request.
+	tr, err := svc.GetAgentSessionTranscript(sess, AgentSessionTranscriptPage{})
+	if err != nil {
+		t.Fatalf("transcript: %v", err)
+	}
+	if len(tr.Blocks) != 4 {
+		t.Fatalf("blocks = %d, want 4", len(tr.Blocks))
+	}
+	if tr.Blocks[0].System != nil {
+		t.Fatalf("r0 (no value in effect) System = %+v, want nil", tr.Blocks[0].System)
+	}
+	for i, wantSeen := range map[int]string{1: "r1", 2: "r1", 3: "r3"} {
+		got := tr.Blocks[i].System
+		if got == nil || got.SeenAtRequest != wantSeen {
+			t.Fatalf("block %d System = %+v, want the entry recorded at %s", i, got, wantSeen)
+		}
+	}
+
+	// The per-request fetch resolves to the same effective values.
+	cases := []struct {
+		requestID string
+		wantRaw   any
+		wantSeen  string
+	}{
+		{"r1", "v1", "r1"}, // own row
+		{"r2", "v1", "r1"}, // inherited: repeats r1's value
+		{"r3", "v2", "r3"}, // own change
+		{"r0", nil, ""},    // precedes every recorded value
+		{"zz", nil, ""},    // names no request of the session
+	}
+	for _, tc := range cases {
+		got, err := svc.GetAgentSessionTranscriptSystemAtRequest(sess, tc.requestID)
+		if err != nil {
+			t.Fatalf("at-request %s: %v", tc.requestID, err)
+		}
+		if tc.wantRaw == nil {
+			if len(got.System) != 0 {
+				t.Fatalf("at-request %s: system = %+v, want the empty timeline", tc.requestID, got.System)
+			}
+			continue
+		}
+		if len(got.System) != 1 {
+			t.Fatalf("at-request %s: %d entries, want exactly 1", tc.requestID, len(got.System))
+		}
+		if got.System[0].Raw != tc.wantRaw || got.System[0].SeenAtRequest != tc.wantSeen {
+			t.Fatalf("at-request %s: entry = %+v, want raw %v recorded at %s", tc.requestID, got.System[0], tc.wantRaw, tc.wantSeen)
+		}
+	}
+
+	// An empty request id falls back to the whole-timeline form.
+	whole, err := svc.GetAgentSessionTranscriptSystemAtRequest(sess, "")
+	if err != nil {
+		t.Fatalf("whole-timeline form: %v", err)
+	}
+	if len(whole.System) != 2 {
+		t.Fatalf("whole-timeline form: %d entries, want the 2 deduplicated values", len(whole.System))
+	}
+
+	if _, err := svc.GetAgentSessionTranscriptSystemAtRequest("nope", "r1"); !errors.Is(err, errcode.ErrAgentSessionNotFound) {
+		t.Fatalf("unknown session err = %v, want ErrAgentSessionNotFound", err)
+	}
+}
+
 // TestGetAgentSessionTranscriptRealByteBudgetWiring pins that the endpoint
 // path uses the SHIPPED 1.5 MiB budget end to end (no test override): a
 // block whose serialization alone exceeds it — near-cap added messages plus
