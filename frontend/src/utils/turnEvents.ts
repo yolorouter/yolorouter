@@ -7,9 +7,14 @@
 // wire contract delivers the classified rows as one flat, undifferentiated
 // `added` array — same objects, same order (user_input + tool_result +
 // injected concatenated back is exactly the wire array, the store's
-// losslessness contract). This module re-derives the per-message class on
-// the client by MIRRORING the backend's rules one-to-one, so the replay
-// page can grade its rendering the way the turn store grades its rows:
+// losslessness contract). Since the block-level split landed, those wire
+// elements are per-block synthetics: a user message that mixed IDE context
+// with human words arrives as separate injected and user elements, and a
+// resent duplicate input never arrives at all (folded at write time) — so
+// the mirror grades exactly what the axis shows. This module re-derives
+// the per-message class on the client by MIRRORING the backend's rules
+// one-to-one, so the replay page can grade its rendering the way the turn
+// store grades its rows:
 //
 //   user_input   the only message class that renders a user bubble on the
 //                conversation axis
@@ -35,10 +40,11 @@ export type AddedEventClass = 'user_input' | 'tool_result' | 'injected'
 // messages — the exact table internal/agentturns/classify.go applies at
 // write time. A message whose text begins with one of these is a machine
 // product (Claude Code's system-reminder wrappers, command echoes, the
-// local-mode caveat), not a human's input. The marker must LEAD the
-// trimmed text: whole-message wrappers only, mid-text occurrences are
-// ordinary quoted content.
-const INJECTED_CONTENT_PREFIXES = ['<system-reminder', '<command-name', '<command-message', 'Caveat:']
+// local-mode caveat, an IDE-coupled client's editor context — matched by
+// the bare '<ide_' stem every observed wrapper shares), not a human's
+// input. The marker must LEAD the trimmed text: whole-message wrappers
+// only, mid-text occurrences are ordinary quoted content.
+const INJECTED_CONTENT_PREFIXES = ['<system-reminder', '<command-name', '<command-message', 'Caveat:', '<ide_']
 
 // Text of a user message for marker inspection: string content verbatim,
 // a blocks array reduced to its text blocks joined by newlines — the same

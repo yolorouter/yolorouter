@@ -67,6 +67,19 @@ type SystemBaseline struct {
 	NextOrdinal int64
 }
 
+// UserInputBaseline is the session's duplicate-input state as of the
+// previous request: the real text of the last user_input event that was
+// kept (Has=false when the session recorded none yet). The engine resolves
+// it from the session's last user_input row; the derivation folds a
+// user_input whose real text equals it (an empty text never folds — two
+// different pure-image inputs share the "" key without being the same
+// words, see userInputFolder), so the row that lands last always carries
+// the current baseline by construction.
+type UserInputBaseline struct {
+	Text string
+	Has  bool
+}
+
 // TurnEvent is one derived event row before it meets the database: the
 // per-request ordinal, the event type, and the content payload (with the
 // system row's serialized-size sidecar). ForPrev marks the resend
@@ -105,13 +118,14 @@ type assistantEventContent struct {
 
 // DeriveTurnEvents derives one request's turn events: the system-prompt
 // change (when this request's system value differs from the session's
-// baseline), one classified event per new caller-side message, the
-// assistant_reply row, and — when this request's new suffix resends
-// assistant copies the predecessor never got recorded — the supplement
-// rows for that predecessor. Pure: no clock, no storage, no error surface;
-// every degraded input degrades the same way the whole-session pass
-// degrades it.
-func DeriveTurnEvents(own OwnBody, prev *PrevBody, baseline SystemBaseline) []TurnEvent {
+// baseline), one classified event per new caller-side added ELEMENT (a
+// multi-block user message splits into injected/user_input elements; a
+// resent duplicate user input folds), the assistant_reply row, and — when
+// this request's new suffix resends assistant copies the predecessor never
+// got recorded — the supplement rows for that predecessor. Pure: no clock,
+// no storage, no error surface; every degraded input degrades the same way
+// the whole-session pass degrades it.
+func DeriveTurnEvents(own OwnBody, prev *PrevBody, baseline SystemBaseline, userBase UserInputBaseline) []TurnEvent {
 	ownTruncated := len(own.RequestBody) > MaxInlineBodyBytes
 	ownMessages, ownSystem, ownHasSystem := ParseReplayBody(own.RequestBody, ownTruncated)
 
@@ -143,10 +157,13 @@ func DeriveTurnEvents(own OwnBody, prev *PrevBody, baseline SystemBaseline) []Tu
 		seq++
 	}
 
-	// The new caller-side messages, classified. The pass kept every
-	// non-assistant, non-system suffix element in `added`; the same
-	// elements land here in the same order, so concatenating the
-	// user_input/tool_result/injected rows' contents reproduces `added`.
+	// The new caller-side messages, split into added elements and
+	// classified element by element. The pass kept every non-assistant,
+	// non-system suffix element in `added` under the same split and the
+	// same duplicate fold; the same elements land here in the same order,
+	// so concatenating the user_input/tool_result/injected rows' contents
+	// reproduces `added`.
+	folder := userInputFolder{last: userBase.Text, hasLast: userBase.Has}
 	var copies []any
 	for _, m := range suffix {
 		role := ReplayMessageRole(m)
@@ -157,12 +174,17 @@ func DeriveTurnEvents(own OwnBody, prev *PrevBody, baseline SystemBaseline) []Tu
 		if role == "system" {
 			continue
 		}
-		events = append(events, TurnEvent{
-			Seq:       seq,
-			EventType: ClassifyAddedMessage(m),
-			Content:   mustMarshalJSON(m),
-		})
-		seq++
+		for _, el := range SplitUserMessageForAdded(m) {
+			if !folder.keep(el) {
+				continue // the resent duplicate of the previous user input
+			}
+			events = append(events, TurnEvent{
+				Seq:       seq,
+				EventType: ClassifyAddedMessage(el),
+				Content:   mustMarshalJSON(el),
+			})
+			seq++
+		}
 	}
 
 	// The request's own assistant_reply row. Source is the write-time

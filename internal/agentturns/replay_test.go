@@ -1,7 +1,8 @@
 // Table-driven tests for the replay assembly pure function
-// (replay.go): prefix dedup, the added-role filter, the four-way assistant
-// source priority, the deduplicated system timeline across both dialects,
-// and the degradation rules (pure retry, unparseable body, capped body).
+// (replay.go): prefix dedup, the added-role filter, the session-wide
+// duplicate-input fold, the four-way assistant source priority, the
+// deduplicated system timeline across both dialects, and the degradation
+// rules (pure retry, unparseable body, capped body).
 // No storage is involved — every case is an input slice plus expected
 // output, so the assembly is pinned at its exact input/output contract.
 // These tests are the write-time derivation's specification: the parity
@@ -130,6 +131,73 @@ func TestAssembleReplayAddedRoleFilter(t *testing.T) {
 	// The excluded system message lands on the timeline instead.
 	if len(system) != 1 || system[0].SeenAtRequest != "r2" {
 		t.Errorf("system timeline = %+v, want exactly one record seen at r2", system)
+	}
+}
+
+// TestAssembleReplayUserInputFold pins the session-wide duplicate-input
+// fold of step 3: a user input whose real text equals the session's last
+// KEPT user input is the resent copy an interrupted client produced and
+// lands nowhere in added — even though it rides FRESH machine context, so
+// the prefix dedup of step 2 keeps the whole message new and only the fold
+// can recognize the repeat. The fresh injected blocks around the resent
+// words still land; a different text keeps and advances the fold state; a
+// repeat that is not adjacent to the last kept input keeps too; and two
+// DIFFERENT pure-image inputs — whose real texts are BOTH empty — keep as
+// well, because "" is every textless message's comparison key, not
+// same-text evidence. This is
+// the pass-side mirror of the write path's fold
+// (TestDeriveTurnEventsUserInputDedup in derive_test.go); the parity arm
+// in TestDeriveTurnEventsAddedIsLossless diffs the two halves on this very
+// shape.
+func TestAssembleReplayUserInputFold(t *testing.T) {
+	uQ1 := replayMsg("user", "run it")
+	uResend := `{"role":"user","content":[{"type":"text","text":"<ide_opened_file>fresh context</ide_opened_file>"},{"type":"text","text":"run it"}]}`
+	ideEl := `{"role":"user","content":[{"type":"text","text":"<ide_opened_file>fresh context</ide_opened_file>"}]}`
+	uDifferent := replayMsg("user", "run it again please")
+	uRepeatBack := replayMsg("user", "run it")
+	uImgA := `{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"QUFB"}}]}`
+	uImgB := `{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"QkJC"}}]}`
+	inputs := []AgentSessionReplayInput{
+		replayInput("r1", replayBody(uQ1)),
+		// r2 resends r1's words verbatim, wrapped in fresh IDE context:
+		// structurally a brand-new message (the prefix diff cannot strip
+		// it), so only the fold can drop the duplicate words.
+		replayInput("r2", replayBody(uQ1, uResend)),
+		// r3 sends different words: kept, and the fold state advances to
+		// them.
+		replayInput("r3", replayBody(uQ1, uResend, uDifferent)),
+		// r4 repeats r1's words again: not adjacent to the last KEPT input
+		// ("run it again please"), so it keeps — the fold compares against
+		// the last kept text only.
+		replayInput("r4", replayBody(uQ1, uResend, uDifferent, uRepeatBack)),
+		// r5 sends a pure image (no text blocks): its empty real text is
+		// not the last kept words ("run it"), so it keeps and the fold
+		// state advances to "".
+		replayInput("r5", replayBody(uQ1, uResend, uDifferent, uRepeatBack, uImgA)),
+		// r6 sends a DIFFERENT pure image: structurally new (the bytes
+		// differ, so the prefix diff cannot strip it), and its empty real
+		// text equals the fold state's "" — but an empty key is never
+		// same-text evidence, so it keeps; folding here would drop a
+		// different input off the axis forever.
+		replayInput("r6", replayBody(uQ1, uResend, uDifferent, uRepeatBack, uImgA, uImgB)),
+	}
+
+	blocks, _ := AssembleAgentSessionReplay(inputs)
+	if len(blocks) != 6 {
+		t.Fatalf("blocks = %d, want 6", len(blocks))
+	}
+	want := [][]any{
+		replayParsedList(t, uQ1),         // first request keeps everything
+		replayParsedList(t, ideEl),       // the resent words fold; the fresh context stays
+		replayParsedList(t, uDifferent),  // different text keeps
+		replayParsedList(t, uRepeatBack), // non-adjacent repeat keeps
+		replayParsedList(t, uImgA),       // pure image keeps; the fold state moves to ""
+		replayParsedList(t, uImgB),       // a different image after it keeps too: the empty key never folds
+	}
+	for i, w := range want {
+		if !reflect.DeepEqual(blocks[i].Added, w) {
+			t.Errorf("block %d Added = %v, want %v", i, blocks[i].Added, w)
+		}
 	}
 }
 

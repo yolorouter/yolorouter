@@ -82,9 +82,13 @@ type turnEngine struct {
 	// (no system value) still pay it — it is microscopic next to the
 	// previous body's parse.
 	fetchBaseline func(sessionID string) (SystemBaseline, error)
+	// fetchUserBase reads the session's last KEPT user input's real text —
+	// the duplicate-input fold's state. One indexed SELECT with the same
+	// microscopic price as the system baseline.
+	fetchUserBase func(sessionID string) (UserInputBaseline, error)
 	// derive is the pure derivation (DeriveTurnEvents); a field so tests
 	// can force the degraded pending path.
-	derive func(own OwnBody, prev *PrevBody, baseline SystemBaseline) []TurnEvent
+	derive func(own OwnBody, prev *PrevBody, baseline SystemBaseline, userBase UserInputBaseline) []TurnEvent
 }
 
 // writeForRequest drives one request's write: fetch the diff base and
@@ -102,6 +106,11 @@ func (e *turnEngine) writeForRequest(in RequestInput) error {
 			return fetchSystemBaseline(e.db, sessionID)
 		}
 	}
+	if e.fetchUserBase == nil {
+		e.fetchUserBase = func(sessionID string) (UserInputBaseline, error) {
+			return fetchLastUserInput(e.db, sessionID)
+		}
+	}
 	if e.derive == nil {
 		e.derive = DeriveTurnEvents
 	}
@@ -114,6 +123,10 @@ func (e *turnEngine) writeForRequest(in RequestInput) error {
 	if err != nil {
 		return e.degradeToPending(in, fmt.Errorf("agent turns: read system baseline: %w", err))
 	}
+	userBase, err := e.fetchUserBase(in.SessionID)
+	if err != nil {
+		return e.degradeToPending(in, fmt.Errorf("agent turns: read last user input: %w", err))
+	}
 
 	own := OwnBody{
 		RequestBody:      in.RequestBody,
@@ -125,7 +138,7 @@ func (e *turnEngine) writeForRequest(in RequestInput) error {
 		diffBase = &PrevBody{RequestBody: prev.RequestBody, HasInlineReply: prev.HasInlineReply}
 	}
 
-	events, derr := e.safeDerive(own, diffBase, baseline)
+	events, derr := e.safeDerive(own, diffBase, baseline, userBase)
 	if derr != nil {
 		return e.degradeToPending(in, fmt.Errorf("agent turns: derive: %w", derr))
 	}
@@ -169,14 +182,14 @@ func (e *turnEngine) writeForRequest(in RequestInput) error {
 // the derivation is a bug in this package; the guard turns it into the
 // same degraded pending path any other failure takes, so the audit rows
 // stay committed and the request stays a backfill candidate.
-func (e *turnEngine) safeDerive(own OwnBody, prev *PrevBody, baseline SystemBaseline) (events []TurnEvent, err error) {
+func (e *turnEngine) safeDerive(own OwnBody, prev *PrevBody, baseline SystemBaseline, userBase UserInputBaseline) (events []TurnEvent, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			events = nil
 			err = fmt.Errorf("derivation panicked: %v", r)
 		}
 	}()
-	return e.derive(own, prev, baseline), nil
+	return e.derive(own, prev, baseline, userBase), nil
 }
 
 // degradeToPending writes the request's pending marker — the in-database
@@ -273,6 +286,41 @@ func fetchSystemBaseline(db *gorm.DB, sessionID string) (SystemBaseline, error) 
 		return SystemBaseline{}, nil
 	}
 	return SystemBaseline{Raw: envelope.Raw, Has: true, NextOrdinal: envelope.Ordinal + 1}, nil
+}
+
+// fetchLastUserInput reads the session's last KEPT user input event — the
+// real text the next request's duplicate fold compares against — in the
+// same session order the system baseline reads (request_created_at,
+// request_pk, seq descending). Because a resent duplicate never lands as a
+// row, the newest user_input row IS the fold state by construction, for
+// the live write and the backfill alike (the backfill walks oldest-first,
+// so each write sees exactly the state its predecessors left). A kept
+// no-text element (a pure image) therefore baselines as Text ""/Has true —
+// exactly the state the pass-side folder advanced to — and folds nothing,
+// because an empty key never folds (see userInputFolder).
+func fetchLastUserInput(db *gorm.DB, sessionID string) (UserInputBaseline, error) {
+	var rows []struct {
+		Content string `gorm:"column:content"`
+	}
+	if err := db.Raw(`
+		SELECT content FROM agent_session_turns
+		WHERE agent_session_id = ? AND event_type = ?
+		ORDER BY request_created_at DESC, request_pk DESC, seq DESC
+		LIMIT 1`, sessionID, EventUserInput).Scan(&rows).Error; err != nil {
+		return UserInputBaseline{}, err
+	}
+	if len(rows) == 0 {
+		return UserInputBaseline{}, nil
+	}
+	var m any
+	if err := json.Unmarshal([]byte(rows[0].Content), &m); err != nil {
+		// An unreadable row means a corrupt stored element, not a lost
+		// input: read it as "nothing kept" so the write path re-records
+		// the next input rather than folding against garbage — the same
+		// recoverable direction the system baseline's corrupt arm takes.
+		return UserInputBaseline{}, nil
+	}
+	return UserInputBaseline{Text: UserInputRealText(m), Has: true}, nil
 }
 
 // ── Read queries ─────────────────────────────────────────────────────────

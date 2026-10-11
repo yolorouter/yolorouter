@@ -9,7 +9,9 @@ package agentturns
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +149,209 @@ func TestRecordTurnsWritesOwnBatchAndSupplement(t *testing.T) {
 	}
 }
 
+// TestRecordTurnsFoldsResentUserInputAcrossRequests pins the write path's
+// duplicate fold end to end over the real engine: an interrupted client's
+// resend carries the same words with FRESH ide context, so the prefix diff
+// sees a new message — the block-level split extracts the context as an
+// injected event and the identical real text lands no second user_input
+// row. A genuinely different follow-up keeps its row, and two DIFFERENT
+// pure-image follow-ups keep theirs too: their real texts are both empty,
+// and an empty key — shared by every textless message — never folds.
+func TestRecordTurnsFoldsResentUserInputAcrossRequests(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	base := time.Date(2026, 10, 11, 14, 0, 0, 0, time.UTC)
+	sess := "turns-dedup"
+
+	const b1 = `{"messages":[{"role":"user","content":[{"type":"text","text":"\u003cide_selection\u003elines 1-1\u003c/ide_selection\u003e"},{"type":"text","text":"X"}]}]}`
+	const b2 = `{"messages":[{"role":"user","content":[{"type":"text","text":"\u003cide_opened_file\u003efresh.jsonl\u003c/ide_opened_file\u003e"},{"type":"text","text":"X"}]}]}`
+	const b3 = `{"messages":[{"role":"user","content":"Y"}]}`
+
+	for i, body := range []string{b1, b2, b3} {
+		id := fmt.Sprintf("d-%d", i+1)
+		pk := seedTurnFixtureRow(t, db, sess, id, base.Add(time.Duration(i)*time.Minute))
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: id, RequestBody: body}); err != nil {
+			t.Fatalf("body %s: %v", id, err)
+		}
+		fixtureWrite(t, db, sess, id, pk, base.Add(time.Duration(i)*time.Minute), body, "", "")
+	}
+
+	userInputs := func(requestID string) []string {
+		var rows []model.AgentSessionTurn
+		if err := db.Where("request_id = ? AND event_type = ?", requestID, EventUserInput).Order("seq ASC").Find(&rows).Error; err != nil {
+			t.Fatalf("user inputs %s: %v", requestID, err)
+		}
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, UserInputRealText(mustUnmarshalTurnContent(t, r.Content)))
+		}
+		return out
+	}
+	if got := userInputs("d-1"); !reflect.DeepEqual(got, []string{"X"}) {
+		t.Fatalf("d-1 user inputs = %q, want [X] (the first copy always lands)", got)
+	}
+	if got := userInputs("d-2"); len(got) != 0 {
+		t.Fatalf("d-2 user inputs = %q, want none (the resent duplicate folds)", got)
+	}
+	if got := userInputs("d-3"); !reflect.DeepEqual(got, []string{"Y"}) {
+		t.Fatalf("d-3 user inputs = %q, want [Y] (a different text never folds)", got)
+	}
+
+	// The resend's fresh context still landed — as an injected row, off the
+	// conversation axis but never dropped.
+	var injected int64
+	db.Model(&model.AgentSessionTurn{}).Where("request_id = ? AND event_type = ?", "d-2", EventInjected).Count(&injected)
+	if injected != 1 {
+		t.Fatalf("d-2 injected rows = %d, want 1 (the fresh ide context block)", injected)
+	}
+
+	// The fold state the engine reads is the last KEPT input — Y now.
+	userBase, err := fetchLastUserInput(db, sess)
+	if err != nil || !userBase.Has || userBase.Text != "Y" {
+		t.Fatalf("last user input = (%+v, err %v), want Y", userBase, err)
+	}
+
+	// The empty-key arms: two DIFFERENT pure-image messages across two
+	// requests. Their real texts are both "" — shared by every textless
+	// message — so the second is NOT a resent duplicate of the first and
+	// must land its own row; an empty key is never same-text evidence.
+	const b4 = `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"QUFB"}}]}]}`
+	const b5 = `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"QkJC"}}]}]}`
+	for i, body := range []string{b4, b5} {
+		id := fmt.Sprintf("d-%d", i+4)
+		pk := seedTurnFixtureRow(t, db, sess, id, base.Add(time.Duration(i+3)*time.Minute))
+		if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: id, RequestBody: body}); err != nil {
+			t.Fatalf("body %s: %v", id, err)
+		}
+		fixtureWrite(t, db, sess, id, pk, base.Add(time.Duration(i+3)*time.Minute), body, "", "")
+	}
+	if got := userInputs("d-4"); !reflect.DeepEqual(got, []string{""}) {
+		t.Fatalf("d-4 user inputs = %q, want one empty-text row (a pure image after words keeps)", got)
+	}
+	if got := userInputs("d-5"); !reflect.DeepEqual(got, []string{""}) {
+		t.Fatalf("d-5 user inputs = %q, want one empty-text row (a DIFFERENT image never folds on the shared empty key)", got)
+	}
+
+	// The fold state after a kept no-text row: Text ""/Has true — exactly
+	// what fetchLastUserInput resolves from the image row and what the
+	// pass-side folder advanced to, so the two halves stay in lockstep and
+	// the empty baseline folds nothing downstream.
+	userBase, err = fetchLastUserInput(db, sess)
+	if err != nil || !userBase.Has || userBase.Text != "" {
+		t.Fatalf("last user input = (%+v, err %v), want empty text with Has", userBase, err)
+	}
+}
+
+// TestRecordTurnsTreatsCorruptLastUserInputAsNoBaseline pins the corrupt-row
+// arm fetchLastUserInput's guarantee comment promises: a stored user_input
+// row whose content no longer parses (bit-rot, a torn write) must read as
+// "nothing kept" — nil error, zero baseline — so the write path RE-RECORDS
+// the resent duplicate rather than folding against garbage or degrading to
+// pending; the very next write re-establishes a readable baseline.
+func TestRecordTurnsTreatsCorruptLastUserInputAsNoBaseline(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	base := time.Date(2026, 10, 11, 15, 0, 0, 0, time.UTC)
+	sess := "turns-corrupt-user"
+
+	// cu-1 lands one real user_input row ("X") through the live path…
+	const b1 = `{"messages":[{"role":"user","content":"X"}]}`
+	pk1 := seedTurnFixtureRow(t, db, sess, "cu-1", base)
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "cu-1", RequestBody: b1}); err != nil {
+		t.Fatalf("body cu-1: %v", err)
+	}
+	fixtureWrite(t, db, sess, "cu-1", pk1, base, b1, "", "")
+
+	// …then the session's newest user_input row rots in place: its content
+	// stops parsing. This is the branch's exact precondition.
+	if err := db.Model(&model.AgentSessionTurn{}).
+		Where("request_id = ? AND event_type = ?", "cu-1", EventUserInput).
+		Update("content", "not json {").Error; err != nil {
+		t.Fatalf("rot the user_input row in place: %v", err)
+	}
+
+	// The corrupt arm reads it as "nothing kept": no error, zero baseline.
+	userBase, err := fetchLastUserInput(db, sess)
+	if err != nil {
+		t.Fatalf("fetchLastUserInput on a corrupt row: %v (want nil — corrupt reads as nothing kept)", err)
+	}
+	if userBase.Has || userBase.Text != "" {
+		t.Fatalf("corrupt row baseline = %+v, want the zero baseline (Has false, no text)", userBase)
+	}
+
+	// cu-2 resends the very text the rotted row held, wrapped in FRESH ide
+	// context so the prefix diff sees an added message (an identical body
+	// would derive nothing): the write must take the recoverable direction —
+	// succeed (no pending marker; a corrupt row is not a write failure), land
+	// its own re-recorded row instead of folding against the garbage, and
+	// leave a readable baseline behind.
+	const b2 = `{"messages":[{"role":"user","content":[{"type":"text","text":"\u003cide_opened_file\u003efresh.jsonl\u003c/ide_opened_file\u003e"},{"type":"text","text":"X"}]}]}`
+	pk2 := seedTurnFixtureRow(t, db, sess, "cu-2", base.Add(time.Minute))
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "cu-2", RequestBody: b2}); err != nil {
+		t.Fatalf("body cu-2: %v", err)
+	}
+	fixtureWrite(t, db, sess, "cu-2", pk2, base.Add(time.Minute), b2, "", "")
+
+	var pending int64
+	db.Model(&model.AgentSessionTurn{}).Where("request_id = ? AND event_type = ?", "cu-2", EventPending).Count(&pending)
+	if pending != 0 {
+		t.Fatalf("cu-2 pending markers = %d, want 0 (a corrupt row is not a write failure)", pending)
+	}
+	var kept []model.AgentSessionTurn
+	if err := db.Where("request_id = ? AND event_type = ?", "cu-2", EventUserInput).Order("seq ASC").Find(&kept).Error; err != nil {
+		t.Fatalf("read cu-2 user inputs: %v", err)
+	}
+	if len(kept) != 1 || UserInputRealText(mustUnmarshalTurnContent(t, kept[0].Content)) != "X" {
+		t.Fatalf("cu-2 user inputs = %+v, want exactly one re-recorded X row", kept)
+	}
+	userBase, err = fetchLastUserInput(db, sess)
+	if err != nil || !userBase.Has || userBase.Text != "X" {
+		t.Fatalf("baseline after the re-record = (%+v, err %v), want X re-established", userBase, err)
+	}
+}
+
+// TestRecordTurnsDegradesToPendingOnUserBaseReadFailure pins the fetchUserBase
+// error arm: a failed "last kept user input" read degrades to the pending
+// marker and returns the cause for the log — the audit rows stay committed
+// and the request stays a backfill candidate, same as every other read
+// failure the write path meets.
+func TestRecordTurnsDegradesToPendingOnUserBaseReadFailure(t *testing.T) {
+	db := testutil.NewSQLiteDB(t)
+	base := time.Date(2026, 10, 11, 15, 30, 0, 0, time.UTC)
+	sess := "turns-userbase-err"
+	pk := seedTurnFixtureRow(t, db, sess, "req-ub1", base)
+	if err := repository.UpsertRequestLogBody(db, &model.RequestLogBody{RequestID: "req-ub1", RequestBody: `{"messages":[]}`}); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+
+	e := &turnEngine{db: db}
+	e.fetchUserBase = func(string) (UserInputBaseline, error) {
+		return UserInputBaseline{}, fmt.Errorf("simulated user-input read failure")
+	}
+	err := e.writeForRequest(RequestInput{
+		SessionID: sess, RequestID: "req-ub1", RequestPK: pk, CreatedAt: base,
+		RequestBody: `{"messages":[]}`,
+	})
+	if err == nil {
+		t.Fatalf("degraded write returned nil, want the cause for the log")
+	}
+	if want := "read last user input"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("degraded error = %q, want it naming the failed read (%q)", err.Error(), want)
+	}
+	rows := allTurns(t, db)
+	if len(rows) != 1 || rows[0].EventType != EventPending || rows[0].Seq != PendingSeq {
+		t.Fatalf("pending marker = %+v, want exactly one pending row at PendingSeq", rows)
+	}
+}
+
+// mustUnmarshalTurnContent decodes one turn row's content for assertions.
+func mustUnmarshalTurnContent(t *testing.T, content string) any {
+	t.Helper()
+	var m any
+	if err := json.Unmarshal([]byte(content), &m); err != nil {
+		t.Fatalf("turn content %q: %v", content, err)
+	}
+	return m
+}
+
 // TestRecordTurnsReadsPreviousBodyExactlyOnce pins the incremental-cost
 // contract: ONE write fetches the previous request exactly once (the
 // architecture's per-request price), and the system baseline once.
@@ -230,7 +435,7 @@ func TestRecordTurnsDegradesToPendingOnDerivationFailure(t *testing.T) {
 	}
 
 	e := &turnEngine{db: db}
-	e.derive = func(own OwnBody, prev *PrevBody, baseline SystemBaseline) []TurnEvent {
+	e.derive = func(own OwnBody, prev *PrevBody, baseline SystemBaseline, userBase UserInputBaseline) []TurnEvent {
 		panic("simulated derivation bug")
 	}
 	err := e.writeForRequest(RequestInput{

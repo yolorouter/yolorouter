@@ -101,12 +101,20 @@ type AgentSessionReplayBlock struct {
 	OutputTokens int       `json:"output_tokens"`
 	DurationMs   int64     `json:"duration_ms"`
 	ProviderName string    `json:"provider_name"`
-	// Added holds this request's NEW caller-side messages as raw JSON
-	// objects: everything after the longest structurally equal prefix
-	// shared with the previous request's messages, minus the assistant and
-	// system roles — the previous turn's reply arrives via Assistant (or as
-	// the next block's resend), and system prompts have their own channel.
-	// An empty array means a pure retry or no new input.
+	// Added holds this request's NEW caller-side input as raw JSON objects:
+	// everything after the longest structurally equal prefix shared with
+	// the previous request's messages, minus the assistant and system
+	// roles, then split at the text-block level (a user message mixing
+	// IDE/system-reminder blocks with human text becomes one element per
+	// injected block plus ONE trailing element that merges every kept
+	// block — see SplitUserMessageForAdded) with resent duplicate user
+	// inputs folded
+	// (the previous request's same NON-EMPTY real text is not repeated; an
+	// empty real text — a pure-image input — never folds, because "" is
+	// every textless message's key, not same-text evidence; see
+	// userInputFolder). The previous turn's reply arrives via Assistant (or
+	// as the next block's resend), and system prompts have their own
+	// channel. An empty array means a pure retry or no new input.
 	Added []any `json:"added"`
 	// Assistant is the reply attribution for this turn (the four sources
 	// are documented on AgentSessionReplayAssistant).
@@ -140,12 +148,14 @@ type AgentSessionReplaySystem struct {
 //     structurally and no dialect semantics are needed.
 //  2. new_i = messages_i minus the longest structurally equal prefix it
 //     shares with messages_{i-1} (the first request keeps everything).
-//  3. Per request: added_i = new_i minus the assistant and system roles;
-//     assistant_i sources by priority inline > stream > resend > none,
-//     where resend lifts the assistant copies the NEXT request's new
-//     suffix carries (a client resending an unrecorded reply as history);
-//     the system timeline appends a record whenever this request's system
-//     value differs from the last recorded one.
+//  3. Per request: added_i = new_i minus the assistant and system roles,
+//     split into per-block elements (SplitUserMessageForAdded) with
+//     duplicate user inputs folded against the session's running last real
+//     text (userInputFolder); assistant_i sources by priority inline >
+//     stream > resend > none, where resend lifts the assistant copies the
+//     NEXT request's new suffix carries (a client resending an unrecorded
+//     reply as history); the system timeline appends a record whenever
+//     this request's system value differs from the last recorded one.
 //
 // The filter in step 3 plus the priority in its assistant rule make every
 // assistant message appear exactly once: when the reply was recorded, the
@@ -179,13 +189,23 @@ func AssembleAgentSessionReplay(inputs []AgentSessionReplayInput) (blocks []Agen
 
 	var lastSystem any
 	hasLastSystem := false
+	// The session-wide duplicate-input fold: the last real text KEPT, in
+	// walk order — the same state the write path reads from the session's
+	// last user_input row (see DeriveTurnEvents), so the pass and the
+	// store fold the same messages.
+	userFolder := userInputFolder{}
 	for i := range inputs {
 		in := &inputs[i]
 
 		added := make([]any, 0, len(newSuffix[i]))
 		for _, m := range newSuffix[i] {
 			if role := ReplayMessageRole(m); role != "assistant" && role != "system" {
-				added = append(added, m)
+				for _, el := range SplitUserMessageForAdded(m) {
+					if !userFolder.keep(el) {
+						continue // the resent duplicate of the previous user input
+					}
+					added = append(added, el)
+				}
 			}
 		}
 
