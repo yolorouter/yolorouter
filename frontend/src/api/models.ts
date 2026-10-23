@@ -33,6 +33,15 @@ export interface ModelCandidate {
   last_test_result: number | null
   last_test_duration_ms: number | null
   last_tested_at: string | null
+  // True when the row's primary price slots were filled at write time: what
+  // separates an explicitly free row (stored 0/0, declared) from an unpriced
+  // import (also 0/0, undeclared). Servers predating the field omit it; the
+  // unpriced classification falls back to the zero-value heuristic then.
+  prices_declared?: boolean
+  // True while some instance's probe queue still owes this row a probe
+  // outcome — the debt the import and requeue flows write. Servers predating
+  // the field omit it; absent then means no standing debt.
+  probe_owed?: boolean
   /**
    * How many caller API keys the gateway currently has pinned to this
    * candidate's provider for this model (balanced scheduling only; always 0
@@ -452,23 +461,45 @@ export function suggestCandidatePrice(
 
 export interface ImportModelItemInput {
   provider_model_name: string
+  // The row's target model name — the name the model is found or created
+  // under when the row declares one, instead of the upstream id. Absent on
+  // new rows, which publish the upstream id verbatim; an added row's requeue
+  // submission always carries it, addressed to the stored mapping's public
+  // name.
+  model_name?: string
   // Optional per-row declaration of what the imported model produces; an
   // absent list imports as text-only. When the import creates the model the
   // declaration is stored on it; when the model already exists, a present
   // declaration must match the stored one or the row is skipped with reason
   // 'modality_mismatch'.
   output_modalities?: string[]
-  input_price: number
-  output_price: number
-  cache_write_price: number | null
-  cache_read_price: number | null
+  // What the model accepts as input ("text", "image", "audio"); absent =
+  // undeclared, never read as "text only".
+  input_modalities?: string[]
+  // Model-level capability declarations; every absent field stays off the
+  // wire and imports as undeclared server-side.
+  context_length?: number
+  supports_tools?: 'yes' | 'no'
+  supports_reasoning?: 'yes' | 'no'
+  temperature?: number
   max_output?: number
+  // Every price slot is optional and omit-shaped: a filled slot submits its
+  // number, a blank one stays OFF the item — "empty = unpriced", the
+  // untouched-marker the server's price fields read. No zeros are invented
+  // for blanks.
+  input_price?: number
+  output_price?: number
+  cache_write_price?: number
+  cache_read_price?: number
+  // The per-million-characters price an audio-declared row carries in place
+  // of the token slots, which it omits entirely.
+  audio_unit_price?: number
 }
 
 export interface ImportItemResult {
   name: string
   status: 'created' | 'appended' | 'skipped'
-  reason?: 'exists' | 'invalid' | 'modality_mismatch'
+  reason?: 'exists' | 'invalid' | 'modality_mismatch' | 'capability_mismatch'
   model_id?: number
   candidate_id?: number
 }

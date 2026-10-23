@@ -273,6 +273,7 @@ export default {
   importSkippedTag: '未导入',
   importSkipInvalid: '名称或声明不合法，按本次提交的内容永远无法导入',
   importSkipModalityMismatch: '同名模型已存在且输出模态与本次声明不一致：请先在「模型」页调整该模型的输出模态，再重新导入该行',
+  importSkipCapabilityMismatch: '同名模型已存在且能力声明与本次声明不一致：请先在「模型」页调整该模型的能力声明，再重新导入该行',
   nameInvalid: '只允许字母、数字、短横线、下划线和点，斜杠仅可作分隔符（不能位于首尾或连续出现）',
   priceNonNegative: '成本不能为负数',
   audioUnitPrice: '字符价（元 / 百万字符）',

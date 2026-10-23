@@ -273,6 +273,7 @@ export default {
   importSkippedTag: 'Not imported',
   importSkipInvalid: 'Invalid name or declaration — this row can never import as submitted',
   importSkipModalityMismatch: 'A model with this name already exists with different output modalities. Adjust that model\'s output modalities on the Models page first, then import this row again',
+  importSkipCapabilityMismatch: 'A model with this name already exists with different capability declarations. Adjust that model\'s capabilities on the Models page first, then import this row again',
   nameInvalid: 'Letters, digits, hyphens, underscores, and dots only; slashes may only separate segments (not leading, trailing, or doubled)',
   priceNonNegative: 'Price cannot be negative',
   audioUnitPrice: 'Character price (CNY / million)',

@@ -84,7 +84,7 @@ import { AlertTriangle, Inbox } from '@lucide/vue'
 import { listModelsForProvider } from '../../api/providers'
 import { importProviderModels, listProviderCandidates, suggestPrices, type ImportItemResult, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
 import { displayMessage } from '../../api/client'
-import { buildImportRows, chunkByCap, IMPORT_BATCH_CAP, normalizeCatalogNames, toImportItems, type ImportRow } from '../../utils/importRows'
+import { buildImportRows, chunkByCap, IMPORT_BATCH_CAP, modalitiesFor, modalityOf, normalizeCatalogNames, toImportItems, type ImportRow, type ImportRowModality } from '../../utils/importRows'
 import { catalogueFailure, NO_CATALOGUE_FAILURE, type CatalogueFailure } from '../../utils/catalogueFailure'
 import { candidateIsOwedWork, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, skipsWorthReading, summarizeImportProgress, type ImportProgress } from '../../utils/importProgress'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
@@ -261,7 +261,7 @@ function startProgressPoll() {
 // Re-queued "added" rows keep their old suggestion display: their prices are
 // server-owned and never change on this submit.
 function rowBillsPerImage(row: ImportRow): boolean {
-  return !row.added && row.modality === 'image'
+  return !row.added && modalityOf(row.out) === 'image'
 }
 
 function suggestionTag(row: ImportRow) {
@@ -283,7 +283,7 @@ function suggestionTag(row: ImportRow) {
 
 function priceInput(row: ImportRow, field: 'inputPrice' | 'outputPrice' | 'cacheWritePrice' | 'cacheReadPrice') {
   if (row.added) return h('span', { class: 'candidate-muted' }, '-')
-  if (row.modality === 'audio') return h('span', { class: 'candidate-muted' }, '—')
+  if (modalityOf(row.out) === 'audio') return h('span', { class: 'candidate-muted' }, '—')
   return h(NInputNumber, {
     value: row[field],
     size: 'small',
@@ -302,7 +302,7 @@ function priceInput(row: ImportRow, field: 'inputPrice' | 'outputPrice' | 'cache
 // muting the token columns apply to audio rows).
 function audioPriceInput(row: ImportRow) {
   if (row.added) return h('span', { class: 'candidate-muted' }, '-')
-  if (row.modality !== 'audio') return h('span', { class: 'candidate-muted' }, '—')
+  if (modalityOf(row.out) !== 'audio') return h('span', { class: 'candidate-muted' }, '—')
   return h(NInputNumber, {
     value: row.audioUnitPrice,
     size: 'small',
@@ -333,11 +333,11 @@ const modalityOptions = computed<SelectOption[]>(() => [
 function modalitySelect(row: ImportRow) {
   if (row.added) return h('span', { class: 'candidate-muted' }, '—')
   return h(NSelect, {
-    value: row.modality,
+    value: modalityOf(row.out),
     size: 'small',
     options: modalityOptions.value,
-    'onUpdate:value': (v: ImportRow['modality']) => {
-      row.modality = v
+    'onUpdate:value': (v: ImportRowModality) => {
+      row.out = modalitiesFor(v)
     },
   })
 }
@@ -513,6 +513,7 @@ function progressRowKey(row: ProgressEntry): string | number {
 
 function skipReasonText(reason: string): string {
   if (reason === 'modality_mismatch') return t('models.importSkipModalityMismatch')
+  if (reason === 'capability_mismatch') return t('models.importSkipCapabilityMismatch')
   if (reason === 'invalid') return t('models.importSkipInvalid')
   return reason
 }
