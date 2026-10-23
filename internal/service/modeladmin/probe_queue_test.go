@@ -31,7 +31,7 @@ func seedUntestedCandidate(t *testing.T, svc *modeladmin.ModelService, db *gorm.
 		t.Fatalf("seed CreateModel failed: %v", err)
 	}
 	cand, err := svc.CreateModelCandidate(context.Background(), view.ID, modeladmin.CreateCandidateInput{
-		ProviderID: providerID, InputPrice: 1, OutputPrice: 2,
+		ProviderID: providerID, InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("seed CreateModelCandidate failed: %v", err)
@@ -40,10 +40,12 @@ func seedUntestedCandidate(t *testing.T, svc *modeladmin.ModelService, db *gorm.
 	// does not arm rows, and these tests model bulk-imported ones. Arming
 	// aligns armed_at with the row clock in the same write, the way every
 	// real arming write does (both set explicitly — GORM would otherwise
-	// auto-touch updated_at and break the alignment).
+	// auto-touch updated_at and break the alignment). The probe debt rides
+	// along: import is one of the two flows that write it, and the queue's
+	// consumption gate keys on it.
 	armedAt := time.Now().UTC()
 	if err := db.Model(&model.ModelCandidate{}).Where("id = ?", cand.ID).
-		Updates(map[string]interface{}{"auto_enable_on_pass": true, "armed_at": armedAt, "updated_at": armedAt}).Error; err != nil {
+		Updates(map[string]interface{}{"auto_enable_on_pass": true, "armed_at": armedAt, "updated_at": armedAt, "probe_owed": true}).Error; err != nil {
 		t.Fatalf("seed arm candidate failed: %v", err)
 	}
 	return cand.ID
@@ -477,7 +479,7 @@ func TestProbeQueuedCandidateYieldsWhenRetargetedWhileQueued(t *testing.T) {
 	// Before the worker gets to the job, the admin retargets the mapping
 	// (saved as disabled — the shape that deliberately does not probe).
 	if err := repository.UpdateModelCandidate(db, id, "renamed-target", 1, 2,
-		nil, nil, 0, true, false, time.Now().UTC()); err != nil {
+		nil, nil, 0, true, false, false, time.Now().UTC()); err != nil {
 		t.Fatalf("retarget failed: %v", err)
 	}
 
@@ -513,7 +515,7 @@ func TestProbeQueuedCandidateYieldsWhenRetargetedMidProbe(t *testing.T) {
 		fired = true
 		session := db.Session(&gorm.Session{NewDB: true})
 		if err := repository.UpdateModelCandidate(session, id, "renamed-target", 1, 2,
-			nil, nil, 0, true, false, time.Now().UTC()); err != nil {
+			nil, nil, 0, true, false, false, time.Now().UTC()); err != nil {
 			t.Errorf("simulate retarget: %v", err)
 		}
 	}
@@ -551,7 +553,7 @@ func TestProbeQueuedCandidateAbandonmentYieldsToARetarget(t *testing.T) {
 		fired = true
 		session := db.Session(&gorm.Session{NewDB: true})
 		if err := repository.UpdateModelCandidate(session, id, "renamed-target", 1, 2,
-			nil, nil, 0, true, false, time.Now().UTC()); err != nil {
+			nil, nil, 0, true, false, false, time.Now().UTC()); err != nil {
 			t.Errorf("simulate retarget: %v", err)
 		}
 	}); err != nil {
@@ -720,7 +722,7 @@ func TestProbeQueueRecoverPendingEnqueuesUnprobedRowsOnly(t *testing.T) {
 		t.Fatalf("seed manual model: %v", err)
 	}
 	manual, err := svc.CreateModelCandidate(context.Background(), manualView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: prov.ID, InputPrice: 1, OutputPrice: 2,
+		ProviderID: prov.ID, InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("seed manual candidate: %v", err)

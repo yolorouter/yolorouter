@@ -22,7 +22,7 @@ export function renderFailReasonCell(row: Pick<ProviderCandidate, 'last_test_err
 export function renderProbeStateTag(
   t: (key: string) => string,
   row: Pick<ProviderCandidate, 'verification_status' | 'management_status' | 'last_tested_at' | 'queue_state'> &
-    Partial<Pick<ProviderCandidate, 'auto_enable_on_pass'>>,
+    Partial<Pick<ProviderCandidate, 'auto_enable_on_pass' | 'probe_owed'>>,
   pending: { labelKey: string; type: 'info' | 'default' },
 ): VNode {
   const state = candidateDisplayState(row)
@@ -35,7 +35,7 @@ export function renderProbeStateTag(
   if (state === 'inconclusive')
     return h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('models.importStateInconclusive') })
   // idle is terminal: no queue owes this row anything (a manual
-  // save-as-disabled, or a promise a retarget revoked). Labeling it with the
+  // save-as-disabled, or a debt a retarget revoked). Labeling it with the
   // caller's pending fallback would claim a probe nobody scheduled.
   if (state === 'idle')
     return h(NTag, { size: 'small', bordered: false, type: 'default' }, { default: () => t('models.importStateIdle') })

@@ -3095,7 +3095,7 @@ func TestProviderImpactFlagsModelsLosingTheirLastRoutableSource(t *testing.T) {
 	addCandidate := func(modelID, providerID uint) {
 		t.Helper()
 		if _, err := modelSvc.CreateModelCandidate(context.Background(), modelID, modeladmin.CreateCandidateInput{
-			ProviderID: providerID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+			ProviderID: providerID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 			ManagementStatus: model.ModelCandidateStatusEnabled,
 		}, now); err != nil {
 			t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3147,13 +3147,13 @@ func TestProviderImpactIgnoresUnroutableFallbackCandidates(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := modelSvc.CreateModelCandidate(context.Background(), m.ID, modeladmin.CreateCandidateInput{
-		ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
 	fallback, err := modelSvc.CreateModelCandidate(context.Background(), m.ID, modeladmin.CreateCandidateInput{
-		ProviderID: providerB.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: providerB.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -3194,7 +3194,7 @@ func TestProviderImpactDoesNotBlameAlreadyDeadModelsOnThisProvider(t *testing.T)
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	only, err := modelSvc.CreateModelCandidate(context.Background(), dead.ID, modeladmin.CreateCandidateInput{
-		ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -3231,7 +3231,7 @@ func TestProviderImpactDoesNotBlameDisabledModels(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := modelSvc.CreateModelCandidate(context.Background(), m.ID, modeladmin.CreateCandidateInput{
-		ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3271,7 +3271,7 @@ func TestProviderImpactNamesKeysOnlyThroughStrandedModels(t *testing.T) {
 		}
 		for _, p := range providers {
 			if _, err := modelSvc.CreateModelCandidate(context.Background(), m.ID, modeladmin.CreateCandidateInput{
-				ProviderID: p.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+				ProviderID: p.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 				ManagementStatus: model.ModelCandidateStatusEnabled,
 			}, now); err != nil {
 				t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3339,7 +3339,7 @@ func TestProviderImpactCountsKeysAndCandidates(t *testing.T) {
 			t.Fatalf("CreateModel failed: %v", err)
 		}
 		if _, err := modelSvc.CreateModelCandidate(context.Background(), m.ID, modeladmin.CreateCandidateInput{
-			ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+			ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 			ManagementStatus: model.ModelCandidateStatusEnabled,
 		}, now); err != nil {
 			t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3752,3 +3752,5 @@ func TestProviderProxyChangeDoesNotBumpDestinationVersion(t *testing.T) {
 		t.Fatal("a proxy change must not put the key into needs-re-entry (destination_version must not bump)")
 	}
 }
+
+func ptrFloat(v float64) *float64 { return &v }

@@ -140,8 +140,12 @@ export interface CreateCandidateInput {
 
 export interface UpdateCandidateInput {
   provider_model_name: string
-  input_price: number
-  output_price: number
+  // Dirty-tracked by the edit form: a price the operator never touched is
+  // omitted, and the server's leave-alone contract keeps the stored rate — a
+  // submitted number would instead count as a fresh price claim and re-derive
+  // the row's declared fact.
+  input_price?: number
+  output_price?: number
   cache_write_price?: number
   cache_read_price?: number
   max_output: number
@@ -531,6 +535,17 @@ export interface ProviderCandidate {
   // outcome; an untested unstamped row without it was stored unprobed on
   // purpose and is not pending anything.
   auto_enable_on_pass: boolean
+  // True while some instance's probe queue still owes this row a probe
+  // outcome — the debt the import and requeue flows write, and the watch key
+  // for an untested unstamped row (an unpriced row is probed but never
+  // armed, so its debt carries no enable promise). Servers predating the
+  // field omit it; absent then means no standing debt.
+  probe_owed?: boolean
+  // True when the row's primary price slots were filled at write time: what
+  // separates an explicitly free row (stored 0/0, declared) from an unpriced
+  // import (also 0/0, undeclared). Servers predating the field omit it; the
+  // unpriced classification falls back to the zero-value heuristic then.
+  prices_declared?: boolean
 }
 
 // listProviderCandidates returns every mapping a provider serves with its

@@ -40,12 +40,23 @@ type ProviderCandidateView struct {
 	LastTestResult     *int       `json:"last_test_result"`
 	LastTestedAt       *time.Time `json:"last_tested_at"`
 	LastTestError      *string    `json:"last_test_error"`
-	// AutoEnableOnPass is the standing probe promise: true means the queue
+	// AutoEnableOnPass is the standing enable promise: true means the queue
 	// (on some instance — not necessarily the one answering this request)
-	// still owes this row a probe outcome, so pollers should keep watching
-	// it. An untested unstamped row WITHOUT it was stored that way on
-	// purpose and is not pending anything.
+	// still owes this row its PASS ENABLEMENT, so pollers watching a
+	// Passed+Disabled row should expect it to turn on. An unpriced row is
+	// never armed — probing it settles the debt without the enable.
 	AutoEnableOnPass bool `json:"auto_enable_on_pass"`
+	// PricesDeclared says the row's primary price slots were filled at write
+	// time. Stored zeros alone cannot carry it: an unpriced row and an
+	// explicitly free one both hold 0. prices_declared is the key the
+	// frontend's unpriced classification reads (zero values remain its
+	// fallback for servers predating the field); the badge views' full switch
+	// onto it lands in a later change.
+	PricesDeclared bool `json:"prices_declared"`
+	// ProbeOwed says the queue still owes this row a probe outcome, so
+	// pollers should keep watching it. An untested unstamped row WITHOUT the
+	// debt was stored that way on purpose and is not pending anything.
+	ProbeOwed bool `json:"probe_owed"`
 	// QueueState is where the probe queue currently holds this mapping —
 	// QueueStateQueued / QueueStateProbing — or empty when the queue has
 	// nothing for it. Stamped from the live queue by
@@ -106,16 +117,18 @@ func (s *ModelService) ListProviderCandidatesWithQueueStates(providerID uint, qu
 }
 
 // candidateRowLooksTorn reports whether a row's database snapshot may predate
-// a verdict that landed during the request. Two shapes qualify: an ARMED
+// a verdict that landed during the request. Two shapes qualify: a PROBE-OWED
 // untested row with no attempt stamp and no queue position (a probe is owed
 // but nothing shows it in flight — produced when a worker commits and leaves
 // the queue between the database read and the queue lookup), and a row
 // showing no queue position now but held by the queue when the request began
 // (its stale verdict would read as terminal and stop the pollers, hiding the
-// rerun's fresh outcome). The armed leg matters: WITHOUT the promise, that
-// same untested-unstamped shape is a lasting legal state (a manual
-// save-as-disabled, a revoked promise) — treating it as torn would re-read
-// the whole list on every poll for as long as such a row exists.
+// rerun's fresh outcome). The probe-debt leg matters: WITHOUT it, that same
+// untested-unstamped shape is a lasting legal state (a manual
+// save-as-disabled, a cancelled debt) — treating it as torn would re-read
+// the whole list on every poll for as long as such a row exists. The enable
+// promise is deliberately NOT this leg's key: an unpriced row is probed
+// while never armed, and it is exactly the row pollers must keep watching.
 func candidateRowLooksTorn(item ProviderCandidateView, wasQueued bool) bool {
 	if item.QueueState != "" {
 		return false
@@ -123,7 +136,7 @@ func candidateRowLooksTorn(item ProviderCandidateView, wasQueued bool) bool {
 	if wasQueued {
 		return true
 	}
-	return item.AutoEnableOnPass &&
+	return item.ProbeOwed &&
 		item.VerificationStatus == model.ModelVerificationStatusUntested && item.LastTestedAt == nil
 }
 
@@ -176,6 +189,8 @@ func (s *ModelService) ListProviderCandidates(providerID uint) ([]ProviderCandid
 			LastTestedAt:       c.LastTestedAt,
 			LastTestError:      c.LastTestError,
 			AutoEnableOnPass:   c.AutoEnableOnPass,
+			PricesDeclared:     c.PricesDeclared,
+			ProbeOwed:          c.ProbeOwed,
 		})
 	}
 	return list, nil

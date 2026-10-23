@@ -309,10 +309,12 @@ import NewProviderModal from '../providers/NewProviderModal.vue'
 import type {
   BillingMode,
   CandidateTestReport,
+  CreateCandidateInput,
   ImagePricingTier,
   ModelCandidate,
   ProbeReport,
   SuggestedPrice,
+  UpdateCandidateInput,
   VideoPricingTier,
 } from '../../api/models'
 import { suggestCandidatePrice } from '../../api/models'
@@ -464,6 +466,20 @@ const priceEditedAt = reactive<Record<PriceField, string | null>>({
 })
 
 const PRICE_FIELDS: PriceField[] = ['inputPrice', 'outputPrice', 'cacheWritePrice', 'cacheReadPrice']
+
+// The primary prices the form was seeded with when THIS opening loaded an
+// existing candidate — what "untouched" means for the edit payload. A price
+// the operator never moved is omitted from the update so the server's
+// leave-alone contract keeps the stored rate: a submitted number is judged
+// submission-side, so echoing the stored zeros of an unpriced import row back
+// would re-declare it explicitly free and re-arm the auto-enable promise its
+// requeue withholds. Only the edit path consults these; create keeps sending
+// both numbers (the blank form's zeros are that row's first declaration, not
+// an echo of stored ones).
+const seededPrices = {
+  input: null as number | null,
+  output: null as number | null,
+}
 
 // Whether the price fields stand for a specific provider+model pair rather than
 // being the untouched defaults of a blank form. Tracked rather than inferred
@@ -858,6 +874,10 @@ watch(
       form.providerModelName = props.editingCandidate.provider_model_name
       form.inputPrice = props.editingCandidate.input_price
       form.outputPrice = props.editingCandidate.output_price
+      // Baseline for the payload's price dirty tracking: what the row holds
+      // right now is what "untouched" means for this opening.
+      seededPrices.input = props.editingCandidate.input_price
+      seededPrices.output = props.editingCandidate.output_price
       form.cacheWritePrice = props.editingCandidate.cache_write_price
       form.cacheReadPrice = props.editingCandidate.cache_read_price
       form.maxOutput = props.editingCandidate.max_output
@@ -893,6 +913,10 @@ watch(
       form.audioUnitPrice = null
       form.inputPrice = 0
       form.outputPrice = 0
+      // Not consulted on the create path (both prices always ride), reset so
+      // a stale baseline cannot outlive the edit that seeded it.
+      seededPrices.input = null
+      seededPrices.output = null
       form.cacheWritePrice = null
       form.cacheReadPrice = null
       form.maxOutput = 0
@@ -939,13 +963,34 @@ watch(showNewProviderModal, (visible) => {
 // not overwrite an enable that landed after the dialog opened.
 const statusTouched = ref(false)
 
-function candidatePayload() {
+// The payload's shape follows the caller's own branch on
+// props.editingCandidate, passed as the flag so each endpoint gets the type
+// it requires: the create endpoints need both primary prices (and every
+// create call site is a non-edit branch, where both always ride), the update
+// endpoint takes the dirty-tracked subset. The builder keys its behavior on
+// the same condition the callers branch on.
+function candidatePayload(forCreate: true): CreateCandidateInput
+function candidatePayload(forCreate?: false): UpdateCandidateInput
+function candidatePayload(forCreate?: boolean): CreateCandidateInput | UpdateCandidateInput {
+  // The primary prices ride dirty-tracked. On the edit path a field whose
+  // value still equals what the opening seeded is LEFT OUT, and the server's
+  // leave-alone contract keeps the stored rate — echoing the stored number
+  // back would count as a fresh submission and re-derive the declared fact
+  // from it, which is exactly how a save laundering an unpriced row into an
+  // explicit free-price claim used to happen. The required fields are
+  // validated non-null before this runs; the ?? is what keeps the payload's
+  // types honest rather than a second default.
+  const priceFields: { input_price?: number; output_price?: number } = {}
+  if (forCreate) {
+    priceFields.input_price = form.inputPrice ?? 0
+    priceFields.output_price = form.outputPrice ?? 0
+  } else if (props.editingCandidate) {
+    if (form.inputPrice !== seededPrices.input) priceFields.input_price = form.inputPrice ?? 0
+    if (form.outputPrice !== seededPrices.output) priceFields.output_price = form.outputPrice ?? 0
+  }
   const base = {
     provider_model_name: form.providerModelName,
-    // The required fields are validated non-null before this runs; the ?? is
-    // what keeps the payload's types honest rather than a second default.
-    input_price: form.inputPrice ?? 0,
-    output_price: form.outputPrice ?? 0,
+    ...priceFields,
     // A cleared optional price is omitted, which the server stores as NULL —
     // "this model has no cache pricing", not "it is free".
     cache_write_price: form.cacheWritePrice ?? undefined,
@@ -1106,8 +1151,8 @@ async function onSave() {
       return
     }
     const result = await store.testAndCreateCandidate(props.modelId, {
+      ...candidatePayload(true),
       provider_id: form.providerId!,
-      ...candidatePayload(),
     })
     if (seq !== saveSeq) return
     report.value = result.report
@@ -1162,8 +1207,8 @@ async function onSaveAnywayDisabled() {
       })
     } else {
       await store.createCandidate(props.modelId, {
+        ...candidatePayload(true),
         provider_id: form.providerId!,
-        ...candidatePayload(),
         management_status: CANDIDATE_STATUS_DISABLED,
       })
     }

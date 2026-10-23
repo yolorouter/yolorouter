@@ -107,7 +107,7 @@ func TestImportProviderModelsAppendsCandidateToExistingModel(t *testing.T) {
 		t.Fatalf("seed CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), view.ID, modeladmin.CreateCandidateInput{
-		ProviderID: pA.ID, InputPrice: 1, OutputPrice: 2,
+		ProviderID: pA.ID, InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now); err != nil {
 		t.Fatalf("seed CreateModelCandidate failed: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestImportProviderModelsSkipsExistingMappingInvalidNameAndInBatchDuplicate(
 		t.Fatalf("seed CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), view.ID, modeladmin.CreateCandidateInput{
-		ProviderID: p.ID, InputPrice: 1, OutputPrice: 2,
+		ProviderID: p.ID, InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now); err != nil {
 		t.Fatalf("seed CreateModelCandidate failed: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestImportProviderModelsReturnsUnfinishedMappingIDsForRequeue(t *testing.T)
 		t.Fatalf("seed CreateModel failed: %v", err)
 	}
 	unfinished, err := svc.CreateModelCandidate(context.Background(), unfinishedModel.ID, modeladmin.CreateCandidateInput{
-		ProviderID: p.ID, InputPrice: 1, OutputPrice: 2,
+		ProviderID: p.ID, InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("seed unfinished candidate failed: %v", err)
@@ -243,7 +243,7 @@ func TestImportProviderModelsReturnsUnfinishedMappingIDsForRequeue(t *testing.T)
 		t.Fatalf("seed CreateModel failed: %v", err)
 	}
 	settled, err := svc.CreateModelCandidate(context.Background(), settledModel.ID, modeladmin.CreateCandidateInput{
-		ProviderID: p.ID, InputPrice: 1, OutputPrice: 2,
+		ProviderID: p.ID, InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("seed settled candidate failed: %v", err)
@@ -395,7 +395,7 @@ func TestSuggestCandidatePricesBatchReturnsHistoryAndEmpty(t *testing.T) {
 		t.Fatalf("seed CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), view.ID, modeladmin.CreateCandidateInput{
-		ProviderID: prov.ID, InputPrice: 42, OutputPrice: 43,
+		ProviderID: prov.ID, InputPrice: ptrFloat(42), OutputPrice: ptrFloat(43),
 	}, now); err != nil {
 		t.Fatalf("seed CreateModelCandidate failed: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestSuggestCandidatePricesReturnsLatestOfSeveralHistories(t *testing.T) {
 			t.Fatalf("seed CreateModel %d failed: %v", i, err)
 		}
 		if _, err := svc.CreateModelCandidate(context.Background(), view.ID, modeladmin.CreateCandidateInput{
-			ProviderID: p.ID, ProviderModelName: "shared-upstream-name", InputPrice: seed.price, OutputPrice: seed.price,
+			ProviderID: p.ID, ProviderModelName: "shared-upstream-name", InputPrice: ptrFloat(seed.price), OutputPrice: ptrFloat(seed.price),
 		}, seed.at); err != nil {
 			t.Fatalf("seed CreateModelCandidate %d failed: %v", i, err)
 		}

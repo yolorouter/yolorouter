@@ -3,30 +3,31 @@ import type { ImportItemResult, ProviderCandidate } from '../api/models'
 
 // How one mapping reads on a progress/status view. 'pending' means the queue
 // still owes it a probe (queued or in flight — the row's queue_state tells
-// which) or nothing has ever probed it. 'inconclusive' means a probe DID run
-// but produced no verdict — auth, rate-limit, upstream errors — recognizable
-// by last_tested_at being stamped while the verdict stays untested AND the
-// queue holding nothing for it. Inconclusive is terminal for progress
-// purposes: waiting on it would wait forever. The queue check comes first
-// because a re-import can requeue an inconclusive mapping, whose stale
-// last_tested_at must not make the view call it done mid-probe.
+// which) or nothing has ever probed it while the probe debt stands.
+// 'inconclusive' means a probe DID run but produced no verdict — auth,
+// rate-limit, upstream errors — recognizable by last_tested_at being stamped
+// while the verdict stays untested AND the queue holding nothing for it.
+// Inconclusive is terminal for progress purposes: waiting on it would wait
+// forever. The queue check comes first because a re-import can requeue an
+// inconclusive mapping, whose stale last_tested_at must not make the view
+// call it done mid-probe.
 // 'idle' is the fifth, terminal answer for a row NO ONE owes anything: never
-// probed, not queued anywhere, and without the auto-enable promise — a manual
-// save-as-disabled row, or one whose promise a retarget revoked. Waiting on
-// it would poll forever; it renders with the caller's untested fallback.
+// probed, not queued anywhere, and without the probe debt — a manual
+// save-as-disabled row, or one whose debt a retarget revoked. Waiting on it
+// would poll forever; it renders with the caller's untested fallback.
 export type CandidateProgressState = 'passed' | 'failed' | 'pending' | 'inconclusive' | 'idle'
 
 export function candidateProgressState(
   // queue_state is optional so single-candidate API results (which carry no
   // queue stamp) can be classified too; absent means "queue holds nothing".
-  // auto_enable_on_pass is optional the same way; absent means "no standing
-  // promise" ON PURPOSE — unlike report_applied, an absent promise is NOT
-  // normalized to true for older servers: a server without the field also
-  // has nothing that would ever settle such a row, so assuming a promise
-  // would poll it forever. Rows an old server is actively working still show
-  // through queue_state, which is checked first.
+  // probe_owed and auto_enable_on_pass are optional the same way; absent
+  // means "no standing debt/promise" ON PURPOSE — unlike report_applied, an
+  // absent flag is NOT normalized to true for older servers: a server
+  // without a field also has nothing that would ever settle such a row, so
+  // assuming one would poll it forever. Rows an old server is actively
+  // working still show through queue_state, which is checked first.
   c: Pick<ProviderCandidate, 'verification_status' | 'management_status' | 'last_tested_at'> &
-    Partial<Pick<ProviderCandidate, 'queue_state' | 'auto_enable_on_pass'>>,
+    Partial<Pick<ProviderCandidate, 'queue_state' | 'auto_enable_on_pass' | 'probe_owed'>>,
 ): CandidateProgressState {
   // A row a worker is ON is never done, whatever its columns say right now:
   // the worker commits the verdict and the enablement in separate writes, and
@@ -51,11 +52,13 @@ export function candidateProgressState(
   if (c.queue_state === 'queued') return 'pending'
   if (c.verification_status === VERIFICATION_FAILED) return 'failed'
   if (c.last_tested_at !== null) return 'inconclusive'
-  // Never probed and not queued here: pending only while the auto-enable
-  // promise stands (some instance's queue owes the probe). Without it, no one
-  // does — the row was saved unprobed on purpose, or a retarget revoked the
-  // promise — and waiting would poll forever.
-  return c.auto_enable_on_pass === true ? 'pending' : 'idle'
+  // Never probed and not queued here: pending only while the probe debt
+  // stands (some instance's queue owes the probe). Without it, no one does —
+  // the row was saved unprobed on purpose, or a retarget revoked the debt —
+  // and waiting would poll forever. probe_owed is this leg's key, NOT
+  // auto_enable_on_pass: an unpriced row is probed but never armed, so its
+  // debt is written without the promise.
+  return c.probe_owed === true ? 'pending' : 'idle'
 }
 
 // The shared pace for every candidate-progress poller (the import dialog and
@@ -65,21 +68,24 @@ export const PROGRESS_POLL_BASE_MS = 1500
 export const PROGRESS_POLL_BACKOFF_CAP_MS = 30_000
 
 // candidateIsOwedWork reports whether some queue still owes this row a probe
-// or an enable: it is visibly held by the local queue, or carries the armed
-// promise (which any instance's queue — or startup recovery — will fulfill).
+// or an enable: it is visibly held by the local queue, carries the probe
+// debt while untested-unstamped (which any instance's queue — or startup
+// recovery — will collect), or is armed while Passed but still off (the
+// armed promise's enable, delivered the same way).
 // The shared definition of "worth watching": the detail page adopts these
 // rows for polling, and the import dialog uses it to reconcile batches whose
 // HTTP response was lost after the server committed them.
 export function candidateIsOwedWork(
   c: Pick<ProviderCandidate, 'verification_status' | 'management_status' | 'last_tested_at'> &
-    Partial<Pick<ProviderCandidate, 'queue_state' | 'auto_enable_on_pass'>>,
+    Partial<Pick<ProviderCandidate, 'queue_state' | 'auto_enable_on_pass' | 'probe_owed'>>,
 ): boolean {
   if (c.queue_state === 'queued' || c.queue_state === 'probing') return true
-  if (c.auto_enable_on_pass !== true) return false
-  // Armed: owed a probe while untested-unstamped, owed the enable while
-  // Passed but still off.
-  if (c.verification_status === VERIFICATION_UNTESTED && c.last_tested_at === null) return true
-  return c.verification_status === VERIFICATION_PASSED && c.management_status !== CANDIDATE_STATUS_ENABLED
+  // The probe debt leg, keyed on probe_owed — NOT auto_enable_on_pass: an
+  // unpriced row is probed but never armed, so its debt carries no promise.
+  if (c.probe_owed === true && c.verification_status === VERIFICATION_UNTESTED && c.last_tested_at === null) return true
+  // The armed leg is only the enable wait: Passed but still off while the
+  // promise stands.
+  return c.auto_enable_on_pass === true && c.verification_status === VERIFICATION_PASSED && c.management_status !== CANDIDATE_STATUS_ENABLED
 }
 
 // Which badge a mapping with no verdict yet gets: its live queue position when
@@ -101,18 +107,23 @@ export type CandidateDisplayState = CandidateProgressState | 'passed_disabled'
 
 export function candidateDisplayState(
   c: Pick<ProviderCandidate, 'verification_status' | 'management_status' | 'last_tested_at' | 'queue_state'> &
-    Partial<Pick<ProviderCandidate, 'auto_enable_on_pass'>>,
+    Partial<Pick<ProviderCandidate, 'auto_enable_on_pass' | 'probe_owed'>>,
 ): CandidateDisplayState {
   const state = candidateProgressState(c)
   if (state === 'passed' && c.management_status !== CANDIDATE_STATUS_ENABLED) return 'passed_disabled'
   return state
 }
 
-// A mapping with every price slot zero or empty gets the "unpriced" badge —
+// A mapping with no filled price slots gets the "unpriced" badge —
 // informational only (cost accounting bills it as 0), never a routing gate.
+// The row's own prices_declared fact decides when the server sent it: stored
+// zeros alone cannot tell an unpriced import from an explicitly free row.
+// Servers predating the field omit it, and the zero-value heuristic stands in.
 export function isUnpriced(
-  c: Pick<ProviderCandidate, 'input_price' | 'output_price' | 'cache_write_price' | 'cache_read_price'>,
+  c: Pick<ProviderCandidate, 'input_price' | 'output_price' | 'cache_write_price' | 'cache_read_price'> &
+    Partial<Pick<ProviderCandidate, 'prices_declared'>>,
 ): boolean {
+  if (c.prices_declared !== undefined) return c.prices_declared === false
   return !c.input_price && !c.output_price && !c.cache_write_price && !c.cache_read_price
 }
 

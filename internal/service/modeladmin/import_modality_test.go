@@ -26,8 +26,11 @@ func importRow(t *testing.T, svc *modeladmin.ModelService, providerID uint, item
 }
 
 // The full scenario a bulk import of image models must survive end to end:
-// declare, probe, and land enabled — every stage switching on the declaration.
-func TestImportedImageRowProbesImageAndAutoEnables(t *testing.T) {
+// declare and probe through the image endpoint. A passing probe lands the
+// verdict but NEVER the enablement: image output bills through tier tables
+// the import never carries, so the row stops at Passed+Disabled (the ladder
+// is configured and the row enabled by hand afterwards).
+func TestImportedImageRowProbesImageAndStopsDisabledAwaitingTiers(t *testing.T) {
 	providerService, db, client := newTestProviderService(t)
 	prov := seedEnabledProviderForModelTest(t, providerService, "image-import-provider")
 	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
@@ -81,8 +84,11 @@ func TestImportedImageRowProbesImageAndAutoEnables(t *testing.T) {
 		t.Errorf("chat probes against the imported image model = %d, want 0", got)
 	}
 	reloaded := loadCandidate(t, db, item.CandidateID)
-	if reloaded.ManagementStatus != model.ModelCandidateStatusEnabled {
-		t.Fatalf("a passing image probe must auto-enable the imported mapping, got %d", reloaded.ManagementStatus)
+	if reloaded.ManagementStatus != model.ModelCandidateStatusDisabled {
+		t.Fatalf("a passing image probe must leave the mapping disabled pending its tier table, got %d", reloaded.ManagementStatus)
+	}
+	if reloaded.AutoEnableOnPass {
+		t.Fatal("an image row must not carry the auto-enable promise")
 	}
 	if reloaded.VerificationStatus != model.ModelVerificationStatusPassed {
 		t.Fatalf("expected verification passed, got %d", reloaded.VerificationStatus)

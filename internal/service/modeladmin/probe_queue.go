@@ -456,7 +456,7 @@ func (s *ModelService) ProbeQueuedCandidate(ctx context.Context, candidateID uin
 					return ferr
 				}
 				if fresh.VerificationStatus == model.ModelVerificationStatusUntested &&
-					fresh.LastTestedAt == nil && fresh.AutoEnableOnPass {
+					fresh.LastTestedAt == nil && fresh.ProbeOwed {
 					c = fresh
 				} else {
 					return nil
@@ -468,14 +468,15 @@ func (s *ModelService) ProbeQueuedCandidate(ctx context.Context, candidateID uin
 			return nil
 		}
 	}
-	// The armed flag is this job's standing order: every enqueue source
-	// (import, requeue, startup recovery) arms the row, and every write that
+	// The probe debt is this job's standing order: every enqueue source
+	// (import, requeue, startup recovery) writes it, and every write that
 	// means "do not probe this" — an explicit disable, a retarget saved as
-	// disabled — revokes it. A row that arrives here unarmed, untested and
-	// unstamped is a job whose order was cancelled while it sat queued;
+	// disabled — cancels it. A row that arrives here untested, unstamped and
+	// out of debt is a job whose order was cancelled while it sat queued;
 	// probing it would spend an uninvited upstream call and stamp a row its
-	// owner deliberately left unprobed.
-	if !c.AutoEnableOnPass && c.VerificationStatus == model.ModelVerificationStatusUntested && c.LastTestedAt == nil {
+	// owner deliberately left unprobed. The enable promise is deliberately
+	// not this gate's key: an unpriced row is probed while never armed.
+	if !c.ProbeOwed && c.VerificationStatus == model.ModelVerificationStatusUntested && c.LastTestedAt == nil {
 		return nil
 	}
 	// Armed-mode enable: whether a pass may enable the row is decided by the

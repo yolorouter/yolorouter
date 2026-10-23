@@ -103,7 +103,7 @@ func TestListProviderCandidatesCarriesBillingDeclaration(t *testing.T) {
 	tiers := &model.ImagePricingTiers{Mode: "per_image", DefaultPrice: ptrFloat(0.25)}
 	if _, err := svc.CreateModelCandidate(t.Context(), view.ID, modeladmin.CreateCandidateInput{
 		ProviderID: prov.ID, ProviderModelName: "billing-view-model",
-		InputPrice: 0.3, OutputPrice: 1.2, BillingMode: model.BillingModeImage, ImagePricingTiers: tiers,
+		InputPrice: ptrFloat(0.3), OutputPrice: ptrFloat(1.2), BillingMode: model.BillingModeImage, ImagePricingTiers: tiers,
 	}, time.Now().UTC()); err != nil {
 		t.Fatalf("create candidate: %v", err)
 	}

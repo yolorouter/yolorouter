@@ -384,7 +384,7 @@ describe('CandidateTable probe six-state badge column (TC-02)', () => {
         verification_status: VERIFICATION_UNTESTED,
         last_test_result: null,
         last_tested_at: null,
-        auto_enable_on_pass: true,
+        probe_owed: true,
       }),
     ])
 
@@ -396,7 +396,7 @@ describe('CandidateTable probe six-state badge column (TC-02)', () => {
     expectBadge('row-inconclusive', zhCN.models.importStateInconclusive, 'warning')
     expectBadge('row-idle', zhCN.models.importStateIdle, 'default')
     // The pending row with no queue position falls back to the caller's
-    // untested label (an armed auto-enable promise still owes it a probe).
+    // untested label (the standing probe debt still owes it a probe).
     expectBadge('row-pending-fallback', zhCN.providers.verificationUntested, 'default')
   })
 })

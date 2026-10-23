@@ -439,6 +439,26 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 					billingMode = model.BillingModeAudio
 					audioPrice = item.AudioUnitPrice
 				}
+				// The stored declaration fact derives from the submitted
+				// price slots (an absent slot stores 0 but is not a free
+				// claim), and the auto-enable promise follows it: only a
+				// row whose primary price slots are filled may auto-enable
+				// on a pass. A row whose model serves image or video output
+				// never arms — those bill through tier tables the import
+				// table does not carry, so enabling one would put an
+				// unpriced mapping into rotation; the ladder is configured
+				// and the row enabled by hand afterwards. Every row the
+				// batch enqueues is owed its probe either way — probing is
+				// how an unpriced row earns its verdict even though it will
+				// never auto-enable.
+				pricesDeclared := pricesDeclaredForBilling(billingMode, item.InputPrice != nil, item.OutputPrice != nil, audioPrice)
+				autoEnable := pricesDeclared &&
+					!m.ServesOutputModality(model.OutputModalityImage) &&
+					!m.ServesOutputModality(model.OutputModalityVideo)
+				var armedAt *time.Time
+				if autoEnable {
+					armedAt = &now
+				}
 				newCandidates = append(newCandidates, &model.ModelCandidate{
 					ModelID: m.ID, ProviderID: providerID, ProviderModelName: rowName,
 					InputPrice: priceOrDefault(item.InputPrice), OutputPrice: priceOrDefault(item.OutputPrice),
@@ -446,6 +466,8 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 					MaxOutput:          item.MaxOutput,
 					BillingMode:        billingMode,
 					AudioUnitPrice:     audioPrice,
+					PricesDeclared:     pricesDeclared,
+					ProbeOwed:          true,
 					ManagementStatus:   model.ModelCandidateStatusDisabled,
 					VerificationStatus: model.ModelVerificationStatusUntested,
 					// The import's auto-enable promise, persisted so the queue
@@ -454,8 +476,8 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 					// UpdatedAt on purpose: the probe commit's enable checks
 					// that alignment, and any later write — by any binary
 					// version — bumps updated_at and thereby blocks it.
-					AutoEnableOnPass: true,
-					ArmedAt:          &now,
+					AutoEnableOnPass: autoEnable,
+					ArmedAt:          armedAt,
 					// Each model appears once per batch (per-name dedup above),
 					// so max+1 cannot collide within the batch itself.
 					SortOrder: maxOrders[m.ID] + 1,
@@ -851,11 +873,32 @@ func contextConflict(item ImportModelItem, caps resolvedCapabilities, m *model.M
 
 // priceOrDefault unwraps a submitted token-slot price, treating an absent
 // one as the zero the columns store today. (Carrying "unpriced" as its own
-// state is later work; the pointers exist so the transport can say "absent"
-// without the service reading a submitted 0.)
+// state is what the prices_declared column does; the pointers exist so the
+// transport can say "absent" without the service reading a submitted 0.)
 func priceOrDefault(p *float64) float64 {
 	if p == nil {
 		return 0
 	}
 	return *p
+}
+
+// pricesDeclaredForBilling derives the stored prices_declared fact from the
+// price slots a write actually carries, judged per the row's billing mode —
+// which every caller has already resolved from the same source the row will
+// store. An image- or video-billed row is declared outright: its price lives
+// in a tier table that is validated (or deliberately left pending) on the
+// billing declaration itself, never in these slots. An audio-billed row
+// declares by its character price, absent meaning unpriced. A token-billed
+// row declares when both token slots are present — "present" is
+// submission-shaped, not numeric, because an explicit 0 is a free-price
+// claim: storage 0 counts as filled, and only an absent slot is unpriced.
+func pricesDeclaredForBilling(billingMode string, inputPresent, outputPresent bool, audioPrice *float64) bool {
+	switch model.NormalizeBillingMode(billingMode) {
+	case model.BillingModeImage, model.BillingModeVideo:
+		return true
+	case model.BillingModeAudio:
+		return audioPrice != nil
+	default:
+		return inputPresent && outputPresent
+	}
 }

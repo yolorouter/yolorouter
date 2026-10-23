@@ -93,6 +93,16 @@ type CandidateView struct {
 	ImagePricingTiers *model.ImagePricingTiers `json:"image_pricing_tiers"`
 	VideoPricingTiers *model.VideoPricingTiers `json:"video_pricing_tiers"`
 	AudioUnitPrice    *float64                 `json:"audio_unit_price"`
+	// PricesDeclared says the row's primary price slots were filled at write
+	// time. Stored zeros alone cannot carry it: an unpriced row and an
+	// explicitly free one both hold 0. prices_declared is the key the
+	// frontend's unpriced classification reads (zero values remain its
+	// fallback for servers predating the field); the badge views' full switch
+	// onto it lands in a later change.
+	PricesDeclared bool `json:"prices_declared"`
+	// ProbeOwed says the queue still owes this row a probe — the watch key
+	// for unpriced rows, which are probed but never auto-enabled.
+	ProbeOwed bool `json:"probe_owed"`
 	// Mirrors model.ModelCandidate: true when the last probe confirmed the
 	// capability, null when it did not. Informational — routing ignores these.
 	SupportsStreaming       *bool `json:"supports_streaming"`
@@ -265,6 +275,7 @@ func buildCandidateView(c model.ModelCandidate, providerName string, blockedBy s
 		ID: c.ID, ProviderID: c.ProviderID, ProviderName: providerName, ProviderModelName: c.ProviderModelName,
 		InputPrice: c.InputPrice, OutputPrice: c.OutputPrice, CacheWritePrice: c.CacheWritePrice, CacheReadPrice: c.CacheReadPrice,
 		MaxOutput: c.MaxOutput, BillingMode: model.NormalizeBillingMode(c.BillingMode), ImagePricingTiers: model.ParseImagePricingTiers(c.ImagePricingTiers), VideoPricingTiers: model.ParseVideoPricingTiers(c.VideoPricingTiers), AudioUnitPrice: c.AudioUnitPrice,
+		PricesDeclared: c.PricesDeclared, ProbeOwed: c.ProbeOwed,
 		SupportsStreaming: c.SupportsStreaming, SupportsFunctionCalling: c.SupportsFunctionCalling,
 		ManagementStatus: c.ManagementStatus, SortOrder: c.SortOrder, VerificationStatus: c.VerificationStatus,
 		Routable:           blockedBy == "",
@@ -568,12 +579,17 @@ func (s *ModelService) CreateModelsBatch(in CreateModelsBatchInput, now time.Tim
 type CreateCandidateInput struct {
 	ProviderID        uint
 	ProviderModelName string
-	InputPrice        float64
-	OutputPrice       float64
-	CacheWritePrice   *float64
-	CacheReadPrice    *float64
-	MaxOutput         int
-	ManagementStatus  int // requested target status; only ==Enabled triggers the server-side retest
+	// InputPrice / OutputPrice are the token slot prices as pointers so an
+	// absent field means "unpriced" (the row stores 0 with the declaration
+	// fact false) while a submitted 0 means "free" (declared). A negative
+	// value is a typo that would bill backwards and is rejected by the
+	// transport binding.
+	InputPrice       *float64
+	OutputPrice      *float64
+	CacheWritePrice  *float64
+	CacheReadPrice   *float64
+	MaxOutput        int
+	ManagementStatus int // requested target status; only ==Enabled triggers the server-side retest
 	// BillingMode and ImagePricingTiers say what settlement prices this
 	// candidate in and, for image mode, the per-image table. Both optional:
 	// the create default is the token mode every candidate had before.
@@ -1097,9 +1113,16 @@ func (s *ModelService) createCandidateWithProbeResults(
 	}
 	candidate := &model.ModelCandidate{
 		ModelID: modelID, ProviderID: input.ProviderID, ProviderModelName: providerModelName,
-		InputPrice: input.InputPrice, OutputPrice: input.OutputPrice,
+		InputPrice: priceOrDefault(input.InputPrice), OutputPrice: priceOrDefault(input.OutputPrice),
 		CacheWritePrice: input.CacheWritePrice, CacheReadPrice: input.CacheReadPrice, MaxOutput: input.MaxOutput,
 		BillingMode: billingMode, ImagePricingTiers: tiersJSON, VideoPricingTiers: videoTiersJSON, AudioUnitPrice: audioPrice,
+		PricesDeclared: pricesDeclaredForBilling(billingMode, input.InputPrice != nil, input.OutputPrice != nil, audioPrice),
+		// This row never owes the queue anything: the probe either ran just
+		// now (its verdict rides on the insert) or was deliberately not
+		// spent — the store-without-probe branch below. Either way the row
+		// starts settled, which is what keeps restart recovery from
+		// collecting it.
+		ProbeOwed:               false,
 		ManagementStatus:        managementStatus,
 		VerificationStatus:      verificationStatus,
 		SupportsStreaming:       commit.SupportsStreaming,
@@ -1247,9 +1270,15 @@ func (s *ModelService) CreateModelCandidate(ctx context.Context, modelID uint, i
 	}
 	candidate := &model.ModelCandidate{
 		ModelID: modelID, ProviderID: input.ProviderID, ProviderModelName: providerModelName,
-		InputPrice: input.InputPrice, OutputPrice: input.OutputPrice,
+		InputPrice: priceOrDefault(input.InputPrice), OutputPrice: priceOrDefault(input.OutputPrice),
 		CacheWritePrice: input.CacheWritePrice, CacheReadPrice: input.CacheReadPrice, MaxOutput: input.MaxOutput,
 		BillingMode: billingMode, ImagePricingTiers: tiersJSON, VideoPricingTiers: videoTiersJSON, AudioUnitPrice: audioPrice,
+		PricesDeclared: pricesDeclaredForBilling(billingMode, input.InputPrice != nil, input.OutputPrice != nil, audioPrice),
+		// Storing without touching the upstream is this path's documented
+		// meaning: the row is untested, unstamped and owed nothing — no
+		// probe debt, so restart recovery never spends an uninvited upstream
+		// call on it. An enable-requesting save probes inline below instead.
+		ProbeOwed:          false,
 		ManagementStatus:   model.ModelCandidateStatusDisabled,
 		VerificationStatus: model.ModelVerificationStatusUntested,
 		CreatedAt:          now, UpdatedAt: now, PriceUpdatedAt: now,
@@ -1739,6 +1768,42 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 		billingMode, imageTiersJSON, videoTiersJSON, audioPrice = resolvedMode, resolvedTiers, resolvedVideoTiers, resolvedAudioPrice
 	}
 
+	// The declaration fact re-derives only when the edit touches a pricing
+	// declaration, and then by SUBMISSION-SIDE judgment: a submitted slot is
+	// judged by its submission (a submitted 0 is a free-price claim and
+	// counts as filled), while an unsubmitted slot inherits the row's
+	// current verdict — a declared row's slots count as filled, because
+	// stored zeros alone cannot tell an explicit free from an unpriced row.
+	// The inheritance holds only WITHIN one billing mode: the stored verdict
+	// was read from the slots the row's existing mode prices with, so a
+	// switch to another mode starts the derivation over and an unsubmitted
+	// slot counts as unfilled. Letting it cross the switch would hand a
+	// declared token row's fact to an audio row with no character price —
+	// and the next import's requeue would then re-arm a row whose pricing
+	// cannot support the enable. A save that touches no pricing at all never
+	// re-derives, so an unrelated edit can neither flip the fact nor launder
+	// it.
+	pricesDeclared := candidate.PricesDeclared
+	if input.InputPrice != nil || input.OutputPrice != nil || input.CacheWritePrice != nil ||
+		input.CacheReadPrice != nil || input.AudioUnitPrice != nil || input.BillingMode != nil ||
+		input.ImagePricingTiers != nil || input.VideoPricingTiers != nil {
+		declaredSameMode := candidate.PricesDeclared &&
+			model.NormalizeBillingMode(billingMode) == model.NormalizeBillingMode(candidate.BillingMode)
+		switch model.NormalizeBillingMode(billingMode) {
+		case model.BillingModeImage, model.BillingModeVideo:
+			// A resolved tier mode always carries a pricing table —
+			// resolveBillingDeclaration refuses the mode without one — so
+			// the table's presence is the whole verdict and there is
+			// nothing to inherit.
+			pricesDeclared = true
+		case model.BillingModeAudio:
+			pricesDeclared = input.AudioUnitPrice != nil || declaredSameMode
+		default:
+			pricesDeclared = (input.InputPrice != nil || declaredSameMode) &&
+				(input.OutputPrice != nil || declaredSameMode)
+		}
+	}
+
 	// The consistency rules span both sides of the model/candidate pair, so a
 	// candidate save re-reads the model and the siblings and re-asserts them
 	// against THIS candidate's effective post-save state — before anything is
@@ -1776,7 +1841,7 @@ func (s *ModelService) UpdateModelCandidate(ctx context.Context, id uint, input 
 			}
 		}
 		if err := repository.UpdateModelCandidate(tx, id, providerModelName, inputPrice, outputPrice,
-			input.CacheWritePrice, input.CacheReadPrice, maxOutput, targetChanged, priceChanged, now); err != nil {
+			input.CacheWritePrice, input.CacheReadPrice, maxOutput, targetChanged, priceChanged, pricesDeclared, now); err != nil {
 			return err
 		}
 		if billingMode != candidate.BillingMode || imageTiersJSON != candidate.ImagePricingTiers || videoTiersJSON != candidate.VideoPricingTiers || !sameOptionalPrice(audioPrice, candidate.AudioUnitPrice) {

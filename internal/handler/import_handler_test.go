@@ -165,13 +165,14 @@ func TestGetProviderCandidatesRefreshesRowsThatSettleMidRequest(t *testing.T) {
 	if err := db.Create(m).Error; err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
-	// Armed like every row the queue actually works on (import and requeue
-	// both arm): the torn-row re-read keys on the promise, because without it
-	// the untested-unstamped shape is a lasting legal state, not a tear.
+	// Owed a probe like every row the queue actually works on (import and
+	// requeue both write the debt): the torn-row re-read keys on the debt,
+	// because without it the untested-unstamped shape is a lasting legal
+	// state, not a tear.
 	cand := &model.ModelCandidate{
 		ModelID: m.ID, ProviderID: p.ID, ProviderModelName: "race-model",
 		ManagementStatus: model.ModelCandidateStatusDisabled, VerificationStatus: model.ModelVerificationStatusUntested,
-		AutoEnableOnPass: true, ArmedAt: &now,
+		ProbeOwed: true,
 		CreatedAt: now, UpdatedAt: now, PriceUpdatedAt: now,
 	}
 	if err := db.Create(cand).Error; err != nil {

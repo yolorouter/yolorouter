@@ -202,7 +202,7 @@ func TestUpdateModelCandidate(t *testing.T) {
 	cacheWrite := 0.5
 	cacheRead := 0.1
 
-	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-2024", 1.5, 3.0, &cacheWrite, &cacheRead, 4096, false, true, now); err != nil {
+	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-2024", 1.5, 3.0, &cacheWrite, &cacheRead, 4096, false, true, false, now); err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
 	}
 	reloaded, err := FindModelCandidateByID(db, candidate.ID)
@@ -624,7 +624,7 @@ func TestFindLatestCandidatePriceFollowsPriceEdits(t *testing.T) {
 	older := seedCandidatePrice(t, db, provider.ID, "older-alias", "deepseek-v4-pro", 1, 2, now.Add(-time.Hour))
 	seedCandidatePrice(t, db, provider.ID, "newer-alias", "deepseek-v4-pro", 3, 6, now)
 
-	if err := UpdateModelCandidate(db, older.ID, "deepseek-v4-pro", 2.4, 4.8, nil, nil, 0, false, true, now.Add(time.Hour)); err != nil {
+	if err := UpdateModelCandidate(db, older.ID, "deepseek-v4-pro", 2.4, 4.8, nil, nil, 0, false, true, false, now.Add(time.Hour)); err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
 	}
 
@@ -680,7 +680,7 @@ func TestUpdateModelCandidateLeavesPriceClockAloneWhenPricesAreUnchanged(t *test
 	seedCandidatePrice(t, db, provider.ID, "newer-alias", "deepseek-v4-pro", 3, 6, now)
 
 	// Same prices, different max_output: priceChanged is false.
-	if err := UpdateModelCandidate(db, stale.ID, "deepseek-v4-pro", 1, 2, nil, nil, 4096, false, false, now.Add(time.Hour)); err != nil {
+	if err := UpdateModelCandidate(db, stale.ID, "deepseek-v4-pro", 1, 2, nil, nil, 4096, false, false, false, now.Add(time.Hour)); err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
 	}
 
@@ -719,7 +719,7 @@ func TestUpdateModelCandidateKeepsTheFoldedNameInStep(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	c := seedCandidatePrice(t, db, provider.ID, "alias", "deepseek-v4-flash", 1, 2, now)
 
-	if err := UpdateModelCandidate(db, c.ID, "DeepSeek-V4-Pro", 3, 6, nil, nil, 0, true, true, now.Add(time.Minute)); err != nil {
+	if err := UpdateModelCandidate(db, c.ID, "DeepSeek-V4-Pro", 3, 6, nil, nil, 0, true, true, false, now.Add(time.Minute)); err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
 	}
 
@@ -750,7 +750,7 @@ func TestUpdateModelCandidateStampsPriceClockOnRetarget(t *testing.T) {
 	moved := seedCandidatePrice(t, db, provider.ID, "moved", "deepseek-v4-flash", 1, 2, now.Add(-time.Hour))
 
 	// Same numbers, new target: priceChanged is driven by targetChanged.
-	if err := UpdateModelCandidate(db, moved.ID, "deepseek-v4-pro", 1, 2, nil, nil, 0, true, true, now.Add(time.Hour)); err != nil {
+	if err := UpdateModelCandidate(db, moved.ID, "deepseek-v4-pro", 1, 2, nil, nil, 0, true, true, false, now.Add(time.Hour)); err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
 	}
 
@@ -1056,7 +1056,7 @@ func TestUpdateModelCandidateRetargetRevokesArmedPromise(t *testing.T) {
 		t.Fatalf("arm candidate: %v", err)
 	}
 
-	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-mini", 1, 2, nil, nil, 0, true, false, now.Add(time.Second)); err != nil {
+	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-mini", 1, 2, nil, nil, 0, true, false, false, now.Add(time.Second)); err != nil {
 		t.Fatalf("retarget failed: %v", err)
 	}
 	r, err := FindModelCandidateByID(db, candidate.ID)
@@ -1073,7 +1073,7 @@ func TestUpdateModelCandidateRetargetRevokesArmedPromise(t *testing.T) {
 		Updates(map[string]interface{}{"auto_enable_on_pass": true, "armed_at": now, "updated_at": now}).Error; err != nil {
 		t.Fatalf("arm candidate: %v", err)
 	}
-	if err := UpdateModelCandidate(db, keep.ID, "gpt-4o", 3, 4, nil, nil, 0, false, true, now.Add(time.Second)); err != nil {
+	if err := UpdateModelCandidate(db, keep.ID, "gpt-4o", 3, 4, nil, nil, 0, false, true, false, now.Add(time.Second)); err != nil {
 		t.Fatalf("same-name edit failed: %v", err)
 	}
 	k, err := FindModelCandidateByID(db, keep.ID)
@@ -1207,7 +1207,7 @@ func TestUpdateModelCandidateClearsProbeResidueOnRetarget(t *testing.T) {
 		t.Fatalf("seed failing probe failed: %v", err)
 	}
 
-	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-mini", 1, 2, nil, nil, 0, true, true, now.Add(time.Minute)); err != nil {
+	if err := UpdateModelCandidate(db, candidate.ID, "gpt-4o-mini", 1, 2, nil, nil, 0, true, true, false, now.Add(time.Minute)); err != nil {
 		t.Fatalf("UpdateModelCandidate failed: %v", err)
 	}
 

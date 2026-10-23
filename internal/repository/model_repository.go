@@ -331,8 +331,11 @@ func CreateModelCandidate(db *gorm.DB, c *model.ModelCandidate) error {
 // edit that merely re-sent the same numbers (which every save from the candidate
 // form does — it always posts the full record) would let a candidate nobody
 // repriced overtake one that was, and resurrect its stale rate.
+//
+// pricesDeclared is the service layer's submission-side re-derivation of the
+// stored declaration fact; the repository only persists it.
 func UpdateModelCandidate(db *gorm.DB, id uint, providerModelName string, inputPrice, outputPrice float64,
-	cacheWritePrice, cacheReadPrice *float64, maxOutput int, resetVerification, priceChanged bool, now time.Time) error {
+	cacheWritePrice, cacheReadPrice *float64, maxOutput int, resetVerification, priceChanged, pricesDeclared bool, now time.Time) error {
 	updates := map[string]interface{}{
 		"provider_model_name": providerModelName,
 		// Never written without its source column: a row whose folded copy is
@@ -343,6 +346,7 @@ func UpdateModelCandidate(db *gorm.DB, id uint, providerModelName string, inputP
 		"cache_write_price":          cacheWritePrice,
 		"cache_read_price":           cacheReadPrice,
 		"max_output":                 maxOutput,
+		"prices_declared":            pricesDeclared,
 		"updated_at":                 now,
 	}
 	if resetVerification {
@@ -355,6 +359,11 @@ func UpdateModelCandidate(db *gorm.DB, id uint, providerModelName string, inputP
 		// and a re-import requeues — the latter is the only path that arms
 		// afresh.
 		updates["auto_enable_on_pass"] = false
+		// The probe debt was the OLD mapping's too: the reset makes the row
+		// read untested-unstamped again, which the recovery keys on, and a
+		// retarget deliberately stores without probing — nothing owes the
+		// fresh target a queue run.
+		updates["probe_owed"] = false
 	} else {
 		// A same-name edit made through THIS binary knowingly preserves the
 		// promise, so it re-aligns armed_at with the clock it just bumped —
@@ -541,27 +550,32 @@ func SetModelCandidateManagementStatusAdvancingProbeToken(db *gorm.DB, id uint, 
 			// promise: a probe still queued (or in flight) for this row must
 			// deliver its verdict without enabling.
 			"auto_enable_on_pass": false,
-			"updated_at":          now,
+			// It also cancels the probe debt: whoever disables a row decided
+			// it must not be probed, and a restart recovery that re-collected
+			// it would spend exactly the upstream call the admin's disable
+			// was meant to stop.
+			"probe_owed": false,
+			"updated_at": now,
 		}).Error
 }
 
-// ListUnprobedCandidateIDs returns every mapping the queue still OWES a probe
-// — untested, no attempt stamp, and carrying the auto-enable promise. The
-// probe queue is in-memory and dies with the process, so these rows ARE the
-// durable queue: re-enqueueing them at startup turns every way a queued probe
-// can be lost (a crash, a shutdown racing an import's enqueue) into a
-// self-healing restart instead of a manual re-import. The armed flag is what
-// separates them from a manually created candidate saved as disabled: that
-// row is untested and unstamped by deliberate choice (store WITHOUT touching
-// the upstream), and only import and requeue — the flows that promise a probe
-// — arm rows.
-// Two shapes are owed something: an untested unstamped armed row is owed a
-// PROBE, and a Passed but disabled armed row is owed its ENABLE (the fulfill
-// path delivers that one without spending a probe).
+// ListUnprobedCandidateIDs returns every mapping the queue still OWES
+// something — the probe queue is in-memory and dies with the process, so
+// these rows ARE the durable queue: re-enqueueing them at startup turns every
+// way a queued probe can be lost (a crash, a shutdown racing an import's
+// enqueue) into a self-healing restart instead of a manual re-import.
+// Two shapes are owed something, each on its own key: an untested unstamped
+// row carrying probe_owed is owed a PROBE (import and requeue — the flows
+// that promise a probe — write the debt, which is what separates such a row
+// from a manually created candidate saved as disabled: that row is untested
+// and unstamped by deliberate choice, store WITHOUT touching the upstream),
+// and a Passed but disabled ARMED row is owed its ENABLE (the fulfill path
+// delivers that one without spending a probe) — the armed flag remains that
+// leg's key because what it carries is the enable promise, not a probe debt.
 func ListUnprobedCandidateIDs(db *gorm.DB) ([]uint, error) {
 	var ids []uint
 	err := db.Model(&model.ModelCandidate{}).
-		Where("auto_enable_on_pass AND ((verification_status = ? AND last_tested_at IS NULL) OR (verification_status = ? AND management_status = ?))",
+		Where("(probe_owed AND verification_status = ? AND last_tested_at IS NULL) OR (auto_enable_on_pass AND verification_status = ? AND management_status = ?)",
 			model.ModelVerificationStatusUntested, model.ModelVerificationStatusPassed, model.ModelCandidateStatusDisabled).
 		Order("id ASC").
 		Pluck("id", &ids).Error
@@ -628,6 +642,14 @@ func ClearCandidatesProbeResidue(db *gorm.DB, ids []uint, probeRunID string, now
 	if len(ids) == 0 {
 		return nil
 	}
+	// The one judgment BOTH arm-state columns below must share: a requeue
+	// renews the enable promise and stamps the arming together, or leaves
+	// both alone. Deciding armed_at by any other rule would stamp rows the
+	// predicate disarms with a fresh armed_at — a fabricated armed history
+	// on a row that must never auto-enable.
+	const rearmWhen = "CASE WHEN prices_declared AND NOT EXISTS (SELECT 1 FROM models " +
+		"WHERE models.id = model_candidates.model_id " +
+		"AND (output_modalities LIKE ? OR output_modalities LIKE ?))"
 	return db.Model(&model.ModelCandidate{}).
 		Where("id IN ? AND verification_status = ?", ids, model.ModelVerificationStatusUntested).
 		Updates(map[string]interface{}{
@@ -635,14 +657,39 @@ func ClearCandidatesProbeResidue(db *gorm.DB, ids []uint, probeRunID string, now
 			"last_test_duration_ms": nil,
 			"last_tested_at":        nil,
 			"last_test_error":       nil,
-			// A requeue renews the import's auto-enable promise: the admin
-			// explicitly asked for these rows to be probed again. Arming and
-			// the row clock are written as the SAME value — that alignment is
-			// what the probe commit's enable checks, so this write both
-			// renews the promise and marks the row untouched-since-arming.
-			"auto_enable_on_pass": true,
-			"armed_at":            now,
-			"updated_at":          now,
+			// A requeue renews the import's auto-enable promise ONLY where the
+			// row's pricing supports it: a declared row on a model without
+			// image/video output re-arms exactly as before, while an unpriced
+			// row (or one whose model serves image or video output — tier
+			// tables pending) requeues for the probe alone and stays
+			// disarmed, so a pass cannot enable a mapping into a state its
+			// pricing does not support. The stored prices and the declared
+			// fact itself are untouched — the requeue never reprices. On a
+			// re-armed row, arming and the row clock are written as the SAME
+			// value — that alignment is what the probe commit's enable
+			// checks, so this write both renews the promise and marks the
+			// row untouched-since-arming.
+			"auto_enable_on_pass": gorm.Expr(
+				// TRUE/FALSE are spelled as literals, not bound parameters:
+				// in a CASE's branches a bound boolean's type is unresolved
+				// and Postgres guesses text, rejecting the whole statement.
+				rearmWhen+" THEN TRUE ELSE FALSE END",
+				`%"image"%`, `%"video"%`,
+			),
+			// The requeue is one of the two flows that promise a probe, so
+			// every row it re-arms (or leaves disarmed) is owed that probe
+			// again regardless of how its enable promise fares.
+			"probe_owed": true,
+			// armed_at is judged by the SAME rearmWhen predicate as
+			// auto_enable_on_pass: only a re-armed row takes the fresh stamp
+			// (aligned with updated_at below); a disarmed row keeps its
+			// previous value — NULL for a row never armed — so the column
+			// stays a truthful arming history.
+			"armed_at": gorm.Expr(
+				rearmWhen+" THEN ? ELSE armed_at END",
+				`%"image"%`, `%"video"%`, now,
+			),
+			"updated_at": now,
 			// The requeue supersedes every probe already in flight: advancing
 			// the token here makes their commits miss instead of landing a
 			// verdict whose updated_at bump would break the alignment just
@@ -737,6 +784,12 @@ func CommitModelCandidateProbeResults(db *gorm.DB, id uint, probedModelName, exp
 		"last_tested_at":        now,
 		"last_probe_run_id":     probeRunID,
 		"updated_at":            now,
+		// The stamp settles the probe debt: every commit writes an attempt
+		// timestamp (verdict, abandonment note, or both), and a stamped row
+		// is no longer "waiting for its probe" anywhere — recovery, the
+		// worker's consumption gate and the torn-snapshot re-read all key on
+		// that combination.
+		"probe_owed": false,
 	}
 	if c.VerificationStatus != nil {
 		updates["verification_status"] = *c.VerificationStatus

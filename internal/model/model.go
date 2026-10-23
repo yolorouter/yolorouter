@@ -404,6 +404,21 @@ type ModelCandidate struct {
 	// ambiguously, and a run can recognize its own already-applied write after
 	// a lost acknowledgment by reading the id back. Storage detail, not API.
 	LastProbeRunID string `gorm:"column:last_probe_run_id" json:"-"`
+	// PricesDeclared records whether the row's primary price slots were
+	// filled when it was last written. Stored zeros cannot answer that on
+	// their own — an unpriced row and an explicitly free one both hold 0 —
+	// so every write path derives the fact from its submitted forms and
+	// stores it here; only a save that actually touches a price declaration
+	// re-derives it, so unrelated edits can neither flip it nor launder it.
+	// Storage detail, not API.
+	PricesDeclared bool `gorm:"column:prices_declared" json:"-"`
+	// ProbeOwed records whether the background queue still owes this row a
+	// probe. It splits the durable-queue question away from the auto-enable
+	// promise: an unpriced import row is probed but never auto-enabled, so
+	// armed alone stopped saying "owed a probe". Import and requeue set it;
+	// a probe's stamp, an explicit disable, a deliberate store-without-probe
+	// and a retarget clear it. Storage detail, not API.
+	ProbeOwed bool `gorm:"column:probe_owed" json:"-"`
 	// AutoEnableOnPass is the import flow's standing promise: armed by bulk
 	// import (and re-armed by a requeue), it lets the background probe queue
 	// enable the row on a pass — checked inside the commit statement, so an

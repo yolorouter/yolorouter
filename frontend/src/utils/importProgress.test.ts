@@ -33,14 +33,26 @@ const cand = (
   last_test_error: error,
   queue_state: queueState,
   auto_enable_on_pass: false,
+  prices_declared: true,
 })
 
 describe('candidateProgressState', () => {
   it('maps verification outcomes to display states', () => {
     expect(candidateProgressState(cand(1, 1, 1))).toBe('passed')
     expect(candidateProgressState(cand(2, 2, 2))).toBe('failed')
-    // Untested, unstamped, unqueued and WITH the probe promise: pending.
-    expect(candidateProgressState({ ...cand(3, 0, 2), auto_enable_on_pass: true })).toBe('pending')
+    // Untested, unstamped, unqueued and WITH the probe debt: pending.
+    expect(candidateProgressState({ ...cand(3, 0, 2), probe_owed: true })).toBe('pending')
+  })
+
+  it('keeps a probe-owed unarmed row with no queue seat pending, not idle', () => {
+    // An unpriced (or image/video-tiered) row is probed but never armed: its
+    // debt is written as probe_owed WITHOUT auto_enable_on_pass. The queue
+    // holding it may live on ANOTHER instance, invisible to this response's
+    // queue_state — calling it idle here would stop the poll while a probe
+    // is still owed.
+    const row = { ...cand(12, 0, 2), probe_owed: true, auto_enable_on_pass: false }
+    expect(candidateProgressState(row)).toBe('pending')
+    expect(candidateIsOwedWork(row)).toBe(true)
   })
 
   it('treats an unqueued untested row whose promise was revoked as idle, not pending', () => {
@@ -107,10 +119,11 @@ describe('candidateProgressState', () => {
 
 describe('candidateIsOwedWork', () => {
   it('is true exactly for rows some queue owes a probe or an enable', () => {
-    // Queued/probing here, armed anywhere, or Passed+Disabled still armed.
+    // Queued/probing here, carrying the probe debt, or Passed+Disabled still
+    // armed for the enable.
     expect(candidateIsOwedWork(cand(1, 0, 2, null, null, 'queued'))).toBe(true)
     expect(candidateIsOwedWork(cand(2, 0, 2, null, null, 'probing'))).toBe(true)
-    expect(candidateIsOwedWork({ ...cand(3, 0, 2), auto_enable_on_pass: true })).toBe(true)
+    expect(candidateIsOwedWork({ ...cand(3, 0, 2), probe_owed: true })).toBe(true)
     expect(candidateIsOwedWork({ ...cand(4, 1, 2, null, '2026-08-20T12:00:00Z'), auto_enable_on_pass: true })).toBe(true)
     // Cancelled order / settled rows are owed nothing.
     expect(candidateIsOwedWork(cand(5, 0, 2))).toBe(false)
@@ -135,11 +148,22 @@ describe('isUnpriced', () => {
     expect(isUnpriced({ input_price: 2, output_price: 0, cache_write_price: null, cache_read_price: null })).toBe(false)
     expect(isUnpriced({ input_price: 0, output_price: 0, cache_write_price: 0.5, cache_read_price: null })).toBe(false)
   })
+
+  it('trusts prices_declared over the zeros: an explicitly free row is not unpriced', () => {
+    // Same stored 0/0 as the unpriced fixtures above — only the declared fact
+    // tells the two rows apart, which is exactly why the zero-value heuristic
+    // alone cannot carry the verdict.
+    expect(isUnpriced({ input_price: 0, output_price: 0, cache_write_price: null, cache_read_price: null, prices_declared: true })).toBe(false)
+  })
+
+  it('takes prices_declared:false as unpriced on the same zeros', () => {
+    expect(isUnpriced({ input_price: 0, output_price: 0, cache_write_price: null, cache_read_price: null, prices_declared: false })).toBe(true)
+  })
 })
 
 describe('summarizeImportProgress', () => {
   it('filters to the imported mappings in import order and tallies the states', () => {
-    const list = [cand(9, 1, 1), cand(5, 2, 2, 'boom'), { ...cand(7, 0, 2), auto_enable_on_pass: true }, cand(3, 1, 1)]
+    const list = [cand(9, 1, 1), cand(5, 2, 2, 'boom'), { ...cand(7, 0, 2), probe_owed: true }, cand(3, 1, 1)]
     const { progress, rows } = summarizeImportProgress(list, [5, 7, 9])
     expect(rows.map((r) => r.candidate_id)).toEqual([5, 7, 9])
     expect(progress).toEqual({ total: 3, passed: 1, failed: 1, inconclusive: 0, pending: 1, done: false })
@@ -163,7 +187,7 @@ describe('candidateDisplayState', () => {
     expect(candidateDisplayState(cand(1, 1, 1))).toBe('passed')
     expect(candidateDisplayState(cand(2, 1, 2))).toBe('passed_disabled')
     expect(candidateDisplayState(cand(3, 2, 2))).toBe('failed')
-    expect(candidateDisplayState({ ...cand(4, 0, 2), auto_enable_on_pass: true })).toBe('pending')
+    expect(candidateDisplayState({ ...cand(4, 0, 2), probe_owed: true })).toBe('pending')
     expect(candidateDisplayState(cand(4, 0, 2))).toBe('idle')
   })
 })

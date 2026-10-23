@@ -187,7 +187,7 @@ func TestModelRunningStatusTransitionsFromNotConfiguredToPending(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestCreateModelCandidateEnablesWhenServerReverifyPasses(t *testing.T) {
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -240,7 +240,7 @@ func TestCreateModelCandidateDefaultsProviderModelNameToModelNameWhenBlank(t *te
 	}
 
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -261,7 +261,7 @@ func TestUpdateModelCandidateDefaultsProviderModelNameToModelNameWhenBlank(t *te
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	created, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -361,7 +361,7 @@ func TestTestAndCreateCandidateDefaultsProviderModelNameToModelNameWhenBlank(t *
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	if _, err := svc.TestAndCreateCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now); err != nil {
 		t.Fatalf("TestAndCreateCandidate failed: %v", err)
@@ -384,7 +384,7 @@ func TestCreateModelCandidateFallsBackToDisabledWhenServerReverifyFails(t *testi
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestAuthFailed}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -416,7 +416,7 @@ func TestCreateModelCandidateRecordsFailedWhenServerReverifyIsDecisive(t *testin
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "nope", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "nope", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -442,7 +442,7 @@ func TestCreateModelCandidateSavesDisabledWithoutServerReverifyWhenNotRequesting
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -466,12 +466,12 @@ func TestCreateModelCandidateRejectsDuplicateProviderOnSameModel(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now); err != nil {
 		t.Fatalf("first CreateModelCandidate failed: %v", err)
 	}
 	_, err = svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o-mini", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o-mini", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if !errors.Is(err, errcode.ErrModelCandidateProviderTaken) {
 		t.Fatalf("expected ErrModelCandidateProviderTaken, got %v", err)
@@ -489,7 +489,7 @@ func TestSetCandidateStatusRejectsEnablingUnverifiedCandidate(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -511,7 +511,7 @@ func TestSetCandidateStatusEnablesAfterPassingTest(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -537,7 +537,7 @@ func TestSetCandidateStatusDisableDoesNotRequireVerification(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -565,7 +565,7 @@ func TestTestModelCandidateBasicRecordsVerificationStatus(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -592,7 +592,7 @@ func seedCandidateForRetest(t *testing.T, svc *modeladmin.ModelService, provider
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: providerID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: providerID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -1527,7 +1527,7 @@ func TestUpdateModelCandidateReportsSupersededWhenRetargetedBeforeReload(t *test
 		fired = true
 		session := db.Session(&gorm.Session{NewDB: true})
 		if err := repository.UpdateModelCandidate(session, candidate.ID, "competitor-target", 1, 2,
-			nil, nil, 0, true, false, time.Now().UTC()); err != nil {
+			nil, nil, 0, true, false, false, time.Now().UTC()); err != nil {
 			t.Errorf("competitor retarget failed: %v", err)
 		}
 	}); err != nil {
@@ -1572,7 +1572,7 @@ func TestRetestModelCandidateReportsSupersededWhenRetargetedBeforeReload(t *test
 		fired = true
 		session := db.Session(&gorm.Session{NewDB: true})
 		if err := repository.UpdateModelCandidate(session, candidate.ID, "competitor-target", 1, 2,
-			nil, nil, 0, true, false, time.Now().UTC()); err != nil {
+			nil, nil, 0, true, false, false, time.Now().UTC()); err != nil {
 			t.Errorf("competitor retarget failed: %v", err)
 		}
 	}); err != nil {
@@ -1801,7 +1801,7 @@ func TestRetestModelCandidateDisownsVerdictWhenRetargetLandsBeforeReadback(t *te
 		fired = true
 		session := db.Session(&gorm.Session{NewDB: true})
 		if err := repository.UpdateModelCandidate(session, candidate.ID, "competitor-target", 1, 2,
-			nil, nil, 0, true, false, time.Now().UTC()); err != nil {
+			nil, nil, 0, true, false, false, time.Now().UTC()); err != nil {
 			t.Errorf("competitor retarget failed: %v", err)
 		}
 	}); err != nil {
@@ -1921,7 +1921,7 @@ func TestTestAndCreateCandidateDoesNotPersistWhenEnableRequestedAndBasicFails(t 
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
 	result, err := svc.TestAndCreateCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -1964,7 +1964,7 @@ func TestTestAndCreateCandidatePersistsDisabledEvenWhenBasicFails(t *testing.T) 
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestModelNotFound}
 	result, err := svc.TestAndCreateCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusDisabled,
 	}, now)
 	if err != nil {
@@ -1997,7 +1997,7 @@ func TestTestAndCreateCandidateStoresEnabledWithCapabilitiesWhenAllProbesPass(t 
 
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	result, err := svc.TestAndCreateCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -2040,7 +2040,7 @@ func TestTestAndCreateCandidateSavesDisabledWhenProviderCannotBeProbed(t *testin
 	}
 
 	result, err := svc.TestAndCreateCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusDisabled,
 	}, now)
 	if err != nil {
@@ -2078,7 +2078,7 @@ func TestTestAndCreateCandidateFailsWhenEnableRequestedAndProviderCannotBeProbed
 	}
 
 	if _, err := svc.TestAndCreateCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now); err == nil {
 		t.Fatal("expected an error when enablement was requested but no probe could run")
@@ -2109,7 +2109,7 @@ func TestCreateModelCandidateDisabledSkipsProbing(t *testing.T) {
 
 	before := client.CallCountFor("basic")
 	created, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusDisabled,
 	}, now)
 	if err != nil {
@@ -2138,7 +2138,7 @@ func TestUpdateModelCandidate(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -2166,7 +2166,7 @@ func TestUpdateModelCandidateResetsVerificationWhenModelNameChanges(t *testing.T
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -2246,7 +2246,7 @@ func seedEnabledCandidate(t *testing.T, svc *modeladmin.ModelService, client *pr
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	created, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: providerID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: providerID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -2409,13 +2409,13 @@ func TestReorderModelCandidateSwapsOrder(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	first, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: providerA.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate(a) failed: %v", err)
 	}
 	second, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: providerB.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: providerB.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate(b) failed: %v", err)
@@ -2459,7 +2459,7 @@ func TestDeleteModelCandidateSucceeds(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -2643,7 +2643,7 @@ func TestModelRunningStatusAvailableEndToEnd(t *testing.T) {
 	}
 	client.Result = providerclient.TestResult{Outcome: providerclient.TestSuccess}
 	if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -2750,7 +2750,7 @@ func TestCreateModelCandidateStaysDisabledWhenNoTestableKeyForServerReverify(t *
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -2771,7 +2771,7 @@ func TestUpdateModelCandidateErrorsWhenUpdateFailsForNonUniqueReason(t *testing.
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -2792,7 +2792,7 @@ func TestDeleteModelCandidateErrorsWhenDeleteFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -2851,7 +2851,7 @@ func TestToModelViewErrorsWhenProviderKeyLookupFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
@@ -2891,7 +2891,7 @@ func TestListModelsErrorsWhenProviderKeyLookupFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
@@ -2987,7 +2987,7 @@ func TestToCandidateViewErrorsWhenProviderKeyLookupFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3009,7 +3009,7 @@ func TestUpdateModelCandidateErrorsWhenReloadFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3039,7 +3039,7 @@ func TestTestModelCandidateErrorsWhenProviderLookupFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3062,7 +3062,7 @@ func TestTestModelCandidateErrorsWhenCommitFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3085,7 +3085,7 @@ func TestTestModelCandidateStreamingErrorsWhenCommitFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3169,7 +3169,7 @@ func TestCreateModelCandidateSilentlySkipsReverifyWhenClientErrors(t *testing.T)
 	client.Err = errors.New("client refused the call")
 
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now)
 	if err != nil {
@@ -3193,7 +3193,7 @@ func TestCreateModelCandidateSilentlySkipsReverifyWhenCommitFails(t *testing.T) 
 	testutil.BlockTableWrites(t, db, "model_candidates", "UPDATE")
 
 	if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		ManagementStatus: model.ModelCandidateStatusEnabled,
 	}, now); err != nil {
 		t.Fatalf("expected CreateModelCandidate itself to still succeed (the candidate row insert isn't blocked), got %v", err)
@@ -3210,7 +3210,7 @@ func TestToCandidateViewErrorsWhenProviderLookupFailsForNonNotFoundReason(t *tes
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3233,7 +3233,7 @@ func TestSetCandidateStatusErrorsWhenCASWriteFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3267,7 +3267,7 @@ func TestTestModelCandidateErrorsWhenProviderKeyLookupFails(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3297,7 +3297,7 @@ func TestTestModelCandidateErrorsWhenNoTestableKey(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	candidate, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now)
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3320,7 +3320,7 @@ func TestListModelsAvoidsNPlusOneCandidateQueries(t *testing.T) {
 			t.Fatalf("CreateModel(%s) failed: %v", name, err)
 		}
 		if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-			ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+			ProviderID: provider.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		}, now); err != nil {
 			t.Fatalf("CreateModelCandidate(%s) failed: %v", name, err)
 		}
@@ -3405,7 +3405,7 @@ func TestSuggestCandidatePricePrefersHistoryOverSeedCatalog(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: name, InputPrice: 0.42, OutputPrice: 0.84,
+		ProviderID: provider.ID, ProviderModelName: name, InputPrice: ptrFloat(0.42), OutputPrice: ptrFloat(0.84),
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
@@ -3433,7 +3433,7 @@ func TestSuggestCandidatePriceMatchesHistoryCaseInsensitively(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), modelView.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "DeepSeek-V4-Pro", InputPrice: 2.4, OutputPrice: 4.8,
+		ProviderID: provider.ID, ProviderModelName: "DeepSeek-V4-Pro", InputPrice: ptrFloat(2.4), OutputPrice: ptrFloat(4.8),
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
@@ -3515,7 +3515,7 @@ func TestUpdateModelCandidateRetargetWinsTheNextSuggestion(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), incumbent.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "vendor-pro", InputPrice: 9, OutputPrice: 9,
+		ProviderID: provider.ID, ProviderModelName: "vendor-pro", InputPrice: ptrFloat(9), OutputPrice: ptrFloat(9),
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}
@@ -3525,7 +3525,7 @@ func TestUpdateModelCandidateRetargetWinsTheNextSuggestion(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	movedCandidate, err := svc.CreateModelCandidate(context.Background(), moved.ID, modeladmin.CreateCandidateInput{
-		ProviderID: provider.ID, ProviderModelName: "vendor-flash", InputPrice: 1, OutputPrice: 2,
+		ProviderID: provider.ID, ProviderModelName: "vendor-flash", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now.Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
@@ -3767,7 +3767,7 @@ func TestGetModelDetailExposesBindingCountsForBalancedModels(t *testing.T) {
 	}
 	for _, p := range []uint{pa.ID, pb.ID} {
 		if _, err := svc.CreateModelCandidate(context.Background(), balanced.ID, modeladmin.CreateCandidateInput{
-			ProviderID: p, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+			ProviderID: p, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 		}, now); err != nil {
 			t.Fatalf("CreateModelCandidate failed: %v", err)
 		}
@@ -3777,7 +3777,7 @@ func TestGetModelDetailExposesBindingCountsForBalancedModels(t *testing.T) {
 		t.Fatalf("CreateModel failed: %v", err)
 	}
 	if _, err := svc.CreateModelCandidate(context.Background(), legacy.ID, modeladmin.CreateCandidateInput{
-		ProviderID: pa.ID, ProviderModelName: "gpt-4o", InputPrice: 1, OutputPrice: 2,
+		ProviderID: pa.ID, ProviderModelName: "gpt-4o", InputPrice: ptrFloat(1), OutputPrice: ptrFloat(2),
 	}, now); err != nil {
 		t.Fatalf("CreateModelCandidate failed: %v", err)
 	}

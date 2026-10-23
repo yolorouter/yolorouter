@@ -112,14 +112,18 @@ type setModelStatusRequest struct {
 }
 
 type createCandidateRequest struct {
-	ProviderID        uint     `json:"provider_id" binding:"required"`
-	ProviderModelName string   `json:"provider_model_name" binding:"max=200"`
-	InputPrice        float64  `json:"input_price" binding:"min=0"`
-	OutputPrice       float64  `json:"output_price" binding:"min=0"`
-	CacheWritePrice   *float64 `json:"cache_write_price" binding:"omitempty,min=0"`
-	CacheReadPrice    *float64 `json:"cache_read_price" binding:"omitempty,min=0"`
-	MaxOutput         int      `json:"max_output" binding:"min=0"`
-	ManagementStatus  int      `json:"management_status" binding:"omitempty,oneof=1 2"`
+	ProviderID        uint   `json:"provider_id" binding:"required"`
+	ProviderModelName string `json:"provider_model_name" binding:"max=200"`
+	// InputPrice / OutputPrice are pointers so an absent field means
+	// "unpriced" (the row stores 0 with its declaration fact false) while a
+	// submitted 0 means "free" — the same nil/zero contract the import
+	// carries.
+	InputPrice       *float64 `json:"input_price" binding:"omitempty,min=0"`
+	OutputPrice      *float64 `json:"output_price" binding:"omitempty,min=0"`
+	CacheWritePrice  *float64 `json:"cache_write_price" binding:"omitempty,min=0"`
+	CacheReadPrice   *float64 `json:"cache_read_price" binding:"omitempty,min=0"`
+	MaxOutput        int      `json:"max_output" binding:"min=0"`
+	ManagementStatus int      `json:"management_status" binding:"omitempty,oneof=1 2"`
 	// BillingMode is optional (empty = the token default). The pair is
 	// validated by the service, which owns the vocabulary — a binding tag
 	// here would be a second copy of it.

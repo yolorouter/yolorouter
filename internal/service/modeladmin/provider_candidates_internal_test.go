@@ -19,10 +19,10 @@ func TestCandidateRowLooksTorn(t *testing.T) {
 		wasQueued bool
 		want      bool
 	}{
-		{"untested unstamped unqueued ARMED (a probe is owed)", ProviderCandidateView{
-			VerificationStatus: model.ModelVerificationStatusUntested, AutoEnableOnPass: true,
+		{"untested unstamped unqueued PROBE-OWED (a probe is owed)", ProviderCandidateView{
+			VerificationStatus: model.ModelVerificationStatusUntested, ProbeOwed: true,
 		}, false, true},
-		{"untested unstamped unqueued unarmed — a lasting legal state (manual save-as-disabled), not a tear", ProviderCandidateView{
+		{"untested unstamped unqueued out of debt — a lasting legal state (manual save-as-disabled), not a tear", ProviderCandidateView{
 			VerificationStatus: model.ModelVerificationStatusUntested,
 		}, false, false},
 		{"stale terminal verdict that was queued at request start", ProviderCandidateView{
