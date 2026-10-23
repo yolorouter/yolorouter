@@ -9,19 +9,41 @@ import (
 
 type importModelItemRequest struct {
 	ProviderModelName string `json:"provider_model_name" binding:"required,max=200"`
-	// The binding only guards transport shape here; an unknown id or an
-	// over-long list must reach the service, which skips just that row —
-	// the import's per-item best-effort contract. (The create endpoints are
-	// the opposite: a bad list rejects the whole request there.)
+	// The bindings below only guard transport shape here; an unknown id, an
+	// over-long list, a negative price or any other out-of-domain value must
+	// reach the service, which skips just that row — the import's per-item
+	// best-effort contract. (The create endpoints are the opposite: a bad
+	// list rejects the whole request there.)
 	OutputModalities []string `json:"output_modalities" binding:"omitempty,max=32,dive,max=32"`
-	InputPrice       float64  `json:"input_price" binding:"min=0"`
-	OutputPrice      float64  `json:"output_price" binding:"min=0"`
-	CacheWritePrice  *float64 `json:"cache_write_price" binding:"omitempty,min=0"`
-	CacheReadPrice   *float64 `json:"cache_read_price" binding:"omitempty,min=0"`
+	// ModelName is the row's optional target model name — the name the model
+	// is found or created under when the row declares one, instead of the
+	// upstream name. The binding caps the transport shape; the service
+	// applies the same name rules as the create path and skips the row when
+	// they fail.
+	ModelName *string `json:"model_name" binding:"omitempty,max=200"`
+	// InputModalities declares what the model accepts as input. It follows
+	// the output list's shape; the vocabulary is the service's to validate.
+	InputModalities *[]string `json:"input_modalities" binding:"omitempty,max=32,dive,max=32"`
+	// ContextLength / SupportsTools / SupportsReasoning / Temperature carry
+	// the model-level capability declarations. None carries a binding tag:
+	// every value domain (positive context, the yes/no vocabulary, the
+	// temperature range) is row-level service validation, so a bad value
+	// skips its own row instead of failing the batch.
+	ContextLength     *int     `json:"context_length"`
+	SupportsTools     *string  `json:"supports_tools"`
+	SupportsReasoning *string  `json:"supports_reasoning"`
+	Temperature       *float64 `json:"temperature"`
+	// The five price slots and MaxOutput are pointers or untagged on purpose:
+	// nil means the row omits the field, and a negative value is a per-row
+	// skip the service rules on, never a whole-batch rejection.
+	InputPrice      *float64 `json:"input_price"`
+	OutputPrice     *float64 `json:"output_price"`
+	CacheWritePrice *float64 `json:"cache_write_price"`
+	CacheReadPrice  *float64 `json:"cache_read_price"`
 	// AudioUnitPrice is the per-million-characters price an audio-only row
 	// carries in place of the token slots.
-	AudioUnitPrice *float64 `json:"audio_unit_price" binding:"omitempty,min=0"`
-	MaxOutput      int      `json:"max_output" binding:"min=0"`
+	AudioUnitPrice *float64 `json:"audio_unit_price"`
+	MaxOutput      int      `json:"max_output"`
 }
 
 // The cap only guards against pathological payloads. It must comfortably hold
@@ -54,13 +76,23 @@ func PostProviderModelsImport(svc *modeladmin.ModelService, queue *modeladmin.Pr
 		}
 		items := make([]modeladmin.ImportModelItem, 0, len(req.Items))
 		for _, it := range req.Items {
+			var inputModalities []string
+			if it.InputModalities != nil {
+				inputModalities = *it.InputModalities
+			}
 			items = append(items, modeladmin.ImportModelItem{
 				ProviderModelName: it.ProviderModelName,
+				ModelName:         it.ModelName,
 				OutputModalities:  it.OutputModalities,
+				InputModalities:   inputModalities,
 				InputPrice:        it.InputPrice, OutputPrice: it.OutputPrice,
 				CacheWritePrice: it.CacheWritePrice, CacheReadPrice: it.CacheReadPrice,
-				AudioUnitPrice: it.AudioUnitPrice,
-				MaxOutput:      it.MaxOutput,
+				AudioUnitPrice:    it.AudioUnitPrice,
+				MaxOutput:         it.MaxOutput,
+				ContextLength:     it.ContextLength,
+				SupportsTools:     it.SupportsTools,
+				SupportsReasoning: it.SupportsReasoning,
+				Temperature:       it.Temperature,
 			})
 		}
 		result, err := svc.ImportProviderModels(providerID, items, timeNow())

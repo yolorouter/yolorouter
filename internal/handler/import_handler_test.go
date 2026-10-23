@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,5 +376,135 @@ func TestPostProviderModelsImportSurfacesModalityMismatch(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("a refused row must store no mapping, found %d", count)
+	}
+}
+
+// The transport layer must carry every optional capability and naming field
+// into the service: the declared model name becomes the model row's name (the
+// upstream name stays the mapping and the result name), the capability
+// declarations land on the model, and the input array derives its deprecated
+// image-input mirror on the same write.
+func TestPostProviderModelsImportDeclaresCapabilities(t *testing.T) {
+	r, db := newModelTestRouter(t)
+	p := seedProviderRow(t, db, "prov-import-caps")
+
+	w, env := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/providers/%d/models/import", p.ID), map[string]interface{}{
+		"items": []map[string]interface{}{
+			{
+				"provider_model_name": "upstream/cap-json", "model_name": "cap-json-model",
+				"context_length": 128000, "supports_tools": "yes", "supports_reasoning": "no",
+				"temperature": 0.705, "input_modalities": []string{"text", "image"},
+				"input_price": 2, "output_price": 8, "max_output": 4096,
+			},
+		},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var result struct {
+		Items []struct {
+			Name        string `json:"name"`
+			Status      string `json:"status"`
+			ModelID     uint   `json:"model_id"`
+			CandidateID uint   `json:"candidate_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(env.Data, &result); err != nil {
+		t.Fatalf("unmarshal import response: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Status != "created" {
+		t.Fatalf("expected one created item, got %+v", result.Items)
+	}
+	if result.Items[0].Name != "upstream/cap-json" {
+		t.Fatalf("the result must name the submitted upstream id, got %q", result.Items[0].Name)
+	}
+	var m model.Model
+	if err := db.First(&m, result.Items[0].ModelID).Error; err != nil {
+		t.Fatalf("load imported model: %v", err)
+	}
+	if m.Name != "cap-json-model" {
+		t.Fatalf("expected the declared model name stored, got %q", m.Name)
+	}
+	if m.ContextLength == nil || *m.ContextLength != 128000 {
+		t.Fatalf("context_length = %v, want 128000", m.ContextLength)
+	}
+	if m.SupportsTools == nil || !*m.SupportsTools {
+		t.Fatalf("supports_tools = %v, want true", m.SupportsTools)
+	}
+	if m.SupportsReasoning == nil || *m.SupportsReasoning {
+		t.Fatalf("supports_reasoning = %v, want false", m.SupportsReasoning)
+	}
+	if m.Temperature == nil || *m.Temperature != 0.705 {
+		t.Fatalf("temperature = %v, want 0.705", m.Temperature)
+	}
+	if m.InputModalities != `["text","image"]` {
+		t.Fatalf("input_modalities = %q, want the declared array", m.InputModalities)
+	}
+	//nolint:staticcheck // SA1019: asserting the deprecated mirror column is the test's purpose
+	if m.SupportsImageInput == nil || !*m.SupportsImageInput { //nolint:staticcheck // SA1019: mirror assertion
+		t.Fatalf("supports_image_input = %v, want the derived true", m.SupportsImageInput) //nolint:staticcheck // SA1019: mirror assertion
+	}
+	var c model.ModelCandidate
+	if err := db.First(&c, result.Items[0].CandidateID).Error; err != nil {
+		t.Fatalf("load imported candidate: %v", err)
+	}
+	if c.ProviderModelName != "upstream/cap-json" {
+		t.Fatalf("the mapping must keep the upstream name, got %q", c.ProviderModelName)
+	}
+	if c.InputPrice != 2 || c.OutputPrice != 8 || c.MaxOutput != 4096 {
+		t.Fatalf("submitted prices/max_output not stored verbatim: %+v", c)
+	}
+}
+
+// Out-of-domain capability values are per-row skips, never a whole-batch 400:
+// the binding only guards transport shape, and every value-domain rejection
+// comes back inside the per-item summary.
+func TestPostProviderModelsImportSkipsInvalidCapabilityRows(t *testing.T) {
+	r, db := newModelTestRouter(t)
+	p := seedProviderRow(t, db, "prov-import-invalid")
+
+	w, env := doJSON(t, r, http.MethodPost, fmt.Sprintf("/api/admin/providers/%d/models/import", p.ID), map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"provider_model_name": "bad-input-price", "input_price": -1, "output_price": 2},
+			{"provider_model_name": "bad-maxout", "max_output": -1},
+			{"provider_model_name": "bad-temp", "temperature": 3},
+			{"provider_model_name": "bad-ctx", "context_length": 0},
+			{"provider_model_name": "bad-tristate", "supports_tools": "maybe"},
+			{"provider_model_name": "bad-inputmod", "input_modalities": []string{"warp"}},
+			{"provider_model_name": "upstream/long", "model_name": strings.Repeat("x", 150)},
+			{"provider_model_name": "upstream/chars", "model_name": "bad name!"},
+			{"provider_model_name": "healthy-row"},
+		},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (per-row skips, not a request failure), got %d, body: %s", w.Code, w.Body.String())
+	}
+	var result struct {
+		Items []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Reason string `json:"reason"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(env.Data, &result); err != nil {
+		t.Fatalf("unmarshal import response: %v", err)
+	}
+	if len(result.Items) != 9 {
+		t.Fatalf("expected one result per submitted row, got %+v", result.Items)
+	}
+	for i, item := range result.Items[:8] {
+		if item.Status != "skipped" || item.Reason != "invalid" {
+			t.Fatalf("item %d (%s): expected an invalid skip, got %+v", i, item.Name, item)
+		}
+	}
+	if result.Items[8].Status != "created" {
+		t.Fatalf("expected the healthy row created, got %+v", result.Items[8])
+	}
+	var count int64
+	if err := db.Model(&model.ModelCandidate{}).Where("provider_id = ?", p.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count candidates: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly the healthy row stored, found %d candidates", count)
 	}
 }

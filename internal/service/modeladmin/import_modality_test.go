@@ -33,7 +33,7 @@ func TestImportedImageRowProbesImageAndAutoEnables(t *testing.T) {
 	svc := modeladmin.NewModelService(db, testutil.ProviderSecrets(), client)
 
 	result, err := svc.ImportProviderModels(prov.ID, []modeladmin.ImportModelItem{
-		{ProviderModelName: "wan2.7-image", OutputModalities: []string{model.OutputModalityImage}, InputPrice: 0.3, OutputPrice: 1.2},
+		{ProviderModelName: "wan2.7-image", OutputModalities: []string{model.OutputModalityImage}, InputPrice: ptrFloat(0.3), OutputPrice: ptrFloat(1.2)},
 	}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("ImportProviderModels failed: %v", err)

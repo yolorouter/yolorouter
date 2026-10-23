@@ -118,6 +118,71 @@ func UpdateModel(db *gorm.DB, id uint, u ModelUpdate, now time.Time) error {
 	return db.Model(&model.Model{}).Where("id = ?", id).Updates(updates).Error
 }
 
+// ModelCapabilityFill carries exactly the capability slots a bulk import row
+// may fill on an already-existing model row — the columns the import read and
+// adjudicated, no others. Unlike ModelUpdate there is no name, status,
+// scheduling or output-modalities member by design: the import never proved
+// anything about those columns, and writing them back from its stale read
+// would silently revert a concurrent model PATCH in the window between the
+// import's lookup and its write.
+type ModelCapabilityFill struct {
+	// Each capability slot keeps the set-flag + tri-state value convention of
+	// ModelUpdate; a fill only ever writes a value into an undeclared slot,
+	// so a set flag always arrives with a non-nil value here.
+	ContextLengthSet     bool
+	ContextLength        *int
+	SupportsToolsSet     bool
+	SupportsTools        *bool
+	SupportsReasoningSet bool
+	SupportsReasoning    *bool
+	TemperatureSet       bool
+	Temperature          *float64
+	// InputModalitiesSet marks the input-modalities declaration as filled;
+	// the value is the canonical JSON string (validated and serialized by
+	// the service). A fill never clears — an empty submitted list is treated
+	// as absent long before it reaches this write — but "" is still stored
+	// as NULL, the column's own undeclared value.
+	InputModalitiesSet bool
+	InputModalities    string
+}
+
+// UpdateModelCapabilityFill writes exactly the submitted slots of f in ONE
+// statement and touches no other column — not name, not management_status,
+// not scheduling_mode, none of the columns the adjudication did not cover.
+// UpdateModel stays the model PATCH path (its unconditional name/status
+// write is PATCH semantics); the import fill path uses this narrower write
+// so it cannot clobber a concurrent PATCH's rename or status change with
+// values it merely carried over from its own lookup.
+func UpdateModelCapabilityFill(db *gorm.DB, id uint, f ModelCapabilityFill, now time.Time) error {
+	updates := map[string]interface{}{"updated_at": now}
+	if f.InputModalitiesSet {
+		// The mirror boolean rides in the same statement as the array it
+		// derives from — the one hard rule every writer of input_modalities
+		// shares, so no reader (the vision-fallback hot path reads the
+		// boolean) can observe the new array with the stale mirror, or the
+		// reverse after a crash between two statements.
+		if f.InputModalities == "" {
+			updates["input_modalities"] = nil
+		} else {
+			updates["input_modalities"] = f.InputModalities
+		}
+		updates["supports_image_input"] = model.DeriveImageInputSupport(f.InputModalities)
+	}
+	if f.ContextLengthSet {
+		updates["context_length"] = f.ContextLength
+	}
+	if f.SupportsToolsSet {
+		updates["supports_tools"] = f.SupportsTools
+	}
+	if f.SupportsReasoningSet {
+		updates["supports_reasoning"] = f.SupportsReasoning
+	}
+	if f.TemperatureSet {
+		updates["temperature"] = f.Temperature
+	}
+	return db.Model(&model.Model{}).Where("id = ?", id).Updates(updates).Error
+}
+
 func ListModelCandidatesByModelID(db *gorm.DB, modelID uint) ([]model.ModelCandidate, error) {
 	var candidates []model.ModelCandidate
 	if err := db.Preload("Provider").Where("model_id = ?", modelID).Order("sort_order ASC").Find(&candidates).Error; err != nil {
