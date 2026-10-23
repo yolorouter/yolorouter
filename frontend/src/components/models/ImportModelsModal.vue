@@ -1,8 +1,20 @@
 <!-- frontend/src/components/models/ImportModelsModal.vue -->
+<!-- Bulk import as a two-pane master-detail dialog:
+     left — the upstream catalogue as selectable rows (checkbox, display name
+     in mono, output-modality chips, configured/unconfigured status dot,
+     price-suggestion badge) under a toolbar (select-all, name filter,
+     selected count);
+     right — the detail form bound to the selected row (public name,
+     capability declarations, price group). Detail edits write straight onto
+     the row object, so the list mirrors them live.
+
+     The progress phase (the post-submit probing watch) is unchanged, and so
+     is the wire: batched submission by IMPORT_BATCH_CAP, omit-shaped
+     declarations, suggestion prefill and the smart default check. -->
 <template>
-  <!-- Wider than the 520px form dialogs on purpose: this is a batch table
-       (selection + name + modality + suggestion + four editable price
-       columns), not a label/field form. -->
+  <!-- Wider than the 520px form dialogs on purpose: two panes side by side
+       (master list + detail form); below the mobile breakpoint the drawer is
+       full-width anyway and the panes stack vertically. -->
   <ModalDrawer
     v-model:show="showModel"
     :title="phase === 'select' ? t('models.importTitle') : t('models.importProgressTitle')"
@@ -11,6 +23,7 @@
     :close-on-esc="false"
     :confirm-text="phase === 'select' ? t('models.importSelected', { count: selectedCount }) : t('models.importClose')"
     :cancel-text="t('models.cancel')"
+    :confirm-disabled="phase === 'select' && selectedCount === 0"
     :dismissable="phase === 'select' && !importing"
     :loading="importing"
     :back-label="t('common.back')"
@@ -34,18 +47,307 @@
       <EmptyState v-else-if="!loading && rows.length === 0" :icon="Inbox" :title="t('models.importCatalogEmpty')" />
       <template v-else>
         <p class="import-hint">{{ t('models.importHint') }}</p>
-        <div class="data-table-wrapper">
-          <n-data-table
-            size="small"
-            :columns="columns"
-            :data="rows"
-            :loading="loading"
-            :row-key="(row: ImportRow) => row.name"
-            :checked-row-keys="checkedKeys"
-            :max-height="420"
-            @update:checked-row-keys="onCheckedKeys"
-          />
-        </div>
+        <n-spin :show="loading">
+          <div class="import-layout" :class="{ 'import-layout--stacked': isMobile }">
+            <!-- Master list: selection + identity + a read-only glance at
+                 what the detail pane edits. No price columns — the four token
+                 slots and the audio slot live in the detail form only. -->
+            <section class="import-pane import-pane--list">
+              <div class="import-toolbar">
+                <n-checkbox
+                  class="import-toolbar__all"
+                  :checked="allVisibleChecked"
+                  :indeterminate="someVisibleChecked && !allVisibleChecked"
+                  :disabled="selectableVisible.length === 0"
+                  :title="t('models.importSelectAll')"
+                  @update:checked="onToggleAll"
+                />
+                <n-input
+                  v-model:value="filter"
+                  class="import-toolbar__filter"
+                  size="small"
+                  clearable
+                  :placeholder="t('models.importFilterPlaceholder')"
+                />
+                <span class="import-toolbar__count">{{ t('models.importSelectedCount', { count: selectedCount }) }}</span>
+              </div>
+              <!-- Plain list semantics, not listbox/option: each row carries a
+                   real checkbox whose checked state IS the selection, and an
+                   aria-selected row would additionally announce the detail
+                   BINDING as a screen-reader selection — two conflicting
+                   selection stories in one row. The detail-bound row is
+                   marked with aria-current instead; selection stays solely
+                   the checkboxes'.
+
+                   The role="list" element is an inner layer, separate from
+                   the bordered scroll box: the filter's empty note must be
+                   the list's SIBLING, never a child — a non-listitem owned
+                   element inside role="list" is exactly the malformed
+                   content browsers repair by stripping the list role. The
+                   note stays inside the same visual box, so the empty state
+                   looks unchanged. -->
+              <div class="import-list">
+                <div class="import-list__rows" role="list" :aria-label="t('models.importTitle')">
+                  <div
+                    v-for="row in visibleRows"
+                    :key="row.name"
+                    class="import-row"
+                    :class="{ 'import-row--selected': row.name === selectedKey }"
+                    role="listitem"
+                    :aria-current="row.name === selectedKey ? 'true' : undefined"
+                    tabindex="0"
+                    @click="selectRow(row)"
+                    @keydown.enter.prevent="selectRow(row)"
+                  >
+                    <span class="import-row__check" @click.stop>
+                      <n-checkbox
+                        class="import-row__check-box"
+                        :checked="checkedSet.has(row.name)"
+                        :disabled="!isSelectable(row)"
+                        @update:checked="(checked: boolean) => onToggleRow(row, checked)"
+                      />
+                    </span>
+                    <!-- The public name when one is declared; the bare
+                         upstream id otherwise, muted so the fallback is
+                         legible as a fallback. -->
+                    <span class="import-row__name" :class="{ 'import-row__name--fallback': row.pubName === '' }">
+                      {{ displayOf(row) }}
+                    </span>
+                    <span class="import-row__mods">
+                      <span v-for="axis in row.out" :key="axis" class="import-row__chip">{{ modalityLabel(axis) }}</span>
+                    </span>
+                    <span
+                      class="import-row__dot"
+                      :class="`import-row__dot--${statusOf(row)}`"
+                      :title="statusTitle(row)"
+                    />
+                    <span class="import-row__suggestion">
+                      <n-tag v-if="row.added && row.unfinished" size="small" :bordered="false" type="warning">
+                        {{ t('models.importUnfinished') }}
+                      </n-tag>
+                      <n-tag v-else-if="row.added" size="small" :bordered="false">{{ t('models.importAdded') }}</n-tag>
+                      <span
+                        v-else-if="rowBillsPerImage(row)"
+                        class="candidate-muted"
+                        :title="t('models.importImagePricingHint_tip')"
+                      >
+                        {{ t('models.importImagePricingHint') }}
+                      </span>
+                      <n-tag v-else-if="row.priceSource === 'history'" size="small" :bordered="false" type="success">
+                        {{ t('models.importPriceHistory') }}
+                      </n-tag>
+                      <n-tag v-else-if="row.priceSource === 'seed'" size="small" :bordered="false" type="success">
+                        {{ t('models.importPriceHit') }}
+                      </n-tag>
+                      <n-tag v-else size="small" :bordered="false" type="warning">{{ t('models.importNoPrice') }}</n-tag>
+                    </span>
+                  </div>
+                </div>
+                <p v-if="rows.length > 0 && visibleRows.length === 0" class="import-list__empty">{{ t('models.importFilterEmpty') }}</p>
+              </div>
+            </section>
+            <!-- Detail: the selected row's form. Every control binds the row
+                 object itself, so a rename re-renders the list row and a new
+                 capability declaration flips the status dot on the spot. -->
+            <section ref="detailEl" class="import-pane import-pane--detail">
+              <template v-if="selected">
+                <header class="import-detail__header">
+                  <span class="import-row__dot" :class="`import-row__dot--${statusOf(selected)}`" :title="statusTitle(selected)" />
+                  <span class="import-detail__name" :class="{ 'import-row__name--fallback': selected.pubName === '' }">
+                    {{ displayOf(selected) }}
+                  </span>
+                  <span class="import-detail__upstream">{{ selected.name }}</span>
+                </header>
+                <!-- An added row submits names only (see toImportItems): its
+                     declarations are server-owned, so the whole form reads
+                     disabled instead of pretending to collect anything. -->
+                <p v-if="selected.added" class="import-detail__note">{{ t('models.importDetailAddedNote') }}</p>
+                <div class="import-detail__form">
+                  <div class="import-field">
+                    <span class="import-field__label">{{ t('models.importDetailPubName') }}</span>
+                    <n-input
+                      v-model:value="selected.pubName"
+                      class="import-detail__pubname"
+                      :disabled="selected.added"
+                      :placeholder="t('models.importDetailPubNamePlaceholder')"
+                    />
+                  </div>
+                  <div class="import-field">
+                    <span class="import-field__label">{{ t('models.contextLength') }}</span>
+                    <n-input-number
+                      v-model:value="selected.ctxLength"
+                      class="import-detail__ctx"
+                      :min="1"
+                      :precision="0"
+                      :disabled="selected.added"
+                      :placeholder="t('models.undeclaredPlaceholder')"
+                    />
+                    <div class="import-detail__presets">
+                      <n-button
+                        v-for="preset in CONTEXT_LENGTH_PRESETS"
+                        :key="preset.value"
+                        size="tiny"
+                        quaternary
+                        type="primary"
+                        :disabled="selected.added"
+                        @click="selected.ctxLength = preset.value"
+                      >
+                        {{ preset.label }}
+                      </n-button>
+                    </div>
+                  </div>
+                  <div class="import-field">
+                    <span class="import-field__label">{{ t('models.inputModalities') }}</span>
+                    <!-- Empty selection = undeclared, the input axis's
+                         meaningful no-declaration state. -->
+                    <n-select
+                      v-model:value="selectedInMods"
+                      class="import-detail__in-mods"
+                      multiple
+                      clearable
+                      :options="inputModalityOptions"
+                      :disabled="selected.added"
+                      :placeholder="t('models.undeclaredPlaceholder')"
+                    />
+                  </div>
+                  <div class="import-field">
+                    <span class="import-field__label">{{ t('models.outputModalities') }}</span>
+                    <!-- Video stays absent: an import cannot fill the
+                         per-second price table a video row needs (same
+                         reason the old single-select column lacked it).
+                         Audio is exclusive — the shared watch below
+                         collapses any selection it joins. -->
+                    <n-select
+                      v-model:value="selectedOut"
+                      class="import-detail__out-mods"
+                      multiple
+                      :options="outputModalityChoices"
+                      :disabled="selected.added"
+                    />
+                  </div>
+                  <div class="import-field">
+                    <span class="import-field__label">{{ t('models.supportsTools') }}</span>
+                    <n-select
+                      v-model:value="selected.tools"
+                      class="import-detail__tools"
+                      :options="triStateOptions"
+                      :disabled="selected.added"
+                    />
+                  </div>
+                  <div class="import-field">
+                    <span class="import-field__label">{{ t('models.supportsReasoning') }}</span>
+                    <n-select
+                      v-model:value="selected.reasoning"
+                      class="import-detail__reasoning"
+                      :options="triStateOptions"
+                      :disabled="selected.added"
+                    />
+                  </div>
+                  <div class="import-field">
+                    <span class="import-field__label">{{ t('models.temperature') }}</span>
+                    <!-- Same [0,2] closed range the model edit dialog binds;
+                         cleared input = no override. -->
+                    <n-input-number
+                      v-model:value="selected.temp"
+                      class="import-detail__temp"
+                      :min="0"
+                      :max="2"
+                      :step="0.1"
+                      :disabled="selected.added"
+                      :placeholder="t('models.undeclaredPlaceholder')"
+                    />
+                  </div>
+                  <div class="import-field">
+                    <span class="import-field__label">{{ t('models.maxOutput') }}</span>
+                    <n-input-number
+                      v-model:value="selected.maxOut"
+                      class="import-detail__maxout"
+                      :min="0"
+                      :precision="0"
+                      :disabled="selected.added"
+                      :placeholder="t('models.undeclaredPlaceholder')"
+                    />
+                  </div>
+                </div>
+                <div class="import-detail__prices">
+                  <span class="import-field__label">{{ t('models.importDetailPrices') }}</span>
+                  <div class="import-detail__price-grid">
+                    <div class="import-field">
+                      <span class="import-field__sublabel">{{ t('models.importInputPrice') }}</span>
+                      <n-input-number
+                        v-model:value="selected.inputPrice"
+                        class="import-detail__input-price"
+                        :min="0"
+                        :show-button="false"
+                        :disabled="tokenPriceDisabled(selected)"
+                        placeholder="0"
+                      />
+                    </div>
+                    <div class="import-field">
+                      <span class="import-field__sublabel">{{ t('models.importOutputPrice') }}</span>
+                      <n-input-number
+                        v-model:value="selected.outputPrice"
+                        class="import-detail__output-price"
+                        :min="0"
+                        :show-button="false"
+                        :disabled="tokenPriceDisabled(selected)"
+                        placeholder="0"
+                      />
+                    </div>
+                    <div class="import-field">
+                      <span class="import-field__sublabel">{{ t('models.importCacheWritePrice') }}</span>
+                      <n-input-number
+                        v-model:value="selected.cacheWritePrice"
+                        class="import-detail__cache-write-price"
+                        :min="0"
+                        :show-button="false"
+                        :disabled="tokenPriceDisabled(selected)"
+                        placeholder="0"
+                      />
+                    </div>
+                    <div class="import-field">
+                      <span class="import-field__sublabel">{{ t('models.importCacheReadPrice') }}</span>
+                      <n-input-number
+                        v-model:value="selected.cacheReadPrice"
+                        class="import-detail__cache-read-price"
+                        :min="0"
+                        :show-button="false"
+                        :disabled="tokenPriceDisabled(selected)"
+                        placeholder="0"
+                      />
+                    </div>
+                    <div class="import-field">
+                      <span class="import-field__sublabel">{{ t('models.audioUnitPrice') }}</span>
+                      <n-input-number
+                        v-model:value="selected.audioUnitPrice"
+                        class="import-detail__audio-price"
+                        :min="0"
+                        :show-button="false"
+                        :disabled="selected.added || !isAudioRow(selected)"
+                        placeholder="0"
+                      />
+                    </div>
+                  </div>
+                  <p class="import-detail__price-hint">{{ t('models.importDetailPricedHint') }}</p>
+                </div>
+                <div class="import-detail__footer">
+                  <!-- Rendered disabled on purpose: per-row probing from this
+                       dialog is a later batch; the tooltip says so instead of
+                       leaving a dead button unexplained. -->
+                  <n-button
+                    class="import-detail__probe"
+                    size="small"
+                    disabled
+                    :title="t('models.importDetailProbeDisabledTip')"
+                  >
+                    {{ t('models.importDetailProbe') }}
+                  </n-button>
+                  <p class="import-detail__hint">{{ t('models.importDetailUnpricedHint') }}</p>
+                </div>
+              </template>
+            </section>
+          </div>
+        </n-spin>
       </template>
     </template>
     <template v-else>
@@ -77,23 +379,39 @@
 import { computed, h, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-// NProgress is not in main.ts's create() list — it must be imported explicitly
-// or Vue renders <n-progress> as an unknown element with zero build errors.
-import { NInputNumber, NProgress, NSelect, NTag, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
+// NProgress, NSpin and NCheckbox are not in main.ts's create() list — they
+// must be imported explicitly or Vue renders <n-progress> & co. as unknown
+// elements with zero build errors.
+import {
+  NButton,
+  NCheckbox,
+  NInput,
+  NInputNumber,
+  NProgress,
+  NSelect,
+  NSpin,
+  NTag,
+  useMessage,
+  type DataTableColumns,
+  type SelectOption,
+} from 'naive-ui'
 import { AlertTriangle, Inbox } from '@lucide/vue'
 import { listModelsForProvider } from '../../api/providers'
 import { importProviderModels, listProviderCandidates, suggestPrices, type ImportItemResult, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
 import { displayMessage } from '../../api/client'
-import { buildImportRows, chunkByCap, IMPORT_BATCH_CAP, modalitiesFor, modalityOf, normalizeCatalogNames, toImportItems, type ImportRow, type ImportRowModality } from '../../utils/importRows'
+import { buildImportRows, chunkByCap, IMPORT_BATCH_CAP, modalityOf, normalizeCatalogNames, statusOf, toImportItems, type ImportRow } from '../../utils/importRows'
 import { catalogueFailure, NO_CATALOGUE_FAILURE, type CatalogueFailure } from '../../utils/catalogueFailure'
 import { candidateIsOwedWork, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, skipsWorthReading, summarizeImportProgress, type ImportProgress } from '../../utils/importProgress'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
 import { outputModalityOptions } from '../../utils/modalityOptions'
+import { CONTEXT_LENGTH_PRESETS } from '../../utils/contextLengthPresets'
 import ModalDrawer from '../common/ModalDrawer.vue'
 import EmptyState from '../EmptyState.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { redirectIfSessionExpired } from '../../utils/sessionExpiredRedirect'
 import { useBackoffPoll } from '../../composables/useBackoffPoll'
+import { useIsMobile } from '../../composables/useIsMobile'
+import { useModalityExclusivity } from '../../composables/useModalityExclusivity'
 
 const props = defineProps<{ show: boolean; providerId: number }>()
 const emit = defineEmits<{
@@ -116,6 +434,14 @@ const importing = ref(false)
 const rows = ref<ImportRow[]>([])
 const checkedKeys = ref<Array<string | number>>([])
 
+// The detail pane's bound row: catalog order picks the default (first row)
+// and a click moves it. Keyed by the upstream id — the row's stable identity,
+// untouched by a public-name edit.
+const filter = ref('')
+const selectedKey = ref<string | null>(null)
+const detailEl = ref<HTMLElement | null>(null)
+const isMobile = useIsMobile()
+
 // After a successful import the dialog switches to the progress view and
 // polls the imported mappings' verification states until every one has a
 // verdict — closable at any time, the probing continues server-side.
@@ -135,12 +461,136 @@ const progress = ref<ImportProgress>({ total: 0, passed: 0, failed: 0, inconclus
 const progressPoll = useBackoffPoll(PROGRESS_POLL_BASE_MS, PROGRESS_POLL_BACKOFF_CAP_MS)
 let dialogGeneration = 0
 
+// ---- Master list ----
 
+function isSelectable(row: ImportRow): boolean {
+  return !row.added || row.unfinished
+}
 
-const selectedCount = computed(() => {
-  const checked = new Set(checkedKeys.value)
-  return rows.value.filter((r) => (!r.added || r.unfinished) && checked.has(r.name)).length
+function displayOf(row: ImportRow): string {
+  return row.pubName !== '' ? row.pubName : row.name
+}
+
+const checkedSet = computed(() => new Set(checkedKeys.value))
+
+const selectedCount = computed(() => rows.value.filter((r) => isSelectable(r) && checkedSet.value.has(r.name)).length)
+
+// The filter reads both names: the public name an admin is shaping (which a
+// rename may have just diverged from the upstream id) and the upstream id
+// itself (which is what a catalogue copy-paste carries).
+const visibleRows = computed(() => {
+  const q = filter.value.trim().toLowerCase()
+  if (q === '') return rows.value
+  return rows.value.filter((r) => displayOf(r).toLowerCase().includes(q) || r.name.toLowerCase().includes(q))
 })
+
+const selectableVisible = computed(() => visibleRows.value.filter(isSelectable))
+const allVisibleChecked = computed(
+  () => selectableVisible.value.length > 0 && selectableVisible.value.every((r) => checkedSet.value.has(r.name)),
+)
+const someVisibleChecked = computed(() => selectableVisible.value.some((r) => checkedSet.value.has(r.name)))
+
+// Select-all scopes to the rows the filter currently shows, so it means the
+// same thing before and after a narrowing search.
+function onToggleAll(checked: boolean) {
+  const set = new Set(checkedKeys.value)
+  for (const row of selectableVisible.value) {
+    if (checked) set.add(row.name)
+    else set.delete(row.name)
+  }
+  checkedKeys.value = [...set]
+}
+
+function onToggleRow(row: ImportRow, checked: boolean) {
+  const set = new Set(checkedKeys.value)
+  if (checked) set.add(row.name)
+  else set.delete(row.name)
+  checkedKeys.value = [...set]
+}
+
+function statusTitle(row: ImportRow): string {
+  return statusOf(row) === 'configured' ? t('models.importRowConfigured') : t('models.importRowUnconfigured')
+}
+
+function modalityLabel(axis: string): string {
+  if (axis === 'image') return t('models.outputModalityImage')
+  if (axis === 'audio') return t('models.outputModalityAudio')
+  return t('models.outputModalityText')
+}
+
+const selected = computed(() => rows.value.find((r) => r.name === selectedKey.value) ?? null)
+
+function selectRow(row: ImportRow) {
+  selectedKey.value = row.name
+  // Stacked layout: the detail sits below the list, so a tap must bring it
+  // into view — the desktop grid has both panes side by side and needs none.
+  if (isMobile.value) detailEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+// ---- Detail form ----
+
+// The output-axes picker binds the selected row's declaration. The shared
+// useModalityExclusivity watch runs on this two-way shim, so the exclusive
+// ids (audio here; video is not offered) collapse the selection exactly as
+// they do on the model dialogs' own form objects.
+const selectedOut = computed<string[]>({
+  get: () => selected.value?.out ?? [],
+  set: (v) => {
+    if (selected.value) selected.value.out = v
+  },
+})
+useModalityExclusivity({
+  get outputModalities() {
+    return selectedOut.value
+  },
+  set outputModalities(v: string[]) {
+    selectedOut.value = v
+  },
+})
+
+// The input axes keep the tri-state-by-absence shape: cleared = null =
+// undeclared, never an empty "text only" claim.
+const selectedInMods = computed<string[]>({
+  get: () => selected.value?.inMods ?? [],
+  set: (v) => {
+    if (selected.value) selected.value.inMods = v.length > 0 ? [...v] : null
+  },
+})
+
+const inputModalityOptions = computed<SelectOption[]>(() => [
+  { label: t('models.inputModalityText'), value: 'text' },
+  { label: t('models.inputModalityImage'), value: 'image' },
+  { label: t('models.inputModalityAudio'), value: 'audio' },
+  { label: t('models.inputModalityVideo'), value: 'video' },
+])
+
+const outputModalityChoices = computed<SelectOption[]>(() =>
+  outputModalityOptions(t).filter((option) => option.value !== 'video'),
+)
+
+// The tool/reasoning tri-state, on the row's own 0/1/2 vocabulary.
+const triStateOptions = computed<SelectOption[]>(() => [
+  { label: t('models.triStateUnknown'), value: 0 },
+  { label: t('models.triStateYes'), value: 1 },
+  { label: t('models.triStateNo'), value: 2 },
+])
+
+// A row the admin marked as image-ONLY settles per delivered image, not per
+// token — the four per-M price cells are inert for it, and saying so beats
+// showing editable fields that do nothing. A 'both' row is NOT included: the
+// mapping still serves chat traffic and bills tokens. An audio row bills per
+// character: its single price replaces the token slots.
+function rowBillsPerImage(row: ImportRow): boolean {
+  return !row.added && modalityOf(row.out) === 'image'
+}
+
+function isAudioRow(row: ImportRow): boolean {
+  return modalityOf(row.out) === 'audio'
+}
+
+function tokenPriceDisabled(row: ImportRow): boolean {
+  return row.added || rowBillsPerImage(row) || isAudioRow(row)
+}
 
 watch(
   () => props.show,
@@ -161,6 +611,7 @@ async function load() {
   loadFailure.value = NO_CATALOGUE_FAILURE
   rows.value = []
   checkedKeys.value = []
+  selectedKey.value = null
   try {
     const [catalog, existing] = await Promise.all([
       listModelsForProvider(props.providerId),
@@ -194,6 +645,9 @@ async function load() {
     // back selectable — re-importing them requeues their lost probes.
     rows.value = buildImportRows(names, existing.list, prices)
     checkedKeys.value = rows.value.filter((r) => r.checked).map((r) => r.name)
+    // The detail pane is persistent — bind it to the catalog's first row so
+    // the form is never empty while the list has anything to show.
+    selectedKey.value = rows.value[0]?.name ?? null
   } catch (err) {
     // Before the stale guard on purpose: a superseded fetch that hit session
     // expiry is still a session expiry.
@@ -207,10 +661,6 @@ async function load() {
   }
 }
 
-function onCheckedKeys(keys: Array<string | number>) {
-  checkedKeys.value = keys
-}
-
 function reset() {
   stopPolling()
   // A catalog load still in flight when the dialog closed must not write rows
@@ -219,6 +669,8 @@ function reset() {
   loadGeneration++
   rows.value = []
   checkedKeys.value = []
+  filter.value = ''
+  selectedKey.value = null
   loadFailure.value = NO_CATALOGUE_FAILURE
   phase.value = 'select'
   importedIds.value = []
@@ -252,150 +704,6 @@ function startProgressPoll() {
     }
   })
 }
-
-// A row the admin marked as image-ONLY settles per delivered image, not per
-// token — the four per-M price cells and the token-price suggestion are
-// inert for it, and saying so beats showing editable fields that do nothing.
-// A 'both' row is NOT included: the mapping still serves chat traffic and
-// bills tokens, so its per-M prices are exactly what the row should collect.
-// Re-queued "added" rows keep their old suggestion display: their prices are
-// server-owned and never change on this submit.
-function rowBillsPerImage(row: ImportRow): boolean {
-  return !row.added && modalityOf(row.out) === 'image'
-}
-
-function suggestionTag(row: ImportRow) {
-  if (row.added && row.unfinished)
-    return h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('models.importUnfinished') })
-  if (row.added) return h(NTag, { size: 'small', bordered: false }, { default: () => t('models.importAdded') })
-  if (rowBillsPerImage(row))
-    return h(
-      'span',
-      { class: 'candidate-muted', title: t('models.importImagePricingHint_tip') },
-      t('models.importImagePricingHint'),
-    )
-  if (row.priceSource === 'history')
-    return h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => t('models.importPriceHistory') })
-  if (row.priceSource === 'seed')
-    return h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => t('models.importPriceHit') })
-  return h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('models.importNoPrice') })
-}
-
-function priceInput(row: ImportRow, field: 'inputPrice' | 'outputPrice' | 'cacheWritePrice' | 'cacheReadPrice') {
-  if (row.added) return h('span', { class: 'candidate-muted' }, '-')
-  if (modalityOf(row.out) === 'audio') return h('span', { class: 'candidate-muted' }, '—')
-  return h(NInputNumber, {
-    value: row[field],
-    size: 'small',
-    min: 0,
-    showButton: false,
-    placeholder: '0',
-    disabled: rowBillsPerImage(row),
-    'onUpdate:value': (v: number | null) => {
-      row[field] = v
-    },
-  })
-}
-
-// The audio price column: the one price an audio row carries, editable only
-// where the row declares audio (every other modality shows a dash, the same
-// muting the token columns apply to audio rows).
-function audioPriceInput(row: ImportRow) {
-  if (row.added) return h('span', { class: 'candidate-muted' }, '-')
-  if (modalityOf(row.out) !== 'audio') return h('span', { class: 'candidate-muted' }, '—')
-  return h(NInputNumber, {
-    value: row.audioUnitPrice,
-    size: 'small',
-    min: 0,
-    showButton: false,
-    placeholder: '0',
-    'onUpdate:value': (v: number | null) => {
-      row.audioUnitPrice = v
-    },
-  })
-}
-
-// The modality column: a per-row declaration of what the imported model
-// produces, defaulting to text and preselected by name for known image
-// families. Inert on "added" rows — the server derives an existing model's
-// modality and billing from the model row it already has. Video is
-// deliberately absent: an import cannot fill the per-second price table a
-// video candidate needs, so a video model is created (and priced) through
-// the model dialog and candidate editor, not here — offering the choice
-// would silently import a text model.
-const modalityOptions = computed<SelectOption[]>(() => [
-  ...outputModalityOptions(t).filter((option) => option.value !== 'video'),
-  { label: t('models.importModalityBoth'), value: 'both' },
-])
-// Video stays absent (a video row cannot carry its per-second table here);
-// audio is importable — one price column answers the whole declaration.
-
-function modalitySelect(row: ImportRow) {
-  if (row.added) return h('span', { class: 'candidate-muted' }, '—')
-  return h(NSelect, {
-    value: modalityOf(row.out),
-    size: 'small',
-    options: modalityOptions.value,
-    'onUpdate:value': (v: ImportRowModality) => {
-      row.out = modalitiesFor(v)
-    },
-  })
-}
-
-const columns = computed<DataTableColumns<ImportRow>>(() => [
-  {
-    type: 'selection',
-    disabled: (row: ImportRow) => row.added && !row.unfinished,
-  },
-  {
-    title: columnTitle(t('models.importModelName'), t('models.importModelName_tip')),
-    key: 'name',
-    minWidth: 200,
-    render: (row) => h('span', { class: row.added ? 'candidate-muted' : undefined }, row.name),
-  },
-  {
-    title: columnTitle(t('models.importModalities'), t('models.importModalities_tip')),
-    key: 'modality',
-    width: 120,
-    render: modalitySelect,
-  },
-  {
-    title: columnTitle(t('models.importPriceSuggestion'), t('models.importPriceSuggestion_tip')),
-    key: 'suggestion',
-    width: 110,
-    render: suggestionTag,
-  },
-  {
-    title: columnTitle(t('models.importInputPrice'), t('models.inputPrice_tip')),
-    key: 'inputPrice',
-    width: 110,
-    render: (row) => priceInput(row, 'inputPrice'),
-  },
-  {
-    title: columnTitle(t('models.importOutputPrice'), t('models.outputPrice_tip')),
-    key: 'outputPrice',
-    width: 110,
-    render: (row) => priceInput(row, 'outputPrice'),
-  },
-  {
-    title: columnTitle(t('models.importCacheWritePrice'), t('models.cacheWritePrice_tip')),
-    key: 'cacheWritePrice',
-    width: 110,
-    render: (row) => priceInput(row, 'cacheWritePrice'),
-  },
-  {
-    title: columnTitle(t('models.importCacheReadPrice'), t('models.cacheReadPrice_tip')),
-    key: 'cacheReadPrice',
-    width: 110,
-    render: (row) => priceInput(row, 'cacheReadPrice'),
-  },
-  {
-    title: columnTitle(t('models.audioUnitPrice'), t('models.audioUnitPrice_tip')),
-    key: 'audioUnitPrice',
-    width: 110,
-    render: (row) => audioPriceInput(row),
-  },
-])
 
 function onConfirm() {
   if (phase.value === 'select') {
@@ -460,11 +768,11 @@ async function onImport() {
       const submitted = new Set(items.map((i) => i.provider_model_name))
       const known = new Set(merged.items.flatMap((it) => (it.candidate_id ? [it.candidate_id] : [])))
       for (const row of list) {
-        // Matched by the PUBLIC model name: the submission carries catalog
-        // ids, which the server resolves to models by name — and a requeued
-        // unfinished mapping keeps whatever upstream name it was created
-        // with, which need not equal the public one.
-        if (!submitted.has(row.model_name) || known.has(row.candidate_id)) continue
+        // Matched by the UPSTREAM id (provider_model_name): that is the key
+        // the submission carries and the key the server stores the mapping
+        // under — a row re-imported under a custom public name must still be
+        // adopted, which a model_name match would miss.
+        if (!submitted.has(row.provider_model_name) || known.has(row.candidate_id)) continue
         if (candidateIsOwedWork(row)) {
           merged.items.push({ name: row.model_name, status: 'appended', candidate_id: row.candidate_id, model_id: row.model_id })
         }
@@ -556,5 +864,240 @@ const progressColumns = computed<DataTableColumns<ProgressEntry>>(() => [
 
 .import-hint--footer {
   margin: var(--space-3) 0 0;
+}
+
+.import-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.import-layout--stacked {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.import-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.import-toolbar__filter {
+  flex: 1;
+}
+
+.import-toolbar__count {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+/* Visual box only — role="list" lives on the inner .import-list__rows so the
+   filter's empty note can sit beside the list instead of inside it. */
+.import-list {
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.import-layout--stacked .import-list {
+  max-height: 40vh;
+}
+
+.import-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border-subtle);
+  cursor: pointer;
+}
+
+.import-row:last-child {
+  border-bottom: none;
+}
+
+.import-row:hover,
+.import-row:focus-visible {
+  background: var(--color-surface-hover);
+}
+
+.import-row--selected {
+  background: var(--color-accent-subtle);
+}
+
+.import-row__check {
+  display: inline-flex;
+}
+
+.import-row__name {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.import-row__name--fallback {
+  color: var(--color-text-muted);
+}
+
+.import-row__mods {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.import-row__chip {
+  font-size: var(--text-xs);
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-soft);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.import-row__dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+}
+
+.import-row__dot--unconfigured {
+  background: var(--color-text-muted);
+}
+
+.import-row__dot--configured {
+  background: var(--color-success);
+}
+
+.import-row__suggestion {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.import-list__empty {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.import-pane--detail {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--color-surface);
+}
+
+.import-detail__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.import-detail__name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.import-detail__upstream {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.import-detail__note {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.import-detail__form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.import-layout--stacked .import-detail__form {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.import-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.import-field__label {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.import-field__sublabel {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.import-detail__presets {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.import-detail__prices {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.import-detail__price-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: var(--space-2);
+}
+
+.import-detail__price-hint {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.import-detail__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.import-detail__footer .import-detail__probe {
+  flex-shrink: 0;
+}
+
+.import-detail__hint {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
 }
 </style>

@@ -22,8 +22,8 @@ export interface ImportRow {
   // The OUTPUT axes the row declares, as the vocabulary the server stores
   // ("text", "image", "audio"; video is not importable here). Default
   // ['text'] — the same default every undeclared import gets server-side.
-  // The single-select column shows the ImportRowModality shorthand of this
-  // set ('both' is the ['text','image'] pair) until the column is redesigned.
+  // The detail pane's multi-select edits this list directly (audio
+  // exclusive); modalityOf derives the display shorthand from it.
   out: string[]
   // The INPUT axes declaration; null = undeclared — nothing preselects it
   // (the image/audio heuristics speak OUTPUT only), and an absent list must
@@ -49,24 +49,14 @@ export interface ImportRow {
   audioUnitPrice: number | null
 }
 
-// The single-select shorthand of an output-axes set, kept only as the import
-// dialog's transitional display vocabulary (the column is redesigned later;
-// the row's declaration itself is the `out` array).
-export type ImportRowModality = 'text' | 'image' | 'both' | 'audio'
-
-// modalitiesFor maps the select's single value onto the declaration list the
-// request sends.
-export function modalitiesFor(modality: ImportRowModality): string[] {
-  if (modality === 'image') return ['image']
-  if (modality === 'both') return ['text', 'image']
-  if (modality === 'audio') return ['audio']
-  return ['text']
-}
-
-// modalityOf derives the display shorthand back from a row's axes. Anything
+// The single-select shorthand of an output-axes set ('both' is the
+// ['text','image'] pair). modalityOf derives it from a row's axes; anything
 // that is not exactly one of the four shorthand shapes reads as 'text' — the
-// same default the server resolves an absent declaration to.
-export function modalityOf(out: string[]): ImportRowModality {
+// same default the server resolves an absent declaration to. The dialog
+// reads it for the pricing rules (an image-only row bills per image, an
+// audio row per character), and the wire builder swaps the token slots for
+// the single character price on an audio row.
+export function modalityOf(out: string[]): 'text' | 'image' | 'both' | 'audio' {
   if (out.length === 2 && out.includes('text') && out.includes('image')) return 'both'
   if (out.length === 1 && out[0] === 'image') return 'image'
   if (out.length === 1 && out[0] === 'audio') return 'audio'

@@ -133,23 +133,15 @@ import { displayMessage } from '../../api/client'
 import { useSchedulingModeOptions } from '../../utils/schedulingMode'
 import { outputModalityOptions as buildOutputModalityOptions } from '../../utils/modalityOptions'
 import { useModalityExclusivity } from '../../composables/useModalityExclusivity'
+// The context-length quick picks — shared with the bulk import dialog's
+// detail pane so the two can never drift (see utils/contextLengthPresets).
+import { CONTEXT_LENGTH_PRESETS } from '../../utils/contextLengthPresets'
 import type { Model, SchedulingMode, TriStateChoice } from '../../api/models'
 import { modelNameRule } from '../../utils/modelValidators'
 import { modelRenameContent } from '../../utils/impactSummary'
 
 const props = defineProps<{ show: boolean; model: Model | null }>()
 const emit = defineEmits<{ 'update:show': [boolean]; updated: [] }>()
-
-// The context-length quick picks. Values follow each tier's canonical
-// real-world figure — powers of two for the binary tiers (32K/128K/1M, the
-// Llama/Qwen/Gemini lineage) and Anthropic's exact 200,000 for 200K. The
-// input above stays freely editable for anything else.
-const CONTEXT_LENGTH_PRESETS: { label: string; value: number }[] = [
-  { label: '32K', value: 32768 },
-  { label: '128K', value: 131072 },
-  { label: '200K', value: 200000 },
-  { label: '1M', value: 1048576 },
-]
 
 // ModalDrawer owns a v-model:show; bridge it to this component's existing
 // :show / @update:show contract so the parent doesn't have to change.
