@@ -1,7 +1,6 @@
 import { formatYuan } from './format'
 import { isUnpriced } from './importProgress'
 import type { ImagePricingTiers, ProviderCandidate } from '../api/models'
-import { videoPriceLines } from './videoPriceSummary'
 
 // What a list column can show for an image-billed mapping's price: the tier
 // table compressed to a min..max per delivered image. Null when no price is
@@ -26,16 +25,20 @@ export function imagePriceSummary(tiers: ImagePricingTiers | null): ImagePriceSu
   return { min, max, range: max > min }
 }
 
-// The unpriced badge follows the billing mode: an image-billed mapping is
-// unpriced when no tier is configured, a video-billed one when no video
-// tier is, and a token-billed one when every price slot is zero — the
-// mapping's own token slots are meaningless in the other modes.
+// The unpriced badge is a token/audio-mode fact only: the badge reads the
+// same isUnpriced helper that carries the prices_declared-first
+// classification — the row's own prices_declared fact decides when the
+// server sent it, and the zero-value heuristic stands in on servers that
+// predate the field. Image- and video-billed mappings NEVER badge —
+// their "unpriced" state lives in the tier table, where the price cell's own
+// "no tiers configured" hint already tells it, and their token slots are
+// inert under that settlement and would say nothing either way.
 export function candidateUnpriced(
-  row: Pick<ProviderCandidate, 'billing_mode' | 'image_pricing_tiers' | 'video_pricing_tiers'> &
-    Pick<ProviderCandidate, 'input_price' | 'output_price' | 'cache_write_price' | 'cache_read_price'>,
+  row: Pick<ProviderCandidate, 'billing_mode'> &
+    Pick<ProviderCandidate, 'input_price' | 'output_price' | 'cache_write_price' | 'cache_read_price'> &
+    Partial<Pick<ProviderCandidate, 'prices_declared'>>,
 ): boolean {
-  if (row.billing_mode === 'image') return imagePriceSummary(row.image_pricing_tiers) === null
-  if (row.billing_mode === 'video') return videoPriceLines(row.video_pricing_tiers).length === 0
+  if (row.billing_mode === 'image' || row.billing_mode === 'video') return false
   return isUnpriced(row)
 }
 

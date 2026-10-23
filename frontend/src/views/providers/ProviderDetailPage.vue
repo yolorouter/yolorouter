@@ -160,7 +160,6 @@ import { ChevronDown, ChevronUp, CloudDownload, MoreHorizontal, Plus, PlayCircle
 import { useProvidersStore } from '../../store/providers'
 import { listProviderCandidates, retestCandidate, deleteCandidate, getModel, type ImportProviderModelsResult, type ModelCandidate, type ProviderCandidate } from '../../api/models'
 import { candidateIsOwedWork, candidateProgressState, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, summarizeImportProgress } from '../../utils/importProgress'
-import { candidateUnpriced } from '../../utils/imagePriceSummary'
 import { BATCH_DELETE_CONCURRENCY, runWithLimit } from '../../utils/runWithLimit'
 import { renderFailReasonCell } from '../../utils/probeStateTag'
 import { displayMessage } from '../../api/client'
@@ -810,9 +809,10 @@ function retestableCandidate(row: ProviderCandidate): boolean {
 // This page's own columns around the shared table's core. Leading: the batch
 // selection column (desktop only — the mobile card layout cannot render
 // checkboxes and the toolbar batch button is desktop-only with it) plus the
-// model name with its unpriced hint. Trailing: the probe failure reason (the
-// probe badge column itself renders inside the shared table; these rows carry
-// the queue fields it reads).
+// plain model name. Trailing: the probe failure reason (the probe badge
+// column itself renders inside the shared table; these rows carry the queue
+// fields it reads). The unpriced badge lives inside the shared table too, on
+// the provider-model-name column — one renderer for both pages.
 // The price column shows no mode tag — the mapping table is already
 // per-billing-mode context here.
 const candidatePriceColumn = computed<CandidatePriceColumn>(() => ({
@@ -826,15 +826,7 @@ const candidateLeadingColumns = computed<DataTableColumns<ProviderCandidate>>(()
     title: columnTitle(t('models.name'), t('models.name_tip')),
     key: 'model_name',
     minWidth: 180,
-    render: (row) => {
-      const parts = [h('span', row.model_name)]
-      if (candidateUnpriced(row)) {
-        parts.push(
-          h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('providers.candidateUnpriced') }),
-        )
-      }
-      return h(NSpace, { size: 6, align: 'center', wrapItem: false }, { default: () => parts })
-    },
+    render: (row) => row.model_name,
   },
 ])
 

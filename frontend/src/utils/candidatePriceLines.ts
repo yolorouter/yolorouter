@@ -20,7 +20,9 @@ import { formatVideoPrice, videoPriceLines, videoTierIsGeneric } from './videoPr
 type Translator = (key: string, named?: Record<string, unknown>) => string
 
 // The fields both price columns read. Satisfied by ModelCandidate and
-// ProviderCandidate alike.
+// ProviderCandidate alike. prices_declared is the server's "primary price
+// slots were filled at write time" fact — absent on servers predating it,
+// in which case the display keeps the raw stored numbers.
 export type PricedCandidate = {
   billing_mode: BillingMode
   image_pricing_tiers: ImagePricingTiers | null
@@ -30,6 +32,7 @@ export type PricedCandidate = {
   output_price: number
   cache_write_price: number | null
   cache_read_price: number | null
+  prices_declared?: boolean
 }
 
 export function candidatePriceLines(row: PricedCandidate, t: Translator): VNodeChild[] {
@@ -45,8 +48,11 @@ export function candidatePriceLines(row: PricedCandidate, t: Translator): VNodeC
   }
   if (row.billing_mode === 'audio') {
     // One price is the whole declaration; its absence is unpriced, the
-    // image table's own muted treatment.
-    if (row.audio_unit_price === null) {
+    // image table's own muted treatment. A stored 0 the server flagged
+    // undeclared means the same thing — "no character price was ever set",
+    // not "free" — so it gets the same muted note; an explicitly free row
+    // (declared) keeps its 0 on display.
+    if (row.audio_unit_price === null || (row.prices_declared === false && row.audio_unit_price === 0)) {
       return [h('div', { class: 'candidate-muted' }, t('providers.candidateAudioUnpriced'))]
     }
     return [h('div', t('providers.candidateAudioPrice', { price: row.audio_unit_price }))]
@@ -65,7 +71,16 @@ export function candidatePriceLines(row: PricedCandidate, t: Translator): VNodeC
       ),
     )
   }
-  const lines = [h('div', `${row.input_price} / ${row.output_price}`)]
+  // Stored zeros the server flagged undeclared mean "no price was ever set",
+  // not "free" — the muted unpriced note takes the slots' place. An
+  // explicitly free row (declared) keeps its plain 0 / 0, and rows from
+  // servers without the declaration fact display exactly as before.
+  const lines: VNodeChild[] = []
+  if (row.prices_declared === false && !row.input_price && !row.output_price) {
+    lines.push(h('div', { class: 'candidate-muted' }, t('providers.candidateUnpriced')))
+  } else {
+    lines.push(h('div', `${row.input_price} / ${row.output_price}`))
+  }
   if (row.cache_write_price !== null || row.cache_read_price !== null) {
     lines.push(
       h('div', { class: 'candidate-cache-price' }, t('providers.candidateCachePrice', { write: row.cache_write_price ?? '-', read: row.cache_read_price ?? '-' })),

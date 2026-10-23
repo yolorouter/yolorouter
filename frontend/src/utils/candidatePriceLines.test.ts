@@ -62,6 +62,18 @@ describe('audio row', () => {
     const unpriced = candidatePriceLines({ ...row, audio_unit_price: null }, (k) => k)
     expect(cell(unpriced[0]).text).toContain('candidateAudioUnpriced')
   })
+
+  it('shows a stored 0 as the muted unpriced note when undeclared, and as a plain 0 when declared free', () => {
+    const row = { billing_mode: 'audio' as BillingMode, image_pricing_tiers: null, video_pricing_tiers: null, audio_unit_price: 0, input_price: 0, output_price: 0, cache_write_price: null, cache_read_price: null }
+    // Undeclared: the 0 means "no character price was ever set", not free.
+    const undeclared = candidatePriceLines({ ...row, prices_declared: false }, (k) => k)
+    expect(cell(undeclared[0]).text).toContain('candidateAudioUnpriced')
+    expect(cell(undeclared[0]).className).toBe('candidate-muted')
+    // Declared: an explicit free claim keeps its honest 0.
+    const declared = candidatePriceLines({ ...row, prices_declared: true }, (k, n) => (k === 'providers.candidateAudioPrice' ? `¥${n?.price} / M chars` : k))
+    expect(cell(declared[0]).text).toContain('¥0 / M chars')
+    expect(cell(declared[0]).className).not.toBe('candidate-muted')
+  })
 })
 
 describe('candidatePriceLines', () => {
@@ -126,5 +138,24 @@ describe('candidatePriceLines', () => {
     const withoutCache = candidatePriceLines(tokenRow(null, null), t)
     expect(withoutCache).toHaveLength(1)
     expect(cell(withoutCache[0]!).text).toBe('1 / 2')
+  })
+
+  it('shows undeclared zero slots as the muted unpriced note, an explicit free row as plain 0 / 0', () => {
+    // Undeclared: the stored zeros mean "no price was ever set" — the muted
+    // note replaces them rather than parading them as a free-price claim.
+    const undeclared = candidatePriceLines({ ...tokenRow(null, null), input_price: 0, output_price: 0, prices_declared: false }, t)
+    expect(undeclared).toHaveLength(1)
+    expect(cell(undeclared[0]!).text).toBe('providers.candidateUnpriced')
+    expect(cell(undeclared[0]!).className).toBe('candidate-muted')
+
+    // Declared: an explicitly free row keeps its honest 0 / 0.
+    const declaredFree = candidatePriceLines({ ...tokenRow(null, null), input_price: 0, output_price: 0, prices_declared: true }, t)
+    expect(declaredFree).toHaveLength(1)
+    expect(cell(declaredFree[0]!).text).toBe('0 / 0')
+    expect(cell(declaredFree[0]!).className).not.toBe('candidate-muted')
+
+    // Servers without the declaration fact display exactly as before.
+    const legacy = candidatePriceLines({ ...tokenRow(null, null), input_price: 0, output_price: 0 }, t)
+    expect(cell(legacy[0]!).text).toBe('0 / 0')
   })
 })

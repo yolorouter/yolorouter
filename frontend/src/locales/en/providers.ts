@@ -74,13 +74,17 @@ export default {
   tabModels: 'Model Mapping',
   modelsEmpty: 'No models mapped yet',
   candidatePrice: 'Price',
-  candidatePrice_tip: 'Token-billed mappings: input / output price in CNY per million tokens, 0 means free or unpriced, cache write / read on a second line when set. Image-billed mappings: per-image price from the configured tiers (a range when tiers differ), or a hint that no tier is configured yet',
+  candidatePrice_tip: 'Token-billed mappings: input / output price in CNY per million tokens; 0 means free, while mappings with no declared price show an "Unpriced" badge; cache write / read on a second line when set. Audio-billed mappings: price in CNY per million characters — with no character price set, the row shows the "Unpriced" badge as well. Image-billed mappings: per-image price from the configured tiers (a range when tiers differ), or a hint that no tier is configured yet',
   candidateCachePrice: 'Cache {write} / {read}',
   candidateProbeStatus: 'Probe Status',
   candidateProbeStatus_tip: 'Verification result of this mapping: passing enables it for routing; failed or unverified mappings stay disabled and are never routed to',
   candidateFailReason: 'Failure Reason',
   candidateFailReason_tip: 'The upstream diagnostic from the most recent failed probe; cleared automatically once a probe passes',
   candidateUnpriced: 'Unpriced',
+  // The badge's guidance: an unpriced row bills as 0 and never auto-enables,
+  // so the tooltip points at the way out — price it in the edit dialog.
+  candidateUnpriced_tip:
+    'No price declared for this mapping yet: it bills as 0 and never auto-enables on a passing probe — set a price in the edit dialog and save to enable it',
   candidateImagePrice: '{price} CNY/image',
   candidateImagePriceRange: '{min}–{max} CNY/image',
   candidateImageUnpriced: 'Per image · no tiers configured',

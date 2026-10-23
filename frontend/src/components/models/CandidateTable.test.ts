@@ -23,6 +23,12 @@
 //        injected name fields, bucket over the raw verification_status,
 //        intersection, and the pager restarting at page 1 — the filter sees
 //        the whole list, never the current page's slice
+//   TC-05b the unpriced badge and the price column's empty-value display:
+//        token/audio rows the server flagged undeclared badge (with the
+//        pricing-guidance tooltip); explicitly free rows show plain 0 and
+//        never badge; image/video rows without tiers get the tier hint in
+//        the price cell instead of a badge; a pricing save (the refreshed
+//        row's prices_declared) clears the badge
 //   TC-08 the filter-miss empty state renders the injected title; the
 //        loading state rides the table without dropping the rows
 //   TC-09 a narrow viewport serves the row actions through the OptionSheet
@@ -35,7 +41,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import naive, { NConfigProvider, NDialogProvider, NInput, NMessageProvider, NTag } from 'naive-ui'
-import { defineComponent, h, nextTick, type ComponentPublicInstance } from 'vue'
+import { defineComponent, h, nextTick, reactive, type ComponentPublicInstance } from 'vue'
 
 import CandidateTable from './CandidateTable.vue'
 import ResponsiveDropdown from '../common/ResponsiveDropdown.vue'
@@ -303,6 +309,15 @@ function expectBadge(rowLocator: string, label: string, type: 'success' | 'warni
   const tag = tagsInRow(tr).find((w) => (w.element.textContent ?? '').trim() === label)
   expect(tag, `${rowLocator}'s "${label}" badge is a rendered tag`).toBeTruthy()
   expect(tag!.props('type'), `${rowLocator}'s "${label}" badge is a ${type} tag`).toBe(type)
+}
+
+// The absence half of expectBadge: no tag with this label anywhere in the
+// row (tag-scoped, so the price column's muted "未定价…" notes never
+// masquerade as the badge).
+function expectNoBadge(rowLocator: string, label: string) {
+  const tr = rowTr(rowLocator)
+  const rendered = [...tr.querySelectorAll('.n-tag')].some((el) => (el.textContent ?? '').trim() === label)
+  expect(rendered, `${rowLocator} must NOT render the "${label}" badge`).toBe(false)
 }
 
 // The menu labels of the nth row's actions dropdown (dividers excluded) —
@@ -618,6 +633,151 @@ describe('CandidateTable filter wiring (TC-05)', () => {
 
     await typeKeyword('')
     expectRows(['up-01', 'up-20'], ['up-tail'])
+  })
+})
+
+describe('CandidateTable unpriced badge and empty-value price display (TC-05b)', () => {
+  const BADGE = zhCN.providers.candidateUnpriced
+
+  // One row per acceptance class: the badge is a token/audio fact keyed on
+  // the server's prices_declared (the zero heuristic only when the field is
+  // absent), image/video rows never badge — their no-tier state lives in the
+  // price cell's own tier hint.
+  function eightClassRows(): ProviderCandidate[] {
+    return [
+      // 1. imported unpriced token row: stored 0/0, undeclared.
+      providerRow({
+        candidate_id: 41,
+        provider_model_name: 'up-badge-token-import',
+        input_price: 0,
+        output_price: 0,
+        prices_declared: false,
+        probe_owed: true,
+      }),
+      // 2. explicitly free token row: stored 0/0, declared.
+      providerRow({
+        candidate_id: 42,
+        provider_model_name: 'up-free-token',
+        input_price: 0,
+        output_price: 0,
+        prices_declared: true,
+      }),
+      // 3. image row with no tier table: tier hint, never the badge.
+      providerRow({
+        candidate_id: 43,
+        provider_model_name: 'up-image-no-tier',
+        billing_mode: 'image',
+        image_pricing_tiers: null,
+      }),
+      // 4. audio row with no character price, undeclared.
+      providerRow({
+        candidate_id: 44,
+        provider_model_name: 'up-audio-unset',
+        billing_mode: 'audio',
+        audio_unit_price: null,
+        input_price: 0,
+        output_price: 0,
+        prices_declared: false,
+      }),
+      // 5. explicitly free audio row: stored 0 character price, declared.
+      providerRow({
+        candidate_id: 45,
+        provider_model_name: 'up-audio-free',
+        billing_mode: 'audio',
+        audio_unit_price: 0,
+        input_price: 0,
+        output_price: 0,
+        prices_declared: true,
+      }),
+      // 6. video row with no tier table: same treatment as image.
+      providerRow({
+        candidate_id: 46,
+        provider_model_name: 'up-video-no-tier',
+        billing_mode: 'video',
+        video_pricing_tiers: null,
+      }),
+      // 7. manually created with the price fields left empty: stored 0/0,
+      //    undeclared — the same display rule as the imported row.
+      providerRow({
+        candidate_id: 47,
+        provider_model_name: 'up-manual-empty',
+        input_price: 0,
+        output_price: 0,
+        prices_declared: false,
+        verification_status: VERIFICATION_UNTESTED,
+        last_test_result: null,
+        last_tested_at: null,
+      }),
+      // 8. manually created with explicit zeros: declared, never a badge.
+      providerRow({
+        candidate_id: 48,
+        provider_model_name: 'up-manual-zero',
+        input_price: 0,
+        output_price: 0,
+        prices_declared: true,
+        verification_status: VERIFICATION_UNTESTED,
+        last_test_result: null,
+        last_tested_at: null,
+      }),
+    ]
+  }
+
+  it('badges undeclared token/audio rows only; image/video rows get the tier hint instead', () => {
+    mountProviderTable(eightClassRows())
+
+    expectBadge('up-badge-token-import', BADGE, 'warning')
+    expectBadge('up-audio-unset', BADGE, 'warning')
+    expectBadge('up-manual-empty', BADGE, 'warning')
+    expectNoBadge('up-free-token', BADGE)
+    expectNoBadge('up-audio-free', BADGE)
+    expectNoBadge('up-manual-zero', BADGE)
+    expectNoBadge('up-image-no-tier', BADGE)
+    expectNoBadge('up-video-no-tier', BADGE)
+  })
+
+  it('the undeclared zero slots read as the muted unpriced note; explicit free rows show plain 0', () => {
+    mountProviderTable(eightClassRows())
+
+    // Undeclared token rows: the muted note replaces the stored 0 / 0.
+    const importRow = rowTr('up-badge-token-import')
+    expect(importRow.textContent, 'the muted unpriced note shows').toContain(BADGE)
+    expect(importRow.textContent, 'no fake free-price 0 / 0').not.toContain('0 / 0')
+
+    // Declared free token rows keep their honest 0 / 0.
+    expect(rowTr('up-free-token').textContent, 'an explicit free row shows 0 / 0').toContain('0 / 0')
+    expect(rowTr('up-manual-zero').textContent, 'the manual explicit-zero row shows 0 / 0').toContain('0 / 0')
+
+    // Tier-less image/video rows carry their tier hint, not any badge text.
+    expect(rowTr('up-image-no-tier').textContent).toContain(zhCN.providers.candidateImageUnpriced)
+    expect(rowTr('up-video-no-tier').textContent).toContain(zhCN.providers.candidateVideoUnpriced)
+
+    // The declared-free audio row shows its stored 0 as a real price.
+    expect(rowTr('up-audio-free').textContent).toContain(zhCN.providers.candidateAudioPrice.replace('{price}', '0'))
+  })
+
+  it('a pricing save clears the badge: the refreshed row flipping prices_declared drops it', async () => {
+    // The edit dialog's dirty-tracked price save re-derives the declaration
+    // server-side; the page's list refresh then carries the declared row and
+    // the shared predicate drops the badge on that same key. The rows arrive
+    // as a reactive list (the page's fetched state), so the refresh is an
+    // in-place splice.
+    const rows = reactive([
+      providerRow({
+        candidate_id: 49,
+        provider_model_name: 'up-then-priced',
+        input_price: 0,
+        output_price: 0,
+        prices_declared: false,
+      }),
+    ])
+    mountProviderTable(rows)
+    expectBadge('up-then-priced', BADGE, 'warning')
+
+    rows.splice(0, 1, { ...rows[0], input_price: 2, output_price: 5, prices_declared: true })
+    await nextTick()
+    await nextTick()
+    expectNoBadge('up-then-priced', BADGE)
+    expect(rowTr('up-then-priced').textContent, 'the priced row shows its real numbers').toContain('2 / 5')
   })
 })
 

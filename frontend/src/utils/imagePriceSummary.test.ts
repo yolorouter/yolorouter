@@ -50,14 +50,31 @@ describe('candidateUnpriced', () => {
     cache_read_price: null,
   }
 
-  it('keeps the all-zero token rule for token-billed rows', () => {
+  it('keeps the all-zero heuristic for token rows on servers without prices_declared', () => {
     expect(candidateUnpriced(tokenRow)).toBe(true)
     expect(candidateUnpriced({ ...tokenRow, input_price: 2 })).toBe(false)
   })
 
-  it('judges image-billed rows by the tier table, not the inert token slots', () => {
-    // Imported image mappings carry submitted token prices that settle
-    // nothing — the badge must not read them as "priced".
+  it('reads the declared fact when the server sends it: undeclared badges, explicitly free does not', () => {
+    // Undeclared means unpriced whatever the stored slots hold; a declared
+    // all-zero row is an explicit free-price claim, never a badge.
+    expect(candidateUnpriced({ ...tokenRow, prices_declared: false })).toBe(true)
+    expect(candidateUnpriced({ ...tokenRow, prices_declared: false, input_price: 2, output_price: 5 })).toBe(true)
+    expect(candidateUnpriced({ ...tokenRow, prices_declared: true })).toBe(false)
+  })
+
+  it('badges undeclared audio rows on the same declared fact', () => {
+    const audioRow = { ...tokenRow, billing_mode: 'audio' as const }
+    expect(candidateUnpriced({ ...audioRow, prices_declared: false })).toBe(true)
+    expect(candidateUnpriced({ ...audioRow, prices_declared: true })).toBe(false)
+    // Old-server fallback: the zero-value heuristic stands in.
+    expect(candidateUnpriced(audioRow)).toBe(true)
+  })
+
+  it('never badges image-billed rows — the tier hint carries the no-tier state instead', () => {
+    // Spec change (the badge is a token/audio fact now): an image row with no
+    // tier table used to badge; its "unpriced" state is the price cell's own
+    // "no tiers configured" hint, and its token slots are inert here.
     const imageRow = {
       ...tokenRow,
       billing_mode: 'image' as const,
@@ -65,24 +82,19 @@ describe('candidateUnpriced', () => {
       output_price: 1.2,
       image_pricing_tiers: null,
     }
-    expect(candidateUnpriced(imageRow)).toBe(true)
-    expect(
-      candidateUnpriced({
-        ...imageRow,
-        image_pricing_tiers: tiers({ default_price: 0.25 }),
-      }),
-    ).toBe(false)
+    const pricedImageRow = { ...imageRow, image_pricing_tiers: tiers({ default_price: 0.25 }) }
+    expect(candidateUnpriced(imageRow)).toBe(false)
+    expect(candidateUnpriced(pricedImageRow)).toBe(false)
   })
 
-  it('judges video-billed rows by the per-second tier table', () => {
+  it('never badges video-billed rows either', () => {
     const videoRow = { ...tokenRow, billing_mode: 'video' as const, input_price: 0.3, output_price: 1.2 }
-    expect(candidateUnpriced(videoRow)).toBe(true)
-    expect(
-      candidateUnpriced({
-        ...videoRow,
-        video_pricing_tiers: { tiers: [{ resolution: '720P', purchase_price: 0.6, sell_price: 0.7 }] },
-      }),
-    ).toBe(false)
+    const pricedVideoRow = {
+      ...videoRow,
+      video_pricing_tiers: { tiers: [{ resolution: '720P', purchase_price: 0.6, sell_price: 0.7 }] },
+    }
+    expect(candidateUnpriced(videoRow)).toBe(false)
+    expect(candidateUnpriced(pricedVideoRow)).toBe(false)
   })
 })
 

@@ -103,7 +103,7 @@ export interface CandidatePriceColumn {
 <script setup lang="ts" generic="Row extends CandidateTableRow">
 import { computed, h } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NInput, NTag, NTooltip, type DataTableColumns } from 'naive-ui'
+import { NButton, NInput, NSpace, NTag, NTooltip, type DataTableColumns } from 'naive-ui'
 import { MoreHorizontal, Search } from '@lucide/vue'
 import EmptyState from '../EmptyState.vue'
 import FilterSelectField from '../common/FilterSelectField.vue'
@@ -111,6 +111,7 @@ import ResponsiveDataTable from '../common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../common/ResponsiveDropdown.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { candidatePriceLines } from '../../utils/candidatePriceLines'
+import { candidateUnpriced } from '../../utils/imagePriceSummary'
 import { renderProbeStateTag } from '../../utils/probeStateTag'
 import { capabilityState } from '../../utils/modelStatusDisplay'
 import type { BillingMode } from '../../api/models'
@@ -301,7 +302,28 @@ const columns = computed<DataTableColumns<Row>>(() => {
     title: columnTitle(t('models.providerModelName'), t('models.providerModelName_tip')),
     key: 'provider_model_name',
     minWidth: 160,
-    render: (row) => row.provider_model_name || '-',
+    // The name carries the unpriced badge (token/audio rows the server flagged
+    // undeclared — see candidateUnpriced): informational, with the pricing
+    // guidance on its tooltip, so the operator knows the way out is the edit
+    // dialog's pricing save. One renderer here rather than per page, so the
+    // two views cannot drift apart again.
+    render: (row) => {
+      const parts = [h('span', row.provider_model_name || '-')]
+      if (candidateUnpriced(row)) {
+        parts.push(
+          h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
+                h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('providers.candidateUnpriced') }),
+              default: () => t('providers.candidateUnpriced_tip'),
+            },
+          ),
+        )
+      }
+      return h(NSpace, { size: 6, align: 'center', wrapItem: false }, { default: () => parts })
+    },
   })
 
   const price = props.priceColumn
