@@ -541,6 +541,83 @@ export function suggestPrices(
   })
 }
 
+// ---- Bulk price adjustment (the model pricing page) ----
+
+/** The two bulk operations: "scale" multiplies a row's effective price slots
+ *  by factor, "apply_suggested" overwrites them with the row's suggestion
+ *  (history or built-in catalog). Mirrors the backend's operation vocabulary. */
+export type BulkPriceOperation = 'scale' | 'apply_suggested'
+
+/** Why one row of a bulk-price batch skipped. Mirrors the backend enum. */
+export type BulkPriceSkipReason = 'not_found' | 'unpriced' | 'unsupported_billing_mode' | 'no_suggestion' | 'unchanged'
+
+/** One row's write-slot snapshot as the bulk-price endpoint reports it
+ *  (before/after), per the row's billing mode: a token row carries the four
+ *  token prices (the character slot null), an audio row only the character
+ *  price (the token slots zero/null). Mirrors modeladmin.BulkPriceSlots. */
+export interface BulkPriceSlots {
+  input_price: number
+  output_price: number
+  cache_write_price: number | null
+  cache_read_price: number | null
+  audio_unit_price: number | null
+}
+
+/** One row's bulk-price outcome: identity, the before/after slot snapshots,
+ *  whether a write slot actually moved, and why nothing happened (present
+ *  only when changed is false). Mirrors modeladmin.BulkPriceItem. */
+export interface BulkPriceItem {
+  candidate_id: number
+  model_name: string
+  provider_name: string
+  before: BulkPriceSlots
+  after: BulkPriceSlots
+  changed: boolean
+  skip_reason?: BulkPriceSkipReason
+}
+
+/** The batch outcome: one item per distinct requested id with the
+ *  applied/skipped split (a preview reports the would-apply split). Mirrors
+ *  modeladmin.BulkPriceResult. */
+export interface BulkPriceResult {
+  items: BulkPriceItem[]
+  applied: number
+  skipped: number
+}
+
+/** The bulk-price request body. Mirrors the handler binding exactly:
+ *  candidate_ids 1..2000 raw; dry_run is REQUIRED on every call (a missing
+ *  one is a 400 — never default a write); factor belongs to "scale" only.
+ *  For "apply_suggested" the backend rejects any NON-NULL factor (JSON null
+ *  decodes to its nil pointer and is tolerated) — the key stays absent
+ *  entirely here, which is why the field is optional rather than nullable:
+ *  absent is unambiguous, null merely happens to pass. */
+export interface BulkPricePayload {
+  candidate_ids: number[]
+  operation: BulkPriceOperation
+  factor?: number
+  dry_run: boolean
+}
+
+// postBulkPrice scales or suggestion-resets many candidate prices in one
+// server-side transaction. dry_run=true previews (before/after/skip per row,
+// no write), dry_run=false applies. compactBody keeps the apply_suggested
+// call factor-free: the backend refuses a NON-NULL factor there (JSON null
+// decodes to the nil pointer and would be tolerated), and an omitted
+// optional stays off the wire — the unambiguous shape, rather than relying
+// on null's accidental pass.
+export function postBulkPrice(payload: BulkPricePayload): Promise<BulkPriceResult> {
+  return apiFetch('/api/admin/models/candidates/bulk-price', {
+    method: 'POST',
+    body: compactBody({
+      candidate_ids: payload.candidate_ids,
+      operation: payload.operation,
+      factor: payload.factor,
+      dry_run: payload.dry_run,
+    }),
+  })
+}
+
 // ProviderModelProbeResult is what the standalone pre-import probe answers:
 // the same report shape the test-and-create flow shows, plus the vision arm's
 // own verdict — this endpoint is the only probe surface that carries one.

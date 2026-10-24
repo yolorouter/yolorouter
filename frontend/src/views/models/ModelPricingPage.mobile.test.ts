@@ -3,8 +3,8 @@
 // The model pricing page's two viewport states (the shared 768px breakpoint,
 // inclusive): desktop renders the labeled grid rows, mobile swaps them for
 // stacked cards whose fields carry their own labels — browse, filter,
-// expand, and single-row edit all stay reachable. This ticket renders no
-// selection UI at all: neither state may show a checkbox.
+// expand, and single-row edit all stay reachable. The bulk selection layer
+// is desktop-only: mobile must not show a checkbox or the bulk toolbar.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -192,13 +192,14 @@ describe('ModelPricingPage viewports', () => {
     await edit!.trigger('click')
     await vi.waitFor(() => expect(wrapper!.findComponent(CandidateEditModal).exists()).toBe(true))
 
-    // No selection UI in this ticket, on either surface.
-    expect(document.body.querySelectorAll('input[type="checkbox"]').length, 'no checkboxes').toBe(0)
+    // No selection UI on mobile: naive-ui's checkbox renders as a
+    // div.n-checkbox (role=checkbox), no native input inside.
+    expect(document.body.querySelectorAll('.n-checkbox').length, 'no checkboxes on mobile').toBe(0)
   })
 
-  it('desktop likewise renders no selection UI', async () => {
+  it('desktop carries the bulk selection layer: checkboxes render there', async () => {
     await mountPage(false)
     await expandAll()
-    expect(document.body.querySelectorAll('input[type="checkbox"]').length, 'no checkboxes').toBe(0)
+    expect(document.body.querySelectorAll('.n-checkbox').length, 'desktop renders the selection checkboxes').toBeGreaterThan(0)
   })
 })
