@@ -109,9 +109,9 @@ import EmptyState from '../EmptyState.vue'
 import FilterSelectField from '../common/FilterSelectField.vue'
 import ResponsiveDataTable from '../common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../common/ResponsiveDropdown.vue'
+import CandidateUnpricedTag from './CandidateUnpricedTag.vue'
 import { columnTitle, STATUS_COL_WIDTH } from '../../utils/columnTitle'
 import { candidatePriceLines } from '../../utils/candidatePriceLines'
-import { candidateUnpriced } from '../../utils/imagePriceSummary'
 import { renderProbeStateTag } from '../../utils/probeStateTag'
 import { capabilityState } from '../../utils/modelStatusDisplay'
 import type { BillingMode } from '../../api/models'
@@ -303,25 +303,13 @@ const columns = computed<DataTableColumns<Row>>(() => {
     key: 'provider_model_name',
     minWidth: 160,
     // The name carries the unpriced badge (token/audio rows the server flagged
-    // undeclared — see candidateUnpriced): informational, with the pricing
-    // guidance on its tooltip, so the operator knows the way out is the edit
-    // dialog's pricing save. One renderer here rather than per page, so the
-    // two views cannot drift apart again.
+    // undeclared): informational, with the pricing guidance on its tooltip, so
+    // the operator knows the way out is the edit dialog's pricing save. The
+    // shared single-source tag — the badge, its tooltip, and the predicate
+    // that gates it live in CandidateUnpricedTag, so this table and the
+    // pricing page cannot drift apart again.
     render: (row) => {
-      const parts = [h('span', row.provider_model_name || '-')]
-      if (candidateUnpriced(row)) {
-        parts.push(
-          h(
-            NTooltip,
-            { trigger: 'hover' },
-            {
-              trigger: () =>
-                h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => t('providers.candidateUnpriced') }),
-              default: () => t('providers.candidateUnpriced_tip'),
-            },
-          ),
-        )
-      }
+      const parts = [h('span', row.provider_model_name || '-'), h(CandidateUnpricedTag, { candidate: row })]
       return h(NSpace, { size: 6, align: 'center', wrapItem: false }, { default: () => parts })
     },
   })

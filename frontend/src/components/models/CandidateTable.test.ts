@@ -735,6 +735,27 @@ describe('CandidateTable unpriced badge and empty-value price display (TC-05b)',
     expectNoBadge('up-video-no-tier', BADGE)
   })
 
+  it('hovering the unpriced badge renders the pricing-guidance tooltip', async () => {
+    mountProviderTable(eightClassRows())
+
+    // The guidance copy lives on the badge's hover tooltip, which teleports
+    // to the document body and only mounts when shown (naive-ui's 'if'
+    // display directive) — so it is absent before the hover and appears
+    // behind the tooltip's short show delay after a real mouseenter on the
+    // badge tag (the row's only BADGE-labelled tag; the price cell's muted
+    // note is a plain div, never a tag).
+    const badge = [...rowTr('up-badge-token-import').querySelectorAll('.n-tag')].find(
+      (el) => (el.textContent ?? '').trim() === BADGE,
+    )
+    expect(badge, 'the unpriced badge rendered').toBeTruthy()
+    expect(bodyText(), 'no guidance copy before the hover').not.toContain(zhCN.providers.candidateUnpriced_tip)
+
+    badge!.dispatchEvent(new MouseEvent('mouseenter'))
+    await vi.waitFor(() =>
+      expect(bodyText(), 'the guidance copy renders on hover').toContain(zhCN.providers.candidateUnpriced_tip),
+    )
+  })
+
   it('the undeclared zero slots read as the muted unpriced note; explicit free rows show plain 0', () => {
     mountProviderTable(eightClassRows())
 
