@@ -459,6 +459,11 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// (they create models and candidates), hence the model service.
 	protected.POST("/providers/:id/models/import", handler.PostProviderModelsImport(modelSvc, deps.ProbeQueue))
 	protected.POST("/providers/:id/models/suggest-prices", handler.PostProviderSuggestPrices(modelSvc))
+	// The standalone probe: try one upstream model name before importing it.
+	// Writes nothing, so it sits beside the import routes it feeds while the
+	// audit layer still captures every call (a probe is real upstream
+	// traffic spent under an admin's session).
+	protected.POST("/providers/:id/models/probe", handler.PostProviderModelProbe(modelSvc))
 	protected.GET("/providers/:id/candidates", handler.GetProviderCandidates(modelSvc, deps.ProbeQueue))
 	protected.PATCH("/models/:id/candidates/:candidateId", handler.PatchModelCandidate(modelSvc))
 	protected.PATCH("/models/:id/candidates/:candidateId/order", handler.PatchModelCandidateOrder(modelSvc))

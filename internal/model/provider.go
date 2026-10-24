@@ -28,7 +28,7 @@ const (
 // Kept in this package (not the service layer) so the model layer does not
 // import service; internal/service/provider_client.go's TestOutcome
 // constants are numerically identical by construction (both start at 0 and
-// list the same 9 outcomes in the same order).
+// list the same outcomes in the same order).
 const (
 	LastTestResultSuccess          = 0
 	LastTestResultAuthFailed       = 1
@@ -50,6 +50,13 @@ const (
 	// operator to opposite places — a timed-out address is reachable and its
 	// URL is fine.
 	LastTestResultTimeout = 9
+	// LastTestResultRequestRejected mirrors providerclient.TestRequestRejected:
+	// the upstream refused the probe request's own shape (a 400/415, mapped
+	// by the image-input chat probe alone). Nothing persists this value
+	// today — the image-input probe reports to the admin console and writes
+	// nothing — but the mirror stays complete so the two vocabularies
+	// cannot drift apart unnoticed.
+	LastTestResultRequestRejected = 10
 )
 
 // Provider is one upstream connection target. Deleting one is a hard

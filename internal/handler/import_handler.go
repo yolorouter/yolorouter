@@ -132,6 +132,39 @@ func GetProviderCandidates(svc *modeladmin.ModelService, queue *modeladmin.Probe
 	}
 }
 
+// probeProviderModelRequest carries the standalone probe's input. The
+// modality list is transport-capped here like the import's is; the
+// vocabulary (unknown ids, duplicates) is the service's to validate.
+type probeProviderModelRequest struct {
+	ProviderModelName string   `json:"provider_model_name" binding:"required,max=200"`
+	OutputModalities  []string `json:"output_modalities" binding:"omitempty,max=32,dive,max=32"`
+}
+
+// PostProviderModelProbe probes one upstream model name against one provider
+// and reports the verdicts — basic, streaming, function-calling, and (for a
+// chat-shaped declaration that passes the basic probe) whether the mapping
+// accepts an image input. Nothing is stored: no model row, no candidate, no
+// probe-owed debt. It is the "try before you import" step of the import
+// dialog, and the only probe surface whose report carries a vision verdict.
+func PostProviderModelProbe(svc *modeladmin.ModelService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		providerID, ok := parseUintParam(c, "id")
+		if !ok {
+			return
+		}
+		var req probeProviderModelRequest
+		if !bindJSON(c, &req) {
+			return
+		}
+		result, err := svc.ProbeProviderModel(c.Request.Context(), providerID, req.ProviderModelName, req.OutputModalities)
+		if err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		response.Success(c, result)
+	}
+}
+
 // PostProviderSuggestPrices is the batch form of GetCandidateSuggestPrice: the
 // import dialog prices every fetched row with one request instead of one per
 // row. Every requested name gets an entry; an empty source means no match.

@@ -37,7 +37,7 @@ import (
 	"github.com/yolorouter/yolorouter/pkg/logger"
 )
 
-// TestOutcome is one of the 10 test-result categories. Its
+// TestOutcome is one of the test-result categories. Its
 // numeric values are stored verbatim in provider_keys.last_test_result
 // (see model.LastTestResult* constants, which must stay numerically
 // identical to this list).
@@ -69,6 +69,17 @@ const (
 	// working through its own failover chain, and pointing that operator at
 	// their URL spelling sends them after the one thing that is not broken.
 	TestTimeout
+	// TestRequestRejected marks an upstream that refused the request's own
+	// shape with a 400 or 415 — statuses whose plain meaning is "this
+	// request body is not something I accept", not "I am unhealthy". Only
+	// the image-input chat probe maps statuses here: against a mapping whose
+	// basic chat probe already passed, a 400/415 on the same endpoint with
+	// one image part added is the upstream decisively saying it does not
+	// take image input. The shared classifier keeps mapping these statuses
+	// to TestUpstreamError for every other probe, whose payloads are fixed
+	// shapes a working upstream never rejects. Nothing persists this value:
+	// the image-input probe reports to the admin and writes nothing.
+	TestRequestRejected
 )
 
 // TestResult is what ProviderClient returns for one test attempt.
@@ -145,6 +156,14 @@ type ProviderClient interface {
 	// through, and the last fallback a chat probe that cannot serve the
 	// model tries on a key verification round.
 	TestSpeechGeneration(ctx context.Context, baseURL, apiKey, model string) (TestResult, error)
+	// TestImageInputChat validates that a chat mapping accepts an image as
+	// INPUT: the protocol's own chat endpoint, a minimal request carrying
+	// one tiny inline image. It is the vision arm of the standalone model
+	// probe — a tri-state capability question, never a persisted verdict —
+	// and the only probe that maps a 400/415 to TestRequestRejected, since
+	// against a mapping whose basic chat probe passed those statuses mean
+	// the upstream refused the image part specifically.
+	TestImageInputChat(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (TestResult, error)
 	// ListModels fetches the upstream model catalogue for a credential
 	// (openai/anthropic/responses: GET /v1/models; gemini: GET /v1beta/models),
 	// used to populate the admin UI's test-model picker before a provider row
@@ -1175,7 +1194,7 @@ func truncateRuneSafe(s string, maxBytes int) string {
 	return s
 }
 
-// classifyResponseByStatus maps an HTTP response into one of the 9 TestOutcome
+// classifyResponseByStatus maps an HTTP response into one of the TestOutcome
 // categories. The status-code switch itself is protocol-neutral — every
 // protocol here uses the same HTTP status conventions (401 auth, 403
 // permission, 404 not-found, 429 rate/quota, 5xx upstream) — only the

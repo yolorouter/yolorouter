@@ -72,6 +72,7 @@ func newModelTestRouterFull(t *testing.T, client providerclient.ProviderClient) 
 	queue := modeladmin.NewProbeQueue(svc, modeladmin.DefaultProbeWorkers)
 	admin.POST("/providers/:id/models/import", PostProviderModelsImport(svc, queue))
 	admin.POST("/providers/:id/models/suggest-prices", PostProviderSuggestPrices(svc))
+	admin.POST("/providers/:id/models/probe", PostProviderModelProbe(svc))
 	admin.GET("/providers/:id/candidates", GetProviderCandidates(svc, queue))
 	return r, db, queue
 }
@@ -309,6 +310,7 @@ func newModelTestRouterSharingProviderDB(t *testing.T, db *gorm.DB, client provi
 	admin.POST("/models/:id/candidates/:candidateId/test", PostModelCandidateTest(svc))
 	admin.GET("/models/candidates/suggest-price", GetCandidateSuggestPrice(svc))
 	admin.DELETE("/models/:id/candidates/:candidateId", DeleteModelCandidate(svc))
+	admin.POST("/providers/:id/models/probe", PostProviderModelProbe(svc))
 	return r
 }
 

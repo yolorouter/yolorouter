@@ -36,10 +36,10 @@ type Fake struct {
 	// PerTarget canned responses keyed by "<proto>|<baseURL>".
 	PerTarget map[string]TargetResponse
 	// PerTestType canned responses keyed by probe kind — "basic" /
-	// "streaming" / "function_calling" / "image" / "video" — for tests
-	// that need the probes to disagree (the key-verification fallbacks
-	// read "basic" against "video"/"image"). Falls back to Result/Err when
-	// a probe has no entry.
+	// "streaming" / "function_calling" / "image" / "video" / "speech" /
+	// "vision" — for tests that need the probes to disagree (the
+	// key-verification fallbacks read "basic" against "video"/"image").
+	// Falls back to Result/Err when a probe has no entry.
 	PerTestType map[string]TargetResponse
 	// callsByTestType counts invocations per probe kind, letting a test
 	// assert that a probe was skipped rather than merely that it failed.
@@ -81,7 +81,8 @@ func (f *Fake) record(testType string, proto protocols.ProtocolID, baseURL, mode
 }
 
 // CallCountFor reports how many times the given probe kind ("basic" /
-// "streaming" / "function_calling" / "image" / "video") was invoked.
+// "streaming" / "function_calling" / "image" / "video" / "speech" /
+// "vision") was invoked.
 func (f *Fake) CallCountFor(testType string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -129,4 +130,8 @@ func (f *Fake) TestFunctionCalling(ctx context.Context, proto protocols.Protocol
 
 func (f *Fake) TestSpeechGeneration(ctx context.Context, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return f.record("speech", protocols.ProtocolOpenAI, baseURL, model)
+}
+
+func (f *Fake) TestImageInputChat(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return f.record("vision", proto, baseURL, model)
 }

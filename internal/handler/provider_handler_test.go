@@ -104,6 +104,10 @@ func (alwaysSuccessClient) TestFunctionCalling(ctx context.Context, proto protoc
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
 
+func (alwaysSuccessClient) TestImageInputChat(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
+}
+
 func (alwaysSuccessClient) ListModels(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey string) (providerclient.ListModelsResult, error) {
 	return providerclient.ListModelsResult{Models: []string{"model-a", "model-b"}, Outcome: providerclient.TestSuccess, DurationMs: 5}, nil
 }
@@ -156,6 +160,10 @@ func (modelNotFoundClient) TestFunctionCalling(ctx context.Context, proto protoc
 	return providerclient.TestResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3}, nil
 }
 
+func (modelNotFoundClient) TestImageInputChat(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3}, nil
+}
+
 func (modelNotFoundClient) ListModels(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey string) (providerclient.ListModelsResult, error) {
 	return providerclient.ListModelsResult{Outcome: providerclient.TestModelNotFound, DurationMs: 3, Detail: "HTTP 404"}, nil
 }
@@ -186,6 +194,10 @@ func (erroringClient) TestStreamingCompletion(ctx context.Context, proto protoco
 }
 
 func (erroringClient) TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{}, errors.New("client refused the call")
+}
+
+func (erroringClient) TestImageInputChat(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{}, errors.New("client refused the call")
 }
 
@@ -1154,6 +1166,10 @@ func (c perProtocolClient) TestStreamingCompletion(ctx context.Context, proto pr
 }
 
 func (c perProtocolClient) TestFunctionCalling(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
+	return c.resultFor(proto), nil
+}
+
+func (c perProtocolClient) TestImageInputChat(ctx context.Context, proto protocols.ProtocolID, baseURL, apiKey, model string) (providerclient.TestResult, error) {
 	return c.resultFor(proto), nil
 }
 

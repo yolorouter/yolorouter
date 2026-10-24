@@ -2448,6 +2448,7 @@ func TestLastTestResultConstantsMirrorTestOutcomes(t *testing.T) {
 		{"upstream error", providerclient.TestUpstreamError, model.LastTestResultUpstreamError},
 		{"verification unsupported", providerclient.TestVerificationUnsupported, model.LastTestResultVerificationUnsupported},
 		{"timeout", providerclient.TestTimeout, model.LastTestResultTimeout},
+		{"request rejected", providerclient.TestRequestRejected, model.LastTestResultRequestRejected},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

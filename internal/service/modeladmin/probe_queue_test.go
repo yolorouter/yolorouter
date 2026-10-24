@@ -1227,6 +1227,10 @@ func (b *blockingClient) TestFunctionCalling(context.Context, protocols.Protocol
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
 }
 
+func (b *blockingClient) TestImageInputChat(context.Context, protocols.ProtocolID, string, string, string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
+}
+
 func (b *blockingClient) ListModels(context.Context, protocols.ProtocolID, string, string) (providerclient.ListModelsResult, error) {
 	return providerclient.ListModelsResult{}, nil
 }
@@ -1394,6 +1398,10 @@ func (b *stubbornClient) TestStreamingCompletion(context.Context, protocols.Prot
 }
 
 func (b *stubbornClient) TestFunctionCalling(context.Context, protocols.ProtocolID, string, string, string) (providerclient.TestResult, error) {
+	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
+}
+
+func (b *stubbornClient) TestImageInputChat(context.Context, protocols.ProtocolID, string, string, string) (providerclient.TestResult, error) {
 	return providerclient.TestResult{Outcome: providerclient.TestSuccess}, nil
 }
 

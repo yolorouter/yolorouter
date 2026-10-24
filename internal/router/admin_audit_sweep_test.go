@@ -164,6 +164,7 @@ var expectedWriteActions = map[string]string{
 	// Provider-scoped model-domain operations.
 	"POST /api/admin/providers/:id/models/import":         "provider.import_models",
 	"POST /api/admin/providers/:id/models/suggest-prices": "provider.suggest_prices",
+	"POST /api/admin/providers/:id/models/probe":          "provider.probe_model",
 	// OAuth identity providers.
 	"POST /api/admin/oauth-providers":          "oauth_provider.create",
 	"PATCH /api/admin/oauth-providers/:id":     "oauth_provider.update",
@@ -217,8 +218,8 @@ func TestAdminAuditSweepCapturesEveryWriteEndpoint(t *testing.T) {
 			t.Errorf("expectation table names %s, but no such live write route exists — remove the stale entry", key)
 		}
 	}
-	if len(expectedWriteActions) != 57 {
-		t.Errorf("expected the console write surface to hold 57 endpoints, table lists %d", len(expectedWriteActions))
+	if len(expectedWriteActions) != 58 {
+		t.Errorf("expected the console write surface to hold 58 endpoints, table lists %d", len(expectedWriteActions))
 	}
 
 	// Fire one request per live write route. Handlers answer with whatever

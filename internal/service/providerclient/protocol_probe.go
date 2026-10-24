@@ -33,6 +33,13 @@ type probeSpec struct {
 	basicPayload           func(model string) map[string]interface{}
 	streamingPayload       func(model string) map[string]interface{}
 	functionCallingPayload func(model string) map[string]interface{}
+	// visionPayload builds the image-input probe body: the protocol's own
+	// chat shape with one tiny inline image attached. Every entry defines
+	// one — a protocol whose wire family cannot carry an image part would
+	// answer the probe with a 400, which is a legitimate "no" verdict, but
+	// the request must still be well-formed enough that only the image
+	// itself can be what gets refused.
+	visionPayload func(model string) map[string]interface{}
 
 	// parseModelPage extracts one page of model ids from a 200 catalogue
 	// body plus the pagination cursor (param name + value), "" when done.
@@ -137,6 +144,27 @@ var openAIProbe = probeSpec{
 	quotaError:         openAIQuotaError,
 	modelNotFoundError: openAIModelNotFoundError,
 	extractMessage:     openAIErrorMessage,
+	visionPayload:      openAIVisionPayload,
+}
+
+// openAIVisionPayload is the image-input probe in the OpenAI chat shape: the
+// content field holds typed parts, and the image rides as a data URI. The
+// text part keeps a real instruction so a vision-capable model has something
+// answerable within the one-token budget.
+func openAIVisionPayload(model string) map[string]interface{} {
+	return map[string]interface{}{
+		"model":      model,
+		"max_tokens": 1,
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "text", "text": visionProbePrompt},
+					{"type": "image_url", "image_url": map[string]string{"url": "data:image/png;base64," + visionProbeImageBase64}},
+				},
+			},
+		},
+	}
 }
 
 // anthropic requires max_tokens on every request.
@@ -187,6 +215,31 @@ var claudeProbe = probeSpec{
 	quotaError:         claudeQuotaError,
 	modelNotFoundError: claudeModelNotFoundError,
 	extractMessage:     claudeErrorMessage,
+	visionPayload:      claudeVisionPayload,
+}
+
+// claudeVisionPayload is the image-input probe in the Anthropic Messages
+// shape: typed content blocks, the image as a base64 source block carrying
+// its media type. Anthropic requires max_tokens on every request, the probe
+// keeps the same one-token budget as the text probe.
+func claudeVisionPayload(model string) map[string]interface{} {
+	return map[string]interface{}{
+		"model":      model,
+		"max_tokens": 1,
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "text", "text": visionProbePrompt},
+					{"type": "image", "source": map[string]string{
+						"type":       "base64",
+						"media_type": "image/png",
+						"data":       visionProbeImageBase64,
+					}},
+				},
+			},
+		},
+	}
 }
 
 // gemini/responses bodies are structurally minimal — enough request shape to
@@ -240,6 +293,25 @@ var geminiProbe = probeSpec{
 	quotaError:         neverQuotaError,
 	modelNotFoundError: neverModelNotFound,
 	extractMessage:     openAIErrorMessage, // gemini error shapes are unmodelled; the OpenAI parse is the best-effort read
+	visionPayload:      geminiVisionPayload,
+}
+
+// geminiVisionPayload is the image-input probe in the generateContent shape:
+// the image is one inlineData part beside the text part, carrying raw
+// base64 (no data-URI prefix) and its mime type, the spelling the runtime
+// encoder emits for delivered images too.
+func geminiVisionPayload(model string) map[string]interface{} {
+	return map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"role": "user",
+				"parts": []map[string]interface{}{
+					{"text": visionProbePrompt},
+					{"inlineData": map[string]string{"mimeType": "image/png", "data": visionProbeImageBase64}},
+				},
+			},
+		},
+	}
 }
 
 // See geminiProbe's note: the deferred validators apply here too.
@@ -282,6 +354,26 @@ var responsesProbe = probeSpec{
 	quotaError:         neverQuotaError,
 	modelNotFoundError: neverModelNotFound,
 	extractMessage:     openAIErrorMessage,
+	visionPayload:      responsesVisionPayload,
+}
+
+// responsesVisionPayload is the image-input probe in the Responses shape:
+// the input is one user message whose content holds input_text and
+// input_image parts, the image as a data URI — the same spelling the
+// runtime request encoder emits for passthrough images.
+func responsesVisionPayload(model string) map[string]interface{} {
+	return map[string]interface{}{
+		"model": model,
+		"input": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": visionProbePrompt},
+					{"type": "input_image", "image_url": "data:image/png;base64," + visionProbeImageBase64},
+				},
+			},
+		},
+	}
 }
 
 func geminiPingBody() map[string]interface{} {

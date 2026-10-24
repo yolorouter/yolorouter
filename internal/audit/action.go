@@ -97,10 +97,12 @@ var actionByRoute = map[string]string{
 	"POST /api/admin/models/:id/candidates/:candidateId/test":    "model_candidate.test",
 	"DELETE /api/admin/models/:id/candidates/:candidateId":       "model_candidate.delete",
 
-	// Provider-scoped model-domain operations (bulk import and pricing
-	// suggestions; subjects are the provider's upstream catalog).
+	// Provider-scoped model-domain operations (bulk import, pricing
+	// suggestions, and the standalone pre-import probe; subjects are the
+	// provider's upstream catalog).
 	"POST /api/admin/providers/:id/models/import":         "provider.import_models",
 	"POST /api/admin/providers/:id/models/suggest-prices": "provider.suggest_prices",
+	"POST /api/admin/providers/:id/models/probe":          "provider.probe_model",
 
 	// OAuth identity providers (client_secret is the redaction-sensitive
 	// field on create/update).
