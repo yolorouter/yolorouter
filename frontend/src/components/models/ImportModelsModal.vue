@@ -10,7 +10,12 @@
      fires the standalone pre-import probe for the selected row and renders
      the verdict bar; a confirmed capability fills the row's UNDECLARED slot
      (badged "probe suggested"), a declared one is never overwritten — the
-     kept-hint says so instead.
+     kept-hint says so instead. The list toolbar's "Probe selected" runs the
+     same probe over every checked, non-added row through a three-slot worker
+     pool, and each row's result re-enters that same backfill. The pool caps
+     its failure toasts (the first rows named, the tail one summary line) and
+     stands down entirely once a probe hits a lapsed session — the surviving
+     workers stop pulling targets instead of firing into the redirect.
 
      The progress phase (the post-submit probing watch) is unchanged, and so
      is the wire: batched submission by IMPORT_BATCH_CAP, omit-shaped
@@ -73,6 +78,20 @@
                   clearable
                   :placeholder="t('models.importFilterPlaceholder')"
                 />
+                <!-- The explicit batch trigger: probes every checked,
+                     still-shapeable row through the same standalone probe the
+                     detail pane fires one row at a time, three upstreams at
+                     once. Dead at zero checked rows and while it runs (the
+                     label carries the "done/total" count). -->
+                <n-button
+                  class="import-toolbar__probe"
+                  size="small"
+                  :disabled="bulkProbeDisabled"
+                  :loading="bulkProbe.running"
+                  @click="onProbeSelected"
+                >
+                  {{ bulkProbeLabel }}
+                </n-button>
                 <span class="import-toolbar__count">{{ t('models.importSelectedCount', { count: selectedCount }) }}</span>
               </div>
               <!-- Plain list semantics, not listbox/option: each row carries a
@@ -399,11 +418,13 @@
                        are server-owned, so there is nothing to fill and it
                        stays disabled with its requeue tooltip. While a probe
                        runs the button shows the progress and refuses
-                       re-entry. -->
+                       re-entry — and it stands down entirely while the
+                       toolbar's batch probe is draining (the two write the
+                       same rows and states, so they never race). -->
                   <n-button
                     class="import-detail__probe"
                     size="small"
-                    :disabled="selected.added || probeRunning"
+                    :disabled="selected.added || probeRunning || bulkProbe.running"
                     :loading="probeRunning"
                     :title="selected.added ? t('models.importDetailProbeDisabledTip') : t('models.importDetailProbeTip')"
                     @click="onProbe"
@@ -717,7 +738,7 @@ const selectedProbeState = computed<RowProbeState | null>(
 
 async function onProbe() {
   const row = selected.value
-  if (!row || row.added || probeRunning.value) return
+  if (!row || row.added || probeRunning.value || bulkProbe.value.running) return
   probeRunning.value = true
   // Same stale-guard as the submit flow: a dialog closed mid-probe must not
   // have a late report written into the fresh session's rows.
@@ -743,6 +764,112 @@ async function onProbe() {
     // reset() has already handed the fresh session a clean flag, and the old
     // promise landing there must not stomp a probe the new session began.
     if (generation === dialogGeneration) probeRunning.value = false
+  }
+}
+
+// ---- Batch probe (the toolbar's "Probe selected") ----
+
+// The single-row probe, repeated over every checked, still-shapeable row and
+// drained by a three-slot worker pool: enough parallelism to keep a long
+// catalogue's wait tolerable, few enough not to hammer the upstream (or trip
+// its rate limiter). Each row's failure is that row's business — the pool
+// keeps draining the rest — and every settled row's result goes through the
+// SAME applyProbeSuggestions backfill the single probe uses, so the
+// applied/notApplied/never-overwrite rules cannot drift between the two
+// entry points. Progress reads as a "done/total" count in the button label —
+// the cheapest per-row feedback that is also assertable.
+const BULK_PROBE_CONCURRENCY = 3
+
+// Per-row failure toasts stop at this many; every failure past the cap is
+// counted into ONE summary toast when the batch ends. A select-all over a
+// large catalogue whose upstream is down would otherwise flood the message
+// stack — the first rows keep their names (the fix is per row), the tail is
+// a count.
+const BULK_PROBE_TOAST_CAP = 3
+const bulkProbe = ref({ running: false, done: 0, total: 0 })
+
+// The rows a click would probe: checked AND not added. An unfinished added
+// row stays checkable (its checkbox requeues the probe on import), but its
+// declarations are server-owned, so it is excluded here exactly as the
+// single-row probe excludes it.
+const bulkProbeTargets = computed(() => rows.value.filter((r) => !r.added && checkedSet.value.has(r.name)))
+
+const bulkProbeDisabled = computed(
+  () => probeRunning.value || bulkProbe.value.running || bulkProbeTargets.value.length === 0,
+)
+
+const bulkProbeLabel = computed(() =>
+  bulkProbe.value.running
+    ? t('models.importProbeBatchRunning', { done: bulkProbe.value.done, total: bulkProbe.value.total })
+    : t('models.importProbeSelected'),
+)
+
+async function onProbeSelected() {
+  if (bulkProbe.value.running) return
+  // A snapshot on purpose: selection edits while the batch runs must not
+  // reshape the batch the admin already started.
+  const targets = bulkProbeTargets.value
+  if (targets.length === 0) return
+  bulkProbe.value = { running: true, done: 0, total: targets.length }
+  // Same stale-guard as the submit flow and the single probe: a dialog
+  // closed mid-batch must not have late reports or toasts written into the
+  // fresh session's rows.
+  const generation = dialogGeneration
+  let cursor = 0
+  // Shared across the pool: once one probe hits a lapsed session, the session
+  // is dead for every worker — the survivors stop pulling targets instead of
+  // firing more requests into the redirect. The same stand-down the progress
+  // poll performs on its own redirect (return 'stop'), threaded here through
+  // the worker loop's condition.
+  let sessionDead = false
+  // Failure bookkeeping for the toast cap: the first BULK_PROBE_TOAST_CAP
+  // failures toast named per row, the rest merge into one summary when the
+  // batch ends.
+  let namedFailures = 0
+  let cappedFailures = 0
+  const worker = async (): Promise<void> => {
+    while (cursor < targets.length && !sessionDead) {
+      if (generation !== dialogGeneration) return
+      const row = targets[cursor++]!
+      try {
+        // The row's own output declaration rides along, exactly as the
+        // single probe sends it — it decides which endpoint family the
+        // probe speaks.
+        const result = await probeProviderModel(props.providerId, {
+          provider_model_name: row.name,
+          output_modalities: [...row.out],
+        })
+        if (generation !== dialogGeneration) return
+        applyProbeSuggestions(row, result)
+      } catch (err) {
+        if (redirectIfSessionExpired(err, router)) {
+          sessionDead = true
+          return
+        }
+        if (generation !== dialogGeneration) return
+        // Named per row for the first few failures: an unattributed toast
+        // would not say which row to look at. Past the cap the failure is
+        // only counted — one closing summary beats a flooded stack.
+        if (namedFailures < BULK_PROBE_TOAST_CAP) {
+          namedFailures++
+          message.error(`${displayOf(row)}: ${displayMessage(err, t)}`)
+        } else {
+          cappedFailures++
+        }
+      } finally {
+        // done counts settled rows (failed included) — it is a progress
+        // count, not a success count. Stale generations leave the fresh
+        // session's counter alone.
+        if (generation === dialogGeneration) bulkProbe.value.done++
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(BULK_PROBE_CONCURRENCY, targets.length) }, () => worker()))
+  if (generation === dialogGeneration) {
+    // The capped tail's single summary — a stale generation toasts nothing
+    // into the reopened session, the same rule the per-row toasts follow.
+    if (cappedFailures > 0) message.error(t('models.importProbeBatchMoreFailed', { count: cappedFailures }))
+    bulkProbe.value = { running: false, done: 0, total: 0 }
   }
 }
 
@@ -993,6 +1120,9 @@ function reset() {
   // "Probing…" — the old promise may never land, and its guarded finally (see
   // onProbe) deliberately no longer clears anything, so reset owns the clear.
   probeRunning.value = false
+  // Same ownership for the batch probe's counter: the stale workers' guarded
+  // finally blocks (see onProbeSelected) no longer touch it.
+  bulkProbe.value = { running: false, done: 0, total: 0 }
   phase.value = 'select'
   importedIds.value = []
   progressRows.value = []
@@ -1207,6 +1337,10 @@ const progressColumns = computed<DataTableColumns<ProgressEntry>>(() => [
 
 .import-toolbar__filter {
   flex: 1;
+}
+
+.import-toolbar__probe {
+  flex-shrink: 0;
 }
 
 .import-toolbar__count {

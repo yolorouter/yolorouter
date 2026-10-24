@@ -52,14 +52,35 @@
 //   - failure details: a failed basic arm quotes its detail verbatim (the
 //     no-usable-key path has no other explanation), same pre as the vision
 //     arm's refusal
+//   - batch probe (TC-17): the toolbar's "Probe selected" drains every
+//     checked, non-added row through the same standalone probe with a
+//     three-slot worker pool (in-flight peak asserted via a holding mock),
+//     sends each row its own output declaration, counts progress as
+//     "done/total" in the button label, survives a failing row (the rest
+//     still complete and backfill), reuses the single-probe
+//     applied/notApplied suggestion mapping per row, is disabled at zero
+//     checked rows, and stands the single-row probe button down while the
+//     batch runs
+//   - batch guard rails (TC-17): checked added rows (settled or unfinished)
+//     are never probed; a batch left running when the dialog closes lands
+//     nowhere in the reopened session (no late backfill, no toast, the
+//     trigger is immediately usable again); a lapsed session mid-batch
+//     redirects to /login and the surviving workers stop pulling targets —
+//     no further requests, no toast on top of the redirect; and a mass
+//     failure toasts only the first rows named plus one capped summary
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import naive, { NCheckbox, NInput, NInputNumber, NSelect } from 'naive-ui'
+import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent, nextTick } from 'vue'
 
 import type { ImportProviderModelsResult, ProviderCandidate } from '../../api/models'
+import { APIError } from '../../api/client'
+import { ACCOUNT_SESSION_INVALID } from '../../api/errcodes'
+import { CANDIDATE_STATUS_DISABLED, VERIFICATION_UNTESTED } from '../../api/candidateStatus'
+import { useAuthStore } from '../../store/auth'
 import { TEST_OUTCOME_REQUEST_REJECTED } from '../../utils/testOutcomeDisplay'
 
 // The dialog talks to four endpoints; all captured at the API boundary.
@@ -231,15 +252,23 @@ async function openDialog(expectedRows = 3, opts: { fastLeave?: boolean } = {}) 
   const i18n = createI18n({ legacy: false, locale: 'en', fallbackLocale: 'en', messages: { en } })
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [{ path: '/', component: { template: '<div />' } }],
+    routes: [
+      { path: '/', component: { template: '<div />' } },
+      // The session-expiry branch pushes /login (redirectIfSessionExpired).
+      { path: '/login', component: { template: '<div />' } },
+    ],
   })
   await router.push('/')
   await router.isReady()
+  // redirectIfSessionExpired clears the pinia-backed auth store on its way to
+  // /login — a fresh store per dialog, active for useAuthStore() outside setup.
+  const pinia = createPinia()
+  setActivePinia(pinia)
   wrapper = mount(Host, {
     attachTo: document.body,
     props: { show: false },
     global: {
-      plugins: [i18n, router, naive],
+      plugins: [pinia, i18n, router, naive],
       ...(opts.fastLeave ? { stubs: { ModalDrawer: FastLeaveDrawer } } : {}),
     },
   })
@@ -248,6 +277,7 @@ async function openDialog(expectedRows = 3, opts: { fastLeave?: boolean } = {}) 
   await wrapper.setProps({ show: true })
   await vi.waitFor(() => expect(document.body.querySelectorAll('.import-row').length).toBe(expectedRows))
   await nextTick()
+  return router
 }
 
 function body(): HTMLElement {
@@ -902,5 +932,317 @@ describe('ImportModelsModal single-model probe (TC-16)', () => {
     expect(body().querySelectorAll('.import-field__suggested')).toHaveLength(2)
     expect(body().textContent).not.toContain(en.models.importProbeToolsKept)
     expect(body().textContent).not.toContain(en.models.importProbeVisionKept)
+  })
+})
+
+describe('ImportModelsModal batch probe (TC-17)', () => {
+  // Five fresh, undeclared, unpriced rows — no smart default checks anything,
+  // so the batch trigger starts dead and every row the tests check becomes a
+  // probe target the component itself counted.
+  const FIVE = ['m-one', 'm-two', 'm-three', 'm-four', 'm-five']
+
+  async function openFiveRows(opts: { fastLeave?: boolean } = {}) {
+    listCatalogueMock.mockResolvedValue(catalogue(FIVE))
+    listCandidatesMock.mockResolvedValue({ list: [] })
+    suggestPricesMock.mockResolvedValue({ prices: {} })
+    return openDialog(5, opts)
+  }
+
+  async function checkRows(names: string[]) {
+    for (const name of names) {
+      checkboxOf('import-row__check-box', rowFor(name)).vm.$emit('update:checked', true)
+    }
+    await nextTick()
+  }
+
+  function bulkProbeButton(): HTMLButtonElement {
+    const probe = body().querySelector<HTMLButtonElement>('.import-toolbar__probe')
+    expect(probe, 'bulk probe button rendered').toBeTruthy()
+    return probe!
+  }
+
+  // A probeProviderModel stand-in that holds every request open until the
+  // test releases it and records the in-flight peak: the concurrency cap is
+  // only observable while promises are outstanding. Release order is held
+  // order (call order), so each scenario settles exactly the requests it
+  // wants to.
+  interface HeldProbe {
+    req: { provider_model_name: string; output_modalities: string[] }
+    resolve: () => void
+    reject: () => void
+  }
+
+  function holdProbes() {
+    const held: HeldProbe[] = []
+    let inFlight = 0
+    let peak = 0
+    probeProviderModelMock.mockImplementation((_providerId: number, req: HeldProbe['req']) => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      return new Promise((resolve, reject) => {
+        held.push({
+          req,
+          resolve: () => {
+            inFlight--
+            resolve(probeResult())
+          },
+          reject: () => {
+            inFlight--
+            reject(new Error('probe request failed'))
+          },
+        })
+      })
+    })
+    return {
+      held,
+      peak: () => peak,
+      settle: (i: number) => held[i]!.resolve(),
+      fail: (i: number) => held[i]!.reject(),
+    }
+  }
+
+  it('caps concurrency at 3 over 5 checked rows, drains the rest as slots free, and counts progress in the label', async () => {
+    await openFiveRows()
+    // Wire parity with the single probe: m-two declares audio output, so the
+    // batch must send each row its OWN declaration, not a hardcoded default.
+    clickRow(rowFor('m-two'))
+    detailSelect('import-detail__out-mods').vm.$emit('update:value', ['audio'])
+    await nextTick()
+    await checkRows(FIVE)
+    const probe = holdProbes()
+    bulkProbeButton().dispatchEvent(new Event('click'))
+    await nextTick()
+    // Exactly three upstreams in flight at once: not all five, not serial.
+    expect(probeProviderModelMock).toHaveBeenCalledTimes(3)
+    expect(probe.peak()).toBe(3)
+    // In progress: the trigger locks and counts settled rows "done/total".
+    expect(bulkProbeButton().disabled).toBe(true)
+    expect(bulkProbeButton().textContent).toContain('0/5')
+    // The first three requests went out in target order, each with its row's
+    // own output declaration.
+    expect(probe.held.map((h) => h.req.provider_model_name)).toEqual(['m-one', 'm-two', 'm-three'])
+    expect(probe.held[0]!.req.output_modalities).toEqual(['text'])
+    expect(probe.held[1]!.req.output_modalities).toEqual(['audio'])
+    // Two settle → their workers immediately pull the remaining two targets,
+    // and the in-flight peak stays at 3.
+    probe.settle(0)
+    probe.settle(1)
+    await vi.waitFor(() => expect(probeProviderModelMock).toHaveBeenCalledTimes(5))
+    expect(probe.peak()).toBe(3)
+    await vi.waitFor(() => expect(bulkProbeButton().textContent).toContain('2/5'))
+    // Drain: the batch ends, the button returns to its idle affordance.
+    probe.settle(2)
+    probe.settle(3)
+    probe.settle(4)
+    await vi.waitFor(() => expect(bulkProbeButton().disabled).toBe(false))
+    expect(bulkProbeButton().textContent).toContain(en.models.importProbeSelected)
+    expect(bulkProbeButton().textContent).not.toContain('5/5')
+  })
+
+  it('a failed row does not stop the batch: all five attempted, the four settled rows backfilled', async () => {
+    await openFiveRows()
+    await checkRows(FIVE)
+    const probe = holdProbes()
+    bulkProbeButton().dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(probeProviderModelMock).toHaveBeenCalledTimes(3))
+    // m-one's request rejects while the other two settle: the pool must keep
+    // draining m-four/m-five all the same.
+    probe.fail(0)
+    probe.settle(1)
+    probe.settle(2)
+    await vi.waitFor(() => expect(probeProviderModelMock).toHaveBeenCalledTimes(5))
+    probe.settle(3)
+    probe.settle(4)
+    await vi.waitFor(() => expect(bulkProbeButton().disabled).toBe(false))
+    // Every row was attempted exactly once, the failed one included.
+    expect(probe.held.map((h) => h.req.provider_model_name).sort()).toEqual([...FIVE].sort())
+    // The failure surfaced once, attributed to its row.
+    await vi.waitFor(() => expect(body().querySelectorAll('.n-message--error-type')).toHaveLength(1))
+    expect(body().querySelector('.n-message--error-type')?.textContent).toContain('m-one')
+    // The four settled rows' backfills landed: an all-confirming probe on an
+    // undeclared row fills tools AND vision input. Each row's own detail pane
+    // is spot-checked so a shared-object shortcut cannot fake the result.
+    for (const name of ['m-two', 'm-three', 'm-four', 'm-five']) {
+      clickRow(rowFor(name))
+      await nextTick()
+      expect(detailSelect('import-detail__tools').props('value'), `${name} tools backfilled`).toBe(1)
+      expect(detailSelect('import-detail__in-mods').props('value'), `${name} vision backfilled`).toEqual(['text', 'image'])
+    }
+  })
+
+  it('backfills each row through the single-probe suggestion rules: applied on undeclared, notApplied on hand declarations', async () => {
+    await openFiveRows()
+    // m-three gets hand declarations BEFORE the batch (tools = not
+    // supported, input = [text]): the same all-confirming verdict must write
+    // m-two's undeclared slots but leave m-three's declarations untouched.
+    clickRow(rowFor('m-three'))
+    detailSelect('import-detail__tools').vm.$emit('update:value', 2)
+    detailSelect('import-detail__in-mods').vm.$emit('update:value', ['text'])
+    await nextTick()
+    await checkRows(FIVE)
+    const probe = holdProbes()
+    bulkProbeButton().dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(probeProviderModelMock).toHaveBeenCalledTimes(3))
+    probe.settle(0)
+    probe.settle(1)
+    probe.settle(2)
+    await vi.waitFor(() => expect(probeProviderModelMock).toHaveBeenCalledTimes(5))
+    probe.settle(3)
+    probe.settle(4)
+    await vi.waitFor(() => expect(bulkProbeButton().disabled).toBe(false))
+    // m-two (undeclared): applied — both values written, both badges up.
+    clickRow(rowFor('m-two'))
+    await nextTick()
+    expect(detailSelect('import-detail__tools').props('value')).toBe(1)
+    expect(detailSelect('import-detail__in-mods').props('value')).toEqual(['text', 'image'])
+    expect(body().querySelectorAll('.import-field__suggested')).toHaveLength(2)
+    // m-three (hand-declared): notApplied — nothing overwritten, kept-hints
+    // only, exactly the single-model mapping.
+    clickRow(rowFor('m-three'))
+    await nextTick()
+    expect(detailSelect('import-detail__tools').props('value')).toBe(2)
+    expect(detailSelect('import-detail__in-mods').props('value')).toEqual(['text'])
+    expect(body().querySelectorAll('.import-field__suggested')).toHaveLength(0)
+    expect(body().textContent).toContain(en.models.importProbeToolsKept)
+    expect(body().textContent).toContain(en.models.importProbeVisionKept)
+  })
+
+  it('is disabled at zero checked rows, and stands the single probe button down while the batch runs', async () => {
+    await openFiveRows()
+    // Nothing checked: the trigger is dead and shows its idle label.
+    expect(bulkProbeButton().disabled).toBe(true)
+    expect(bulkProbeButton().textContent).toContain(en.models.importProbeSelected)
+    await checkRows(['m-one'])
+    expect(bulkProbeButton().disabled).toBe(false)
+    const probe = holdProbes()
+    bulkProbeButton().dispatchEvent(new Event('click'))
+    await nextTick()
+    expect(probeProviderModelMock).toHaveBeenCalledTimes(1)
+    // Batch in flight: the toolbar button locks, and the detail pane's
+    // single-row probe stands down with it — the two entry points never run
+    // concurrently.
+    expect(bulkProbeButton().disabled).toBe(true)
+    expect(probeButton().disabled).toBe(true)
+    probe.settle(0)
+    await vi.waitFor(() => expect(bulkProbeButton().disabled).toBe(false))
+    expect(probeButton().disabled).toBe(false)
+  })
+
+  it('probes checked non-added rows only: a checked added row (settled or unfinished) is never probed', async () => {
+    // Two added rows mixed into the catalogue: a settled mapping (its checkbox
+    // disabled — fixed) and an unfinished one (checkbox live — requeueing its
+    // lost probe is what checking it is FOR). Either name reaching the batch
+    // target list is the bug this pins.
+    listCatalogueMock.mockResolvedValue(catalogue(['live-one', 'settled-mapped', 'pending-mapped']))
+    listCandidatesMock.mockResolvedValue({
+      list: [
+        candidate({ candidate_id: 11, model_id: 5, model_name: 'settled-public', provider_model_name: 'settled-mapped' }),
+        candidate({
+          candidate_id: 12,
+          model_id: 6,
+          model_name: 'pending-public',
+          provider_model_name: 'pending-mapped',
+          verification_status: VERIFICATION_UNTESTED,
+          last_test_result: null,
+          last_tested_at: null,
+          management_status: CANDIDATE_STATUS_DISABLED,
+          probe_owed: true,
+        }),
+      ],
+    })
+    suggestPricesMock.mockResolvedValue({ prices: {} })
+    await openDialog(3)
+    // All three names go into the selection set (the settled box is disabled
+    // in the UI, but the guard under test sits past selection).
+    await checkRows(['live-one', 'settled-public', 'pending-public'])
+    expect(bulkProbeButton().disabled).toBe(false)
+    const probe = holdProbes()
+    bulkProbeButton().dispatchEvent(new Event('click'))
+    // Exactly ONE probe — the shapable row; the progress total counted one
+    // target, not three, and the added names never reached the endpoint.
+    await vi.waitFor(() => expect(probeProviderModelMock).toHaveBeenCalledTimes(1))
+    expect(probe.held[0]!.req.provider_model_name).toBe('live-one')
+    await vi.waitFor(() => expect(bulkProbeButton().textContent).toContain('0/1'))
+    probe.settle(0)
+    await vi.waitFor(() => expect(bulkProbeButton().disabled).toBe(false))
+    expect(bulkProbeButton().textContent).toContain(en.models.importProbeSelected)
+  })
+
+  it('a batch left running across close/reopen lands nowhere: no late backfill, no toast, and the fresh trigger is immediately usable', async () => {
+    await openFiveRows({ fastLeave: true })
+    await checkRows(FIVE)
+    const probe = holdProbes()
+    bulkProbeButton().dispatchEvent(new Event('click'))
+    await vi.waitFor(() => expect(probeProviderModelMock).toHaveBeenCalledTimes(3))
+    // Close mid-batch (the stub hands reset() its after-leave), then reopen.
+    await wrapper!.setProps({ show: false })
+    await vi.waitFor(() => expect(body().querySelector('.import-row')).toBeNull())
+    await wrapper!.setProps({ show: true })
+    await vi.waitFor(() => expect(body().querySelectorAll('.import-row')).toHaveLength(5))
+    // The fresh session's trigger is NOT pinned by the old batch: one check
+    // later it is live again under its idle label.
+    await checkRows(['m-one'])
+    expect(bulkProbeButton().disabled).toBe(false)
+    expect(bulkProbeButton().textContent).toContain(en.models.importProbeSelected)
+    // Now the three in-flight requests land — one as a failure, two as
+    // results. All of it is stale: no toast, no report bar, no backfill.
+    probe.fail(0)
+    probe.settle(1)
+    probe.settle(2)
+    await nextTick()
+    await nextTick()
+    expect(body().querySelector('.n-message--error-type')).toBeNull()
+    expect(body().textContent).not.toContain(en.models.importProbeReportTitle)
+    clickRow(rowFor('m-one'))
+    await nextTick()
+    expect(detailSelect('import-detail__tools').props('value')).toBe(0)
+    expect(body().querySelectorAll('.import-field__suggested')).toHaveLength(0)
+  })
+
+  it('a lapsed session mid-batch redirects to /login and the surviving workers stop pulling targets — no further requests, no toast', async () => {
+    const router = await openFiveRows()
+    await checkRows(FIVE)
+    // m-one's probe comes back 401 while its two pool-mates succeed.
+    probeProviderModelMock.mockImplementation((_providerId: number, req: { provider_model_name: string }) =>
+      req.provider_model_name === 'm-one'
+        ? Promise.reject(new APIError(ACCOUNT_SESSION_INVALID))
+        : Promise.resolve(probeResult()),
+    )
+    bulkProbeButton().dispatchEvent(new Event('click'))
+    // The expiry routed the admin to reauth, and the auth store noticed.
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/login'))
+    expect(useAuthStore().sessionExpiredNotice).toBe(true)
+    // The surviving workers drained nothing further: only the first wave
+    // (three rows) was ever sent — m-four/m-five were never requested.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(probeProviderModelMock).toHaveBeenCalledTimes(3)
+    expect(
+      probeProviderModelMock.mock.calls
+        .map((c) => (c[1] as { provider_model_name: string }).provider_model_name)
+        .sort(),
+    ).toEqual([...FIVE].slice(0, 3).sort())
+    // The redirect carries no error toast on top.
+    expect(body().querySelector('.n-message--error-type')).toBeNull()
+  })
+
+  it('caps failure toasts: the first rows named per row, the tail merged into one summary line', async () => {
+    const SIX = ['b-one', 'b-two', 'b-three', 'b-four', 'b-five', 'b-six']
+    listCatalogueMock.mockResolvedValue(catalogue(SIX))
+    listCandidatesMock.mockResolvedValue({ list: [] })
+    suggestPricesMock.mockResolvedValue({ prices: {} })
+    await openDialog(6)
+    await checkRows(SIX)
+    probeProviderModelMock.mockRejectedValue(new Error('probe request failed'))
+    bulkProbeButton().dispatchEvent(new Event('click'))
+    // Six failures, three toasts' worth of cap: 3 named + 1 summary.
+    await vi.waitFor(() => expect(body().querySelectorAll('.n-message--error-type')).toHaveLength(4))
+    const toasts = [...body().querySelectorAll('.n-message--error-type')].map((e) => e.textContent ?? '')
+    for (const name of ['b-one', 'b-two', 'b-three']) {
+      expect(toasts.some((text) => text.includes(name)), `a toast names ${name}`).toBe(true)
+    }
+    for (const name of ['b-four', 'b-five', 'b-six']) {
+      expect(toasts.some((text) => text.includes(name)), `no toast names ${name}`).toBe(false)
+    }
+    expect(toasts.some((text) => text.includes(en.models.importProbeBatchMoreFailed.replace('{count}', '3')))).toBe(true)
   })
 })
