@@ -19,6 +19,7 @@ import ProviderListPage from '../views/providers/ProviderListPage.vue'
 import ProviderDetailPage from '../views/providers/ProviderDetailPage.vue'
 import ModelListPage from '../views/models/ModelListPage.vue'
 import ModelDetailPage from '../views/models/ModelDetailPage.vue'
+import ModelPricingPage from '../views/models/ModelPricingPage.vue'
 import ApiKeyListPage from '../views/apikeys/ApiKeyListPage.vue'
 import OAuthProviderListPage from '../views/oauth/OAuthProviderListPage.vue'
 import UserListPage from '../views/users/UserListPage.vue'
@@ -72,6 +73,10 @@ export const router = createRouter({
         { path: 'providers/:id', component: ProviderDetailPage },
         { path: 'models', component: ModelListPage },
         { path: 'models/:id', component: ModelDetailPage },
+        // Per-model price comparison across every provider mapping. Admin-only
+        // like the routes around it — no meta.memberAllowed, so the guard
+        // below keeps member sessions on their self-service surface.
+        { path: 'model-pricing', component: ModelPricingPage },
         { path: 'rate-limits', component: RateLimitListPage },
         { path: 'api-keys', component: ApiKeyListPage, meta: { memberAllowed: true } },
         { path: 'oauth-providers', component: OAuthProviderListPage },

@@ -46,6 +46,7 @@ const ADMIN_ONLY_PATHS = [
   'providers/:id',
   'models',
   'models/:id',
+  'model-pricing',
   'rate-limits',
   'oauth-providers',
   'users',

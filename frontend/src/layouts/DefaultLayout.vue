@@ -307,6 +307,12 @@ const navItems = computed<NavItem[]>(() => {
     { key: 'group-models', label: t('nav.groupModels'), group: true },
     { key: 'providers', label: t('nav.providers'), icon: Server, to: '/providers' },
     { key: 'models', label: t('nav.models'), icon: Box, to: '/models' },
+    // Per-model price comparison across provider mappings — a model
+    // management concern, so it sits with the models/providers entries
+    // instead of the standalone placeholder slot it used to occupy at the
+    // branch tail. Admin-only branch only: the member surface above is
+    // untouched, matching the route guard.
+    { key: 'model-pricing', label: t('nav.modelPricing'), icon: Tags, to: '/model-pricing' },
     { key: 'tokens', label: t('nav.tokens'), icon: Key, to: '/api-keys' },
     { key: 'rate-limits', label: t('nav.rateLimits'), icon: Gauge, to: '/rate-limits' },
 
@@ -352,8 +358,6 @@ const navItems = computed<NavItem[]>(() => {
       tag: updateStore.hasUpdate ? t('nav.newVersionBadge') : undefined,
       badge: updateStore.hasUpdate,
     },
-    // Hidden from the sidebar for now (feature not built yet).
-    { key: 'model-pricing', label: t('nav.modelPricing'), icon: Tags, disabled: true, hidden: true },
   ]
 })
 
