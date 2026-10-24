@@ -262,7 +262,7 @@ export default {
   importDetailPricedHint: 'Prices prefilled from the suggestion where one matched — edit freely; a field left blank imports as unpriced, never as 0.',
   importDetailUnpricedHint: 'Unpriced models will not be auto-enabled when their probe passes — set a price on the mapping afterwards and retest, or enable it by hand.',
   importDetailProbe: 'Probe',
-  importDetailProbeDisabledTip: 'Probing from this dialog opens in a later batch — verify the mapping on the provider page after import.',
+  importDetailProbeDisabledTip: 'This mapping already exists — its declarations are owned by the server. Use retest on the mappings table to verify it.',
   importDetailProbeTip: 'Sends a real probe for this row\'s upstream id against the provider — basic text, streaming, function calling and vision input. Nothing is saved; suggested declarations fill the form only.',
   importProbeRunning: 'Probing…',
   importProbeSelected: 'Probe selected',

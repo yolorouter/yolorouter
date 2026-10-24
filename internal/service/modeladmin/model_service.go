@@ -96,9 +96,9 @@ type CandidateView struct {
 	// PricesDeclared says the row's primary price slots were filled at write
 	// time. Stored zeros alone cannot carry it: an unpriced row and an
 	// explicitly free one both hold 0. prices_declared is the key the
-	// frontend's unpriced classification reads (zero values remain its
-	// fallback for servers predating the field); the badge views' full switch
-	// onto it lands in a later change.
+	// frontend's unpriced classification reads — it wins whenever the server
+	// sends it, with the old zero-value heuristic kept as the fallback for
+	// servers predating the field.
 	PricesDeclared bool `json:"prices_declared"`
 	// ProbeOwed says the queue still owes this row a probe — the watch key
 	// for unpriced rows, which are probed but never auto-enabled.

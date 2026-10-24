@@ -312,8 +312,8 @@ function expectBadge(rowLocator: string, label: string, type: 'success' | 'warni
 }
 
 // The absence half of expectBadge: no tag with this label anywhere in the
-// row (tag-scoped, so the price column's muted "未定价…" notes never
-// masquerade as the badge).
+// row (tag-scoped, so the price column's muted providers.candidateUnpriced
+// note never masquerades as the badge).
 function expectNoBadge(rowLocator: string, label: string) {
   const tr = rowTr(rowLocator)
   const rendered = [...tr.querySelectorAll('.n-tag')].some((el) => (el.textContent ?? '').trim() === label)

@@ -262,7 +262,7 @@ export default {
   importDetailPricedHint: '命中建议价的字段已预填，可直接修改；留空的字段按未定价导入（不会补 0）。',
   importDetailUnpricedHint: '未定价的模型探测通过后不会自动启用——请导入后在映射上补价并重测，或手动启用。',
   importDetailProbe: '探测',
-  importDetailProbeDisabledTip: '弹窗内探测下批开放——导入后可在供应商页对该映射重测验证。',
+  importDetailProbeDisabledTip: '该映射已存在，其能力声明由服务端持有——请在映射列表上重测验证。',
   importDetailProbeTip: '立即以该行的上游 id 向供应商发起真实探测——基础文本、流式、函数调用与视觉输入。不保存任何内容；探测建议仅回填到本表单。',
   importProbeRunning: '探测中…',
   importProbeSelected: '探测所选',
