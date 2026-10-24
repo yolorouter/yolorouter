@@ -1,5 +1,5 @@
 import { apiFetch } from './client'
-import { CANDIDATE_PROBE_BUDGET_MS } from './probeBudget'
+import { CANDIDATE_PROBE_BUDGET_MS, PROVIDER_MODEL_PROBE_BUDGET_MS } from './probeBudget'
 
 export interface ModelCandidate {
   id: number
@@ -167,12 +167,15 @@ export interface UpdateCandidateInput {
 
 // ProbeReport is one probe's result. `ran: false` means the probe was skipped
 // (the basic probe failed first), which must read as "not tested" rather than as
-// a verdict. `supported` is tri-state for the capability probes.
+// a verdict. `supported` is tri-state for the capability probes. `detail` is
+// the probe's admin-facing diagnostic, quoted verbatim from the upstream on a
+// failure (omitted on the wire when empty).
 export interface ProbeReport {
   ran: boolean
   supported: boolean | null
   outcome: number | null
   duration_ms: number
+  detail?: string
 }
 
 export interface CandidateTestReport {
@@ -535,6 +538,37 @@ export function suggestPrices(
   return apiFetch(`/api/admin/providers/${providerId}/models/suggest-prices`, {
     method: 'POST',
     body: JSON.stringify({ names }),
+  })
+}
+
+// ProviderModelProbeResult is what the standalone pre-import probe answers:
+// the same report shape the test-and-create flow shows, plus the vision arm's
+// own verdict — this endpoint is the only probe surface that carries one.
+// A vision report with `ran: false` means the arm was skipped (non-chat
+// output declaration, or the basic probe failed first) and must read as
+// "not tested", never as a verdict.
+export interface ProviderModelProbeResult {
+  report: CandidateTestReport
+  vision: ProbeReport
+}
+
+// probeProviderModel probes one upstream model name against one provider and
+// stores nothing — no model row, no candidate, no probe-owed debt. It is the
+// import dialog's per-row "Probe" button: try before you import. The row's
+// current output-modality declaration rides along because it decides the
+// endpoint family the probe speaks (a declared image model is probed through
+// the images endpoint, not chat).
+export function probeProviderModel(
+  providerId: number,
+  input: { provider_model_name: string; output_modalities?: string[] },
+): Promise<ProviderModelProbeResult> {
+  return apiFetch(`/api/admin/providers/${providerId}/models/probe`, {
+    method: 'POST',
+    body: compactBody({
+      provider_model_name: input.provider_model_name,
+      output_modalities: input.output_modalities,
+    }),
+    timeoutMs: PROVIDER_MODEL_PROBE_BUDGET_MS,
   })
 }
 

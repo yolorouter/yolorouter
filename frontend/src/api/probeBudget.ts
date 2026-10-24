@@ -54,3 +54,12 @@ export const BATCH_TEST_BUDGET_MS = SERVER_BATCH_TEST_BUDGET_MS + CLIENT_MARGIN_
 // candidate row is already stored by the time probing starts, so a premature
 // abort makes the operator's retry fail on the duplicate-mapping constraint.
 export const CANDIDATE_PROBE_BUDGET_MS = 2 * SERVER_PROBE_BUDGET_MS + CLIENT_MARGIN_MS
+
+// PROVIDER_MODEL_PROBE_BUDGET_MS sizes the standalone pre-import probe (the
+// import dialog's per-row "Probe" button). Its server side is three sequential
+// rounds: the basic mapping probe, the two capability probes concurrently,
+// then the vision arm that only this endpoint runs. Nothing is persisted, so
+// an early abort costs only patience — but the full chain is what "about how
+// long" has to mean, and a timeout verdict the server classified is worth
+// waiting for.
+export const PROVIDER_MODEL_PROBE_BUDGET_MS = 3 * SERVER_PROBE_BUDGET_MS + CLIENT_MARGIN_MS

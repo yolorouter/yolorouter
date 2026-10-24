@@ -26,6 +26,15 @@ export const OUTCOME_I18N_KEYS = [
   // means it did and the upstream simply took too long, so repeating
   // "check the URL spelling" here would be actively misleading.
   'outcomeTimeout',
+  // The Go enum's eleventh entry (TestRequestRejected): an upstream that
+  // refused the request's own shape with a 400/415. Only the image-input
+  // (vision) probe maps statuses here — against a basic probe that just
+  // passed, that answer means "this model does not take image input", which
+  // is a different fix from outcomeUpstreamError's "the upstream is
+  // unhealthy". Without the entry the value fell through to the fallback
+  // below and was mislabelled "upstream error", sending operators after a
+  // server fault that does not exist.
+  'outcomeRequestRejected',
 ] as const
 
 // Resolves an outcome int to its `providers.*` i18n key, falling back to
@@ -49,6 +58,7 @@ export function isTestSuccess(outcome: number): boolean {
 // category-specific behavior to unknown outcomes.
 export const TEST_OUTCOME_MODEL_NOT_FOUND = 3
 export const TEST_OUTCOME_UPSTREAM_ERROR = 7
+export const TEST_OUTCOME_REQUEST_REJECTED = 10
 
 // testOutcomeLabel resolves an outcome int straight to its localized category
 // label (the `providers.*` text) — the shape nearly every caller wants, so

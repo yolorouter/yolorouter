@@ -121,6 +121,7 @@ export default {
   outcomeUpstreamError: '上游错误',
   outcomeVerificationUnsupported: '暂无法验证',
   outcomeTimeout: '测试超时',
+  outcomeRequestRejected: '请求被拒绝',
   // Actionable one-liners shown under a failed connection test, keyed by the
   // same outcome category as the label above (outcomeSuccess has none).
   outcomeAuthFailed_hint: '请检查 Key 是否正确、是否已过期或被禁用',
@@ -134,6 +135,7 @@ export default {
   outcomeModelNotFound_rowHint: '请确认测试模型名是否正确，可在编辑 Key 时拉取可用模型列表',
   outcomeVerificationUnsupported_hint: '这是旧版本记录的结果：当时该协议的返回内容无法被判定为通过。现已支持校验，请重新测试',
   outcomeTimeout_hint: '服务地址可以连通，但上游在 60 秒内没有返回；可能是上游繁忙或正在逐个尝试其它渠道，稍后重试即可',
+  outcomeRequestRejected_hint: '上游拒绝了请求本身的形态（HTTP 400/415）——在基础文本探测已通过的前提下，这表示该模型不接受图片输入',
   keyTestTargetsTitle: '各协议端点测试结果',
   confirmDisableProviderTitle: '停用供应商',
   confirmDisableProviderContent: '停用后该供应商将不参与路由。',

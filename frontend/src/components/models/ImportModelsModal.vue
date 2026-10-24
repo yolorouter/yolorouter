@@ -6,7 +6,11 @@
      selected count);
      right — the detail form bound to the selected row (public name,
      capability declarations, price group). Detail edits write straight onto
-     the row object, so the list mirrors them live.
+     the row object, so the list mirrors them live. The footer's Probe button
+     fires the standalone pre-import probe for the selected row and renders
+     the verdict bar; a confirmed capability fills the row's UNDECLARED slot
+     (badged "probe suggested"), a declared one is never overwritten — the
+     kept-hint says so instead.
 
      The progress phase (the post-submit probing watch) is unchanged, and so
      is the wire: batched submission by IMPORT_BATCH_CAP, omit-shaped
@@ -197,7 +201,21 @@
                     </div>
                   </div>
                   <div class="import-field">
-                    <span class="import-field__label">{{ t('models.inputModalities') }}</span>
+                    <span class="import-field__label">
+                      {{ t('models.inputModalities') }}
+                      <!-- The probe's vision verdict filled this slot (it was
+                           undeclared when the probe confirmed vision input);
+                           the badge says where the value came from. -->
+                      <n-tag
+                        v-if="selectedProbeState?.visionSuggestion === 'applied'"
+                        class="import-field__suggested"
+                        size="small"
+                        :bordered="false"
+                        type="info"
+                      >
+                        {{ t('models.importProbeSuggestedTag') }}
+                      </n-tag>
+                    </span>
                     <!-- Empty selection = undeclared, the input axis's
                          meaningful no-declaration state. -->
                     <n-select
@@ -226,9 +244,23 @@
                     />
                   </div>
                   <div class="import-field">
-                    <span class="import-field__label">{{ t('models.supportsTools') }}</span>
+                    <span class="import-field__label">
+                      {{ t('models.supportsTools') }}
+                      <!-- Same probe-suggestion badge as the input axes: the
+                           slot was undeclared and the function-calling probe
+                           confirmed the capability. -->
+                      <n-tag
+                        v-if="selectedProbeState?.toolsSuggestion === 'applied'"
+                        class="import-field__suggested"
+                        size="small"
+                        :bordered="false"
+                        type="info"
+                      >
+                        {{ t('models.importProbeSuggestedTag') }}
+                      </n-tag>
+                    </span>
                     <n-select
-                      v-model:value="selected.tools"
+                      v-model:value="selectedTools"
                       class="import-detail__tools"
                       :options="triStateOptions"
                       :disabled="selected.added"
@@ -330,17 +362,53 @@
                   </div>
                   <p class="import-detail__price-hint">{{ t('models.importDetailPricedHint') }}</p>
                 </div>
+                <!-- The last probe's conclusion bar for the selected row:
+                     one ✓✗/?/— verdict per probe (basic text, streaming,
+                     function calling, vision input) plus the total time in
+                     flight. basic/streaming have no form counterpart — they
+                     report here only. -->
+                <div v-if="selectedProbeState" class="import-detail__probe-report" role="status">
+                  <span class="import-detail__probe-report__title">{{ t('models.importProbeReportTitle') }}</span>
+                  <span v-for="entry in probeBarEntries" :key="entry.label" class="import-detail__probe-report__entry">
+                    {{ entry.label }}
+                    <b :class="`import-detail__probe-report__icon--${entry.tone}`" :title="entry.note">{{ entry.icon }}</b>
+                    <span v-if="entry.note" class="import-detail__probe-report__note">{{ entry.note }}</span>
+                  </span>
+                  <span class="import-detail__probe-report__duration">{{ t('models.importProbeDuration', { ms: probeTotalMs }) }}</span>
+                </div>
+                <!-- The failing arms' refusals in the upstream's own words,
+                     one pre each: a failed basic probe (whose detail is often
+                     the only reason available — the no-usable-key path has
+                     no verdict bar note that explains it) and the vision arm
+                     whenever it ran and did not confirm vision — "not
+                     supported" and "unknown" alike carry a reason worth
+                     reading verbatim. -->
+                <pre v-for="detail in failureDetails" :key="detail" class="upstream-detail">{{ detail }}</pre>
+                <!-- Suggestions the probe made but did NOT apply: the row
+                     already declared the capability, so nothing was written —
+                     saying so beats a silent no-op. -->
+                <p v-if="selectedProbeState?.toolsSuggestion === 'notApplied'" class="import-detail__suggestion">
+                  {{ t('models.importProbeToolsKept') }}
+                </p>
+                <p v-if="selectedProbeState?.visionSuggestion === 'notApplied'" class="import-detail__suggestion">
+                  {{ t('models.importProbeVisionKept') }}
+                </p>
                 <div class="import-detail__footer">
-                  <!-- Rendered disabled on purpose: per-row probing from this
-                       dialog is a later batch; the tooltip says so instead of
-                       leaving a dead button unexplained. -->
+                  <!-- The standalone pre-import probe: enabled for every row
+                       this dialog can still shape. An added row's declarations
+                       are server-owned, so there is nothing to fill and it
+                       stays disabled with its requeue tooltip. While a probe
+                       runs the button shows the progress and refuses
+                       re-entry. -->
                   <n-button
                     class="import-detail__probe"
                     size="small"
-                    disabled
-                    :title="t('models.importDetailProbeDisabledTip')"
+                    :disabled="selected.added || probeRunning"
+                    :loading="probeRunning"
+                    :title="selected.added ? t('models.importDetailProbeDisabledTip') : t('models.importDetailProbeTip')"
+                    @click="onProbe"
                   >
-                    {{ t('models.importDetailProbe') }}
+                    {{ probeRunning ? t('models.importProbeRunning') : t('models.importDetailProbe') }}
                   </n-button>
                   <p class="import-detail__hint">{{ t('models.importDetailUnpricedHint') }}</p>
                 </div>
@@ -397,12 +465,23 @@ import {
 } from 'naive-ui'
 import { AlertTriangle, Inbox } from '@lucide/vue'
 import { listModelsForProvider } from '../../api/providers'
-import { importProviderModels, listProviderCandidates, suggestPrices, type ImportItemResult, type ImportProviderModelsResult, type ProviderCandidate } from '../../api/models'
+import {
+  importProviderModels,
+  listProviderCandidates,
+  probeProviderModel,
+  suggestPrices,
+  type ImportItemResult,
+  type ImportProviderModelsResult,
+  type ProbeReport,
+  type ProviderCandidate,
+  type ProviderModelProbeResult,
+} from '../../api/models'
 import { displayMessage } from '../../api/client'
 import { buildImportRows, chunkByCap, IMPORT_BATCH_CAP, modalityOf, normalizeCatalogNames, statusOf, toImportItems, type ImportRow } from '../../utils/importRows'
 import { catalogueFailure, NO_CATALOGUE_FAILURE, type CatalogueFailure } from '../../utils/catalogueFailure'
 import { candidateIsOwedWork, PROGRESS_POLL_BACKOFF_CAP_MS, PROGRESS_POLL_BASE_MS, skipsWorthReading, summarizeImportProgress, type ImportProgress } from '../../utils/importProgress'
 import { renderFailReasonCell, renderProbeStateTag } from '../../utils/probeStateTag'
+import { testOutcomeLabel } from '../../utils/testOutcomeDisplay'
 import { outputModalityOptions } from '../../utils/modalityOptions'
 import { CONTEXT_LENGTH_PRESETS } from '../../utils/contextLengthPresets'
 import ModalDrawer from '../common/ModalDrawer.vue'
@@ -549,11 +628,26 @@ useModalityExclusivity({
 })
 
 // The input axes keep the tri-state-by-absence shape: cleared = null =
-// undeclared, never an empty "text only" claim.
+// undeclared, never an empty "text only" claim. Edits go through the shim so
+// a hand change can retire a probe suggestion it made stale (see
+// syncSuggestionStateAfterEdit).
 const selectedInMods = computed<string[]>({
   get: () => selected.value?.inMods ?? [],
   set: (v) => {
-    if (selected.value) selected.value.inMods = v.length > 0 ? [...v] : null
+    if (!selected.value) return
+    selected.value.inMods = v.length > 0 ? [...v] : null
+    syncSuggestionStateAfterEdit(selected.value)
+  },
+})
+
+// The tools tri-state binds through a shim for the same reason: the setter is
+// the one hook every manual edit passes through.
+const selectedTools = computed<0 | 1 | 2>({
+  get: () => selected.value?.tools ?? 0,
+  set: (v) => {
+    if (!selected.value) return
+    selected.value.tools = v
+    syncSuggestionStateAfterEdit(selected.value)
   },
 })
 
@@ -591,6 +685,227 @@ function isAudioRow(row: ImportRow): boolean {
 function tokenPriceDisabled(row: ImportRow): boolean {
   return row.added || rowBillsPerImage(row) || isAudioRow(row)
 }
+
+// ---- Per-row probe (try before you import) ----
+
+// One probe's consequences for its row: the report to render, plus which of
+// the suggestions the backfill actually applied. Keyed by the upstream id —
+// the row's stable identity — so each row keeps its own last report and the
+// suggestion badges name where a filled slot came from.
+interface RowProbeState {
+  result: ProviderModelProbeResult
+  // 'applied' = the row was undeclared and the confirmed capability was
+  // written into the form (badged on the field label) — or the value still is
+  // the previous probe's untouched backfill, so a re-probe keeps the badge;
+  // 'notApplied' = the probe confirmed the capability but the row already
+  // declared it, so only the kept-hint shows. '' = the probe did not confirm
+  // the capability, so there is no suggestion at all.
+  toolsSuggestion: '' | 'applied' | 'notApplied'
+  visionSuggestion: '' | 'applied' | 'notApplied'
+}
+const probeStates = ref<Record<string, RowProbeState>>({})
+const probeRunning = ref(false)
+
+// The input-modality set the vision backfill writes when it fills an
+// undeclared slot; the staleness check compares the field against it to know
+// whether the value the probe wrote is still what the field holds.
+const PROBE_SUGGESTED_IN_MODS = ['text', 'image']
+
+const selectedProbeState = computed<RowProbeState | null>(
+  () => (selected.value ? probeStates.value[selected.value.name] ?? null : null),
+)
+
+async function onProbe() {
+  const row = selected.value
+  if (!row || row.added || probeRunning.value) return
+  probeRunning.value = true
+  // Same stale-guard as the submit flow: a dialog closed mid-probe must not
+  // have a late report written into the fresh session's rows.
+  const generation = dialogGeneration
+  try {
+    // The row's output declaration rides along: it decides which endpoint
+    // family the probe speaks (a declared image model is probed through the
+    // images endpoint, not chat).
+    const result = await probeProviderModel(props.providerId, {
+      provider_model_name: row.name,
+      output_modalities: [...row.out],
+    })
+    if (generation !== dialogGeneration) return
+    applyProbeSuggestions(row, result)
+  } catch (err) {
+    if (redirectIfSessionExpired(err, router)) return
+    // A stale probe's failure is dropped silently too: an error toast into
+    // the reopened session would report a probe that session never sent.
+    if (generation !== dialogGeneration) return
+    message.error(displayMessage(err, t))
+  } finally {
+    // Only the generation that started the probe clears the in-flight flag.
+    // reset() has already handed the fresh session a clean flag, and the old
+    // promise landing there must not stomp a probe the new session began.
+    if (generation === dialogGeneration) probeRunning.value = false
+  }
+}
+
+// applyProbeSuggestions runs the suggestion backfill for one probe result.
+// A confirmed capability fills an UNDECLARED slot only — a slot the admin
+// already declared is never overwritten, and an inconclusive (null) or
+// negative verdict never writes anything. basic/streaming have no form
+// counterpart (the report bar shows them), and no context length is ever
+// suggested.
+function applyProbeSuggestions(row: ImportRow, result: ProviderModelProbeResult) {
+  const state: RowProbeState = { result, toolsSuggestion: '', visionSuggestion: '' }
+  // The previous round's state for this row: a re-probe consults it so a slot
+  // the last probe filled — and no hand edit has touched since (any hand edit
+  // retires the applied state, see syncSuggestionStateAfterEdit) — keeps its
+  // applied badge instead of being re-read as an admin declaration.
+  const prev = probeStates.value[row.name]
+  const fc = result.report.function_calling
+  if (fc.ran && fc.supported === true) {
+    if (row.tools === 0) {
+      row.tools = 1
+      state.toolsSuggestion = 'applied'
+    } else if (row.tools === 1 && prev?.toolsSuggestion === 'applied') {
+      // Same value the probe suggests, and it is still the previous probe's
+      // backfill: keep the badge. Recording notApplied here would demote the
+      // badge to the kept-hint and attribute the value to a declaration the
+      // admin never made.
+      state.toolsSuggestion = 'applied'
+    } else {
+      state.toolsSuggestion = 'notApplied'
+    }
+  }
+  if (result.vision.ran && result.vision.supported === true) {
+    if (row.inMods === null) {
+      row.inMods = [...PROBE_SUGGESTED_IN_MODS]
+      state.visionSuggestion = 'applied'
+    } else if (sameModalitySet(row.inMods, PROBE_SUGGESTED_IN_MODS) && prev?.visionSuggestion === 'applied') {
+      // Same no-downgrade rule as tools above: the set is exactly what the
+      // last probe wrote and no edit has retired it, so it stays applied.
+      state.visionSuggestion = 'applied'
+    } else {
+      state.visionSuggestion = 'notApplied'
+    }
+  }
+  probeStates.value = { ...probeStates.value, [row.name]: state }
+}
+
+// A suggestion only vouches for the moment it was made: the badge names the
+// value the probe wrote, and the kept-hint describes the declaration the
+// probe chose not to overwrite. A later hand edit can invalidate either —
+// the badge would vouch for a value that is no longer in the field, the hint
+// would describe a declaration that no longer exists (cleared away, or
+// extended until it now states what the probe suggested) — so every manual
+// edit of the two suggested fields re-checks the state and silently drops the
+// suggestion that no longer holds. (The backfill above writes the row
+// directly and never passes through here on purpose: it must not retire the
+// suggestion it just recorded.)
+function syncSuggestionStateAfterEdit(row: ImportRow) {
+  const state = probeStates.value[row.name]
+  if (!state) return
+  if (
+    (state.visionSuggestion === 'applied' && !sameModalitySet(row.inMods, PROBE_SUGGESTED_IN_MODS)) ||
+    // notApplied retires when the declaration it describes is gone: cleared
+    // to undeclared, or extended by hand until it includes image — the hint's
+    // own ask ("consider adding Image") has then been carried out.
+    (state.visionSuggestion === 'notApplied' &&
+      (row.inMods === null || row.inMods.length === 0 || row.inMods.includes('image')))
+  ) {
+    state.visionSuggestion = ''
+  }
+  if (
+    (state.toolsSuggestion === 'applied' && row.tools !== 1) ||
+    // Same retirement for tools: undeclared again (0), or flipped by hand to
+    // supported (1) — exactly the value the probe would have suggested, so
+    // "your declaration was left unchanged" no longer describes the form.
+    (state.toolsSuggestion === 'notApplied' && (row.tools === 0 || row.tools === 1))
+  ) {
+    state.toolsSuggestion = ''
+  }
+}
+
+// Order-insensitive on purpose: the picker reordering a multi-select (or a
+// tag removed and re-added) does not change what is declared.
+function sameModalitySet(a: string[] | null, b: string[]): boolean {
+  if (a === null || a.length !== b.length) return false
+  const others = new Set(b)
+  return a.every((mod) => others.has(mod))
+}
+
+// The conclusion bar's four entries. The basic probe is binary, the two
+// capability probes tri-state, and the vision arm tri-state with its own
+// "unknown" word for an unclaimed verdict. A skipped probe reads "not
+// tested" (—), never as a failure; a failed one names its outcome category
+// (the shared word list) instead of a bare ✗.
+type ProbeBarTone = 'ok' | 'bad' | 'unknown' | 'untested'
+
+interface ProbeBarEntry {
+  label: string
+  icon: string
+  tone: ProbeBarTone
+  note: string
+}
+
+function outcomeNote(p: ProbeReport): string {
+  return p.outcome === null || p.outcome === undefined ? '' : testOutcomeLabel(t, p.outcome)
+}
+
+function basicBarEntry(p: ProbeReport): ProbeBarEntry {
+  const label = t('models.basicText')
+  if (!p.ran) return { label, icon: '—', tone: 'untested', note: t('models.probeNotTested') }
+  if (p.supported === true) return { label, icon: '✓', tone: 'ok', note: t('models.testPassed') }
+  return { label, icon: '✗', tone: 'bad', note: outcomeNote(p) || t('models.testFailed') }
+}
+
+function capabilityBarEntry(label: string, p: ProbeReport): ProbeBarEntry {
+  if (!p.ran) return { label, icon: '—', tone: 'untested', note: t('models.probeNotTested') }
+  if (p.supported === true) return { label, icon: '✓', tone: 'ok', note: t('models.probeConfirmed') }
+  if (p.supported === false) return { label, icon: '✗', tone: 'bad', note: outcomeNote(p) || t('models.probeUnsupported') }
+  return { label, icon: '?', tone: 'unknown', note: t('models.probeUnconfirmed') }
+}
+
+function visionBarEntry(p: ProbeReport): ProbeBarEntry {
+  const label = t('models.importProbeVisionLabel')
+  if (!p.ran) return { label, icon: '—', tone: 'untested', note: t('models.probeNotTested') }
+  if (p.supported === true) return { label, icon: '✓', tone: 'ok', note: '' }
+  if (p.supported === false) return { label, icon: '✗', tone: 'bad', note: outcomeNote(p) }
+  return { label, icon: '?', tone: 'unknown', note: t('models.importProbeVisionUnknown') }
+}
+
+const probeBarEntries = computed<ProbeBarEntry[]>(() => {
+  const st = selectedProbeState.value
+  if (!st) return []
+  const r = st.result.report
+  return [
+    basicBarEntry(r.basic),
+    capabilityBarEntry(t('models.supportsStreaming'), r.streaming),
+    capabilityBarEntry(t('models.supportsFunctionCalling'), r.function_calling),
+    visionBarEntry(st.result.vision),
+  ]
+})
+
+const probeTotalMs = computed(() => {
+  const st = selectedProbeState.value
+  if (!st) return 0
+  const r = st.result.report
+  return r.basic.duration_ms + r.streaming.duration_ms + r.function_calling.duration_ms + st.result.vision.duration_ms
+})
+
+// The failing arms' refusals in the upstream's own words: the basic arm
+// whenever it ran and did not succeed — for it the detail is often the ONLY
+// reason available (the no-usable-key path has no other explanation to
+// show) — and the vision arm whenever it ran and did not confirm vision,
+// "not supported" and "unknown" alike. Basic renders first; an arm that
+// passed, was skipped, or carries no detail contributes nothing.
+const failureDetails = computed<string[]>(() => {
+  const st = selectedProbeState.value
+  if (!st) return []
+  const details: string[] = []
+  const b = st.result.report.basic
+  if (b.ran && b.supported !== true && b.detail) details.push(b.detail)
+  const v = st.result.vision
+  if (v.ran && v.supported !== true && v.detail) details.push(v.detail)
+  return details
+})
 
 watch(
   () => props.show,
@@ -672,6 +987,12 @@ function reset() {
   filter.value = ''
   selectedKey.value = null
   loadFailure.value = NO_CATALOGUE_FAILURE
+  probeStates.value = {}
+  // The in-flight flag is session state like the rows: a probe left running
+  // when the dialog closed must not pin the fresh session's button on
+  // "Probing…" — the old promise may never land, and its guarded finally (see
+  // onProbe) deliberately no longer clears anything, so reset owns the clear.
+  probeRunning.value = false
   phase.value = 'select'
   importedIds.value = []
   progressRows.value = []
@@ -1089,6 +1410,66 @@ const progressColumns = computed<DataTableColumns<ProgressEntry>>(() => [
   margin-top: var(--space-3);
   padding-top: var(--space-3);
   border-top: 1px solid var(--color-border-subtle);
+}
+
+/* The probe's conclusion bar: one line, one verdict per probe. Icon colour
+   carries the tone (✓ green, ✗ red, ? amber, — muted) so the words can stay
+   small; the whole strip reads as one status region (role="status"). */
+.import-detail__probe-report {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-soft);
+  font-size: var(--text-xs);
+}
+
+.import-detail__probe-report__title {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.import-detail__probe-report__entry {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.import-detail__probe-report__icon--ok {
+  color: var(--color-success);
+}
+
+.import-detail__probe-report__icon--bad {
+  color: var(--color-danger);
+}
+
+.import-detail__probe-report__icon--unknown {
+  color: var(--color-warning);
+}
+
+.import-detail__probe-report__icon--untested {
+  color: var(--color-text-muted);
+}
+
+.import-detail__probe-report__note,
+.import-detail__probe-report__duration {
+  color: var(--color-text-secondary);
+}
+
+/* A suggestion the probe made but did NOT write (the row already declared the
+   capability) — a prose line under the report bar. */
+.import-detail__suggestion {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+/* The "probe suggested" badge sits beside a field label it vouches for. */
+.import-field__suggested {
+  margin-left: 4px;
 }
 
 .import-detail__footer .import-detail__probe {
