@@ -7,6 +7,28 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A model pricing page answers the questions the per-provider mapping
+  tables cannot: which provider serves a model cheapest, which mappings
+  still carry no price, and how to adjust many prices at once. Mappings
+  are grouped by model, each group header showing its provider count,
+  lowest priced input, and unpriced count; rows sort by their
+  representative price with unpriced rows sinking, and keyword,
+  unpriced-only, and provider filters narrow the list. A single row
+  edits through the same candidate editor the mapping tables use. Bulk
+  adjustment runs on a transactional server endpoint: pick rows across
+  providers, scale by a factor or reset to suggested prices (recorded
+  history first, the price catalog second — a row never suggests from
+  itself), preview every before/after in a dry run that changes no
+  prices, then apply in one audited transaction that advances the
+  price-updated timestamps only where prices really changed and
+  re-derives the declared-pricing flags. Image- and video-billed rows
+  sit out bulk adjustment and are skipped with a reason. The page is admin-only; bulk
+  controls are desktop-side.
+
 ## [0.2.8] - 2026-10-11
 
 ### Added
