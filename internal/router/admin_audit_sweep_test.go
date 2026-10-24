@@ -156,6 +156,7 @@ var expectedWriteActions = map[string]string{
 	"DELETE /api/admin/models/:id":                               "model.delete",
 	"POST /api/admin/models/:id/candidates":                      "model_candidate.create",
 	"POST /api/admin/models/:id/candidates/test-and-create":      "model_candidate.test_and_create",
+	"POST /api/admin/models/candidates/bulk-price":               "model_candidate.bulk_price_update",
 	"PATCH /api/admin/models/:id/candidates/:candidateId":        "model_candidate.update",
 	"PATCH /api/admin/models/:id/candidates/:candidateId/order":  "model_candidate.order",
 	"PATCH /api/admin/models/:id/candidates/:candidateId/status": "model_candidate.status",
@@ -218,8 +219,8 @@ func TestAdminAuditSweepCapturesEveryWriteEndpoint(t *testing.T) {
 			t.Errorf("expectation table names %s, but no such live write route exists — remove the stale entry", key)
 		}
 	}
-	if len(expectedWriteActions) != 58 {
-		t.Errorf("expected the console write surface to hold 58 endpoints, table lists %d", len(expectedWriteActions))
+	if len(expectedWriteActions) != 59 {
+		t.Errorf("expected the console write surface to hold 59 endpoints, table lists %d", len(expectedWriteActions))
 	}
 
 	// Fire one request per live write route. Handlers answer with whatever

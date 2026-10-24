@@ -8,6 +8,7 @@ import (
 
 	"github.com/yolorouter/yolorouter/internal/repository"
 	"github.com/yolorouter/yolorouter/internal/service/analytics"
+	"github.com/yolorouter/yolorouter/internal/service/modeladmin"
 	"github.com/yolorouter/yolorouter/pkg/errcode"
 	"github.com/yolorouter/yolorouter/pkg/response"
 )
@@ -77,6 +78,11 @@ var serviceErrorTable = []serviceErrorEntry{
 	{sentinel: errcode.ErrModelOutputModalityInvalid, code: errcode.ModelOutputModalityInvalid},
 	{sentinel: errcode.ErrModelBillingInvalid, code: errcode.ModelBillingInvalid},
 	{sentinel: errcode.ErrModelInputModalityInvalid, code: errcode.ModelInputModalityInvalid},
+	// The bulk-price contract violations name the broken rule in their
+	// wrapped text (which field, which bound), so the client sees the rule
+	// rather than a bare code. HTTP callers normally hit the handler's
+	// binding/param checks first; this row is the direct-caller defense.
+	{sentinel: modeladmin.ErrBulkPriceInvalid, code: errcode.InvalidParam, verbatim: true},
 	// The consistency rejections carry the offending numbers in their wrapped
 	// text (which candidate, which bound), so the client sees the pair that
 	// contradicts itself rather than a bare code.

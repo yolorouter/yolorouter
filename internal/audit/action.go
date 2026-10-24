@@ -96,6 +96,11 @@ var actionByRoute = map[string]string{
 	"PATCH /api/admin/models/:id/candidates/:candidateId/status": "model_candidate.status",
 	"POST /api/admin/models/:id/candidates/:candidateId/test":    "model_candidate.test",
 	"DELETE /api/admin/models/:id/candidates/:candidateId":       "model_candidate.delete",
+	// The bulk price adjustment: one transaction across many candidate rows.
+	// Its own dictionary entry (not model_candidate.update) because one
+	// request reprices many mappings and the trail's detail carries the
+	// batch's own fixed shape.
+	"POST /api/admin/models/candidates/bulk-price": "model_candidate.bulk_price_update",
 
 	// Provider-scoped model-domain operations (bulk import, pricing
 	// suggestions, and the standalone pre-import probe; subjects are the

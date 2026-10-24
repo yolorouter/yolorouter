@@ -453,6 +453,13 @@ func newWithDistFS(distFS fs.FS, deps Deps) (*gin.Engine, error) {
 	// the query string rather than the path, because the candidate it is pricing
 	// does not exist yet — there is no :candidateId to scope it to.
 	protected.GET("/models/candidates/suggest-price", handler.GetCandidateSuggestPrice(modelSvc))
+	// The bulk price adjustment reprices many candidate rows in ONE server
+	// transaction: single-row PATCHes would be last-write-wins with no
+	// transaction and no batch-shaped audit, which pricing — the thing that
+	// decides what traffic bills — must never hang from. dry_run previews
+	// with zero business writes; the same request with dry_run=false applies
+	// the batch whole.
+	protected.POST("/models/candidates/bulk-price", handler.PostModelsBulkPrice(modelSvc))
 	protected.POST("/models/:id/candidates/test-and-create", handler.PostModelCandidateTestAndCreate(modelSvc))
 	// Bulk import routes live under /providers/:id because their subject is
 	// "this provider's upstream catalog", but they are model-domain operations

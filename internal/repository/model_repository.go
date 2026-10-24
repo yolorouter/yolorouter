@@ -216,6 +216,22 @@ func ListModelCandidatesByProvider(db *gorm.DB, providerID uint) ([]model.ModelC
 	return candidates, nil
 }
 
+// ListModelCandidatesByIDs loads the requested candidate rows by primary key
+// with their providers preloaded — the batch-price path reads each row's
+// stored prices and needs the provider's name and base_url (suggestion
+// resolution) beside them. Ids that match nothing are simply absent, which
+// the caller reports per row as not_found.
+func ListModelCandidatesByIDs(db *gorm.DB, ids []uint) ([]model.ModelCandidate, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var candidates []model.ModelCandidate
+	if err := db.Preload("Provider").Where("id IN ?", ids).Order("id ASC").Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
 // ListModelsByNames resolves a set of names in one query — the bulk-import
 // preload that replaces a per-name FindModelByName loop.
 func ListModelsByNames(db *gorm.DB, names []string) ([]model.Model, error) {
@@ -421,6 +437,61 @@ func UpdateModelCandidateBilling(db *gorm.DB, id uint, billingMode, imagePricing
 		}).Error
 }
 
+// bulkPriceUpdates assembles the column set both bulk price writes share:
+// the declaration fact the service re-derived, the updated_at bump every real
+// write carries, and the armed_at realignment UpdateModelCandidate applies on
+// same-name edits — the same reasoning transfers verbatim, because a bulk
+// price edit also bumps updated_at without invalidating the mapping, and
+// skipping the realignment would silently forfeit a queued probe's
+// auto-enable promise exactly as an unaligned price PATCH would.
+func bulkPriceUpdates(pricesDeclared bool, now time.Time) map[string]interface{} {
+	return map[string]interface{}{
+		"prices_declared": pricesDeclared,
+		"updated_at":      now,
+		"armed_at":        gorm.Expr("CASE WHEN auto_enable_on_pass THEN ? ELSE armed_at END", now),
+	}
+}
+
+// stampPriceClock conditionally advances price_updated_at, the clock the
+// auto-suggest look-up ranks candidates by — only a real price change may
+// move it, never a write that re-sent the same numbers (see
+// UpdateModelCandidate for the full rationale).
+func stampPriceClock(updates map[string]interface{}, priceChanged bool, now time.Time) {
+	if priceChanged {
+		updates["price_updated_at"] = now
+	}
+}
+
+// UpdateModelCandidateTokenPrices writes the four token price slots of one
+// candidate — the write the bulk-price path issues for token-billed rows.
+// Scoped to those four columns on purpose: an audio_unit_price residue the
+// row carries beside its token declaration is not a token write slot and
+// must survive the write untouched, and the billing declaration (mode,
+// tier tables) is not this path's business. priceChanged stamps the price
+// clock only on a real change; pricesDeclared is the service layer's
+// re-derived fact, persisted as given.
+func UpdateModelCandidateTokenPrices(db *gorm.DB, id uint, inputPrice, outputPrice float64,
+	cacheWritePrice, cacheReadPrice *float64, priceChanged, pricesDeclared bool, now time.Time) error {
+	updates := bulkPriceUpdates(pricesDeclared, now)
+	updates["input_price"] = inputPrice
+	updates["output_price"] = outputPrice
+	updates["cache_write_price"] = cacheWritePrice
+	updates["cache_read_price"] = cacheReadPrice
+	stampPriceClock(updates, priceChanged, now)
+	return db.Model(&model.ModelCandidate{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// UpdateModelCandidateAudioPrice writes one candidate's per-million-
+// characters price — the write the bulk-price path issues for audio-billed
+// rows, whose token slots are inert and therefore never touched by it. The
+// clock and declaration handling matches UpdateModelCandidateTokenPrices.
+func UpdateModelCandidateAudioPrice(db *gorm.DB, id uint, audioUnitPrice *float64, priceChanged, pricesDeclared bool, now time.Time) error {
+	updates := bulkPriceUpdates(pricesDeclared, now)
+	updates["audio_unit_price"] = audioUnitPrice
+	stampPriceClock(updates, priceChanged, now)
+	return db.Model(&model.ModelCandidate{}).Where("id = ?", id).Updates(updates).Error
+}
+
 // DemoteUnverifiedEnabledCandidate is the enabled-implies-verified backstop:
 // it disables the row only while it STILL reads enabled-but-unverified, still
 // points at the target the caller's edit stored (providerModelName), and its
@@ -447,15 +518,7 @@ func DemoteUnverifiedEnabledCandidate(db *gorm.DB, id uint, providerModelName st
 // (price_updated_at DESC, id DESC): rows arrive in that order and the first
 // row seen per folded name wins.
 func FindLatestCandidatePricesByFoldedNames(db *gorm.DB, providerID uint, foldedNames []string) (map[string]model.ModelCandidate, error) {
-	if len(foldedNames) == 0 {
-		return map[string]model.ModelCandidate{}, nil
-	}
-	var rows []model.ModelCandidate
-	err := db.
-		Select("input_price", "output_price", "cache_write_price", "cache_read_price", "billing_mode", "audio_unit_price", "price_updated_at", "provider_model_name_folded").
-		Where("provider_id = ? AND provider_model_name_folded IN ?", providerID, foldedNames).
-		Order("price_updated_at DESC, id DESC").
-		Find(&rows).Error
+	rows, err := FindCandidatePriceHistoryByFoldedNames(db, providerID, foldedNames)
 	if err != nil {
 		return nil, err
 	}
@@ -466,6 +529,32 @@ func FindLatestCandidatePricesByFoldedNames(db *gorm.DB, providerID uint, folded
 		}
 	}
 	return latest, nil
+}
+
+// FindCandidatePriceHistoryByFoldedNames returns every price-carrying
+// candidate row for one provider and the given folded upstream names, newest
+// first (price_updated_at DESC, id DESC) — the same recency rule the single
+// and batch look-ups apply. It is the raw history the newest-per-name
+// selectors are built on: FindLatestCandidatePricesByFoldedNames keeps only
+// the first row per name, while the bulk-price suggestion rule must look past
+// a row the candidate itself holds (a row never suggests from itself) and
+// adopt an older sibling instead, which needs more than one row per name.
+// Only the price columns are selected; rows are price carriers, not full
+// candidates.
+func FindCandidatePriceHistoryByFoldedNames(db *gorm.DB, providerID uint, foldedNames []string) ([]model.ModelCandidate, error) {
+	if len(foldedNames) == 0 {
+		return nil, nil
+	}
+	var rows []model.ModelCandidate
+	err := db.
+		Select("id", "input_price", "output_price", "cache_write_price", "cache_read_price", "billing_mode", "audio_unit_price", "price_updated_at", "provider_model_name_folded").
+		Where("provider_id = ? AND provider_model_name_folded IN ?", providerID, foldedNames).
+		Order("price_updated_at DESC, id DESC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // FindLatestCandidatePrice returns the most recently PRICED candidate row for
