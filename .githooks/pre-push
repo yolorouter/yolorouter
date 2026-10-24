@@ -74,7 +74,10 @@ GOOS=windows GOARCH=amd64 go build ./...
 # Best-effort: an unreachable endpoint warns and lets the push through.
 SEED="internal/pricecatalog/catalog.json"
 LIVE_URL="https://prices.yolorouter.com/catalog.json"
-LIVE_TMP="$(mktemp -t price-seed)"
+# No -t: BSD mktemp treats "-t price-seed" as a prefix, but GNU mktemp
+# requires X's in a -t template and fails outright — and under set -e that
+# aborts the gate before the comparison, blocking every push from Linux.
+LIVE_TMP="$(mktemp)"
 trap 'rm -f "$LIVE_TMP"' EXIT
 if curl -fsSL -m 15 "$LIVE_URL" -o "$LIVE_TMP"; then
   if python3 - "$SEED" "$LIVE_TMP" <<'PY'
