@@ -597,8 +597,8 @@ func assertCapabilityRow(t *testing.T, got, want model.Model) {
 		t.Errorf("context_length = %v, want %v", got.ContextLength, want.ContextLength)
 	}
 	//nolint:staticcheck // SA1019: asserting the deprecated mirror column is the test's purpose
-	if !reflect.DeepEqual(got.SupportsImageInput, want.SupportsImageInput) {
-		t.Errorf("supports_image_input = %v, want %v", got.SupportsImageInput, want.SupportsImageInput)
+	if !reflect.DeepEqual(got.SupportsImageInput, want.SupportsImageInput) { //nolint:staticcheck // SA1019: mirror assertion
+		t.Errorf("supports_image_input = %v, want %v", got.SupportsImageInput, want.SupportsImageInput) //nolint:staticcheck // SA1019: mirror assertion
 	}
 	if got.InputModalities != want.InputModalities {
 		t.Errorf("input_modalities = %q, want %q", got.InputModalities, want.InputModalities)
@@ -642,7 +642,7 @@ func TestImportProviderModelsStoresCapabilityDeclarations(t *testing.T) {
 			want: model.Model{
 				ContextLength: ptrInt(128000), SupportsTools: ptrBool(true),
 				SupportsReasoning: ptrBool(false), Temperature: ptrFloat(0.705),
-				InputModalities: `["text","image"]`, SupportsImageInput: ptrBool(true),
+				InputModalities: `["text","image"]`, SupportsImageInput: ptrBool(true), //nolint:staticcheck // SA1019: asserting the deprecated mirror column is the test's purpose
 			},
 		},
 		{
@@ -651,7 +651,7 @@ func TestImportProviderModelsStoresCapabilityDeclarations(t *testing.T) {
 				ProviderModelName: "upstream/cap-text", ModelName: ptrString("cap-text"),
 				InputModalities: []string{"text"},
 			},
-			want:           model.Model{InputModalities: `["text"]`, SupportsImageInput: ptrBool(false)},
+			want:           model.Model{InputModalities: `["text"]`, SupportsImageInput: ptrBool(false)}, //nolint:staticcheck // SA1019: asserting the deprecated mirror column is the test's purpose
 			zeroTokenSlots: true,
 		},
 		{
@@ -666,7 +666,7 @@ func TestImportProviderModelsStoresCapabilityDeclarations(t *testing.T) {
 				ProviderModelName: "upstream/cap-folded", ModelName: ptrString("cap-folded"),
 				InputModalities: []string{"TEXT", "Image"},
 			},
-			want:           model.Model{InputModalities: `["text","image"]`, SupportsImageInput: ptrBool(true)},
+			want:           model.Model{InputModalities: `["text","image"]`, SupportsImageInput: ptrBool(true)}, //nolint:staticcheck // SA1019: asserting the deprecated mirror column is the test's purpose
 			zeroTokenSlots: true,
 		},
 	}
@@ -908,7 +908,7 @@ func TestImportProviderModelsCapabilityAdjudication(t *testing.T) {
 			t.Fatalf("a settled mapping must not be requeued, got %+v", result.Items[0])
 		}
 		stored := loadModel("adj-exists")
-		assertCapabilityRow(t, stored, model.Model{InputModalities: `["text"]`, SupportsImageInput: ptrBool(false)})
+		assertCapabilityRow(t, stored, model.Model{InputModalities: `["text"]`, SupportsImageInput: ptrBool(false)}) //nolint:staticcheck // SA1019: asserting the deprecated mirror column is the test's purpose
 	})
 
 	t.Run("an exists fill keeps the untested requeue", func(t *testing.T) {

@@ -272,7 +272,7 @@ func (s *ModelService) importProviderModelsOnce(providerID uint, items []ImportM
 					// insert — the one hard rule every writer of
 					// input_modalities shares. An undeclared list derives
 					// nil, the column's own undeclared value.
-					SupportsImageInput: model.DeriveImageInputSupport(caps.inputCanonical),
+					SupportsImageInput: model.DeriveImageInputSupport(caps.inputCanonical), //nolint:staticcheck // SA1019: writing the deprecated mirror column is this writer's transition duty
 					CreatedAt:          now, UpdatedAt: now,
 				})
 			}
