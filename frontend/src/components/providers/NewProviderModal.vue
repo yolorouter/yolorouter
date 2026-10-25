@@ -112,7 +112,7 @@ import ModalDrawer from '../common/ModalDrawer.vue'
 import ProtocolConfigFields from './ProtocolConfigFields.vue'
 import ProviderModelTester from './ProviderModelTester.vue'
 import { providerNameRule, baseUrlRule, noteRule, keyLabelRule, keyPlaintextRule } from '../../utils/providerValidators'
-import { emptyProtocolConfig, protocolEndpointsValid, serializeProtocolConfig, type ProtocolConfigModel } from '../../utils/providerProtocol'
+import { ALL_PROTOCOLS, emptyProtocolConfig, protocolEndpointsValid, serializeProtocolConfig, type ProtocolConfigModel } from '../../utils/providerProtocol'
 import { PROVIDER_PRESETS } from '../../config/providerPresets'
 
 const props = defineProps<{ show: boolean }>()
@@ -204,6 +204,31 @@ function selectPreset(card: PresetCard | null) {
   }
   form.protocol = protocol
 }
+
+// A preset's extra endpoints are enabled with an empty URL, which means
+// "serve this protocol off base_url" — and that base_url is the PRESET's
+// address. Once the admin edits the URL to anything else, the premise behind
+// those extras is gone: keeping them would silently declare the preset's
+// whole dialect set at a (likely single-dialect) upstream, whose key could
+// then never pass the all-destination verification gate. So on divergence,
+// drop every extra still riding on an empty URL and move the highlight to the
+// custom card so the UI matches what will actually be saved. An extra the
+// admin explicitly typed a URL into is theirs and survives. Typing the
+// preset's URL back does NOT re-apply the preset — only clicking a card does
+// — and once no preset is selected this watcher stays out of the way.
+watch(
+  () => form.baseUrl,
+  (baseUrl) => {
+    const preset = presetCards.value.find((c) => c.id === selectedPresetId.value)
+    if (!preset || baseUrl === preset.baseUrl) return
+    for (const proto of ALL_PROTOCOLS) {
+      if (proto === form.protocol.providerType) continue
+      const entry = form.protocol.endpoints[proto]
+      if (entry.enabled && !entry.url) form.protocol.endpoints[proto] = { enabled: false, url: '' }
+    }
+    selectedPresetId.value = ''
+  },
+)
 
 watch(
   () => props.show,
