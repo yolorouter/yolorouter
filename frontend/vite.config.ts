@@ -5,6 +5,17 @@ const backendTarget = process.env.VITE_BACKEND_TARGET || 'http://127.0.0.1:8080'
 
 export default defineConfig({
   plugins: [vue()],
+  // Pages are route-level lazy imports, so the entry stays ~70 kB and every
+  // page loads its own small chunk. Two on-demand chunks legitimately exceed
+  // Vite's default 500 kB advisory: the echarts bundle (chart pages only)
+  // and the shared UI chunk. Fragmenting a single vendor further has no
+  // navigational benefit (it is one cacheable file either way) — and the
+  // rolldown group auto-splitting that tried it produced broken cross-chunk
+  // bindings (a blank page with "TypeError: w is not a function"). Raise the
+  // advisory to cover the largest legitimate on-demand chunk instead.
+  build: {
+    chunkSizeWarningLimit: 700,
+  },
   server: {
     // Expose the dev server on all interfaces so the frontend is reachable
     // from other devices on the LAN (e.g. a phone used to test the mobile
