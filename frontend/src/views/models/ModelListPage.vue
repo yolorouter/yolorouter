@@ -61,6 +61,13 @@
             width="100%"
             @update:value="onSearch"
           />
+          <!-- The switch applies immediately, like the selects beside it: the
+               handler writes the draft, then snapshots it into the applied
+               filter the table reads. -->
+          <label class="filter-item filter-switch">
+            <n-switch size="small" :value="filter.unpricedOnly" @update:value="onUnpricedOnlyChange" />
+            <span>{{ t('models.filterUnpricedOnly') }}</span>
+          </label>
           <div class="filter-actions">
             <n-button size="small" type="primary" @click="onSearch">{{ t('models.search') }}</n-button>
             <n-button size="small" quaternary @click="onReset">{{ t('models.reset') }}</n-button>
@@ -73,7 +80,7 @@
           :columns="columns"
           :data="filteredModels"
           :loading="store.loading"
-          :scroll-x="910"
+          :scroll-x="1050"
           :row-key="(row: Model) => row.id"
           :row-props="rowProps"
           :full-span-keys="['expand_candidates']"
@@ -84,6 +91,17 @@
 
     <NewModelModal v-model:show="showCreate" />
     <ModelEditModal v-model:show="showEditModel" :model="editingModel" @updated="onEdited" />
+    <!-- The shared candidate edit modal the mapping tables use: opened on a
+         comparison row with THAT model (the PATCH URL's owner) and the row
+         itself; saved applies the same PATCH write path, then the list
+         refreshes and the expansion re-renders from stored prices. -->
+    <CandidateEditModal
+      v-model:show="showEditCandidate"
+      :model-id="editingCandidateRow?.model.id ?? 0"
+      :model-name="editingCandidateRow?.model.name ?? ''"
+      :editing-candidate="editingCandidateRow?.candidate ?? null"
+      @saved="onCandidateEdited"
+    />
     <DeleteModelModal v-model:show="showDeleteModel" :model="deletingModel" @deleted="onModelDeleted" />
     <VisionFallbackModal v-model:show="showVisionFallback" />
     <CCSwitchImportModal
@@ -106,7 +124,7 @@ import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
 import { modelDisableCopy } from '../../utils/impactSummary'
-import { modelRunningStatusDisplay, MODEL_RUNNING_STATUS_DISPLAY, routableMark } from '../../utils/modelStatusDisplay'
+import { modelRunningStatusDisplay, MODEL_RUNNING_STATUS_DISPLAY } from '../../utils/modelStatusDisplay'
 import { modalityBadge, modalityBadgeLabel } from '../../utils/modalityBadge'
 import { columnTitle } from '../../utils/columnTitle'
 import { isBalancedModel } from '../../utils/schedulingMode'
@@ -114,12 +132,16 @@ import { modelCostDetailLocation } from '../../utils/modelCostLocation'
 import { useClientPagination } from '../../composables/useClientPagination'
 import { useIsMobile } from '../../composables/useIsMobile'
 import { expandPanel, EXPAND_EMPTY_STYLE, rowNavigationProps } from '../../utils/expandPanel'
+import { comparisonRows, cheapestComparisonRow, modelHasUnpriced, modelPriceMetrics } from './modelPriceSummary'
+import { PriceLinesBlock, ProbeTagBlock } from './pricingRowBlocks'
+import CandidateUnpricedTag from '../../components/models/CandidateUnpricedTag.vue'
 import type { VNodeChild } from 'vue'
 import type { Model, ModelCandidate } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import NewModelModal from '../../components/models/NewModelModal.vue'
 import ModelEditModal from '../../components/models/ModelEditModal.vue'
+import CandidateEditModal from '../../components/models/CandidateEditModal.vue'
 import DeleteModelModal from '../../components/models/DeleteModelModal.vue'
 import VisionFallbackModal from '../../components/models/VisionFallbackModal.vue'
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
@@ -132,7 +154,7 @@ import { useAuthStore } from '../../store/auth'
 import CCSwitchImportModal from '../../components/ccswitch/CCSwitchImportModal.vue'
 import type { CCSwitchConfirmPayload } from '../../utils/ccswitchExport'
 
-const { t, te } = useI18n()
+const { t } = useI18n()
 const isMobile = useIsMobile()
 const route = useRoute()
 const router = useRouter()
@@ -175,6 +197,22 @@ function onEdited() {
   void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
 }
 
+// Inline candidate edit from the comparison expansion: the shared modal the
+// mapping tables use, opened with the row's model (the PATCH URL's owner) and
+// the candidate itself. A saved modal refetches the list, so the expansion
+// re-renders from stored prices.
+const showEditCandidate = ref(false)
+const editingCandidateRow = ref<{ model: Model; candidate: ModelCandidate } | null>(null)
+
+function openCandidateEdit(model: Model, candidate: ModelCandidate) {
+  editingCandidateRow.value = { model, candidate }
+  showEditCandidate.value = true
+}
+
+function onCandidateEdited() {
+  void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
+}
+
 // Row delete: assigning the row opens the modal (useRowModal binds show to
 // the row). After a successful delete the list refreshes in place — the row
 // simply leaves the table, filters and pagination keep their state.
@@ -185,17 +223,18 @@ function onModelDeleted() {
 }
 
 // In-page filters over the fully-fetched list (name substring + running /
-// management status). `filter` is the live draft the inputs edit; `applied`
-// is the snapshot the table actually filters by — mirroring the
-// search/reset flow on the request-logs page so the text field only takes
+// management status + unpriced-only). `filter` is the live draft the inputs
+// edit; `applied` is the snapshot the table actually filters by — mirroring
+// the search/reset flow on the request-logs page so the text field only takes
 // effect on Enter / the Search button, not on every keystroke.
 interface ModelFilter {
   name: string
   running: string | null
   management: number | null
   provider: number | null
+  unpricedOnly: boolean
 }
-const emptyFilter = (): ModelFilter => ({ name: '', running: null, management: null, provider: null })
+const emptyFilter = (): ModelFilter => ({ name: '', running: null, management: null, provider: null, unpricedOnly: false })
 const filter = reactive<ModelFilter>(emptyFilter())
 const applied = reactive<ModelFilter>(emptyFilter())
 
@@ -241,6 +280,9 @@ const filteredModels = computed(() => {
     if (applied.running && m.running_status !== applied.running) return false
     if (applied.management !== null && m.management_status !== applied.management) return false
     if (applied.provider !== null && !m.candidates.some((c) => c.provider_id === applied.provider)) return false
+    // Model-level unpriced filter: the model matches when ANY of its
+    // candidates is unpriced (the shared predicate's single verdict).
+    if (applied.unpricedOnly && !modelHasUnpriced(m.candidates)) return false
     return true
   })
 })
@@ -260,6 +302,13 @@ function onReset() {
   Object.assign(filter, emptyFilter())
   Object.assign(applied, emptyFilter())
   pagination.page = 1
+}
+
+// The switch applies immediately, like the selects beside it: write the
+// draft, then snapshot it into the applied filter.
+function onUnpricedOnlyChange(value: boolean) {
+  filter.unpricedOnly = value
+  onSearch()
 }
 
 onMounted(() => {
@@ -288,48 +337,69 @@ function rowProps(row: Model) {
   return rowNavigationProps(() => goDetail(row.id))
 }
 
-// The route chain as an aligned grid: order marker, provider, the provider's
-// own name for the model (monospace — it's a wire identifier, not prose),
-// and whether the gateway can actually send traffic there. A candidate whose
-// provider-side name is still blank shows a muted placeholder — the backend
-// refuses to route it (its ✗ names the reason), so inventing a fallback name
-// here would dress up a dead route as a live one. Inline styles because
+// The expanded comparison surface: the model's candidates as price-sorted
+// rows (the pricing page's row order via comparisonRows), the cheapest priced
+// row highlighted with the cheapest tag, each row carrying the shared price
+// lines, probe badge, and unpriced badge, plus an edit entry into the shared
+// CandidateEditModal. The expand trigger mechanics are the table's; only the
+// panel content changed from the old route-order grid. Inline styles because
 // scoped CSS does not reach h()-rendered nodes.
-function candidateCells(c: ModelCandidate): VNodeChild[] {
-  return [
-    h(
-      'span',
-      { style: 'font-size:var(--text-xs); color:var(--color-text-muted); font-variant-numeric:tabular-nums; justify-self:end;' },
-      String(c.sort_order),
-    ),
-    h('span', { style: 'font-size:var(--text-sm); font-weight:500; color:var(--color-text);' }, c.provider_name),
-    c.provider_model_name
-      ? h(
-          'span',
-          { style: 'font-family:var(--font-mono); font-size:var(--text-xs); color:var(--color-text-secondary);' },
-          c.provider_model_name,
-        )
-      : h('span', { style: 'font-size:var(--text-xs); color:var(--color-text-muted);' }, '—'),
-    routableMark(t, te, c, { inlineReason: isMobile.value }),
-  ]
-}
-
 function renderModelExpand(row: Model) {
   if (!row.candidates.length) {
-    return expandPanel({ eyebrow: isMobile.value ? undefined : t('models.expandCandidates'), indent: !isMobile.value }, [
+    return expandPanel({ eyebrow: isMobile.value ? undefined : t('models.expandComparison'), indent: !isMobile.value }, [
       h('div', { style: EXPAND_EMPTY_STYLE }, t('models.expandNoCandidates')),
     ])
   }
-  const grid = h(
+  const rows = comparisonRows(row)
+  const cheapest = cheapestComparisonRow(rows)
+  const list = h(
     'div',
-    {
-      style:
-        'display:grid; grid-template-columns:max-content max-content max-content max-content;' +
-        ' column-gap:12px; row-gap:6px; align-items:center; justify-items:start;',
-    },
-    row.candidates.flatMap(candidateCells),
+    { style: 'display:flex; flex-direction:column; gap:6px;' },
+    rows.map(({ candidate }) => {
+      const isCheapest = cheapest !== null && cheapest.candidate.id === candidate.id
+      return h(
+        'div',
+        {
+          key: candidate.id,
+          class: isCheapest ? 'model-compare-row model-compare-row--cheapest' : 'model-compare-row',
+          'data-candidate-id': String(candidate.id),
+          style:
+            'display:grid; grid-template-columns:minmax(110px,1fr) minmax(140px,1.3fr) minmax(150px,1.4fr) max-content max-content;' +
+            ' column-gap:12px; align-items:center; padding:6px 10px;' +
+            ' border:1px solid var(--color-border-subtle); border-radius:var(--radius-md);' +
+            (isCheapest ? ' background:rgba(82,196,26,0.08); border-color:rgba(82,196,26,0.35);' : ''),
+        },
+        [
+          h('span', { style: 'font-size:var(--text-sm); font-weight:500; color:var(--color-text);' }, candidate.provider_name),
+          candidate.provider_model_name
+            ? h(
+                'span',
+                { style: 'font-family:var(--font-mono); font-size:var(--text-xs); color:var(--color-text-secondary);' },
+                candidate.provider_model_name,
+              )
+            : h('span', { style: 'font-size:var(--text-xs); color:var(--color-text-muted);' }, '—'),
+          h('div', [h(PriceLinesBlock, { candidate })]),
+          h(
+            'div',
+            { style: 'display:flex; align-items:center; gap:6px;' },
+            [
+              h(ProbeTagBlock, { candidate }),
+              h(CandidateUnpricedTag, { candidate }),
+              isCheapest
+                ? h(NTag, { size: 'small', type: 'success', bordered: false }, { default: () => t('models.cheapestTag') })
+                : null,
+            ].filter(Boolean),
+          ),
+          h(
+            'div',
+            { onClick: (e: MouseEvent) => e.stopPropagation() },
+            [h(NButton, { size: 'tiny', class: 'model-compare-edit', onClick: () => openCandidateEdit(row, candidate) }, { default: () => t('common.edit') })],
+          ),
+        ],
+      )
+    }),
   )
-  return expandPanel({ eyebrow: isMobile.value ? undefined : t('models.expandCandidates'), indent: !isMobile.value }, [grid])
+  return expandPanel({ eyebrow: isMobile.value ? undefined : t('models.expandComparison'), indent: !isMobile.value }, [list])
 }
 
 function onToggleStatus(row: Model, enable: boolean) {
@@ -347,7 +417,7 @@ function onToggleStatus(row: Model, enable: boolean) {
   )
 }
 
-// Desktop gets a real expand column (route order at a glance without leaving
+// Desktop gets a real expand column (price comparison at a glance without leaving
 // the list); mobile card mode uses columns[0] as the card header, so the
 // expand column must not lead there — the same panel becomes a labeled card
 // row instead.
@@ -356,13 +426,46 @@ const columns = computed<DataTableColumns<Model>>(() =>
     ? [
         ...sharedColumns.value,
         {
-          title: columnTitle(t('models.expandCandidates'), t('models.expandCandidates_tip')),
+          title: columnTitle(t('models.expandComparison'), t('models.expandComparison_tip')),
           key: 'expand_candidates',
           render: renderModelExpand,
         },
       ]
     : [{ type: 'expand', renderExpand: renderModelExpand }, ...sharedColumns.value],
 )
+
+// The price summary cell: the lowest input price among the model's PRICED
+// token candidates (the shared predicate's verdict; an explicitly free row
+// participates with 0), a warning tag counting the unpriced candidates
+// (image and video rows always carry tier prices and never count), or the
+// tag alone when no priced token candidate exists. The number formats exactly
+// like the price lines' raw numbers, so the summary and the comparison rows
+// can never disagree. Inline styles because scoped CSS does not reach
+// h()-rendered nodes.
+function renderPriceCell(row: Model) {
+  const metrics = modelPriceMetrics(row.candidates)
+  const parts: VNodeChild[] = []
+  if (metrics.minTokenInputPrice !== null) {
+    parts.push(
+      h(
+        'span',
+        { class: 'model-price-min', style: 'font-weight:600; font-variant-numeric:tabular-nums;' },
+        t('models.priceFrom', { price: metrics.minTokenInputPrice }),
+      ),
+    )
+  }
+  if (metrics.unpricedCount > 0) {
+    parts.push(
+      h(
+        NTag,
+        { size: 'small', type: 'warning', bordered: false, class: 'model-price-unpriced' },
+        { default: () => `${t('models.unpricedCount')} ${metrics.unpricedCount}` },
+      ),
+    )
+  }
+  if (!parts.length) return h('span', { style: 'color:var(--color-text-muted);' }, '—')
+  return h('div', { style: 'display:flex; align-items:center; gap:6px; flex-wrap:wrap;' }, parts)
+}
 
 const sharedColumns = computed<DataTableColumns<Model>>(() => [
   {
@@ -430,6 +533,12 @@ const sharedColumns = computed<DataTableColumns<Model>>(() => [
         ),
       ])
     },
+  },
+  {
+    title: columnTitle(t('models.priceColumn'), t('models.priceColumn_tip')),
+    key: 'price_summary',
+    minWidth: 140,
+    render: renderPriceCell,
   },
   {
     title: columnTitle(t('models.managementStatusColumn'), t('models.managementStatusColumn_tip')),
@@ -504,5 +613,15 @@ const sharedColumns = computed<DataTableColumns<Model>>(() => [
 :deep(.model-name-cell) {
   font-weight: 650;
   color: var(--color-text);
+}
+
+.filter-switch {
+  display: inline-flex;
+  width: auto;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
 }
 </style>

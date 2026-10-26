@@ -58,13 +58,14 @@ export function emptyPricingFilter(): PricingFilter {
   return { keyword: '', unpricedOnly: false, provider: null }
 }
 
-/** Header metrics for a set of rows — the one definition both the initial
- * build and the filtered rebuild use, so filtering re-summarizes exactly the
- * rows that remain visible. */
-function groupMetrics(rows: PricingRow[]): Pick<PricingGroup, 'providerCount' | 'minTokenInputPrice' | 'unpricedCount'> {
+/** Summary metrics over a bare candidate list — the minimum/minimumless and
+ * unpriced-count aggregation the group headers show, exported so the models
+ * list's flat per-model mirror (modelPriceSummary.ts) reuses this one loop
+ * instead of restating it. */
+export function candidateMetrics(candidates: ModelCandidate[]): Pick<PricingGroup, 'minTokenInputPrice' | 'unpricedCount'> {
   const pricedTokenInputs: number[] = []
   let unpricedCount = 0
-  for (const { candidate } of rows) {
+  for (const candidate of candidates) {
     // One unpriced verdict per row, consumed by every metric: the header
     // minimum, the warning count, the row sort, and the badge all read the
     // same candidateUnpriced predicate (declared pricing when the server
@@ -75,9 +76,18 @@ function groupMetrics(rows: PricingRow[]): Pick<PricingGroup, 'providerCount' | 
     if (unpriced) unpricedCount++
   }
   return {
-    providerCount: rows.length,
     minTokenInputPrice: pricedTokenInputs.length ? Math.min(...pricedTokenInputs) : null,
     unpricedCount,
+  }
+}
+
+/** Header metrics for a set of rows — the one definition both the initial
+ * build and the filtered rebuild use, so filtering re-summarizes exactly the
+ * rows that remain visible. */
+function groupMetrics(rows: PricingRow[]): Pick<PricingGroup, 'providerCount' | 'minTokenInputPrice' | 'unpricedCount'> {
+  return {
+    providerCount: rows.length,
+    ...candidateMetrics(rows.map(({ candidate }) => candidate)),
   }
 }
 
