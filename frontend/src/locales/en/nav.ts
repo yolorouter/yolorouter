@@ -25,7 +25,6 @@ export default {
   generalSettings: 'General',
   about: 'About',
   language: 'Language',
-  modelPricing: 'Model Pricing',
   comingSoon: 'Coming soon',
   soonBadge: 'Soon',
   saveBadge: 'Save',

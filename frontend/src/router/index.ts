@@ -57,10 +57,11 @@ export const router = createRouter({
         { path: 'providers/:id', component: () => import('../views/providers/ProviderDetailPage.vue') },
         { path: 'models', component: () => import('../views/models/ModelListPage.vue') },
         { path: 'models/:id', component: () => import('../views/models/ModelDetailPage.vue') },
-        // Per-model price comparison across every provider mapping. Admin-only
-        // like the routes around it — no meta.memberAllowed, so the guard
-        // below keeps member sessions on their self-service surface.
-        { path: 'model-pricing', component: () => import('../views/models/ModelPricingPage.vue') },
+        // The standalone pricing page folded into the models list (price
+        // column, unpriced filter, comparison expansion, bulk adjustment all
+        // live there now). Keep the old path alive as a redirect so stale
+        // bookmarks land on the merged surface instead of the catch-all.
+        { path: 'model-pricing', redirect: '/models' },
         { path: 'rate-limits', component: () => import('../views/ratelimits/RateLimitListPage.vue') },
         { path: 'api-keys', component: () => import('../views/apikeys/ApiKeyListPage.vue'), meta: { memberAllowed: true } },
         { path: 'oauth-providers', component: () => import('../views/oauth/OAuthProviderListPage.vue') },

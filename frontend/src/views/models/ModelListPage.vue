@@ -426,8 +426,7 @@ function onUnpricedOnlyChange(value: boolean) {
 // The ticked MODEL ids. Selection is model-grained: ticking a model puts ALL
 // of its candidates into the batch. The pure algebra (the tri-state status,
 // the row toggle) comes from the shared pricingBulkSelection module; the flat
-// select-all below is the same Set sweep its group version performs, just
-// without groups.
+// select-all below is the same Set sweep inline — the table has no groups.
 const selectedModelIds = ref<Set<number>>(new Set())
 
 // Choke-point for the list refetches this page initiates (post-edit,

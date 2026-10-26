@@ -11,23 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A model pricing page answers the questions the per-provider mapping
-  tables cannot: which provider serves a model cheapest, which mappings
-  still carry no price, and how to adjust many prices at once. Mappings
-  are grouped by model, each group header showing its provider count,
-  lowest priced input, and unpriced count; rows sort by their
-  representative price with unpriced rows sinking, and keyword,
-  unpriced-only, and provider filters narrow the list. A single row
-  edits through the same candidate editor the mapping tables use. Bulk
-  adjustment runs on a transactional server endpoint: pick rows across
-  providers, scale by a factor or reset to suggested prices (recorded
+- The models management page now carries the full pricing surface. A
+  price column summarizes each model row — the lowest priced input
+  across its provider mappings ("from" it; an explicitly free candidate
+  counts as 0) plus an unpriced count badge when mappings still carry no
+  price (image and video candidates always carry tier prices and never
+  count; with no priced token candidate only the unpriced tag shows) —
+  and a filter switch narrows the list to models with unpriced
+  candidates. Expanding a row turns it into the comparison surface: the
+  model's candidates sort by their billing primary price (token rows by
+  input price, audio rows by character price, image and video rows by
+  upstream name, unpriced rows sinking) with the cheapest one tagged,
+  and each row edits through the same candidate editor the mapping
+  tables use. Bulk adjustment runs on a transactional server endpoint:
+  tick models (everything visible under the active filter, across
+  pages), scale by a factor or reset to suggested prices (recorded
   history first, the price catalog second — a row never suggests from
   itself), preview every before/after in a dry run that changes no
   prices, then apply in one audited transaction that advances the
   price-updated timestamps only where prices really changed and
   re-derives the declared-pricing flags. Image- and video-billed rows
-  sit out bulk adjustment and are skipped with a reason. The page is admin-only; bulk
-  controls are desktop-side.
+  sit out bulk adjustment and are skipped with a reason. Admin-only;
+  bulk controls are desktop-side.
 
 ## [0.2.8] - 2026-10-11
 

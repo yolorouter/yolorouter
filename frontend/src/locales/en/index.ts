@@ -5,7 +5,6 @@ import auth from './auth'
 import providers from './providers'
 import ccswitch from './ccswitch'
 import models from './models'
-import modelPricing from './modelPricing'
 import apiKeys from './apiKeys'
 import dashboard from './dashboard'
 import failReason from './failReason'
@@ -30,7 +29,6 @@ export default {
   providers,
   ccswitch,
   models,
-  modelPricing,
   apiKeys,
   dashboard,
   failReason,

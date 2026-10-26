@@ -115,7 +115,6 @@ async function mountLayout(locale: 'en' | 'zh-CN', role: 'admin' | 'member' = 'm
       '/oauth-providers',
       '/settings/general',
       '/about',
-      '/model-pricing',
     ].map((path) => ({
       path,
       component: { template: '<div />' },
@@ -342,51 +341,5 @@ describe('DefaultLayout sidebar Playground entry (TC-06, TC-25/26/27)', () => {
       usage: zhCN.nav.usage,
       playground: zhCN.nav.playground,
     })
-  })
-})
-
-// The model-pricing entry arms: the admin sidebar links /model-pricing with
-// the zh-CN nav copy (nav.modelPricing), positioned INSIDE the models
-// management group (after its heading, before the next group's), while the
-// member sidebar carries no such entry — the route is admin-only and the
-// member branch stays the self-service surface.
-describe('DefaultLayout sidebar model-pricing entry', () => {
-  function groupHeadings(labels: string[]): HTMLElement[] {
-    const nav = document.querySelector('.sidebar-nav')
-    expect(nav, 'sidebar nav rendered').not.toBeNull()
-    const headings = [...nav!.querySelectorAll<HTMLElement>('.sidebar-nav__group')].filter((g) =>
-      labels.some((l) => g.textContent?.includes(l)),
-    )
-    expect(headings, `the ${labels.join('/')} group heading(s) render`).toHaveLength(labels.length)
-    return headings
-  }
-
-  it('admin sidebar links model pricing inside the models group (zh-CN copy)', async () => {
-    media.setMobile(false)
-    wrapper = await mountLayout('zh-CN', 'admin')
-    const link = document.querySelector<HTMLAnchorElement>('a[href="/model-pricing"]')
-    expect(link, 'admin sidebar links /model-pricing').not.toBeNull()
-    expect(link!.textContent).toContain(zhCN.nav.modelPricing)
-
-    // Group-membership oracle, DOM-order based: the entry renders after the
-    // models group heading and before the next group's heading — i.e. inside
-    // the models group, not at the branch tail.
-    const [modelsHeading, accountsHeading] = groupHeadings([zhCN.nav.groupModels, zhCN.nav.groupAccounts])
-    expect(
-      modelsHeading.compareDocumentPosition(link!) & Node.DOCUMENT_POSITION_FOLLOWING,
-      'the pricing entry renders after the models group heading (inside the group)',
-    ).toBeTruthy()
-    expect(
-      link!.compareDocumentPosition(accountsHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
-      'the pricing entry renders before the accounts group heading (still inside the models group)',
-    ).toBeTruthy()
-  })
-
-  it('member sidebar carries no model pricing entry', async () => {
-    media.setMobile(false)
-    wrapper = await mountLayout('en', 'member')
-    const navText = document.querySelector('.sidebar-nav')?.textContent ?? ''
-    expect(navText, 'member sidebar does not carry the pricing entry').not.toContain(en.nav.modelPricing)
-    expect(document.querySelector('a[href="/model-pricing"]'), 'no /model-pricing link for members').toBeNull()
   })
 })

@@ -115,3 +115,35 @@ describe('router: the retired request-messages address', () => {
     expect(router.currentRoute.value.path, 'retired address lands on the home page via the catch-all').toBe('/')
   })
 })
+
+// The retired model-pricing PAGE is the other retirement flavor: the surface
+// still exists (folded into the models list — price column, unpriced filter,
+// comparison expansion, bulk adjustment), so the old path gets a DEDICATED
+// redirect to /models instead of the catch-all's home fallback. Stale
+// bookmarks must land on the merged surface, not the home page.
+describe('router: the retired model-pricing address', () => {
+  it('is registered as a redirect to /models, not a page', () => {
+    const layout = router.options.routes.find((r) => r.path === '/')
+    const record = layout?.children?.find((r) => r.path === 'model-pricing')
+    expect(record, 'the model-pricing child record exists').toBeTruthy()
+    expect(record!.redirect, 'the old path redirects to the merged models list').toBe('/models')
+    expect(record!.component, 'no page component hangs off the retired path').toBeUndefined()
+  })
+
+  it('lands an authenticated session on /models', async () => {
+    // Same self-contained state setup as the catch-all arm above: the mocks
+    // matter only if this arm ever runs before the guard's memoized state
+    // check has fired — either way the store reads as an initialized admin
+    // session (the models list is admin-only).
+    stateMock.mockResolvedValue({ initialized: true })
+    meMock.mockResolvedValue({ username: 'admin', role: 'admin', is_local: true, is_bootstrap: false })
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore()
+    auth.$patch({ initialized: true, username: 'admin', role: 'admin', isLocal: true, isBootstrap: false })
+
+    await router.push('/model-pricing')
+    expect(router.currentRoute.value.path, 'the old pricing path lands on the models list').toBe('/models')
+  })
+})
