@@ -78,7 +78,7 @@
             <template #icon><Trash2 :size="16" /></template>
             {{ batchDeleteButtonLabel }}
           </n-button>
-          <n-button type="primary" @click="openImportModels">
+          <n-button class="ml-4" type="primary" @click="openImportModels">
             <template #icon><CloudDownload :size="16" /></template>
             {{ t('models.importModelsButton') }}
           </n-button>

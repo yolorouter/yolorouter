@@ -835,10 +835,12 @@ function tokenRow(label: string, value: number) {
 // The usage cell renders one billing unit per row: a per-image settlement
 // reads "count × unit price", a settled video job "seconds × unit price"
 // (the settlement write stamps seconds and cost together, so the unit
-// price is their quotient); everything else keeps the vertical token
-// breakdown. An unpriced image row carries no snapshot (and usually no
-// token counts), so it lands on the same '-' as any unmeasured row — as
-// does a video row whose settlement has not landed yet.
+// price is their quotient), a speech synthesis row shows its character
+// count (the per-character price is too small to read); everything else
+// keeps the vertical token breakdown. An unpriced image row carries no
+// snapshot (and usually no token counts), so it lands on the same '-' as
+// any unmeasured row — as does a video row whose settlement has not
+// landed yet.
 function usageCell(row: RequestLogRow) {
   if (row.image_count > 0 && row.image_unit_price != null) {
     return h(
@@ -852,6 +854,13 @@ function usageCell(row: RequestLogRow) {
       'span',
       { style: 'font-variant-numeric: tabular-nums; font-size:12px; white-space:nowrap;' },
       t('requestLogs.usageVideoLine', { n: row.usage_seconds, price: formatYuan(fromMicros(row.cost_micros) / row.usage_seconds) }),
+    )
+  }
+  if (row.usage_characters > 0) {
+    return h(
+      'span',
+      { style: 'font-variant-numeric: tabular-nums; font-size:12px; white-space:nowrap;' },
+      t('requestLogs.usageAudioLine', { n: row.usage_characters }),
     )
   }
   const lines = []
