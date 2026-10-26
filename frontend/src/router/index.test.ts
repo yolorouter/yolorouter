@@ -35,9 +35,11 @@ vi.mock('../api/auth', () => ({
 const stateMock = vi.mocked(getAuthState)
 const meMock = vi.mocked(getMe)
 
-// Must be imported after the vi.mock factory is registered. Importing the
-// router also imports every page component, which is exactly what the real
-// app boots — nothing here mounts them, navigation only resolves guards.
+// Must be imported after the vi.mock factory is registered. Every
+// authenticated page is a lazy route component, so importing the router
+// pulls in only the layout shell plus the static /login + /setup boot
+// pages; navigation fetches the remaining page chunks on demand — nothing
+// here mounts them, navigation only resolves guards.
 import { router } from './index'
 import { useAuthStore } from '../store/auth'
 

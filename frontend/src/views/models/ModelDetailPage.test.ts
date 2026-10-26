@@ -430,4 +430,27 @@ describe('ModelDetailPage baseline (TC-13)', () => {
     await vi.waitFor(() => expect(document.body.textContent ?? '').toContain(failureText))
     messageOfTier('warning', failureText)
   })
+
+  // Regression pin: the header's mobile actions branch named
+  // <ResponsiveDropdown> without importing it (dropped in the shared
+  // CandidateTable refactor), so Vue silently rendered an unknown element —
+  // in production the mobile header dropdown was dead. The desktop viewport
+  // stubs above never mount that branch, and Vue only whispers about
+  // unresolved components on console.warn, so this pins the wiring itself:
+  // one mount with a warn spy must produce ZERO "Failed to resolve
+  // component" warnings, which fails for ANY component this template stops
+  // importing, not just this one.
+  it('resolves every component its template names (no missing-import regressions)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await mountPage(modelFixture())
+      await nextTick()
+      const unresolved = warnSpy.mock.calls
+        .map((args) => args.map(String).join(' '))
+        .filter((line) => /Failed to resolve component/.test(line))
+      expect(unresolved, 'every named component resolves').toEqual([])
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
 })

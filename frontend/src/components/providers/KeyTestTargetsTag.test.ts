@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
+import naive from 'naive-ui'
 import KeyTestTargetsTag from './KeyTestTargetsTag.vue'
 import en from '../../locales/en'
 
@@ -21,7 +22,11 @@ function mountTag(hint: string) {
   const i18n = createI18n({ legacy: false, locale: 'en', messages: { en } })
   return mount(KeyTestTargetsTag, {
     props: { text: 'Upstream error', type: 'error', hint, targets },
-    global: { plugins: [i18n] },
+    // The panel's rows render <n-tag>, which the app resolves through
+    // main.ts's global naive registration; the mount needs the same plugin
+    // (every sibling page/modal suite here does this) or Vue warns
+    // "Failed to resolve component: n-tag" three times per run.
+    global: { plugins: [i18n, naive] },
     attachTo: document.body,
   })
 }
