@@ -1,11 +1,14 @@
 // frontend/src/views/models/pricingBulkSelection.ts
 //
-// The model pricing page's bulk-selection pure layer, in the same spirit as
-// the modelPricingGroups module: no Vue, no i18n — just the set algebra the
-// page's checkboxes need. The selection is a Set of candidate ids shared by
-// every control (row, group header, select-all); each function takes the
-// current set and returns a NEW one, so the page can hold it in a ref and
-// Vue sees a fresh value on every change.
+// The bulk-selection pure layer, in the same spirit as the modelPricingGroups
+// module: no Vue, no i18n — just the set algebra the checkboxes need. The
+// selection is a Set of ids shared by every control (row, group header,
+// select-all); each function takes the current set and returns a NEW one, so
+// the page can hold it in a ref and Vue sees a fresh value on every change.
+// Consumers: the standalone model pricing page (candidate-level rows, group
+// headers) and the models list' bulk toolbar (model-level selection on a flat
+// table — it uses the tri-state status, the row toggle, and the preview slot
+// changes; its select-all is three lines of flat-Set algebra in the page).
 //
 // Scope rule: only rows currently VISIBLE under the applied filter are ever
 // touched. A select-all completes the visible set (keeping ids selected
@@ -94,29 +97,30 @@ export interface BulkSlotChange {
  *
  *  Values render as the bare numbers the backend sent, exactly like the
  *  mapping tables' price columns — no rounding invented for display. A null
- *  side reads as an em dash. */
+ *  side reads as an em dash. The slot label keys live in the models domain:
+ *  the flat models list is the page that renders them now. */
 export function previewSlotChanges(billingMode: BillingMode | undefined, before: BulkPriceSlots, after: BulkPriceSlots): BulkSlotChange[] {
   const either = (b: number | null, a: number | null) => b !== null || a !== null
   const text = (v: number | null) => (v === null ? '—' : String(v))
   if (billingMode === 'audio') {
     if (!either(before.audio_unit_price, after.audio_unit_price)) return []
-    return [{ labelKey: 'modelPricing.bulkSlotAudio', before: text(before.audio_unit_price), after: text(after.audio_unit_price) }]
+    return [{ labelKey: 'models.bulkSlotAudio', before: text(before.audio_unit_price), after: text(after.audio_unit_price) }]
   }
   if (billingMode !== 'token') return []
   const changes: BulkSlotChange[] = [
-    { labelKey: 'modelPricing.bulkSlotInput', before: String(before.input_price), after: String(after.input_price) },
-    { labelKey: 'modelPricing.bulkSlotOutput', before: String(before.output_price), after: String(after.output_price) },
+    { labelKey: 'models.bulkSlotInput', before: String(before.input_price), after: String(after.input_price) },
+    { labelKey: 'models.bulkSlotOutput', before: String(before.output_price), after: String(after.output_price) },
   ]
   if (either(before.cache_write_price, after.cache_write_price)) {
     changes.push({
-      labelKey: 'modelPricing.bulkSlotCacheWrite',
+      labelKey: 'models.bulkSlotCacheWrite',
       before: text(before.cache_write_price),
       after: text(after.cache_write_price),
     })
   }
   if (either(before.cache_read_price, after.cache_read_price)) {
     changes.push({
-      labelKey: 'modelPricing.bulkSlotCacheRead',
+      labelKey: 'models.bulkSlotCacheRead',
       before: text(before.cache_read_price),
       after: text(after.cache_read_price),
     })

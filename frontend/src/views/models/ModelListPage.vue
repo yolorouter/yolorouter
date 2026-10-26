@@ -1,4 +1,20 @@
-<!-- frontend/src/views/models/ModelListPage.vue -->
+<!-- frontend/src/views/models/ModelListPage.vue
+     The models list: one full fetch, client-side filters (name substring,
+     running / management status, provider, unpriced-only) over the applied
+     snapshot, client pagination, and the expandable per-model price
+     comparison. Bulk pricing is a desktop capability merged in from the
+     standalone pricing page: a leading selection column whose header
+     select-all covers the CURRENT FILTERED models (a Set of model ids that
+     persists across paging and filter sweeps), a count-labeled toolbar
+     entry, and the two-phase drawer — operation chooser, then the dry-run
+     preview whose confirm applies to the deduped union of the selected
+     models' candidates, reloads, clears the selection, and summarizes.
+     Every refetch this page initiates lands in one choke-point that
+     clears the selection (model creations refetch inside the create
+     modal's store action and only ever ADD rows, so they are left
+     alone), and the drawer refuses to open when that union is empty.
+     Below the shared 768px breakpoint none of that renders: browse, filter,
+     expand, and single-row edit stay available. -->
 <template>
   <div class="common-page">
     <PageHeader :eyebrow="t('models.eyebrow')" :title="t('models.pageTitle')" :description="t('models.pageDescription')">
@@ -69,6 +85,20 @@
             <span>{{ t('models.filterUnpricedOnly') }}</span>
           </label>
           <div class="filter-actions">
+            <!-- The bulk entry travels with the selection layer: desktop only,
+                 disabled until at least one model row is ticked. -->
+            <n-button
+              v-if="!isMobile"
+              size="small"
+              type="warning"
+              ghost
+              class="models-bulk-button"
+              :disabled="selectedModelIds.size === 0"
+              @click="openBulk"
+            >
+              <template #icon><BadgePercent :size="14" /></template>
+              {{ bulkButtonLabel }}
+            </n-button>
             <n-button size="small" type="primary" @click="onSearch">{{ t('models.search') }}</n-button>
             <n-button size="small" quaternary @click="onReset">{{ t('models.reset') }}</n-button>
           </div>
@@ -80,7 +110,7 @@
           :columns="columns"
           :data="filteredModels"
           :loading="store.loading"
-          :scroll-x="1050"
+          :scroll-x="1100"
           :row-key="(row: Model) => row.id"
           :row-props="rowProps"
           :full-span-keys="['expand_candidates']"
@@ -111,6 +141,79 @@
       :owner-username="authStore.username ?? ''"
       @confirm="onCCSConfirm"
     />
+
+    <!-- The desktop bulk-price flow, two phases in one drawer (the pricing
+         page's shape): the operation chooser, then the dry-run preview.
+         Confirm on phase one previews (dry_run true); confirm on phase two
+         applies (dry_run false). Cancel / mask / Esc close at any point
+         without ever sending the write — except while a request is in
+         flight: the dismissable lock withholds every dismiss affordance for
+         the preview fetch and seals the apply write's point of no return
+         against cancel / mask / Esc. -->
+    <ModalDrawer
+      v-model:show="bulkShow"
+      :title="bulkTitle"
+      max-width="640px"
+      :confirm-text="bulkConfirmText"
+      :cancel-text="t('common.cancel')"
+      :back-label="t('common.back')"
+      :loading="bulkBusy"
+      :dismissable="!bulkBusy"
+      :confirm-disabled="!bulkCanConfirm"
+      @confirm="onBulkConfirm"
+      @after-leave="onBulkClosed"
+    >
+      <div v-if="bulkPhase === 'choose'" class="bulk-choose">
+        <div class="bulk-choose__field">
+          <span class="bulk-choose__label">{{ t('models.bulkOperationLabel') }}</span>
+          <n-radio-group v-model:value="bulkOperation" name="bulk-operation">
+            <n-radio value="scale">{{ t('models.bulkOperationScale') }}</n-radio>
+            <n-radio value="apply_suggested">{{ t('models.bulkOperationApplySuggested') }}</n-radio>
+          </n-radio-group>
+          <p class="bulk-choose__hint">
+            {{ bulkOperation === 'scale' ? t('models.bulkOperationScale_tip') : t('models.bulkOperationApplySuggested_tip') }}
+          </p>
+        </div>
+        <div v-if="bulkOperation === 'scale'" class="bulk-choose__field">
+          <HelpLabel :tip="t('models.bulkFactorLabel_tip')">{{ t('models.bulkFactorLabel') }}</HelpLabel>
+          <n-input-number
+            v-model:value="bulkFactor"
+            class="bulk-factor"
+            :min="0"
+            :step="0.01"
+            :placeholder="t('models.bulkFactorPlaceholder')"
+          />
+          <p v-if="factorInvalid" class="bulk-choose__error">{{ t('models.bulkFactorInvalid') }}</p>
+        </div>
+      </div>
+      <div v-else-if="bulkPreview" class="bulk-preview">
+        <p class="bulk-preview__summary">
+          {{ t('models.bulkPreviewSummary', { applied: bulkPreview.applied, skipped: bulkPreview.skipped }) }}
+        </p>
+        <p v-if="bulkPreview.applied === 0" class="bulk-preview__none">{{ t('models.bulkPreviewNothingToApply') }}</p>
+        <div
+          v-for="item in bulkPreview.items"
+          :key="item.candidate_id"
+          class="bulk-preview__item"
+          :class="{ 'bulk-preview__item--skipped': !item.changed }"
+        >
+          <div class="bulk-preview__head">
+            <span class="bulk-preview__name">{{ item.model_name }} · {{ item.provider_name }}</span>
+            <n-tag size="tiny" :bordered="false" :type="item.changed ? 'success' : 'warning'">
+              {{ item.changed ? t('models.bulkChangedTag') : t('models.bulkSkippedTag') }}
+            </n-tag>
+          </div>
+          <div class="bulk-preview__detail">
+            <template v-if="item.changed">
+              <span v-for="change in itemSlotChanges(item)" :key="change.labelKey" class="bulk-preview__slot">
+                {{ t(change.labelKey) }} {{ change.before }} → {{ change.after }}
+              </span>
+            </template>
+            <span v-else class="bulk-preview__reason">{{ skipReasonLabel(item.skip_reason) }}</span>
+          </div>
+        </div>
+      </div>
+    </ModalDrawer>
   </div>
 </template>
 
@@ -118,8 +221,11 @@
 import { computed, h, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
-import { Boxes, Plus, Search, MoreHorizontal } from '@lucide/vue'
+// NCheckbox / NRadio / NRadioGroup are NOT in main.ts's create() components
+// list — without these imports Vue renders them as unknown elements (the
+// typecheck and build stay green while the UI breaks).
+import { NButton, NCheckbox, NRadio, NRadioGroup, NSwitch, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
+import { BadgePercent, Boxes, Plus, Search, MoreHorizontal } from '@lucide/vue'
 import { useModelsStore } from '../../store/models'
 import { displayMessage } from '../../api/client'
 import { useConfirmedStatusToggle } from '../../composables/useConfirmedStatusToggle'
@@ -134,11 +240,14 @@ import { useIsMobile } from '../../composables/useIsMobile'
 import { expandPanel, EXPAND_EMPTY_STYLE, rowNavigationProps } from '../../utils/expandPanel'
 import { comparisonRows, cheapestComparisonRow, modelHasUnpriced, modelPriceMetrics } from './modelPriceSummary'
 import { PriceLinesBlock, ProbeTagBlock } from './pricingRowBlocks'
+import { previewSlotChanges, selectionStatus, toggleRow } from './pricingBulkSelection'
 import CandidateUnpricedTag from '../../components/models/CandidateUnpricedTag.vue'
 import type { VNodeChild } from 'vue'
-import type { Model, ModelCandidate } from '../../api/models'
+import type { BulkPriceItem, BulkPriceOperation, BulkPricePayload, BulkPriceResult, Model, ModelCandidate } from '../../api/models'
+import { postBulkPrice } from '../../api/models'
 import PageHeader from '../../components/PageHeader.vue'
 import EmptyState from '../../components/EmptyState.vue'
+import HelpLabel from '../../components/HelpLabel.vue'
 import NewModelModal from '../../components/models/NewModelModal.vue'
 import ModelEditModal from '../../components/models/ModelEditModal.vue'
 import CandidateEditModal from '../../components/models/CandidateEditModal.vue'
@@ -147,6 +256,7 @@ import VisionFallbackModal from '../../components/models/VisionFallbackModal.vue
 import ResponsiveDataTable from '../../components/common/ResponsiveDataTable.vue'
 import ResponsiveDropdown from '../../components/common/ResponsiveDropdown.vue'
 import FilterSelectField from '../../components/common/FilterSelectField.vue'
+import ModalDrawer from '../../components/common/ModalDrawer.vue'
 import { ccsProfileName } from '../../utils/format'
 import { useCCSwitchImport } from '../../composables/useCCSwitchImport'
 import { useRowModal } from '../../composables/useRowModal'
@@ -194,7 +304,7 @@ function openEditModel(row: Model) {
 }
 
 function onEdited() {
-  void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
+  void reload().catch((err) => message.error(displayMessage(err, t)))
 }
 
 // Inline candidate edit from the comparison expansion: the shared modal the
@@ -210,7 +320,7 @@ function openCandidateEdit(model: Model, candidate: ModelCandidate) {
 }
 
 function onCandidateEdited() {
-  void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
+  void reload().catch((err) => message.error(displayMessage(err, t)))
 }
 
 // Row delete: assigning the row opens the modal (useRowModal binds show to
@@ -219,7 +329,7 @@ function onCandidateEdited() {
 const { row: deletingModel, show: showDeleteModel } = useRowModal<Model>()
 
 function onModelDeleted() {
-  void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
+  void reload().catch((err) => message.error(displayMessage(err, t)))
 }
 
 // In-page filters over the fully-fetched list (name substring + running /
@@ -311,6 +421,255 @@ function onUnpricedOnlyChange(value: boolean) {
   onSearch()
 }
 
+// --- Bulk pricing selection (desktop capability; mobile renders none of it) -
+
+// The ticked MODEL ids. Selection is model-grained: ticking a model puts ALL
+// of its candidates into the batch. The pure algebra (the tri-state status,
+// the row toggle) comes from the shared pricingBulkSelection module; the flat
+// select-all below is the same Set sweep its group version performs, just
+// without groups.
+const selectedModelIds = ref<Set<number>>(new Set())
+
+// Choke-point for the list refetches this page initiates (post-edit,
+// post-candidate-save, post-delete, post-toggle, and the initial mount —
+// NOT the create modal's internal refetch, which only adds rows): the
+// bulk selection names MODEL ids against the list as it WAS, so a selection
+// never outlives the refetch — the fresh list may have reordered or dropped
+// the ticked models, and a stale selection would inflate the toolbar count
+// with ghost ids or send an empty candidate union to the bulk endpoint (a
+// guaranteed 400). The next batch must be an explicit choice against current
+// data.
+async function reload(): Promise<void> {
+  await store.fetchList()
+  selectedModelIds.value = new Set()
+}
+
+// The select-all reads the VISIBLE scope: the currently filtered models (the
+// applied snapshot), across every page — the batch is what the admin sees
+// under the active filter, not merely the rows on screen.
+const selectAllStatus = computed(() => selectionStatus(filteredModels.value.map((m) => m.id), selectedModelIds.value))
+
+function onSelectAll(checked: boolean) {
+  const next = new Set(selectedModelIds.value)
+  for (const model of filteredModels.value) {
+    if (checked) next.add(model.id)
+    else next.delete(model.id)
+  }
+  selectedModelIds.value = next
+}
+
+function onModelCheck(modelId: number) {
+  selectedModelIds.value = toggleRow(modelId, selectedModelIds.value)
+}
+
+const bulkButtonLabel = computed(() =>
+  selectedModelIds.value.size === 0
+    ? t('models.bulkButton')
+    : t('models.bulkButtonWithCount', { count: selectedModelIds.value.size }),
+)
+
+// The deduped union of ALL candidates of the selected models — the bulk
+// endpoint's candidate_ids. Built from the store list, so a model deleted
+// after its row was ticked silently drops out of the batch.
+const selectedCandidateIds = computed<number[]>(() => {
+  const ids = new Set<number>()
+  for (const model of store.list) {
+    if (!selectedModelIds.value.has(model.id)) continue
+    for (const candidate of model.candidates) ids.add(candidate.id)
+  }
+  return [...ids]
+})
+
+// Every fetched candidate by id: the preview's billing-mode lookup (the
+// endpoint reports slot snapshots, not each row's billing mode).
+const candidateById = computed<Map<number, ModelCandidate>>(() => {
+  const byId = new Map<number, ModelCandidate>()
+  for (const model of store.list) {
+    for (const candidate of model.candidates) byId.set(candidate.id, candidate)
+  }
+  return byId
+})
+
+// --- Bulk flow: chooser -> dry-run preview -> apply --------------------------
+
+const bulkShow = ref(false)
+const bulkPhase = ref<'choose' | 'preview'>('choose')
+const bulkOperation = ref<BulkPriceOperation>('scale')
+// number | null is what the input number emits; null = untouched, and only a
+// value ABOVE zero passes (zero and negatives are rejected client-side).
+const bulkFactor = ref<number | null>(null)
+const bulkPreview = ref<BulkPriceResult | null>(null)
+const bulkBusy = ref(false)
+
+// Monotonic session token for the bulk flow: every open and close bumps it,
+// and each in-flight request captures its value before awaiting, proceeding
+// after the await only if the token still matches. A stale response — one
+// that lands after a close, or after a close-and-reopen started a fresh
+// session — is retired instead of writing preview state, toasting, or
+// reloading against a drawer the user is no longer in.
+let bulkReqSeq = 0
+
+const factorInvalid = computed(() => bulkOperation.value === 'scale' && bulkFactor.value !== null && bulkFactor.value <= 0)
+
+const bulkTitle = computed(() => (bulkPhase.value === 'choose' ? t('models.bulkDialogTitle') : t('models.bulkPreviewTitle')))
+
+const bulkConfirmText = computed(() => (bulkPhase.value === 'choose' ? t('models.bulkPreviewButton') : t('models.bulkConfirmApply')))
+
+// Choose phase: scale needs a positive factor, apply_suggested nothing.
+// Preview phase: at least one row must be applicable for a write to mean
+// anything (an all-skipped preview has nothing to confirm).
+const bulkCanConfirm = computed(() => {
+  if (bulkPhase.value === 'choose') {
+    return bulkOperation.value === 'apply_suggested' || (bulkFactor.value !== null && bulkFactor.value > 0)
+  }
+  return (bulkPreview.value?.applied ?? 0) > 0
+})
+
+// The endpoint binds candidate_ids to 1..2000 raw: a union past the cap would
+// 400 no matter what the body says, so it is refused at the door with the
+// numbers spelled out and the drawer stays closed.
+const BULK_PRICE_MAX_IDS = 2000
+
+function openBulk() {
+  if (selectedModelIds.value.size === 0) return
+  const union = selectedCandidateIds.value
+  // The selection names models, but the batch is candidate ids: a model with
+  // no candidates (or ids left ticked that no longer contribute anything)
+  // would post an empty union and earn the endpoint's 400. Refused at the
+  // same door as the cap, with the drawer never opening.
+  if (union.length === 0) {
+    message.warning(t('models.bulkNothingSelected'))
+    return
+  }
+  if (union.length > BULK_PRICE_MAX_IDS) {
+    message.warning(t('models.bulkOverCap', { count: union.length, cap: BULK_PRICE_MAX_IDS }))
+    return
+  }
+  // A reopen starts a NEW session: the bump retires any bulk request still
+  // in flight from the previous one, so its late response can never write
+  // preview state into — or act against — a drawer the user has already
+  // left and re-entered.
+  bulkReqSeq++
+  bulkShow.value = true
+  // A reopen always starts at the chooser: anything a half-lived flow left
+  // behind is cleared here rather than inherited.
+  bulkPhase.value = 'choose'
+  bulkPreview.value = null
+  bulkFactor.value = null
+}
+
+// The factor key belongs to scale only: for apply_suggested it stays OFF the
+// payload object entirely — the backend rejects any NON-NULL factor there (a
+// JSON null would decode into its nil pointer and slip through), and keeping
+// the key absent is the unambiguous shape rather than a tolerated accident.
+function bulkPayload(dryRun: boolean): BulkPricePayload {
+  const payload: BulkPricePayload = {
+    candidate_ids: selectedCandidateIds.value,
+    operation: bulkOperation.value,
+    dry_run: dryRun,
+  }
+  if (bulkOperation.value === 'scale') payload.factor = bulkFactor.value!
+  return payload
+}
+
+async function onBulkConfirm() {
+  if (bulkBusy.value || !bulkCanConfirm.value || selectedModelIds.value.size === 0) return
+  if (bulkPhase.value === 'choose') {
+    bulkBusy.value = true
+    const seq = ++bulkReqSeq
+    try {
+      const result = await postBulkPrice(bulkPayload(true))
+      // The drawer can close — or close and reopen — while the dry run is in
+      // flight. The token retires the response in both cases: a stale result
+      // captures nothing, so it cannot flip a closed drawer into a preview
+      // or skip the chooser on a reopened one.
+      if (seq !== bulkReqSeq) return
+      bulkPreview.value = result
+      bulkPhase.value = 'preview'
+    } catch (err) {
+      // Same staleness rule on the failure path: an abandoned session's
+      // error is never toasted against the session that replaced it.
+      if (seq !== bulkReqSeq) return
+      message.error(displayMessage(err, t))
+    } finally {
+      // Only the live session releases the busy lock: a retired request's
+      // finally must not unstick a newer session's in-flight spinner (that
+      // would re-arm the confirm button mid-request — a double-apply
+      // window). No stuck-lock risk: onBulkClosed clears it unconditionally.
+      if (seq === bulkReqSeq) bulkBusy.value = false
+    }
+    return
+  }
+  // The write. Closing the drawer first keeps a slow apply from reading as a
+  // hung dialog; a failure reopens nothing — the summary stays in the toast.
+  bulkBusy.value = true
+  const seq = ++bulkReqSeq
+  try {
+    const result = await postBulkPrice(bulkPayload(false))
+    // The apply can be abandoned mid-flight (cancel, mask, Esc, then a
+    // reopen): a stale success must not close the drawer, toast, clear the
+    // selection, or reload against the fresh session, and a stale failure
+    // must not toast either.
+    if (seq !== bulkReqSeq) return
+    bulkShow.value = false
+    message.success(t('models.bulkAppliedSummary', { applied: result.applied, skipped: result.skipped }))
+    // The write already happened: drop the selection and refresh even if the
+    // refresh itself fails (its error is surfaced on its own).
+    selectedModelIds.value = new Set()
+    try {
+      await store.fetchList()
+    } catch (err) {
+      message.error(displayMessage(err, t))
+    }
+  } catch (err) {
+    // The apply was refused: keep the preview up so the flow can be retried
+    // or abandoned with the eyes-on evidence still there. A stale failure is
+    // retired by the token check — its toast belongs to the live session
+    // only.
+    if (seq !== bulkReqSeq) return
+    message.error(displayMessage(err, t))
+  } finally {
+    // Same rule as the preview path: the lock belongs to the live session
+    // only (this finally can land well after a close-and-reopen — the
+    // reload above keeps this frame alive past onBulkClosed).
+    if (seq === bulkReqSeq) bulkBusy.value = false
+  }
+}
+
+// Anything that closes the drawer (cancel, mask, Esc, mobile back arrow)
+// lands here: no write has been sent on the preview path, and the next open
+// starts clean at the chooser.
+function onBulkClosed() {
+  // Retire in-flight bulk requests at close time: between the leave
+  // finishing and the next open, no late response has a live session to act
+  // on.
+  bulkReqSeq++
+  bulkPhase.value = 'choose'
+  bulkOperation.value = 'scale'
+  bulkFactor.value = null
+  bulkPreview.value = null
+  bulkBusy.value = false
+}
+
+// The skip reasons the backend sends, each to its own bilingual label.
+const SKIP_REASON_KEYS: Record<NonNullable<BulkPriceItem['skip_reason']>, string> = {
+  not_found: 'models.bulkSkipNotFound',
+  unpriced: 'models.bulkSkipUnpriced',
+  unsupported_billing_mode: 'models.bulkSkipUnsupportedBillingMode',
+  no_suggestion: 'models.bulkSkipNoSuggestion',
+  unchanged: 'models.bulkSkipUnchanged',
+}
+
+function skipReasonLabel(reason: BulkPriceItem['skip_reason']): string {
+  return reason && SKIP_REASON_KEYS[reason] ? t(SKIP_REASON_KEYS[reason]) : t('models.bulkSkippedTag')
+}
+
+// A changed item's before→after entries, family per the row's billing mode
+// (the endpoint reports slot snapshots; the page knows the mode).
+function itemSlotChanges(item: BulkPriceItem) {
+  return previewSlotChanges(candidateById.value.get(item.candidate_id)?.billing_mode, item.before, item.after)
+}
+
 onMounted(() => {
   // Deep links: ?management=1|2 (the dashboard's unavailable-models figure
   // counts disabled models, so its drill-down filters this dimension) and
@@ -326,7 +685,7 @@ onMounted(() => {
     filter.running = running
     applied.running = running
   }
-  void store.fetchList().catch((err) => message.error(displayMessage(err, t)))
+  void reload().catch((err) => message.error(displayMessage(err, t)))
 })
 
 function goDetail(id: number) {
@@ -409,7 +768,7 @@ function onToggleStatus(row: Model, enable: boolean) {
     async () => {
       try {
         await store.setStatus(row.id, enable)
-        await store.fetchList()
+        await reload()
       } catch (err) {
         message.error(displayMessage(err, t))
       }
@@ -417,10 +776,41 @@ function onToggleStatus(row: Model, enable: boolean) {
   )
 }
 
+// The model-level bulk selection column (desktop only): the header checkbox
+// is the select-all over the CURRENT FILTERED models (all pages of them), and
+// each row's checkbox joins or leaves that model — its click must not
+// trigger the row's navigation.
+const bulkSelectColumn = computed<DataTableColumns<Model>>(() => [
+  {
+    title: () =>
+      h(NCheckbox, {
+        size: 'small',
+        class: 'models-select-all',
+        checked: selectAllStatus.value === 'all',
+        indeterminate: selectAllStatus.value === 'partial',
+        'aria-label': t('models.bulkSelectAll'),
+        'onUpdate:checked': onSelectAll,
+      }),
+    key: 'bulk_select',
+    width: 48,
+    render: (row) =>
+      h('div', { onClick: (e: MouseEvent) => e.stopPropagation() }, [
+        h(NCheckbox, {
+          size: 'small',
+          class: `models-row-check--${row.id}`,
+          checked: selectedModelIds.value.has(row.id),
+          'aria-label': row.name,
+          'onUpdate:checked': () => onModelCheck(row.id),
+        }),
+      ]),
+  },
+])
+
 // Desktop gets a real expand column (price comparison at a glance without leaving
-// the list); mobile card mode uses columns[0] as the card header, so the
-// expand column must not lead there — the same panel becomes a labeled card
-// row instead.
+// the list) behind the leading selection column; mobile card mode uses
+// columns[0] as the card header, so neither the checkbox nor the expand
+// column may lead there — the same panel becomes a labeled card row instead,
+// and the selection layer renders nothing at all.
 const columns = computed<DataTableColumns<Model>>(() =>
   isMobile.value
     ? [
@@ -431,7 +821,7 @@ const columns = computed<DataTableColumns<Model>>(() =>
           render: renderModelExpand,
         },
       ]
-    : [{ type: 'expand', renderExpand: renderModelExpand }, ...sharedColumns.value],
+    : [...bulkSelectColumn.value, { type: 'expand', renderExpand: renderModelExpand }, ...sharedColumns.value],
 )
 
 // The price summary cell: the lowest input price among the model's PRICED
@@ -623,5 +1013,91 @@ const sharedColumns = computed<DataTableColumns<Model>>(() => [
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
   cursor: pointer;
+}
+
+/* --- Bulk flow drawer (the pricing page's shape) --- */
+
+.bulk-choose__field {
+  margin-bottom: var(--space-4);
+}
+
+.bulk-choose__label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.bulk-choose__field .n-radio-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.bulk-choose__hint {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.bulk-factor {
+  margin-top: var(--space-2);
+  max-width: 200px;
+}
+
+.bulk-choose__error {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+}
+
+.bulk-preview__summary {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.bulk-preview__none {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+}
+
+.bulk-preview__item {
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* A skipped row greys out: it will not change, only explain itself. */
+.bulk-preview__item--skipped {
+  opacity: 0.55;
+}
+
+.bulk-preview__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.bulk-preview__name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.bulk-preview__detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--space-3);
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+.bulk-preview__reason {
+  color: var(--color-text-muted);
 }
 </style>
