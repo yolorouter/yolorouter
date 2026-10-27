@@ -52,6 +52,17 @@ vi.mock('../../api/providers', async (importOriginal) => {
   return { ...actual, getProvider: vi.fn(), listModelsForProvider: vi.fn() }
 })
 
+// The page header's proxy-warning icon resolves its stance from the global
+// outbound-proxy setting, fetched on every mount — mock it to the direct
+// (off) stance so the icon stays bare and no suite here reaches the wire.
+import { getOutboundProxy } from '../../api/systemSettings'
+
+vi.mock('../../api/systemSettings', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/systemSettings')>()
+  return { ...actual, getOutboundProxy: vi.fn() }
+})
+vi.mocked(getOutboundProxy).mockResolvedValue({ mode: 'off', url: '', version: 0 })
+
 vi.mock('../../api/models', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/models')>()
   return {

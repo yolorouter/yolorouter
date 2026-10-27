@@ -12,5 +12,12 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     setupFiles: ['./vitest.setup.ts'],
+    // The mounted view tests (21-row tables, pagination flips, multi-round
+    // awaits) spend 2.5-3.5s each on an idle machine; vitest's 5s default
+    // leaves no headroom for suite-parallel transform/import load or a
+    // concurrent build, which is how green-at-CI tests timed out locally in
+    // flakes that moved between tests run to run. A timeout's job here is
+    // catching a hang, not policing speed under load.
+    testTimeout: 15000,
   },
 })

@@ -112,6 +112,10 @@ async function mountLayout(locale: 'en' | 'zh-CN', role: 'admin' | 'member' = 'm
       '/rate-limits',
       '/cost-optimization',
       '/users',
+      // The admin sidebar's audit entry targets /audit-logs; leaving it out
+      // of this fixture made every admin-role test log the vue-router
+      // "No match found" warn.
+      '/audit-logs',
       '/oauth-providers',
       '/settings/general',
       '/about',

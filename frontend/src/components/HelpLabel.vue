@@ -19,7 +19,9 @@
     >
       <CircleHelp />
     </NIcon>
-    <NTooltip v-else trigger="hover" placement="top" :max-width="TIP_MAX_WIDTH">
+    <!-- maxWidth goes through :style — the old :max-width prop still works
+         but logs the naive/popover deprecation warning on every mount. -->
+    <NTooltip v-else trigger="hover" placement="top" :style="{ maxWidth: TIP_MAX_WIDTH + 'px' }">
       <template #trigger>
         <!-- Clicks stop here: a help icon inside a clickable card must not
              trigger the card's navigation. -->

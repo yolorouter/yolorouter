@@ -137,7 +137,7 @@ describe('CCSwitchImportModal (model mode)', () => {
 
     const wrapper = mount(CcsModalHost, {
       props: { row: KEY, catalog: CATALOG },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, makeRouter()] },
       attachTo: document.body,
     })
     await vi.waitFor(() =>
@@ -194,7 +194,7 @@ describe('CCSwitchImportModal (model mode)', () => {
 
     const wrapper = mount(CcsModalHost, {
       props: { row: KEY, catalog: CATALOG },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, makeRouter()] },
       attachTo: document.body,
     })
     await vi.waitFor(() =>
@@ -218,7 +218,7 @@ describe('CCSwitchImportModal (model mode)', () => {
 
     const wrapper = mount(CcsModalHost, {
       props: { row: KEY, catalog: null },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, makeRouter()] },
       attachTo: document.body,
     })
     await vi.waitFor(() =>
@@ -267,7 +267,7 @@ describe('CCSwitchImportModal (model mode)', () => {
 
     const wrapper = mount(CcsModalHost, {
       props: { row: KEY, catalog: null },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, makeRouter()] },
       attachTo: document.body,
     })
     await vi.waitFor(() =>
@@ -297,7 +297,7 @@ describe('CCSwitchImportModal (model mode)', () => {
 
     const wrapper = mount(CcsModalHost, {
       props: { row: KEY, catalog: CATALOG },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, makeRouter()] },
       attachTo: document.body,
     })
     await vi.waitFor(() =>
@@ -331,7 +331,7 @@ describe('CCSwitchImportModal (model mode)', () => {
 
     const wrapper = mount(CcsModalHost, {
       props: { row: KEY, catalog: CATALOG },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, makeRouter()] },
       attachTo: document.body,
     })
     await vi.waitFor(() => expect(plaintextMock).toHaveBeenCalledTimes(1))
