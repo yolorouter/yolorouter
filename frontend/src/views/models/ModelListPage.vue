@@ -695,6 +695,19 @@ function rowProps(row: Model) {
   return rowNavigationProps(() => goDetail(row.id))
 }
 
+// The compare rows' shared track template and the header cell style. One
+// const for both the header and the rows: the labels ride the exact tracks
+// they name, so a track edit can never leave the header drifting off the
+// columns. Tracks are FIXED (not fr/max-content) on purpose — every row is
+// its own grid, and content-sized tracks would give long provider names or
+// the cheapest-only tag their own column widths, breaking the shared column
+// axis; the badge track reserves the widest tag combo so the edit button
+// cannot drift either.
+const COMPARE_ROW_STYLE =
+  'display:grid; grid-template-columns:130px 210px minmax(160px,1fr) 240px max-content; column-gap:12px; align-items:center;'
+const COMPARE_HEADER_CELL_STYLE =
+  'font-size:var(--text-xs); color:var(--color-text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;'
+
 // The expanded comparison surface: the model's candidates as price-sorted
 // rows (the pricing page's row order via comparisonRows), the cheapest priced
 // row highlighted with the cheapest tag, each row carrying the shared price
@@ -710,10 +723,23 @@ function renderModelExpand(row: Model) {
   }
   const rows = comparisonRows(row)
   const cheapest = cheapestComparisonRow(rows)
+  const header = h(
+    'div',
+    { class: 'model-compare-header', style: COMPARE_ROW_STYLE + 'padding:0 10px 2px;' },
+    [
+      t('models.compareProvider'),
+      t('models.providerModelName'),
+      t('models.priceColumn'),
+      t('models.compareStatus'),
+      t('common.actions'),
+    ].map((label) => h('span', { style: COMPARE_HEADER_CELL_STYLE }, label)),
+  )
   const list = h(
     'div',
     { style: 'display:flex; flex-direction:column; gap:6px;' },
-    rows.map(({ candidate }) => {
+    [
+      header,
+      ...rows.map(({ candidate }) => {
       const isCheapest = cheapest !== null && cheapest.candidate.id === candidate.id
       return h(
         'div',
@@ -722,24 +748,27 @@ function renderModelExpand(row: Model) {
           class: isCheapest ? 'model-compare-row model-compare-row--cheapest' : 'model-compare-row',
           'data-candidate-id': String(candidate.id),
           style:
-            'display:grid; grid-template-columns:minmax(110px,1fr) minmax(140px,1.3fr) minmax(150px,1.4fr) max-content max-content;' +
-            ' column-gap:12px; align-items:center; padding:6px 10px;' +
+            COMPARE_ROW_STYLE + ' padding:6px 10px;' +
             ' border:1px solid var(--color-border-subtle); border-radius:var(--radius-md);' +
             (isCheapest ? ' background:rgba(82,196,26,0.08); border-color:rgba(82,196,26,0.35);' : ''),
         },
         [
-          h('span', { style: 'font-size:var(--text-sm); font-weight:500; color:var(--color-text);' }, candidate.provider_name),
+          h(
+            'span',
+            { title: candidate.provider_name, style: 'font-size:var(--text-sm); font-weight:500; color:var(--color-text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;' },
+            candidate.provider_name,
+          ),
           candidate.provider_model_name
             ? h(
                 'span',
-                { style: 'font-family:var(--font-mono); font-size:var(--text-xs); color:var(--color-text-secondary);' },
+                { title: candidate.provider_model_name, style: 'font-family:var(--font-mono); font-size:var(--text-xs); color:var(--color-text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;' },
                 candidate.provider_model_name,
               )
             : h('span', { style: 'font-size:var(--text-xs); color:var(--color-text-muted);' }, '—'),
           h('div', [h(PriceLinesBlock, { candidate })]),
           h(
             'div',
-            { style: 'display:flex; align-items:center; gap:6px;' },
+            { style: 'display:flex; align-items:center; justify-content:flex-start; gap:6px; flex-wrap:wrap;' },
             [
               h(ProbeTagBlock, { candidate }),
               h(CandidateUnpricedTag, { candidate }),
@@ -755,7 +784,7 @@ function renderModelExpand(row: Model) {
           ),
         ],
       )
-    }),
+    })],
   )
   return expandPanel({ eyebrow: isMobile.value ? undefined : t('models.expandComparison'), indent: !isMobile.value }, [list])
 }

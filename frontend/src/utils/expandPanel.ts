@@ -6,8 +6,13 @@ import type { VNodeChild } from 'vue'
 // block, so the panel reads as a deliberate sub-view instead of loose text
 // floating in the row gap. Inline styles throughout because scoped CSS
 // cannot reach h()-rendered nodes.
+//
+// display:flex (block-level, NOT inline-flex): the panel must fill the
+// expand cell's full width — an inline-flex strip shrinks to its content
+// (the row cards' fixed tracks ≈ 850px), which parked the comparison list
+// in the left half of a wide screen.
 const PANEL_STYLE =
-  'display:inline-flex; flex-direction:column; gap:8px; padding:10px 16px 12px;' +
+  'display:flex; flex-direction:column; gap:8px; padding:10px 16px 12px;' +
   ' background:var(--color-bg-soft); border:1px solid var(--color-border-subtle);' +
   ' border-radius:var(--radius-md); max-width:100%;'
 

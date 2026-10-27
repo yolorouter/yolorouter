@@ -338,6 +338,30 @@ describe('ModelListPage comparison expansion', () => {
     expect(ids).toEqual(['63', '62', '61', '64', '65'])
   })
 
+  it('the comparison panel carries exactly one column header naming the five tracks in order', async () => {
+    await mountPage(COMPARE_MODELS())
+    await expandRow('compare-me', 5)
+    const headers = wrapper!.findAll('.model-compare-header')
+    expect(headers.length, 'one header per expanded panel, not per row').toBe(1)
+    // Left-to-right track labels — the header rides the rows' shared grid
+    // template, so this doubles as the label/track alignment contract.
+    expect(headers[0].findAll('span').map((s) => s.text())).toEqual([
+      zhCN.models.compareProvider,
+      zhCN.models.providerModelName,
+      zhCN.models.priceColumn,
+      zhCN.models.compareStatus,
+      zhCN.common.actions,
+    ])
+  })
+
+  it('a model with no candidates expands to the empty note and no column header', async () => {
+    await mountPage([modelFixture(90, 'bare-model', [])])
+    const row = rowByName('bare-model')
+    await row.find('.n-data-table-expand-trigger').trigger('click')
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain(zhCN.models.expandNoCandidates))
+    expect(wrapper!.findAll('.model-compare-header').length).toBe(0)
+  })
+
   it('the cheapest priced row carries the 最便宜 tag', async () => {
     await mountPage(COMPARE_MODELS())
     await expandRow('compare-me', 5)

@@ -22,6 +22,8 @@ export default {
   priceFrom: 'from {price}',
   unpricedCount: 'Unpriced',
   cheapestTag: 'Cheapest',
+  compareProvider: 'Provider',
+  compareStatus: 'Status',
   expandComparison: 'Candidate price comparison (price ascending)',
   expandComparison_tip:
     'Every candidate of this model sorted by its billing primary price ascending: token rows by input price, audio rows by character price, image and video rows by upstream name, unpriced rows sunk to the bottom; the cheapest row carries a tag and can be edited inline',

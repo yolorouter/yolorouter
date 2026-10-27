@@ -21,6 +21,8 @@ export default {
   priceFrom: '{price} 起',
   unpricedCount: '未定价',
   cheapestTag: '最便宜',
+  compareProvider: '供应商',
+  compareStatus: '状态',
   expandComparison: '候选比价（按价格升序）',
   expandComparison_tip: '该模型的全部候选按计费主价升序排列：token 行按输入价、音频行按字符价，图片与视频行按上游名，未定价行沉底；最便宜行带标签，可在行内直接改价',
   bulkButton: '批量调价',
