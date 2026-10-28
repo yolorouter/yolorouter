@@ -7,6 +7,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The audit rows a request leaves behind can no longer come apart on a busy
+  machine. The recorder wrote the summary row, the body row, and the agent-turn
+  rows under one shared five-second deadline; on a box slow enough — the public
+  CI's Windows runner, where single SQLite statements run a hundred times
+  slower than on Linux — that deadline could land between two writes,
+  committing the summary and silently dropping the body (the write is
+  best-effort, and a test process logs to a nop logger, so nothing showed
+  anywhere but a "no body row" test failure). Each persistence write now
+  carries its own fresh deadline, derived detached from the caller's
+  cancellation and from every budget already spent, and the recorder pass's
+  outer bound became a per-recorder runaway net sized never to bind a healthy
+  write.
+
 ## [0.2.9] - 2026-10-27
 
 ### Added

@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -72,6 +73,23 @@ func New(db *gorm.DB) *Recorder { return &Recorder{db: db} }
 
 // Name identifies the recorder in logs.
 func (*Recorder) Name() string { return "request_log" }
+
+// writeBudget bounds ONE persistence write. The several writes that make up
+// one audit record are sequential statements, and a deadline shared across
+// them can land in between — on a starved machine (the Windows CI runner,
+// where single SQLite statements run 130–290ms) exactly that happened: the
+// summary row committed, the body write inherited a spent clock and returned
+// context-deadline, and the best-effort write was dropped with the row half
+// missing. Each write therefore gets its own fresh deadline below.
+const writeBudget = 30 * time.Second
+
+// writeCtx arms one write's fresh deadline. Derived through WithoutCancel so
+// the write inherits neither the caller's cancellation — a disconnected caller
+// is precisely whose row matters most — nor any budget already spent reaching
+// this point or on the writes before this one.
+func writeCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), writeBudget)
+}
 
 // Record writes the summary row and the body row.
 //
@@ -176,7 +194,10 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 	row.ImagePricingSnapshot = view.ImagePricingSnapshot()
 	row.AudioPricingSnapshot = view.AudioPricingSnapshot()
 
-	if err := repository.CreateRequestLog(r.db.WithContext(ctx), row); err != nil {
+	wctx, cancel := writeCtx(ctx)
+	err := repository.CreateRequestLog(r.db.WithContext(wctx), row)
+	cancel()
+	if err != nil {
 		logger.Error("gateway: write request log failed",
 			zap.String("request_id", view.RequestID()), zap.Error(err))
 	}
@@ -192,7 +213,10 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 		StreamBodyTruncated:   view.StreamBodyTruncated(),
 		CompressedRequestBody: string(view.CompressedRequestBody()),
 	}
-	if err := repository.UpsertRequestLogBody(r.db.WithContext(ctx), bodyRow); err != nil {
+	wctx, cancel = writeCtx(ctx)
+	err = repository.UpsertRequestLogBody(r.db.WithContext(wctx), bodyRow)
+	cancel()
+	if err != nil {
 		logger.Error("gateway: write request log body failed",
 			zap.String("request_id", view.RequestID()), zap.Error(err))
 	}
@@ -206,7 +230,8 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 	// above are already committed and must never be rolled back because
 	// the turn classification could not be stored.
 	if session := view.AgentSessionID(); session != "" {
-		err := agentturns.RecordTurnsForRequest(r.db.WithContext(ctx), agentturns.RequestInput{
+		wctx, cancel := writeCtx(ctx)
+		err := agentturns.RecordTurnsForRequest(r.db.WithContext(wctx), agentturns.RequestInput{
 			SessionID:        session,
 			RequestID:        view.RequestID(),
 			RequestPK:        row.ID,
@@ -215,6 +240,7 @@ func (r *Recorder) Record(ctx context.Context, view View, out fact.Outcome, tl f
 			HasInlineReply:   len(view.ResponseBody()) > 0,
 			HasStreamCapture: view.StreamBodyPath() != "",
 		})
+		cancel()
 		if err != nil {
 			logger.Warn("gateway: write agent session turns failed",
 				zap.String("request_id", view.RequestID()), zap.Error(err))

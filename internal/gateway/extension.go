@@ -1269,10 +1269,19 @@ func (s *Service) releaseAdmissions(ctx context.Context, rc *Exchange, held []he
 	}
 }
 
-// recorderWriteBudget bounds how long the audit trail may take to persist. It
-// runs after the caller has been served, so it delays nothing the caller sees;
-// the bound exists so a stuck database cannot pin goroutines indefinitely.
-const recorderWriteBudget = 5 * time.Second
+// recorderWriteBudget is the recorder pass's runaway net, not its operative
+// bound: each recorder bounds its own persistence work per write (the
+// requestlog recorder arms a fresh deadline for every statement), because a
+// deadline shared across the sequential writes of one audit record can land
+// between them and drop the later half — which is how a starved CI runner
+// once lost a body row whose summary row had committed. This outer budget
+// exists so a recorder that hangs outright still cannot pin the goroutine
+// forever; it is sized well above any well-behaved recorder's own per-write
+// budgets so it is never the constraint a healthy write dies on.
+//
+// It is armed per recorder, so one slow recorder cannot spend the next
+// recorder's clock.
+const recorderWriteBudget = 2 * time.Minute
 
 // releaseBudget bounds how long EACH admission may take to give back what it
 // holds — per ticket, not a shared total, so one stuck backend cannot starve
@@ -1338,16 +1347,16 @@ func (s *Service) runRecorders(ctx context.Context, rc *Exchange, out fact.Outco
 		ctx = context.Background()
 	}
 	// The audit trail is written on a context detached from the request's own
-	// cancellation, and bounded separately. A cancelled caller is exactly the
-	// case where the row matters most — a request that ended in a disconnect is
-	// one somebody will come looking for — and inheriting that cancellation
-	// means the write fails precisely then. The bound keeps a stuck database
-	// from holding the goroutine after the caller is long gone.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recorderWriteBudget)
-	defer cancel()
+	// cancellation. A cancelled caller is exactly the case where the row
+	// matters most — a request that ended in a disconnect is one somebody will
+	// come looking for — and inheriting that cancellation means the write
+	// fails precisely then. The runaway net above is armed per recorder inside
+	// the loop, for the reasons its comment gives.
 
 	for _, r := range s.recorders {
 		func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recorderWriteBudget)
+			defer cancel()
 			defer func() {
 				if v := recover(); v != nil {
 					logger.Error("gateway: recorder panicked",
