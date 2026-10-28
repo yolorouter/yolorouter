@@ -34,6 +34,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sit out bulk adjustment and are skipped with a reason. Admin-only;
   bulk controls are desktop-side.
 
+- The bulk-import dialog is rebuilt as a two-pane master-detail form.
+  The left pane lists the upstream catalogue as selectable rows —
+  checkbox, upstream id in mono, output-modality chips, a
+  configured/unconfigured status dot, and a price-suggestion badge —
+  under a toolbar with select-all, a name filter, and the selected
+  count; the right pane is the selected row's detail form (public
+  name, capability declarations, price group), and edits land straight
+  on the row so the list mirrors them live. Rows now carry
+  declarations: the output axes (text / image / audio — audio
+  exclusive, video not importable, an undeclared row defaults to
+  text) and the input axes (undeclared stays off the wire and is never
+  read as text-only); a public model name (empty publishes the
+  upstream id verbatim; a row whose mapping already exists carries the
+  stored public name, which is what its requeue submission addresses);
+  and the model-level capability set — context length, max output,
+  recommended temperature, and the tools/reasoning tri-states — every
+  slot tri-state by absence, an undeclared slot simply omitted. An
+  audio row swaps the token slots for a single per-character price.
+  Only the six capability fields light a row's configured marker: the
+  public name and output axes never count, both having fully
+  default-shaped answers. A mapping still waiting on a probe verdict
+  stays selectable — re-submitting it is how probes lost to a restart
+  get requeued, since the probe queue is not durable.
+
+- A standalone pre-import probe answers, before anything is stored,
+  whether an upstream model name works on a provider and what it is
+  good at. The endpoint writes nothing — no model row, no candidate,
+  no mapping — resolves the provider's highest-priority usable key,
+  rides the provider's proxy stance, and picks its endpoint family
+  from the declared output modalities (audio decided first, then
+  video-alone, then image-only, defaulting to chat). For a
+  chat-shaped model whose basic probe passed, one extra image-input
+  request answers the vision question under a whitelist: a completion
+  means yes; a model-not-found or request-shape rejection means no;
+  auth, quota, rate-limit, and 5xx answers describe the provider's
+  health, not the model's capability, and stay unclaimed; a timeout
+  means no verdict was obtained. A provider whose keys are all
+  unusable renders the same way an upstream-refused probe does — an
+  answered request carrying a failed report with the reason. In the
+  dialog, the footer's Probe button fires it for the selected row and
+  renders a verdict bar (one ✓/✗/?/— per probe); a confirmed
+  capability fills the row's undeclared slot, badged "probe
+  suggested" — a declared slot is never overwritten, the kept-hint
+  says so instead. "Probe selected" runs the same probe over every
+  checked, non-added row through a three-slot worker pool with the
+  same backfill; the pool caps its failure toasts and stands down
+  entirely once a probe hits a lapsed session, so surviving workers
+  stop firing into the redirect.
+
+- Candidates now record two derived facts: whether their primary price
+  slots were declared at the last write, and whether the background
+  probe queue still owes them a probe. Stored zeros cannot tell an
+  unpriced row from an explicitly free one, so the candidate
+  create/edit API moved to an absent-field contract — an absent price
+  field means unpriced, a submitted 0 means free. An unpriced import
+  row is probed but never auto-enabled, and the migration disarms the
+  auto-enable promise on existing armed candidates without declared
+  prices (image- and video-billed rows, which always carry tier
+  prices, are exempt). Only a save that actually touches a price
+  declaration re-derives the flag, so unrelated edits can neither
+  flip it nor launder it. The unpriced badge renders from this state
+  with tier-aware display.
+
+- The request log's usage cell renders speech rows in their own
+  billing unit: a per-character synthesis now shows its delivered
+  character count, alongside the per-image and per-second forms.
+
+- The embedded price-catalog seed re-syncs from the 2026-10-23 live
+  catalog: minimax retired the seven m2-line listings (m2, m2.1,
+  m2.1-highspeed, m2.5, m2.5-highspeed, m2.7, m2.7-highspeed),
+  dashscope retired the seven qwen3 open-weight listings (8b, 14b,
+  30b-a3b, 235b-a22b, both coder sizes, next-80b), and three minimax
+  listings arrived (m3.1-flash, h3-regeneration, h3-context-ir).
+
+### Fixed
+
+- The model detail page's mobile header actions had been broken in
+  production since the shared-table refactor: the dropdown's import
+  was dropped, so Vue silently rendered an unknown element while 36
+  resolve warnings flooded every build. The import is restored and
+  pinned by a no-unresolved-component test. Alongside it, pages moved
+  to route-level lazy imports — the entry chunk drops from 2.5 MB to
+  about 70 kB — and a router error handler reloads the page once per
+  tab session when a binary upgrade swaps asset hashes under a live
+  session, instead of leaving every navigation dead.
+
+- Creating a provider no longer silently carries the preset's
+  cross-protocol extras when the base URL is edited. The default
+  preset declares the three extras with empty URLs (reuse base_url),
+  so editing the URL in place effectively declared all four dialects
+  at the edited URL and made a single-dialect upstream's key
+  impossible to verify under the all-destination gate. When the base
+  URL diverges from the selected preset's, the preset-owned empty-URL
+  extras now fall away and the card highlight switches to custom;
+  extras with a typed URL survive.
+
 ## [0.2.8] - 2026-10-11
 
 ### Added
