@@ -974,7 +974,12 @@ Yolorouter 走向多协议：现在接受四种线上协议，并能在去往供
   静态加密（AES-256）。
 - 经 `update` 命令与更新检查 API 自更新。
 
-[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/yolorouter/yolorouter/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/yolorouter/yolorouter/compare/v0.2.8...v0.2.9
+[0.2.8]: https://github.com/yolorouter/yolorouter/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/yolorouter/yolorouter/compare/v0.2.6...v0.2.7
+[0.2.6]: https://github.com/yolorouter/yolorouter/compare/v0.2.5...v0.2.6
+[0.2.5]: https://github.com/yolorouter/yolorouter/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/yolorouter/yolorouter/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/yolorouter/yolorouter/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/yolorouter/yolorouter/compare/v0.2.1...v0.2.2
