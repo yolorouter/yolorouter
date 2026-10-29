@@ -52,3 +52,7 @@ gui-test-screenshots/
 
 # ZCode per-machine tooling state (auto-synced from .gitignore by the platform).
 .zcodeignore
+
+# agregator-llm preprod state and local build artifacts
+preprod-data/
+bin/
